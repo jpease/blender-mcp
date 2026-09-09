@@ -227,3 +227,6 @@ __marimo__/
 node_modules/
 package.json
 package-lock.json
+
+# Generated output from the headless Blender Docker container
+docker/blender/output/
