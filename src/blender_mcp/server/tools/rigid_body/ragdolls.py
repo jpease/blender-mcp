@@ -2,13 +2,13 @@
 
 import asyncio
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .inspection_and_setup import RigidBodyConstraintSpec, Vector3, _call, mcp
+from .inspection_and_setup import Vector3, _call, mcp, rigid_body_constraint_adapter
 
 
 class RagdollBodySpec(BaseModel):
@@ -36,7 +36,11 @@ class RagdollJointSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     parent_bone_name: str = Field(min_length=1)
     child_bone_name: str = Field(min_length=1)
-    configuration: RigidBodyConstraintSpec
+    # A discriminated-union object keyed by "type": FIXED, POINT, HINGE, SLIDER, PISTON, GENERIC,
+    # GENERIC_SPRING, or MOTOR. Kept untyped here (validated below) rather than declared as
+    # RigidBodyConstraintSpec directly, which would serialize that whole union into
+    # create_ragdoll_rig's advertised JSON schema.
+    configuration: dict[str, Any]
     constraint_name: str | None = None
     axis: Vector3 | None = None
 
@@ -46,6 +50,19 @@ class RagdollJointSpec(BaseModel):
             raise ValueError("Ragdoll joint endpoints must be distinct")
         if self.axis is not None and sum(component * component for component in self.axis) <= 1e-16:
             raise ValueError("Ragdoll joint axis must be non-zero")
+        return self
+
+    @model_validator(mode="after")
+    def validate_configuration(self) -> "RagdollJointSpec":
+        """
+        Validate and normalize the untyped configuration dict against RigidBodyConstraintSpec.
+
+        Returns:
+            RagdollJointSpec: This instance, with configuration replaced by its validated form.
+
+        """
+        validated = rigid_body_constraint_adapter.validate_python(self.configuration)
+        self.configuration = validated.model_dump(exclude_none=True, exclude_unset=True)
         return self
 
 
@@ -112,13 +129,7 @@ async def create_ragdoll_rig(
             "armature_object_name": armature_object_name,
             "rig_name": rig_name,
             "bodies": [body.model_dump(exclude_none=True) for body in bodies],
-            "joints": [
-                {
-                    **joint.model_dump(exclude={"configuration"}, exclude_none=True),
-                    "configuration": joint.configuration.model_dump(exclude_none=True, exclude_unset=True),
-                }
-                for joint in joints
-            ],
+            "joints": [joint.model_dump(exclude_none=True) for joint in joints],
             "total_mass": total_mass,
             "proxy_collection_name": proxy_collection_name,
             "constraint_collection_name": constraint_collection_name,

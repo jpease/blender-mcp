@@ -55,7 +55,7 @@ def test_proxy_and_ragdoll_specs_reject_ambiguous_mappings() -> None:
         rigid_body.RagdollJointSpec(
             parent_bone_name="spine",
             child_bone_name="spine",
-            configuration=rigid_body.PointConstraint(type="POINT"),
+            configuration={"type": "POINT"},
         )
 
 
@@ -94,10 +94,10 @@ def test_ragdoll_payload_keeps_reviewed_constraint_limits(monkeypatch) -> None:
     joint = rigid_body.RagdollJointSpec(
         parent_bone_name="spine",
         child_bone_name="head",
-        configuration=rigid_body.HingeConstraint(
-            type="HINGE",
-            angular_z=rigid_body.LimitAxis(use_limit=True, lower=-0.5, upper=0.5),
-        ),
+        configuration={
+            "type": "HINGE",
+            "angular_z": {"use_limit": True, "lower": -0.5, "upper": 0.5},
+        },
     )
     _run(
         rigid_body.create_ragdoll_rig,

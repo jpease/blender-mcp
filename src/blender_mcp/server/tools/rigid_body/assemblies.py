@@ -2,13 +2,13 @@
 
 import asyncio
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .inspection_and_setup import RigidBodyConstraintSpec, Vector3, _call, mcp
+from .inspection_and_setup import Vector3, _call, mcp, rigid_body_constraint_adapter
 
 
 class ConstraintEdge(BaseModel):
@@ -71,7 +71,7 @@ async def create_rigid_body_constraint_network(
     scene_name: str,
     network_name: str,
     body_names: Annotated[list[str], Field(min_length=2, max_length=256)],
-    configuration: RigidBodyConstraintSpec,
+    configuration: dict[str, Any],
     edges: Annotated[list[ConstraintEdge] | None, Field(max_length=512)] = None,
     pairing: Literal["EXPLICIT", "CHAIN", "NEAREST", "RADIUS", "PARENT"] = "EXPLICIT",
     radius: Annotated[float | None, Field(gt=0.0)] = None,
@@ -88,6 +88,10 @@ async def create_rigid_body_constraint_network(
     within `radius` (required) of each other, up to max_neighbors per body; PARENT links each body
     to its existing Blender object-parent, if that parent is also in body_names. All pairings other
     than EXPLICIT ignore edges.
+
+    configuration is a discriminated-union object keyed by "type": FIXED, POINT, HINGE, SLIDER,
+    PISTON, GENERIC, GENERIC_SPRING, or MOTOR - each with its own additional fields, validated
+    against Blender's real constraint schema before this call reaches Blender.
     """
     if len(set(body_names)) != len(body_names):
         raise ToolError("body_names must be unique")
@@ -97,6 +101,7 @@ async def create_rigid_body_constraint_network(
         raise ToolError("edges are only valid with EXPLICIT pairing")
     if pairing == "RADIUS" and radius is None:
         raise ToolError("RADIUS pairing requires radius")
+    validated_configuration = rigid_body_constraint_adapter.validate_python(configuration)
     return await asyncio.to_thread(
         _call,
         "create_rigid_body_constraint_network",
@@ -104,7 +109,7 @@ async def create_rigid_body_constraint_network(
             "scene_name": scene_name,
             "network_name": network_name,
             "body_names": body_names,
-            "configuration": configuration.model_dump(exclude_none=True, exclude_unset=True),
+            "configuration": validated_configuration.model_dump(exclude_none=True, exclude_unset=True),
             "edges": [edge.model_dump(exclude_none=True) for edge in edges] if edges else [],
             "pairing": pairing,
             "radius": radius,
@@ -160,14 +165,20 @@ async def create_rigid_body_chain(
     scene_name: str,
     chain_name: str,
     body_names: Annotated[list[str], Field(min_length=2, max_length=256)],
-    configuration: RigidBodyConstraintSpec,
+    configuration: dict[str, Any],
     axis: Vector3 = (0.0, 0.0, 1.0),
     start_anchor_name: str | None = None,
     end_anchor_name: str | None = None,
     collection_name: str | None = None,
     confirm_delete_baked_cache: bool = False,
 ) -> dict:
-    """Connect ordered bodies and optional passive anchors as a stable mechanical chain."""
+    """
+    Connect ordered bodies and optional passive anchors as a stable mechanical chain.
+
+    configuration is a discriminated-union object keyed by "type": FIXED, POINT, HINGE, SLIDER,
+    PISTON, GENERIC, GENERIC_SPRING, or MOTOR - each with its own additional fields, validated
+    against Blender's real constraint schema before this call reaches Blender.
+    """
     names = [
         *body_names,
         *([start_anchor_name] if start_anchor_name else []),
@@ -177,6 +188,7 @@ async def create_rigid_body_chain(
         raise ToolError("chain bodies and anchors must be unique")
     if sum(value * value for value in axis) <= 1e-16:
         raise ToolError("axis must be non-zero")
+    validated_configuration = rigid_body_constraint_adapter.validate_python(configuration)
     return await asyncio.to_thread(
         _call,
         "create_rigid_body_chain",
@@ -184,7 +196,7 @@ async def create_rigid_body_chain(
             "scene_name": scene_name,
             "chain_name": chain_name,
             "body_names": body_names,
-            "configuration": configuration.model_dump(exclude_none=True, exclude_unset=True),
+            "configuration": validated_configuration.model_dump(exclude_none=True, exclude_unset=True),
             "axis": axis,
             "start_anchor_name": start_anchor_name,
             "end_anchor_name": end_anchor_name,

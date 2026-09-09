@@ -5,11 +5,11 @@ import logging
 import sys
 
 from collections.abc import Sequence
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from ...app import mcp
 from ...connection import get_blender_connection
@@ -251,6 +251,13 @@ RigidBodyConstraintSpec = Annotated[
     | MotorConstraint,
     Field(discriminator="type"),
 ]
+
+# Validated where `configuration` dicts arrive (create_rigid_body_constraint,
+# configure_rigid_body_constraint, and the network/chain/ragdoll builders elsewhere in this
+# package) rather than declared directly as a tool parameter type: exposing
+# RigidBodyConstraintSpec that way would serialize this whole 8-variant discriminated union
+# into every one of those tools' advertised JSON schemas on every client connection.
+rigid_body_constraint_adapter = TypeAdapter(RigidBodyConstraintSpec)
 
 
 class ConstraintTransform(_StrictModel):
@@ -534,11 +541,18 @@ async def create_rigid_body_constraint(
     object1_name: Annotated[str, Field(min_length=1)],
     object2_name: Annotated[str, Field(min_length=1)],
     transform: ConstraintTransform,
-    configuration: RigidBodyConstraintSpec,
+    configuration: dict[str, Any],
     collection_name: Annotated[str | None, Field(min_length=1)] = None,
     confirm_delete_baked_cache: bool = False,
 ) -> dict:
-    """Create a typed rigid-body constraint at an explicit world transform between two bodies."""
+    """
+    Create a typed rigid-body constraint at an explicit world transform between two bodies.
+
+    configuration is a discriminated-union object keyed by "type": FIXED, POINT, HINGE, SLIDER,
+    PISTON, GENERIC, GENERIC_SPRING, or MOTOR - each with its own additional fields, validated
+    against Blender's real constraint schema before this call reaches Blender.
+    """
+    validated_configuration = rigid_body_constraint_adapter.validate_python(configuration)
     return await asyncio.to_thread(
         _call,
         "create_rigid_body_constraint",
@@ -548,7 +562,7 @@ async def create_rigid_body_constraint(
             "object1_name": object1_name,
             "object2_name": object2_name,
             "transform": transform.model_dump(exclude_none=True),
-            "configuration": configuration.model_dump(exclude_none=True, exclude_unset=True),
+            "configuration": validated_configuration.model_dump(exclude_none=True, exclude_unset=True),
             "collection_name": collection_name,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
@@ -561,13 +575,20 @@ async def configure_rigid_body_constraint(
     ctx: Context,
     scene_name: Annotated[str, Field(min_length=1)],
     constraint_object_name: Annotated[str, Field(min_length=1)],
-    configuration: RigidBodyConstraintSpec,
+    configuration: dict[str, Any],
     object1_name: Annotated[str | None, Field(min_length=1)] = None,
     object2_name: Annotated[str | None, Field(min_length=1)] = None,
     confirm_delete_baked_cache: bool = False,
 ) -> dict:
-    """Patch a constraint through a type-specific schema and optionally replace validated endpoints."""
-    if len(configuration.model_fields_set) == 1 and object1_name is None and object2_name is None:
+    """
+    Patch a constraint through a type-specific schema and optionally replace validated endpoints.
+
+    configuration is a discriminated-union object keyed by "type": FIXED, POINT, HINGE, SLIDER,
+    PISTON, GENERIC, GENERIC_SPRING, or MOTOR - each with its own additional fields, validated
+    against Blender's real constraint schema before this call reaches Blender.
+    """
+    validated_configuration = rigid_body_constraint_adapter.validate_python(configuration)
+    if len(validated_configuration.model_fields_set) == 1 and object1_name is None and object2_name is None:
         raise ToolError("Provide at least one constraint setting or endpoint change")
     return await asyncio.to_thread(
         _call,
@@ -575,7 +596,7 @@ async def configure_rigid_body_constraint(
         {
             "scene_name": scene_name,
             "constraint_object_name": constraint_object_name,
-            "configuration": configuration.model_dump(exclude_none=True, exclude_unset=True),
+            "configuration": validated_configuration.model_dump(exclude_none=True, exclude_unset=True),
             "object1_name": object1_name,
             "object2_name": object2_name,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
