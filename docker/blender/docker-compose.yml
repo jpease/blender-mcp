@@ -1,0 +1,13 @@
+services:
+  blender:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Blender only ships x86_64 Linux builds; force amd64 even on arm64 hosts
+    # (e.g. Apple Silicon), which run it correctly under emulation.
+    platform: linux/amd64
+    volumes:
+      - ../..:/repo:ro
+      - ./output:/output
+    ports:
+      - "9876:9876"
