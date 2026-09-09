@@ -82,7 +82,11 @@ Then in Blender: **Edit → Preferences → Add-ons** → enable **Interface: Bl
 
 In Blender's 3D viewport, press `N` → open the **BlenderMCP** tab → click **Start MCP Server**. That's it — ask Claude to build something.
 
-> **Note:** Only run **one** instance of the MCP server (either Cursor or Claude Desktop), not both.
+> **Note:** By default the server only registers its core scene/mesh/object toolset (~40 tools) to
+> keep `tools/list` small. See [Tool Bundles](#tool-bundles) below to add domains like cloth, liquid,
+> or rigging. Running more than one server process for the *same* bundle selection (e.g. two default
+> `blender` entries in both Cursor and Claude Desktop) is redundant — each opens its own connection to
+> the same addon — so stick to one process per bundle set you're using this session.
 
 ---
 
@@ -93,6 +97,7 @@ In Blender's 3D viewport, press `N` → open the **BlenderMCP** tab → click **
 - [Installation](#installation)
   - [Prerequisites](#prerequisites)
   - [MCP Client Setup](#mcp-client-setup)
+  - [Tool Bundles](#tool-bundles)
   - [Install the Blender Addon](#install-the-blender-addon)
 - [Usage](#usage)
 - [Capabilities](#capabilities)
@@ -220,6 +225,73 @@ claude mcp add blender blender-mcp
 
 Refer to your editor's MCP setup instructions and use `"command": "blender-mcp"`. For Windows, wrap as `"command": "cmd", "args": ["/c", "blender-mcp"]`.
 
+<details>
+<summary><b>Codex CLI</b> — <code>~/.codex/config.toml</code></summary>
+
+```toml
+[mcp_servers.blender]
+command = "blender-mcp"
+```
+</details>
+
+---
+
+## Tool Bundles
+
+blender-mcp registers close to 300 tools in total. Sending all of them to a client on every
+connection can be large enough to eat into the context available for the actual task, so by
+default a server process only registers its **core** bundle — scene inspection, mesh/object
+editing, viewport, and animation (~40 tools). Everything else is opt-in per domain, selected with
+the `BLENDER_MCP_TOOLSETS` environment variable (a comma-separated list of bundle names, or `all`
+for the previous everything-registered behavior):
+
+| Bundle | Adds |
+|---|---|
+| *(default, always on)* | scene inspection, mesh/object editing, viewport, animation |
+| `camera` | camera placement, framing, shots |
+| `cloth` | cloth simulation |
+| `liquid` | fluid/liquid simulation |
+| `rigid-body` | rigid body physics, scene physics |
+| `geometry-nodes` | geometry nodes, ND toolkit |
+| `character-rigging` | armatures, rigging |
+| `retopology` | retopology workflows |
+| `texture-lighting` | materials/textures, lighting |
+| `rendering` | render + inspect render output |
+| `assets` | Poly Haven, Sketchfab |
+
+Add one MCP server entry per bundle set you want available this session — set the env var on that
+entry, not globally, so each client config controls exactly which tools it sees:
+
+**Claude Desktop / Claude Code** (`claude_desktop_config.json`, or `claude mcp add`'s `--env` flag):
+
+```json
+{
+    "mcpServers": {
+        "blender": {
+            "command": "blender-mcp"
+        },
+        "blender-cloth": {
+            "command": "blender-mcp",
+            "env": { "BLENDER_MCP_TOOLSETS": "cloth,liquid" }
+        }
+    }
+}
+```
+
+**Codex CLI** (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.blender]
+command = "blender-mcp"
+
+[mcp_servers.blender-cloth]
+command = "blender-mcp"
+env = { BLENDER_MCP_TOOLSETS = "cloth,liquid" }
+```
+
+Both clients then show one hammer-icon server per entry; enable only the ones relevant to what
+you're working on, and disable the rest for that session.
+
 ---
 
 ### Install the Blender Addon
@@ -270,6 +342,10 @@ Store Sketchfab API keys in **Edit → Preferences → Add-ons → Blender MCP**
 **Connection**
 
 Configure host and port with `BLENDER_HOST` and `BLENDER_PORT` environment variables (defaults: `localhost`, `9876`).
+
+**Tool bundles**
+
+Configure which tool domains a server process registers with `BLENDER_MCP_TOOLSETS` — see [Tool Bundles](#tool-bundles).
 
 ---
 

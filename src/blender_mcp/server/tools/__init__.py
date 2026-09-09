@@ -1,27 +1,26 @@
-"""Import every tool submodule for its @mcp.tool() registration side effect."""
+"""
+Import the tool submodules selected by BLENDER_MCP_TOOLSETS for their @mcp.tool() registration side effect.
 
-# Registration order is intentional: the documentation pass must run last.
-# ruff: file-ignore[unsorted-imports]
+Every tool registered here is sent to every connected MCP client in its `tools/list`
+response. With all domains always imported, that response alone can be large enough to
+exhaust a client's context before any real work starts. BLENDER_MCP_TOOLSETS (a
+comma-separated list of bundle names from `..bundles.BUNDLES`, or `all`) lets a server
+process register only the domains a client's config asks for; `core` modules are always
+included. See ../bundles.py and README.md for the bundle table and client config examples.
+"""
 
-from . import animation as animation
-from . import camera as camera
-from . import character_rigging as character_rigging
-from . import cloth as cloth
-from . import core as core
-from . import geometry_nodes as geometry_nodes
-from . import lighting as lighting
-from . import liquid as liquid
-from . import mesh as mesh
-from . import model as model
-from . import nd as nd
-from . import object_animation as object_animation
-from . import polyhaven as polyhaven
-from . import retopology as retopology
-from . import rendering as rendering
-from . import rigid_body as rigid_body
-from . import scene as scene
-from . import scene_physics as scene_physics
-from . import sketchfab as sketchfab
-from . import texture as texture
-from . import viewport as viewport
-from . import _documentation as _documentation
+# This file's job is exactly this conditional registration; the docstrings-and-reexports
+# convention doesn't apply.
+# ruff: file-ignore[non-empty-init-module]
+
+import importlib
+import os
+
+from ..bundles import resolve_toolset_modules
+
+for _module_name in resolve_toolset_modules(os.getenv("BLENDER_MCP_TOOLSETS")):
+    importlib.import_module(f".{_module_name}", package=__name__)
+
+# Imported last and only after the modules above so the documentation pass covers
+# exactly the tools this process actually registered.
+from . import _documentation as _documentation  # ruff: ignore[module-import-not-at-top-of-file]
