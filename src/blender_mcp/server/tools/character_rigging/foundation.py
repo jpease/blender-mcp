@@ -5,11 +5,11 @@ import logging
 import sys
 
 from collections.abc import Sequence
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from ...app import mcp
 from ...connection import get_blender_connection
@@ -495,6 +495,12 @@ PoseConstraintSpec = Annotated[
     Field(discriminator="type"),
 ]
 
+# Validated inside add_pose_bone_constraint rather than declared as that tool's parameter
+# type: exposing PoseConstraintSpec directly would serialize this whole 13-variant
+# discriminated union into that one tool's advertised JSON schema on every client
+# connection, at a cost of several thousand tokens for detail most calls never touch.
+_pose_constraint_adapter = TypeAdapter(PoseConstraintSpec)
+
 
 def _models(items: Sequence[BaseModel]) -> list[dict]:
     return [item.model_dump(exclude_none=True) for item in items]
@@ -784,20 +790,25 @@ async def add_pose_bone_constraint(
     ctx: Context,
     armature_object_name: str,
     bone_name: str,
-    constraint: PoseConstraintSpec,
+    constraint: dict[str, Any],
 ) -> dict:
     """
     Create or update one typed pose-bone constraint after validating targets and dependency cycles.
 
     bone_name must already exist as a pose bone on armature_object_name; this tool cannot create bones.
+    constraint is a discriminated-union object keyed by "type": IK, SPLINE_IK, COPY_TRANSFORMS,
+    COPY_LOCATION, COPY_ROTATION, COPY_SCALE, CHILD_OF, DAMPED_TRACK, TRACK_TO, STRETCH_TO,
+    LIMIT_LOCATION, LIMIT_ROTATION, LIMIT_SCALE, TRANSFORM, or ACTION - each with its own additional
+    fields, validated against Blender's real constraint schema before this call reaches Blender.
     """
+    validated = _pose_constraint_adapter.validate_python(constraint)
     return await asyncio.to_thread(
         _call,
         "add_pose_bone_constraint",
         {
             "armature_object_name": armature_object_name,
             "bone_name": bone_name,
-            "constraint": constraint.model_dump(exclude_none=True),
+            "constraint": validated.model_dump(exclude_none=True),
         },
         [armature_object_name],
     )
