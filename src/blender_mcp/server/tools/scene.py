@@ -9,7 +9,7 @@ import operator
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
-from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model, model_validator
 
 from ..app import mcp
 from ..connection import get_blender_connection
@@ -535,6 +535,12 @@ for _modifier_type, _setting_names in _MODIFIER_SETTING_NAMES.items():
 
 ModifierSpecInput = Annotated[functools.reduce(operator.or_, _modifier_variants), Field(discriminator="type")]
 
+# Validated inside manage_modifiers rather than declared as that tool's parameter type: exposing
+# ModifierSpecInput directly would serialize all 30 modifier types' full settings schemas into
+# that one tool's advertised JSON schema on every client connection, at a cost of roughly 19K
+# tokens for detail no single call ever needs more than one variant of.
+modifier_spec_adapter = TypeAdapter(ModifierSpecInput)
+
 
 def _call(command: str, params: dict[str, Any], changed_objects: list[str] | None = None) -> dict:
     result = get_blender_connection().send_command(command, params)
@@ -674,13 +680,23 @@ async def manage_modifiers(
     ctx: Context,
     object_name: str,
     action: Literal["ADD", "PATCH", "MOVE", "REMOVE", "APPLY"],
-    modifier: ModifierSpecInput,
+    modifier: dict[str, Any],
     position: int | None = Field(default=None, ge=0),
     confirm_destructive: bool = False,
 ) -> dict:
-    """Manage one allowlisted non-Geometry-Nodes modifier and report evaluated geometry evidence."""
+    """
+    Manage one allowlisted non-Geometry-Nodes modifier and report evaluated geometry evidence.
+
+    modifier is {"name": ..., "type": ..., "settings": {...}}, where type selects one of Blender's
+    modifier types (ARRAY, BEVEL, BOOLEAN, BUILD, CAST, CURVE, DECIMATE, DISPLACE, LATTICE, MASK,
+    MESH_DEFORM, MIRROR, REMESH, SCREW, SHRINKWRAP, SIMPLE_DEFORM, SKIN, SMOOTH, SOLIDIFY, SUBSURF,
+    TRIANGULATE, WAVE, WELD, WIREFRAME, WEIGHTED_NORMAL, UV_PROJECT, UV_WARP, VOLUME_TO_MESH,
+    MESH_TO_VOLUME, or OCEAN) and settings accepts only that type's allowlisted fields, validated
+    against Blender's real modifier schema before this call reaches Blender.
+    """
     if action in {"REMOVE", "APPLY"} and not confirm_destructive:
         raise ValueError("confirm_destructive=True is required for REMOVE or APPLY")
+    validated_modifier = modifier_spec_adapter.validate_python(modifier)
     warnings = [STALE_INDEX_WARNING] if action == "APPLY" else None
     result = await asyncio.to_thread(
         _call,
@@ -688,7 +704,7 @@ async def manage_modifiers(
         {
             "object_name": object_name,
             "action": action,
-            "modifier": modifier.model_dump(exclude_none=True),
+            "modifier": validated_modifier.model_dump(exclude_none=True),
             "position": position,
             "confirm_destructive": confirm_destructive,
         },
