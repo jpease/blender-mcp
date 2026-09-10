@@ -1576,6 +1576,7 @@
     "get_viewport_screenshot": [
       "filepath",
       "format",
+      "inline",
       "max_size",
       "shading_override",
       "view"
@@ -1620,6 +1621,7 @@
       "filepath",
       "format",
       "frame",
+      "inline",
       "max_size",
       "output_path"
     ],
@@ -2551,5 +2553,5 @@
       "scope"
     ]
   },
-  "protocol_version": 36
+  "protocol_version": 37
 }

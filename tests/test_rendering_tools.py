@@ -2,6 +2,7 @@
 """Regression coverage for render, view-layer, and pass tools."""
 
 import asyncio
+import base64
 import importlib
 import inspect
 import math
@@ -18,7 +19,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import _dispatch, image_capture, rendering
+from blender_mcp.server.tools import _dispatch, _image_transport, rendering
 
 RENDER_COMMANDS = {
     "inspect_render_setup",
@@ -216,6 +217,9 @@ def test_inspect_render_output_is_async_and_returns_the_image_with_its_envelope(
 
     connection.send_command = fake_send_command
     monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+    # No handshake means no inline support, which is the shared-path transport this covers;
+    # pinned rather than left to whichever test last cached one.
+    monkeypatch.setattr(_image_transport, "get_last_handshake", lambda: None)
 
     items = asyncio.run(rendering.inspect_render_output(ctx=None, output_path="/tmp/render.png", max_size=500))
 
@@ -244,7 +248,8 @@ def test_inspect_render_output_tempfile_is_removed_when_blender_fails(monkeypatc
         return descriptor, str(rendered)
 
     monkeypatch.setattr(_dispatch, "get_blender_connection", _FailingConnection)
-    monkeypatch.setattr(image_capture.tempfile, "mkstemp", fake_mkstemp)
+    monkeypatch.setattr(_image_transport, "get_last_handshake", lambda: None)
+    monkeypatch.setattr(_image_transport.tempfile, "mkstemp", fake_mkstemp)
 
     with pytest.raises(Exception, match="Render output inspection failed"):
         asyncio.run(rendering.inspect_render_output(ctx=None))
@@ -1189,3 +1194,42 @@ def test_orchestrated_animation_cancellation_lands_between_frames_and_skips_pers
     assert [c for c, _p in connection.calls] == ["plan_render_animation", "render_scene", "render_scene"]
     assert ctx.progress_calls == [(1, 5, "Rendered frame 1 (1/5)")]
     assert all(command != "configure_render_settings" for command, _params in connection.calls)
+
+
+def test_inspect_render_output_uses_the_inline_transport_when_the_addon_supports_it(monkeypatch) -> None:
+    calls = []
+
+    class Connection:
+        def send_command(self, command, params):
+            calls.append((command, params))
+            return {
+                "image_base64": base64.b64encode(b"inline-render").decode("ascii"),
+                "width": 500,
+                "height": 300,
+                "source": "output_path",
+                "source_path": "/renders/frame.png",
+            }
+
+    monkeypatch.setattr(_dispatch, "get_blender_connection", Connection)
+    monkeypatch.setattr(
+        _image_transport,
+        "get_last_handshake",
+        lambda: types.SimpleNamespace(protocol_version=_image_transport.INLINE_IMAGE_PROTOCOL_VERSION),
+    )
+    monkeypatch.setattr(
+        _image_transport.tempfile,
+        "mkstemp",
+        lambda **_kwargs: pytest.fail("the inline transport must not touch the local filesystem"),
+    )
+
+    image, envelope = asyncio.run(
+        rendering.inspect_render_output(ctx=None, output_path="/renders/frame.png", max_size=500)
+    )
+
+    command, params = calls[0]
+    assert command == "inspect_render_output"
+    assert params["inline"] is True
+    assert params["output_path"] == "/renders/frame.png"
+    assert "filepath" not in params
+    assert image.data == b"inline-render"
+    assert envelope["data"]["source"] == "output_path"

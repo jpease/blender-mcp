@@ -1,6 +1,7 @@
 # ruff: file-ignore[module-import-not-at-top-of-file]
 """Run with Blender 5.1+ to smoke-test render and view-layer handlers."""
 
+import base64
 import importlib.util
 import math
 import os
@@ -97,6 +98,23 @@ def _check_frame_is_read_back_from_the_filename(handler: RenderingHandlersMixin,
             scene.name, str(Path(directory) / "hero.png"), mode="STILL", frame=1, confirm_render=True
         )
         assert handler.inspect_render_output(copy, output_path=still["filepath"])["frame"] is None
+
+
+def _check_inline_reply_carries_the_bytes(handler: RenderingHandlersMixin, scene: bpy.types.Scene) -> None:
+    """`inline` answers with the image itself, writing nothing the caller could read."""
+    with tempfile.TemporaryDirectory() as directory:
+        still = handler.render_scene(
+            scene.name, str(Path(directory) / "inline.png"), mode="STILL", frame=1, confirm_render=True
+        )
+        before = set(Path(tempfile.gettempdir()).glob("blender_mcp_inline_*"))
+        inspected = handler.inspect_render_output(output_path=still["filepath"], inline=True)
+        # The destination this process picked is its own; reporting it would invite the caller
+        # - on another filesystem, which is the whole point - to try to read it.
+        assert "filepath" not in inspected, inspected
+        assert base64.b64decode(inspected["image_base64"]).startswith(b"\x89PNG"), "no PNG came back inline"
+        leaked = set(Path(tempfile.gettempdir()).glob("blender_mcp_inline_*")) - before
+        assert not leaked, f"the inline destination outlived the reply: {sorted(leaked)}"
+        assert not list(Path(directory).glob("*.src.png")), "the render-result staging copy was left behind"
 
 
 def _check_eevee_ray_tracing_is_reachable(handler: RenderingHandlersMixin, scene: bpy.types.Scene) -> None:
@@ -293,6 +311,7 @@ def main() -> None:
     _check_output_path_resolution(handler, scene)
     _check_directory_output_is_refused(handler, scene)
     _check_frame_is_read_back_from_the_filename(handler, scene)
+    _check_inline_reply_carries_the_bytes(handler, scene)
     _check_scene_owned_render_intent(handler, scene)
     _check_default_frame_range_is_refused(handler, scene)
 

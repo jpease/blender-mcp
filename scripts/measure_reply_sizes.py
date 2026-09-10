@@ -22,6 +22,7 @@ Usage:
 """
 
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -2282,7 +2283,10 @@ class _StubConnection:
 
         A tool that hands a `.png` path to the add-on reads that file back afterwards, so the
         stub writes one wherever the directory really exists - which is the temporary path the
-        tool itself just made, never the fictional shot paths in `_ARGUMENTS`.
+        tool itself just made, never the fictional shot paths in `_ARGUMENTS`. Once a handshake
+        has reported a protocol that speaks inline images - measuring `get_addon_status` caches
+        one - the tool asks for the bytes in the reply instead, and the stub answers the way
+        `bundled/addon/image_reply.finalize_image_reply` does.
 
         Args:
             command: Add-on command name the tool dispatched.
@@ -2305,7 +2309,12 @@ class _StubConnection:
                     target = Path(candidate)
                     if target.parent.is_dir():
                         target.write_bytes(_ONE_PIXEL_PNG)
-        return builder(self._scale)
+        payload = builder(self._scale)
+        if (params or {}).get("inline") and isinstance(payload, dict):
+            inline = {key: value for key, value in payload.items() if key != "filepath"}
+            inline["image_base64"] = base64.b64encode(_ONE_PIXEL_PNG).decode("ascii")
+            return inline
+        return payload
 
 
 def _install_stub(scale: SceneScale) -> None:

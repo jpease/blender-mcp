@@ -3,6 +3,7 @@ import contextlib
 import bpy
 
 from ..helpers import find_view3d
+from ..image_reply import finalize_image_reply, image_destination
 from .camera._shared import _camera, _look_quaternion, _object, _vector
 
 # The only two space.shading.type values get_viewport_screenshot's shading_override accepts.
@@ -345,13 +346,16 @@ class ViewportHandlersMixin:
         setattr(holder, overlay_prop, bool(enabled))
         return {"toggle": toggle, "enabled": bool(enabled)}
 
-    def get_viewport_screenshot(self, max_size=800, filepath=None, format="png", view=None, shading_override=None):
+    def get_viewport_screenshot(
+        self, max_size=800, filepath=None, format="png", view=None, shading_override=None, inline=False
+    ):
         """
         Capture a screenshot of the current 3D viewport and save it to the specified path.
 
         Args:
             max_size: Maximum size in pixels for the largest dimension of the image
-            filepath: Path where to save the screenshot file
+            filepath: Path where to save the screenshot file; optional when `inline`, which
+                lets this process choose its own.
             format: Image format (png, jpg, etc.)
             view: Optional ViewSpec fields (dict) to capture from an ad hoc camera_object or
                 eye/target_point/target_object_name view instead of the live viewport's own
@@ -359,10 +363,12 @@ class ViewportHandlersMixin:
                 (unchanged default behavior).
             shading_override: Optional "SOLID" or "MATERIAL" to force that viewport shading
                 for just this capture, restoring the live viewport's shading afterward.
+            inline: Return the image bytes in the reply instead of writing to filepath.
 
         Returns:
             success/error status, plus "view_source" ("live_viewport", "camera_object", or
-            "eye_target") and "shading_mode" (the space.shading.type actually used).
+            "eye_target") and "shading_mode" (the space.shading.type actually used); carrying
+            the image bytes as "image_base64" instead of a "filepath" when `inline`.
 
         """
         # screen.screenshot_area captures the OS window framebuffer, which is
@@ -373,8 +379,6 @@ class ViewportHandlersMixin:
         # back to the window grab if offscreen rendering is unavailable (e.g. no
         # GPU context). The response reports which path produced the image.
         try:
-            if not filepath:
-                return {"error": "No filepath provided"}
             if shading_override is not None and shading_override not in _SHADING_OVERRIDES:
                 allowed = sorted(_SHADING_OVERRIDES)
                 return {"error": f"Invalid shading_override: {shading_override}. Must be one of {allowed}"}
@@ -396,18 +400,20 @@ class ViewportHandlersMixin:
                 r3d = space.region_3d
                 view_matrix, window_matrix, view_source = r3d.view_matrix, r3d.window_matrix, "live_viewport"
 
-            return _capture_view(
-                area,
-                region,
-                space,
-                view_matrix,
-                window_matrix,
-                view_source,
-                max_size,
-                filepath,
-                format,
-                shading_override,
-            )
+            with image_destination(inline, filepath) as path:
+                captured = _capture_view(
+                    area,
+                    region,
+                    space,
+                    view_matrix,
+                    window_matrix,
+                    view_source,
+                    max_size,
+                    path,
+                    format,
+                    shading_override,
+                )
+                return finalize_image_reply(captured, inline=inline, path=path)
 
         except Exception as e:
             return {"error": str(e)}
