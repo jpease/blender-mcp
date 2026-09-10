@@ -25,7 +25,7 @@ bl_info = {
 # Keep in sync with blender_mcp.addon_manager.EXPECTED_ADDON_PROTOCOL_VERSION.
 # Bumped so installations without advanced Geometry Nodes zones, cache, delivery,
 # and performance capabilities are refreshed before dispatch.
-ADDON_PROTOCOL_VERSION = 30
+ADDON_PROTOCOL_VERSION = 31
 
 from .server_core import BlenderMCPServer  # ruff: ignore[module-import-not-at-top-of-file]
 from .ui import (  # ruff: ignore[module-import-not-at-top-of-file]

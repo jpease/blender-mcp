@@ -10,7 +10,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import rendering
+from blender_mcp.server.tools import _image_transport, rendering
 
 RENDER_COMMANDS = {
     "inspect_render_setup",
@@ -188,7 +188,7 @@ def test_inspect_render_output_serializes_request_and_returns_image(monkeypatch)
         return {"width": 500, "height": 300, "source": "output_path", "source_path": "/tmp/render.png"}
 
     connection.send_command = fake_send_command
-    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_image_transport, "get_blender_connection", lambda: connection)
 
     items = rendering.inspect_render_output(ctx=None, output_path="/tmp/render.png", max_size=500)
 
@@ -215,10 +215,47 @@ def test_inspect_render_output_tempfile_is_removed_when_blender_fails(monkeypatc
         descriptor = os.open(rendered, os.O_CREAT | os.O_RDWR)
         return descriptor, str(rendered)
 
-    monkeypatch.setattr(rendering, "get_blender_connection", _FailingConnection)
-    monkeypatch.setattr(rendering.tempfile, "mkstemp", fake_mkstemp)
+    monkeypatch.setattr(_image_transport, "get_blender_connection", _FailingConnection)
+    monkeypatch.setattr(_image_transport.tempfile, "mkstemp", fake_mkstemp)
 
     with pytest.raises(Exception, match="Render output inspection failed"):
         rendering.inspect_render_output(ctx=None)
 
     assert not rendered.exists()
+
+
+def test_inspect_render_output_uses_the_inline_transport_when_the_addon_supports_it(monkeypatch) -> None:
+    import base64
+    import types
+
+    from blender_mcp.server.tools import _image_transport
+
+    calls = []
+
+    class Connection:
+        def send_command(self, command, params):
+            calls.append((command, params))
+            return {
+                "image_base64": base64.b64encode(b"inline-render").decode("ascii"),
+                "width": 500,
+                "height": 300,
+                "source": "output_path",
+                "source_path": "/renders/frame.png",
+            }
+
+    monkeypatch.setattr(_image_transport, "get_blender_connection", Connection)
+    monkeypatch.setattr(
+        _image_transport,
+        "get_last_handshake",
+        lambda: types.SimpleNamespace(protocol_version=_image_transport.INLINE_IMAGE_PROTOCOL_VERSION),
+    )
+
+    image, envelope = rendering.inspect_render_output(ctx=None, output_path="/renders/frame.png", max_size=500)
+
+    command, params = calls[0]
+    assert command == "inspect_render_output"
+    assert params["inline"] is True
+    assert params["output_path"] == "/renders/frame.png"
+    assert "filepath" not in params
+    assert image.data == b"inline-render"
+    assert envelope["data"]["source"] == "output_path"

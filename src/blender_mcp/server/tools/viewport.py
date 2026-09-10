@@ -1,8 +1,6 @@
 """Scene/object introspection and viewport screenshot tools."""
 
 import logging
-import os
-import tempfile
 
 from typing import Annotated, Literal
 
@@ -12,6 +10,7 @@ from pydantic import Field
 
 from ..app import mcp
 from ..connection import get_blender_connection
+from ._image_transport import request_image
 from .envelope import ok
 
 logger = logging.getLogger("BlenderMCPServer")
@@ -243,36 +242,14 @@ def get_viewport_screenshot(ctx: Context, max_size: Annotated[int, Field(ge=16, 
         Exception: If the operation cannot be completed.
 
     """
-    temp_path = None
     try:
-        blender = get_blender_connection()
-
-        descriptor, temp_path = tempfile.mkstemp(prefix="blender_mcp_viewport_", suffix=".png")
-        os.close(descriptor)
-
-        result = blender.send_command(
+        image_bytes, result = request_image(
             "get_viewport_screenshot",
-            {"max_size": max_size, "filepath": temp_path, "format": "png"},
+            {"max_size": max_size, "format": "png"},
+            prefix="blender_mcp_viewport_",
         )
-
-        if "error" in result:
-            raise Exception(result["error"])
-
-        if not os.path.exists(temp_path):
-            raise Exception("Screenshot file was not created")
-
-        # Read the file
-        with open(temp_path, "rb") as f:
-            image_bytes = f.read()
-
         return [Image(data=image_bytes, format="png"), ok(_screenshot_metadata(result))]
 
     except Exception as e:
         logger.error(f"Error capturing screenshot: {e!s}")
         raise Exception(f"Screenshot failed: {e!s}") from e
-    finally:
-        if temp_path:
-            try:
-                os.remove(temp_path)
-            except FileNotFoundError:
-                pass

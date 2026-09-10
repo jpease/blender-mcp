@@ -9,5 +9,11 @@ services:
     volumes:
       - ../..:/repo:ro
       - ./output:/output
+    environment:
+      # Reported to the MCP server through get_addon_info, so the agent knows
+      # which container path actually reaches the host. Nothing in the codebase
+      # hardcodes /output - a local (non-container) Blender simply leaves this
+      # unset and reports its own defaults instead.
+      BLENDERMCP_OUTPUT_ROOTS: /output
     ports:
       - "9876:9876"

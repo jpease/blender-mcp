@@ -9,6 +9,8 @@ from contextlib import suppress
 
 import bpy
 
+from ..image_reply import finalize_image_reply, image_destination
+
 _VIEW_LAYER_PROPERTIES = {
     "use",
     "use_sky",
@@ -660,7 +662,9 @@ class RenderingHandlersMixin:
             "progress_truncated": len(written_files) > len(progress),
         }
 
-    def inspect_render_output(self, filepath, output_path=None, frame=None, max_size=1000, format="png"):
+    def inspect_render_output(
+        self, filepath=None, output_path=None, frame=None, max_size=1000, format="png", inline=False
+    ):
         """
         Read a previously rendered frame's pixels into a bounded copy for visual inspection.
 
@@ -671,24 +675,45 @@ class RenderingHandlersMixin:
         are only reachable through their own written output_path.
 
         Args:
-            filepath: Destination path this call writes the (possibly downscaled) copy to.
+            filepath: Destination path this call writes the (possibly downscaled) copy to;
+                optional when `inline`, which lets this process choose its own.
             output_path: Path to an existing rendered file on disk. Takes precedence over frame.
             frame: Frame number the in-memory Render Result must currently hold; only
                 checked when output_path is omitted.
             max_size: Maximum size in pixels for the largest dimension of the saved copy.
             format: Image format for the saved copy (png, jpg, etc.)
+            inline: Return the image bytes in the reply instead of writing to filepath.
 
         Returns:
-            success status with width/height/native dimensions, source, and frame.
+            dict: success status with width/height/native dimensions, source, and frame,
+            carrying the image bytes instead of a path when `inline`.
+
+        """
+        with image_destination(inline, filepath) as path:
+            return finalize_image_reply(
+                self._copy_render_output(path, output_path, frame, max_size, format), inline=inline, path=path
+            )
+
+    @staticmethod
+    def _copy_render_output(path, output_path, frame, max_size, format):
+        """
+        Write a bounded copy of the requested render to `path`.
+
+        Args:
+            path: Destination the copy is written to.
+            output_path: Path to an existing rendered file on disk.
+            frame: Frame the in-memory Render Result must hold, when used.
+            max_size: Maximum size in pixels for the largest dimension.
+            format: Image format for the saved copy (png, jpg, etc.)
+
+        Returns:
+            dict: success status with dimensions, source, and frame.
 
         Raises:
             ValueError: If the operation cannot be completed.
             RuntimeError: If the operation cannot be completed.
 
         """
-        if not filepath:
-            raise ValueError("No destination filepath provided")
-
         staging_path = None
         if output_path:
             if not os.path.isfile(output_path):
@@ -707,7 +732,7 @@ class RenderingHandlersMixin:
                 )
             frame = current_frame
             source = "render_result"
-            staging_path = f"{filepath}.src.png"
+            staging_path = f"{path}.src.png"
             render_result.save_render(filepath=staging_path)
             img = bpy.data.images.load(staging_path, check_existing=False)
 
@@ -718,7 +743,7 @@ class RenderingHandlersMixin:
                 scale = max_size / max(width, height)
                 width, height = max(1, int(width * scale)), max(1, int(height * scale))
                 img.scale(width, height)
-            img.filepath_raw = filepath
+            img.filepath_raw = path
             img.file_format = format.upper()
             img.save()
         finally:
@@ -732,7 +757,7 @@ class RenderingHandlersMixin:
             "height": height,
             "native_width": native_width,
             "native_height": native_height,
-            "filepath": filepath,
+            "filepath": path,
             "source": source,
             "source_path": output_path,
             "frame": frame,

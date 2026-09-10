@@ -198,3 +198,34 @@ def test_repeat_install_preserves_original_backup(tmp_path: Path) -> None:
     assert "USER LOCAL EDIT" in backup.read_text(encoding="utf-8"), (
         "repeat install clobbered the backup of the user's previous addon"
     )
+
+
+def test_handshake_surfaces_writable_output_roots() -> None:
+    from unittest.mock import Mock
+
+    blender = Mock()
+    blender.send_command.return_value = {
+        "protocol_version": EXPECTED_ADDON_PROTOCOL_VERSION,
+        "addon_version": [1, 2, 0],
+        "capabilities": ["get_addon_info"],
+        "blender_version": "5.2.1",
+        "writable_output_roots": ["/output", "/tmp"],
+    }
+
+    handshake = handshake_addon(blender)
+
+    assert handshake.writable_output_roots == ["/output", "/tmp"]
+
+
+def test_handshake_defaults_writable_output_roots_for_an_older_addon() -> None:
+    from unittest.mock import Mock
+
+    blender = Mock()
+    blender.send_command.return_value = {
+        "protocol_version": EXPECTED_ADDON_PROTOCOL_VERSION,
+        "addon_version": [1, 2, 0],
+        "capabilities": ["get_addon_info"],
+        "blender_version": "5.2.1",
+    }
+
+    assert handshake_addon(blender).writable_output_roots == []

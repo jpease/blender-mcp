@@ -3,6 +3,7 @@ import json
 import os
 import queue
 import socket
+import tempfile
 import threading
 import time
 import traceback
@@ -32,6 +33,7 @@ from .handlers.scene_physics import ScenePhysicsHandlersMixin
 from .handlers.sketchfab import SketchfabHandlersMixin
 from .handlers.viewport import ViewportHandlersMixin
 from .helpers import get_blendermcp_addon_preferences, get_mesh_object, paginate, sync_from_editmode
+from .output_roots import configured_roots, writable_roots
 from .transaction import mutation_transaction
 
 
@@ -1155,7 +1157,32 @@ class BlenderMCPServer(
             "protocol_version": ADDON_PROTOCOL_VERSION,
             "capabilities": sorted({"ping", "get_polyhaven_status", "get_nd_status", *self._build_command_handlers()}),
             "blender_version": bpy.app.version_string,
+            "writable_output_roots": self._writable_output_roots(),
         }
+
+    @staticmethod
+    def _writable_output_roots():
+        """
+        List directories this Blender process can write renders and exports to.
+
+        The MCP server cannot work this out for itself once the two no longer
+        share a filesystem, so it is reported here. Deployment-specific roots
+        come first (see BLENDERMCP_OUTPUT_ROOTS), then this process's own
+        defaults.
+
+        Returns:
+            list[str]: Absolute, writable directories, most preferred first.
+
+        """
+        blend_file = bpy.data.filepath
+        candidates = [
+            *configured_roots(),
+            os.path.dirname(blend_file) if blend_file else None,
+            getattr(bpy.app, "tempdir", None),
+            tempfile.gettempdir(),
+            os.path.expanduser("~"),
+        ]
+        return writable_roots(candidates)
 
     _SCENE_INFO_MAX_LIMIT = 200
 

@@ -3,8 +3,6 @@
 
 import asyncio
 import logging
-import os
-import tempfile
 
 from typing import Annotated, Literal
 
@@ -14,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..app import mcp
 from ..connection import get_blender_connection
+from ._image_transport import request_image
 from .envelope import ok
 
 logger = logging.getLogger("BlenderMCPServer")
@@ -351,38 +350,14 @@ def inspect_render_output(
         Exception: If the operation cannot be completed.
 
     """
-    temp_path = None
     try:
-        blender = get_blender_connection()
-
-        descriptor, temp_path = tempfile.mkstemp(prefix="blender_mcp_render_output_", suffix=".png")
-        os.close(descriptor)
-
-        result = blender.send_command(
+        image_bytes, result = request_image(
             "inspect_render_output",
-            {
-                "filepath": temp_path,
-                "output_path": output_path,
-                "frame": frame,
-                "max_size": max_size,
-                "format": "png",
-            },
+            {"output_path": output_path, "frame": frame, "max_size": max_size, "format": "png"},
+            prefix="blender_mcp_render_output_",
         )
-
-        if not os.path.exists(temp_path):
-            raise Exception("Rendered-frame copy was not created")
-
-        with open(temp_path, "rb") as f:
-            image_bytes = f.read()
-
         return [Image(data=image_bytes, format="png"), ok(_render_output_metadata(result))]
 
     except Exception as e:
         logger.error(f"Error inspecting render output: {e!s}")
         raise Exception(f"Render output inspection failed: {e!s}") from e
-    finally:
-        if temp_path:
-            try:
-                os.remove(temp_path)
-            except FileNotFoundError:
-                pass

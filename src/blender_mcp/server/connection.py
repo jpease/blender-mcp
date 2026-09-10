@@ -5,8 +5,10 @@ import logging
 import os
 import socket
 import threading
+import time
 import uuid
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -19,6 +21,14 @@ logger = logging.getLogger("BlenderMCPServer")
 # Default configuration
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 9876
+
+# Blender is regularly not listening at the moment the server first reaches for
+# it: the addon may still be enabling, or a container may have started without
+# having bound its port yet. Retrying the *initial* connect turns that race into
+# a short wait instead of a failed first tool call. Set BLENDER_CONNECT_ATTEMPTS
+# to 1 to restore single-shot behaviour.
+DEFAULT_CONNECT_ATTEMPTS = 3
+DEFAULT_CONNECT_RETRY_DELAY = 0.5
 
 _addon_handshake = None
 _addon_handshake_checked = False
@@ -151,9 +161,7 @@ class BlenderConnection:
 
         while b"\n" not in self._recv_buffer:
             if len(self._recv_buffer) > self._MAX_MESSAGE_BYTES:
-                raise Exception(
-                    f"Response exceeded max size ({len(self._recv_buffer)} bytes) without a terminator"
-                )
+                raise Exception(f"Response exceeded max size ({len(self._recv_buffer)} bytes) without a terminator")
             chunk = sock.recv(buffer_size)
             if not chunk:
                 if not self._recv_buffer:
@@ -296,6 +304,68 @@ def _maybe_handshake_addon(blender: BlenderConnection) -> None:
         logger.debug(f"Addon handshake skipped: {e}")
 
 
+def connect_attempts() -> int:
+    """
+    Read how many times the initial connection should be attempted.
+
+    Returns:
+        int: Configured attempt count, never below 1.
+
+    """
+    try:
+        return max(1, int(os.getenv("BLENDER_CONNECT_ATTEMPTS", DEFAULT_CONNECT_ATTEMPTS)))
+    except ValueError:
+        logger.warning("Ignoring unparseable BLENDER_CONNECT_ATTEMPTS; using %s", DEFAULT_CONNECT_ATTEMPTS)
+        return DEFAULT_CONNECT_ATTEMPTS
+
+
+def connect_retry_delay() -> float:
+    """
+    Read how long to wait between initial-connection attempts, in seconds.
+
+    Returns:
+        float: Configured delay.
+
+    """
+    try:
+        return float(os.getenv("BLENDER_CONNECT_RETRY_DELAY", DEFAULT_CONNECT_RETRY_DELAY))
+    except ValueError:
+        logger.warning("Ignoring unparseable BLENDER_CONNECT_RETRY_DELAY; using %s", DEFAULT_CONNECT_RETRY_DELAY)
+        return DEFAULT_CONNECT_RETRY_DELAY
+
+
+def connect_with_retry(
+    connection: BlenderConnection, *, attempts: int, delay: float, sleep: Callable[[float], None] | None = None
+) -> bool:
+    """
+    Attempt `connection.connect()` until it succeeds or the attempts run out.
+
+    Wraps `BlenderConnection.connect` rather than changing it: every tool call
+    reaches `connect` through `get_blender_connection`, including the lazy
+    reconnect after a dropped socket, so retrying inside `connect` itself would
+    add latency to paths that deliberately fail fast.
+
+    Args:
+        connection: Object exposing a `connect()` returning truthy on success.
+        attempts: Total attempts to make, including the first.
+        delay: Seconds to wait between attempts.
+        sleep: Injectable sleep, for tests. Resolved at call time so patching
+            `time.sleep` on this module works too.
+
+    Returns:
+        bool: True once connected, False if every attempt failed.
+
+    """
+    sleeper = time.sleep if sleep is None else sleep
+    for attempt in range(1, attempts + 1):
+        if connection.connect():
+            return True
+        if attempt < attempts:
+            logger.info("Blender not reachable (attempt %s/%s); retrying in %ss", attempt, attempts, delay)
+            sleeper(delay)
+    return False
+
+
 def get_blender_connection():
     """
     Get or create a persistent Blender connection.
@@ -321,7 +391,7 @@ def get_blender_connection():
         host = os.getenv("BLENDER_HOST", DEFAULT_HOST)
         port = int(os.getenv("BLENDER_PORT", DEFAULT_PORT))
         _blender_connection = BlenderConnection(host=host, port=port)
-        if not _blender_connection.connect():
+        if not connect_with_retry(_blender_connection, attempts=connect_attempts(), delay=connect_retry_delay()):
             logger.error("Failed to connect to Blender")
             _blender_connection = None
             raise Exception("Could not connect to Blender. Make sure the Blender addon is running.")
