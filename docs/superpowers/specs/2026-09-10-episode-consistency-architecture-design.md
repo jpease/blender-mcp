@@ -22,6 +22,11 @@
 > agnosticism into a requirement, which demotes Skills to a thin pointer and drops tool
 > search from the roadmap.
 >
+> **Revision 2.7** derives the context budget from the floor context window instead of
+> asserting it, and measures the five scoping moves taking shot mode from 78.1K to 53.8K
+> tokens — closing the last FATAL's arithmetic. The budget is met only if intent tools hold
+> a 1 KB ceiling; the floor window itself is now §17 Q11, the last open gate.
+>
 > **Revision 2.6** specifies the file-lifecycle and linking subsystem (§9.1) that Appendix
 > E #3 found missing, schedules it as Phase 0.5, and — from the same spike — refutes half of
 > Appendix E #2: Blender does **not** block Python writes to linked data, so the mode guard
@@ -1063,7 +1068,7 @@ plugin being the prototype.
 | **0.5 — File lifecycle** | The §9.1 handler family: `open_shot`, `save_shot`, `reset_session`, `link_canon_library`, `create_override`, `list_libraries`, `reload_library`, `relocate_library`, `load_post` hook. `transaction.py` gains `libraries`. **This is the critical path — everything below depends on it and revision 2 omitted it entirely.** | A shot file can be opened, a canon library linked, an override created, and the result saved and reopened with the link intact |
 | **1 — Demo** | Plugin (agent loop, UI panel, credentials). One canon character + one location, hand-built. `LocalMirrorResolver`. `blend` preset provider only. Six tools: `link_canon`, `apply_preset`, `set_shot_camera`, `place_character`, `compute_consistency_fingerprint`, `diff_consistency`. Extractor + hasher for `asset`, `material`, `color`, `format`. Workflow guidance authored as portable MCP Resources, with a thin `blender-mcp-authoring` Skill pointing at them (§6.5 Lever 3). | An artist builds two shots; a deliberate drift is caught and a legitimate change is not |
 | **2 — Enforcement** | Addon mode guard. Baselines, exceptions, `assert_consistency`, `publish_shot`. `load_post` digest re-check. `transaction.py` library tracking. `shot_recipe` recording. | A shot cannot be published inconsistent, from any client configuration |
-| **3 — Portability** | `CORE_MODULES` and `texture-lighting` splits; schema diet on the 20 heaviest; typed gateway; `StudioAssetResolver`; `recipe` and `captured` providers; `audit_episode`. | Generic MCP client gets a shot-mode payload under 60K tokens and completes a shot |
+| **3 — Portability** | Bundle splits — `CORE_MODULES`, `texture-lighting`, **`scene`** (authoring + destructive out), **`camera.rigs`**, **lighting construction**; schema diet on the 20 heaviest; typed gateway; `StudioAssetResolver`; `recipe` and `captured` providers; `audit_episode`. | Generic MCP client gets a shot-mode payload **measured** under the §6.5 budget and completes a shot |
 | **4 — Hosted** | Session model, connection router, concurrency. **Transport is done** (`ee25ffc`); this phase is orchestration only. | Media Center drives a shot end to end |
 
 The Docker work already on `docker-blender` moves headless closer than revision 1 assumed;
@@ -1078,7 +1083,7 @@ path rather than parallel to it.
 | 2 | Float or pin canon versions? | **Pin** — with open-time re-verification, episode audit, and a batch upgrade path. |
 | 3 | Enforcement mechanism? | **Addon-side guard keyed on the open `.blend`.** Reversed from revision 1: process-scoped guards are not invariants. |
 | 4 | Is drift structurally prevented? | **No.** Detected. Revision 1's claim was false (§6.3). |
-| 5 | Context target? | **Tokens, not tool count.** Under 60K for shot mode; 2 KB per-tool budget. |
+| 5 | Context target? | **Tokens, not tool count**, derived from the floor context window: 60K = a 200K floor at 30% (§6.5). Intent tools carry a **1 KB ceiling**, which measurement shows decides whether the budget is met. The floor itself is §17 Q11. |
 | 6 | Gateway role? | Third priority, behind schema dieting and mode scoping; typed only; win proportional to unused surface. |
 | 7 | Collapse the plugin↔MCP loop locally? | **No.** |
 | 8 | Port upstream's `safe_mode.py`? | **No** — it guards a deleted tool. Port its threat model (§12). |
@@ -1132,9 +1137,15 @@ Q9 below now outranks them.
    requirements rather than open questions: canon assets must **pack textures or publish a
    digested dependency manifest** (§6.1 invariant 4), and a version upgrade is a
    **re-publish, not an in-place re-save** (invariant 3).
-10. **Does the variant-scoping lever actually reach budget?** Appendix E #1 corrected the
-    mechanism but not the arithmetic: shot mode is 77K against a 60K budget that is itself
-    underived (#13). Revision 3 must either derive the budget or change the surface.
+10. ~~**Does the variant-scoping lever actually reach budget?**~~ — **answered 2026-09-11
+    by measurement** (§6.5). Five scoping moves take shot mode 78.1K → 53.8K. The budget is
+    met *only if* intent tools average ~1 KB; at the median existing tool size they cost
+    13.1K and the total lands 6.9K over. The 1 KB ceiling on §8 is now a hard constraint.
+11. **What is the minimum client context window we commit to supporting?** The 60K budget
+    is "200K floor at 30%" (§6.5). A 128K floor implies ~38K, which **no combination of the
+    measured levers reaches**. A product decision, not a technical one, and the last thing
+    gating the context work — vendor agnosticism (decision 17) forbids inferring it from
+    whichever model we happen to use first.
 6. ~~**Blender lifecycle in the hosted path**~~ — **answered 2026-09-11**: job-per-request
    baseline, possibly TTL-cached, with a warm pool for performance. Design consequences in
    §5.2. Not yet fixed, but the variants share the constraints that matter.
