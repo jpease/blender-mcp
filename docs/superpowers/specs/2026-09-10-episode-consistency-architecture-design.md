@@ -1,8 +1,12 @@
 # Episode Consistency & Context Architecture
 
-**Status:** Design — approved for planning
-**Date:** 2026-09-10
+**Status:** Design — revision 2, after adversarial review
+**Created:** 2026-09-10 · **Revised:** 2026-09-11
 **Repo:** `jpease/blender-mcp` (fork of `josuemontano/blender-mcp`, in turn of `ahujasid/blender-mcp`)
+
+> **Revision 2** rewrites §3, §6.2, §6.3, §6.5, §10, §12, §13 and §14 after an adversarial
+> review found two fatal errors in revision 1. Every measurement and code citation below
+> was re-verified by execution against `main`. Findings and disposition: Appendix B.
 
 ---
 
@@ -10,243 +14,300 @@
 
 Two problems that share one solution.
 
-**Consistency.** An animated series running for several years must not have characters
-or key locations drift in appearance between shots or between episodes. Generative
-authoring makes drift cheap and invisible, so continuity has to become a property the
-system enforces and can prove, not a property artists notice in review.
+**Consistency.** A series running for several years must not have characters or key
+locations drift in appearance between shots or between episodes. Generative authoring
+makes drift cheap and invisible, so continuity must become something the system checks and
+can prove — not something artists catch in review.
 
-**Context cost.** The server registers 287 tools. Every MCP client receives the full
-`tools/list` response at connect time, which consumes a large share of a model's context
-before any work begins. Recent work has reduced per-schema size; that is a constant-factor
-improvement against a problem that grows linearly with tool count.
+**Context cost.** The server registers 285 tools. Every MCP client receives the whole
+`tools/list` response at connect time. Measured on `main` via `asyncio.run(mcp.list_tools())`,
+compact JSON, ~3.6 bytes/token:
 
-These are the same problem. The 287 tools exist because the agent must derive every
-result from Blender primitives. An agent that can link a canon asset and apply a preset
-does not need the modeling, retopology, rigging, or simulation surface for shot work at
-all. Canon and presets shorten the tool list *and* the conversation.
+| Selection | Tools | Payload | Tokens |
+|---|---|---|---|
+| `core` only — current default | 40 | 122,155 B | **~34K** |
+| `core` + `camera,texture-lighting,rendering` | 104 | 382,187 B | **~106K** |
+| `all` | 285 | 1,198,576 B | **~333K** |
+
+**Input schemas are 76% of the payload**, and the distribution is heavy-tailed — the 20
+largest tools are **22% of all bytes**:
+
+| Tool | Bytes | In shot path? |
+|---|---|---|
+| `configure_cloth` | 34,619 | no |
+| `create_geometry_object` | 25,279 | **yes — in `scene`, i.e. core** |
+| `configure_render_settings` | 19,639 | **yes — rendering** |
+| `setup_liquid_shot` | 18,514 | no |
+| `create_character_cloth_setup` | 17,748 | no |
+| `add_cloth_simulation` | 14,090 | no |
+
+**Schema size, not tool count, is the dominant term.** The two `perf:` commits on `main`
+cut `manage_modifiers` from 72,410 B to 2,419 B and reduced the full `all` payload by
+221,105 B (~61K tokens, 18.5%). That work attacked the right axis and should continue.
+
+These remain one problem: the 285 tools exist because the agent derives every result from
+primitives. An agent that links canon and applies a preset needs neither the modeling
+surface nor its schemas.
 
 ## 2. Goals
 
-1. Make cross-shot and cross-episode consistency a **server-enforced invariant** and a
-   **diffable artifact**, not a prompt instruction or a review-time judgement call.
-2. Provide **pre-defined starting points** (lighting rigs, camera setups, shot skeletons)
-   so common work costs one call rather than a re-derived sequence.
-3. Reduce the advertised tool surface for shot work to a few dozen tools **without
-   deleting authoring capability**, and without depending on client cooperation.
+1. Make consistency a **checkable, diffable artifact** with an enforcement point that
+   cannot be bypassed by configuration.
+2. Provide **pre-defined starting points** so common setups cost one call.
+3. Bring the shot-mode `tools/list` payload under a **stated token budget**, without
+   deleting authoring capability and without depending on client cooperation.
 4. Ship an artist-facing prototype as a **Blender plugin on a local workstation**, on a
-   path where a **hosted deployment for Media Center** is a transport swap rather than a
-   rewrite.
+   path where hosting it for Media Center is a deployment change, not a rewrite.
 
-## 3. Non-goals
+## 3. Scope decision required: what does Blender produce?
 
-- **Maya → Blender conversion.** A separate seeding project produces the Blender canon
-  library. This design consumes it and assumes it exists.
-- **Choosing the final render path.** Whether Blender produces final frames or control
-  imagery (depth/normal/segmentation passes) for a downstream generative model is
-  undecided. Consistency is therefore defined over **scene state**, not over rendered
-  pixels, which keeps this design valid under either outcome.
+**This is not a non-goal.** It determines whether the rest of this document is a
+consistency guarantee or merely a precondition to one. Revision 1 deferred it and claimed
+the design was "valid under either outcome." That claim was wrong.
+
+**Outcome A — Blender renders final pixels.** Scene-state consistency (§6.2) is close to
+sufficient. This document stands as written.
+
+**Outcome B — Blender renders control passes** (depth / normal / segmentation / pose) that
+condition a downstream generative model which produces the delivered image. Then what
+drifts is *the model's rendering of the character*, and **identical control passes do not
+prevent it**: two shots with byte-identical depth passes can return different faces.
+Consistency there is **identity conditioning** — reference embeddings, adapter/LoRA
+weights, base-model version, sampler, scheduler, seed, prompt — a second canon of a
+different kind, needing the same versioning rigor as the first.
+
+Under Outcome B this document specifies the *input* half of a two-part problem; §7
+specifies the second half conditionally. **Until this is decided, treat §7 as unfunded
+scope, not absent scope.** Building §6 alone and calling it a consistency guarantee is the
+most expensive available mistake.
+
+## 4. Non-goals
+
+- **Maya → Blender conversion.** A separate seeding project produces the canon library.
+  This design consumes it — but see §17 Q3: that project's identifier stability is a hard
+  dependency, not a detail.
 - **Arbitrary code execution.** `execute_blender_code` was deliberately removed from this
-  fork. It is not coming back, in any form, including as a gateway capability. See §10.
-- **Inventing asset versioning.** The studio's existing asset-management system owns
-  versions and publishing. This design integrates through a port (§5.1).
+  fork and is not returning, including as a gateway capability (§12).
+- **Inventing asset versioning.** The studio's asset-management system owns versions and
+  publishing; this design integrates through a port (§6.1).
 
-## 4. Constraints (verified against the code, not assumed)
+## 5. Constraints (verified by execution against `main`)
 
 | Constraint | Evidence | Consequence |
 |---|---|---|
-| One in-flight request per socket connection; responses matched by ordering, not by ID | `server/connection.py:191-196` | Multi-artist requires N Blender processes and a router, not multiplexing. Deferred to Phase 3. |
-| Commands execute on Blender's main thread, drained by a timer returning `0.05` | `bundled/addon/server_core.py:184,321` | ~25ms average latency floor per call. Favors coarse, intent-level tools over chatty multi-round-trip designs. |
-| Socket listener and per-client handlers run on daemon threads | `bundled/addon/server_core.py:177,250` | A plugin that calls the MCP server from Blender's main thread **deadlocks**. See §8. |
-| Client is not under our control in the hosted phase; multi-provider, generic MCP | Stated requirement | Context reduction must work server-side. No reliance on `tools/list_changed`, client-side filtering, or provider-specific features. |
-| `.blend` must stay artist-refinable | Stated requirement | Non-destructive operations; live modifiers; the file is a deliverable, not scratch. |
+| One in-flight request per connection. A UUID is carried and checked, but as a desync backstop that raises — not a correlation mechanism permitting overlap | `connection.py:191-196,202,222-230` | Multi-artist needs N Blender processes and a router. Phase 4. |
+| Commands execute on Blender's main thread, drained by a timer returning `0.05` | `addon/server_core.py:184,321` | ~25 ms latency floor per call; favors coarse tools. |
+| Socket listener and client handlers are daemon threads | `addon/server_core.py:177,250` | A plugin calling the MCP server **from the main thread deadlocks** (§10). |
+| `bpy.app.timers.register()` must not be called off the main thread — *"not thread-safe and the callback can be silently lost"* | `addon/server_core.py:383-385` | Plugin must use a queue drained by **one persistent timer registered once on the main thread** (§10). |
+| `bpy.ops.render.render(write_still=True)` runs synchronously inside the drain timer; client timeout is 180 s | `handlers/rendering.py:612-615`; `connection.py:160,222` | A render over 180 s desyncs the stream and freezes the UI (§11). |
+| Image bytes now cross the socket (base64) for protocol ≥ 31 | `docker-blender@75a7abf` | Response payloads are now large as well as slow; worsens the row above. Bounded by `_MAX_MESSAGE_BYTES` (64 MiB). |
+| Each command pushes its own undo step | `addon/transaction.py:137,157` | A 12-command `assemble_shot` yields 12 undo steps unless batched (§10). |
+| Rollback does not track `libraries` | `addon/transaction.py:17-36` | A failed `link_canon` leaks a library datablock (§11). |
+| **Multiple MCP server processes against one Blender is the documented configuration** | `README.md:243+` — *"Add one MCP server entry per bundle set"* | **A server-process-scoped mode guard is not an invariant** (§6.3). |
+| The addon has no concept of mode; it dispatches anything arriving on `:9876` | `addon/server_core.py:100,476` | Enforcement must live in the addon or the file (§6.3). |
+| A headless Blender container already exists | `docker/blender/{Dockerfile,entrypoint.sh,start_server.py}` | The extractor **can** be CI-tested (§13), and hosting is nearer than revision 1 assumed. |
+| Client is not ours in the hosted phase; multi-provider, generic MCP | Stated requirement | Context reduction must work server-side; no `tools/list_changed` reliance. |
 
-## 5. Architecture
+## 6. Architecture
 
-Five new subsystems. Each is independently testable, and three of the five contain no
-`bpy` dependency at all.
-
-```
-                    ┌─────────────────────────────────────┐
-                    │  Intent layer  (tools/shot.py)      │  15 tools
-                    └──────┬──────────┬──────────┬────────┘
-                           │          │          │
-              ┌────────────▼───┐ ┌────▼──────┐ ┌─▼─────────────┐
-              │ Canon registry │ │ Presets   │ │ Consistency   │
-              │  (canon/)      │ │ (presets/)│ │ (consistency/)│
-              └────────┬───────┘ └────┬──────┘ └─▲─────────────┘
-                       │              │          │ plain dicts
-        ┌──────────────▼──────────────▼──────────┴──────────────┐
-        │  Mode guard (modes.py) — enforces writability per mode │
-        └──────────────────────────┬─────────────────────────────┘
-                                   │ socket
-        ┌──────────────────────────▼─────────────────────────────┐
-        │  Addon handlers: canon.py, shot.py, presets.py,        │
-        │  fingerprint.py (extractor only — reads bpy, emits dicts)│
-        └─────────────────────────────────────────────────────────┘
-```
-
-### 5.1 Canon registry — asset identity
+### 6.1 Canon registry — asset identity
 
 A **canon entity** is a durable, versioned identity for something that must look the same
-everywhere: a character, a location, a hero prop, a rig.
+everywhere: a character, location, hero prop, or rig.
 
 ```python
 @dataclass(frozen=True)
 class CanonRef:
     kind: Literal["character", "location", "prop", "rig", "material"]
-    canon_id: str          # "char_hero", "loc_kitchen"
-    version: str           # "v012" — immutable, never "latest" once recorded
-    uri: str               # resolved library path
-    fingerprint: str       # content digest, verified on link
+    canon_id: str          # "char_hero"
+    version: str           # "v012" — immutable; never "latest" once recorded
+    content_digest: str    # of the library's *content*, not its path
 ```
 
-Resolution goes through a port so the studio's asset manager is an adapter, not a
-dependency:
+Resolution goes through a port, so the studio's asset manager is an adapter:
 
 ```python
 class AssetResolver(Protocol):
     def list(self, kind: str, query: str | None) -> Sequence[CanonSummary]: ...
     def resolve(self, canon_id: str, version: str) -> CanonRef: ...
     def latest(self, canon_id: str) -> str: ...
-    def publish(self, canon_id: str, source: Path, notes: str) -> CanonRef: ...
+    def publish_asset(self, canon_id: str, source: Path, notes: str) -> CanonRef: ...
+    def publish_shot(self, shot_id: str, source: Path, fingerprint: Fingerprint,
+                     notes: str) -> ShotRef: ...
 ```
 
-Two adapters ship: `StudioAssetResolver` (the production system) and
-`LocalMirrorResolver` (a versioned directory tree, used for the Phase 1 local prototype
-and for tests). Nothing above this port knows which is in use.
+`publish_shot` is separate because a shot is not a canon entity — revision 1 routed shot
+publishing through `publish_asset`, which the interface could not represent.
 
-**Version pinning policy — decided.** *Shots pin explicit immutable versions and never
-float.* `link_canon` records the resolved concrete version in the `.blend`; a re-open or
-re-render months later resolves the same bytes. Upgrading is an explicit act
-(`update_canon_version`), which re-runs the fingerprint and reports what changed.
+Two adapters ship: `StudioAssetResolver` and `LocalMirrorResolver` (a versioned directory
+tree, used for the prototype and tests).
 
-Rationale: an approved shot that silently changes when an upstream asset republishes is
-a continuity defect that reaches air. The cost — an episode can drift internally if some
-shots upgrade and others do not — is *detectable* by the consistency check in §5.2, while
-the floating alternative's failure mode is silent.
+**Version pinning policy — pinned, never floating.** `link_canon` records the resolved
+concrete version. Upgrading is explicit (`update_canon_version`) and re-fingerprints.
 
-### 5.2 Consistency fingerprint — making drift diffable
+An approved shot that silently changes when an upstream asset republishes is a continuity
+defect that reaches air. The cost — an episode drifting internally as some shots upgrade —
+is *detectable*, but only given the three mechanisms revision 1 omitted:
 
-This is the core invention, and the answer to "what does consistent actually mean."
+1. **Re-verification on open, not only on link.** A `load_post` handler in the addon
+   re-checks each linked library's `content_digest` against what the `.blend` recorded.
+   Blender links by *path*; if a version is republished in place or served through a
+   `latest` symlink, path-pinning alone silently resolves different bytes.
+2. **An episode-level audit** (`audit_episode`) that opens every shot headlessly — using
+   the existing `docker/blender` container — and reports drift across the set. Pairwise
+   `diff_consistency` and a publish-time gate cannot answer "is episode 4 coherent?"
+3. **A batch upgrade driver.** `update_canon_version` operates on one open file over a
+   single-in-flight socket. Re-pinning 200 shots interactively is not viable; the upgrade
+   path is the same headless runner as the audit.
 
-A fingerprint is **not** a single hash of the scene. A single hash reports "different" and
-nothing more. A fingerprint is an ordered set of **facet rows**, each independently
-comparable:
+**Hard dependency.** Pinning assumes the asset system exposes immutable, content-stable
+version references. §17 Q1 is unresolved. Until it is, this policy is *chosen* but not
+*safe* — hence `content_digest` rather than a path in `CanonRef`.
+
+### 6.2 Consistency fingerprint — making drift diffable
+
+Not a single scene hash — that reports "different" and nothing more. A fingerprint is an
+ordered set of independently comparable **facet rows**:
 
 ```python
 @dataclass(frozen=True)
 class FingerprintRow:
-    facet: str      # "asset" | "material" | "rig" | "color" | "lens" | "light"
-    subject: str    # "char_hero" | "hero_skin" | "scene.view_transform"
-    digest: str     # canonical hash of that facet's identity-bearing values
-    detail: dict    # small, human-readable, for the diff message
+    facet: str          # "asset" | "material" | "transform" | "color" | "format" | "light"
+    subject: str        # library-qualified: (library_id, datablock_name)
+    digest: str         # canonical hash — the fast path
+    values: dict        # the canonicalized values themselves — the verdict
 ```
 
-Facets, and why each is identity-bearing:
+**Digest is the fast path; `values` is the verdict.** Digest equality cannot express
+tolerance, and float32 round-trips through save/load make exact equality fragile. Equal
+digests pass immediately; unequal digests fall through to a tolerance comparison on
+`values` before anything is reported as drift.
 
-| Facet | Captures | Drift it catches |
+| Facet | Captures | Grade |
 |---|---|---|
-| `asset` | `(canon_id, version, library digest)` per linked entity | Someone used `v011` of the hero in shot 4 and `v012` in shot 5 |
-| `material` | Node-tree topology hash + values of identity inputs, for materials tagged canon-identity | Skin tone, costume colour, hair shader nudged in one shot |
-| `rig` | Armature bone rest transforms + proportion digest | A rig swap or a uniform scale that changes silhouette |
-| `color` | View transform, look, display device, render engine | The single most common cause of "the character looks different" |
-| `lens` | Focal length, sensor size, DOF settings | Not enforced across shots by default; recorded for review |
-| `light` | Preset provenance + key/fill ratio + colour temp | A location lit differently between two shots in the same scene |
+| `asset` | `(canon_id, version, content_digest)` per linked entity | enforced |
+| `material` | Node topology keyed by socket **identifier** (not display name), identity-input values, **plus content hashes of referenced image files** | enforced |
+| `transform` | World-space bounds and scale of each linked entity's override root | enforced |
+| `color` | View transform, look, display device, **exposure, gamma**, world, **OCIO config identity**, render engine | enforced |
+| `format` | Resolution, pixel aspect, fps, frame range | enforced |
+| `light` | Preset provenance stamp **and** actual light params (position, energy, color, size, spread) | advisory |
 
-Facets are graded, because not all drift is a defect:
+Six changes from revision 1, each closing a verified hole:
 
-- **`asset`, `material`, `rig`, `color` are enforced.** A mismatch against the episode
-  baseline fails `assert_consistency`.
-- **`lens` and `light` are advisory.** Recorded and diffed, reported as warnings. A
-  director legitimately changes lenses between shots; they do not legitimately change the
-  hero's skin tone.
+- **`material` now hashes texture content.** A linked material's node graph and the
+  library's bytes are unchanged when someone repaints `hero_skin_albedo.png`. Revision 1
+  passed that shot. Canon materials must use packed textures or have their image files
+  content-hashed.
+- **`rig` became `transform`.** Rest transforms of a linked armature cannot be edited —
+  they equal the pinned version by construction, so the old facet was tautological. The
+  drift it was meant to catch (a scale that changes silhouette) is an *object-level*
+  transform on the override root. That is what `transform` measures.
+- **`color` gained exposure, gamma, world, and OCIO identity.** `configure_color_management`
+  sets `exposure` and `gamma` (`handlers/lighting/rendering.py:226`, exposed at
+  `tools/lighting/rendering.py:99-100`) and is in the shot path. Revision 1 could not see
+  a two-stop exposure change on the hero. "AgX" also names a transform in whichever config
+  `$OCIO` loaded; the string is stable while the curve is not.
+- **`format` is new.** Resolution, fps, and pixel aspect are among the most common
+  continuity defects on a series, and `configure_render_settings` sets all of them from
+  inside shot mode.
+- **`light` records parameters, not just the stamp.** A provenance stamp survives moving
+  the key light and changing its color. The positions are the fact; the stamp is the
+  inference. Revision 1 had this backwards.
+- **`subject` is library-qualified.** Linked datablocks from different libraries can share
+  a name with each other and with local data.
 
-**Episode baseline.** An episode has a baseline: the enforced rows established by its
-first approved shot, or set explicitly. Every subsequent shot asserts against it.
-Advancing the baseline (because the hero was legitimately republished mid-episode) is an
-explicit, recorded operation — which also gives you the list of already-approved shots
-now inconsistent with it.
+**Canonicalization is specified, not deferred.** The extractor must: key node sockets by
+identifier; exclude `location`, `width`, `label`, and auto-generated `.001` suffixes;
+quantize floats to float32 precision before hashing; sort by a stable key; and record the
+Blender version that produced the reading. Node trees are versioned in memory on load, so
+the same pinned library read under two Blender releases can differ — the recorded version
+is what lets an audit distinguish real drift from a version artifact.
 
-**Purity.** Fingerprinting splits in two:
+**Baseline, exceptions, and where they live.** An episode's baseline is the set of enforced
+rows it must match. Baselines, episodes, shots, and approvals are entities in the resolver,
+not loose files. Because a legitimate per-shot deviation exists (a burned costume, a
+wet-hair variant), the model includes explicit exceptions:
 
-- **Extractor** (addon side, `bpy`-dependent): walks the scene, emits plain dicts. No
-  hashing, no policy.
-- **Hasher/differ** (server side, pure Python): canonicalizes, hashes, compares, formats
-  diffs. **Zero `bpy` imports, fully unit-testable without Blender.**
+```python
+@dataclass(frozen=True)
+class ConsistencyException:
+    shot_id: str; facet: str; subject: str; reason: str; approved_by: str
+```
 
-This split is where most of the test coverage lives, and it satisfies the repo's existing
-rule that pure validation and serialization helpers stay isolated from Blender-dependent
-code.
+Without a per-shot waiver, the only escape from a failing enforced facet is advancing the
+episode-global baseline — and a check whose only remedy is that broad is a check people
+stop running.
 
-Fingerprints are written into the `.blend` as a custom property and returned in the
-envelope, so a shot carries its own provenance even when separated from the database.
+**Purity.** Extractor (addon, `bpy`, emits plain dicts) is separate from
+hasher/differ/policy (server, pure Python, no `bpy`). The pure half holds most of the
+tests; the extractor is tested in the headless container (§13).
 
-### 5.3 Modes — enforcement by construction
+### 6.3 Modes and enforcement — the correction
 
-Two modes, with near-disjoint tool surfaces and opposite writability rules.
+Revision 1 claimed `shot` mode makes drift "structurally impossible" because canon is
+linked, not appended. **That was false**, for two independent reasons:
+
+1. **Linking freezes datablock bytes, not appearance.** On an editable override an agent
+   can set `material_slots[i].link = 'OBJECT'` and assign a local material, add modifiers,
+   constraints or drivers, and scale the root. Scene-local state — `scene.world`, the
+   compositor tree, view-layer passes, light linking, object color, `hide_render` — is
+   unlinked by definition. Blender has no per-property editability policy on an override;
+   "overrides for pose and animation only" was an intention, not a mechanism.
+2. **The guard was in the wrong process.** Tool registration is import-time from an env
+   var, so mode was a property of a *server process* — and `README.md:243+` recommends
+   running several against one Blender. An `asset`-mode process beside a `shot`-mode one
+   is the documented configuration, and neither knows about the other.
+
+**Enforcement moves into the addon, keyed on the open file.** The `.blend` carries a
+`mode` property. The addon checks it in `_build_command_handlers` dispatch, before any
+handler runs, and refuses out-of-mode mutations regardless of which process sent them or
+how that process was configured. This is the only layer every path traverses.
 
 | | `shot` mode | `asset` mode |
 |---|---|---|
-| Purpose | Assemble, animate, light, and render a shot | Author or revise a canon entity |
-| Canon data | **Linked**, never appended. Library overrides for pose/animation only. | Writable, through checkout → edit → publish |
-| Consistency | Enforced; `assert_consistency` runs before publish | Baseline-advancing is the explicit output |
-| Tool surface | Intent layer + shot-scoped core, camera, lighting, rendering (target ~40; see §5.5) | Mesh, retopology, rigging, texture, geometry nodes, simulation (~250) |
-| Destructive ops | Refused | Permitted within a checkout |
+| Purpose | Assemble, animate, light, render | Author or revise a canon entity |
+| Canon data | Linked; overrides permitted but audited by `transform`/`material` facets | Writable within a checkout |
+| Enforcement | Addon-side guard + fingerprint check | Baseline advance is the explicit output |
+| Tool surface | Intent layer + shot-scoped domains (§6.5) | Authoring surface |
 
-Drift is prevented **structurally**: in `shot` mode the agent cannot edit a character's
-material because it does not own that datablock — Blender's own linking model does the
-enforcement, not a validation rule that could be bypassed or a prompt that could be
-ignored.
+Tool exposure remains the *ergonomic* mechanism — it keeps irrelevant schemas out of
+context. The addon guard is the *correctness* mechanism. Neither substitutes for the other,
+and the design no longer claims prevention where it provides detection.
 
-**Enforcement is two-layer, deliberately.** Tool exposure (§5.5) is the *ergonomic*
-mechanism — it keeps out-of-mode tools out of the model's context. A server-side **mode
-guard** is the *correctness* mechanism: every mutating handler declares the modes it is
-valid in, and a call arriving out-of-mode is refused with a structured error regardless of
-how it was routed. Exposure alone is insufficient because Media Center may connect to a
-process registered with a wider surface than the current mode permits.
-
-### 5.4 Preset library — one interface, three providers
-
-Presets are the "pre-defined starting points." All three authoring routes discussed are
-supported behind a single resolver, so the choice of route is not an architectural
-commitment:
+### 6.4 Preset library — one interface, three providers
 
 ```python
 class PresetProvider(Protocol):
     def list(self, kind: str) -> Sequence[PresetSummary]: ...
-    def describe(self, preset_id: str) -> PresetDetail: ...   # includes params JSON Schema
+    def describe(self, preset_id: str) -> PresetDetail: ...   # params JSON Schema
     def apply(self, preset_id: str, params: dict, target: TargetSpec) -> AppliedPreset: ...
 ```
 
-| Provider | Authored by | Stored as | Best for |
+| Provider | Authored by | Stored as | Phase |
 |---|---|---|---|
-| `blend` | Artists, in Blender | Versioned `.blend` in the preset library, linked or appended | Look-bearing rigs an artist should tune visually |
-| `recipe` | Engineers | Parameterized Python building the setup | Setups that must scale to subject size or shot framing |
-| `captured` | The agent | Serialized recipe snapshotted from a live scene | Accumulating presets from real work |
+| `blend` | Artists, in Blender | Versioned `.blend` in the preset library | 1 |
+| `recipe` | Engineers | Parameterized Python | 2 |
+| `captured` | The agent | Serialized recipe from a live scene | 3 |
 
-Every applied preset **stamps provenance** — `preset_id`, version, and params — as a
-custom property on what it creates. The `light` fingerprint facet reads that stamp, so
-"this shot was lit with `three_point_studio@v3`" is a checkable fact rather than an
-inference from light positions.
+Applied presets stamp provenance (`preset_id`, version, params) on what they create; the
+`light` facet reads it *alongside* measured parameters, not instead of them.
 
-### 5.5 Context mechanism — mode-scoped registration, plus a typed gateway
+### 6.5 Context budget — stated in tokens, enforced per tool
 
-Three layers, in order of preference:
+The target is **a shot-mode payload under 60K tokens (~216 KB)**, not a tool count.
+Revision 1's "~40 tools" was the wrong unit: 40 tools is already 34K tokens today.
 
-**1. The intent layer absorbs the common path.** Shot work needs ~15 intent tools, not 287,
-because `assemble_shot` replaces a long primitive sequence. This is the largest win and
-it reduces conversation length as well as tool count.
+Three mechanisms, in order of leverage:
 
-**2. Mode-scoped registration handles packaging.** `bundles.py` already resolves an env
-var to a set of modules to import. Modes extend that mechanism: `shot` registers the
-intent layer plus shot-relevant domains; `asset` registers the authoring surface. A
-generic client connecting to a `shot`-mode process gets a small list with no client-side
-cooperation required.
+**1. A per-tool schema budget of 2 KB, with the 20 heaviest tools as the work item.**
+They are 22% of all bytes. `create_geometry_object` (25.3 KB) and
+`configure_render_settings` (19.6 KB) are both in the shot path and both must come down;
+the `manage_modifiers` fix (72.4 KB → 2.4 KB) is the proof the technique works and the
+template for the rest.
 
-**`CORE_MODULES` must be split first.** Today `core` is unconditional and already carries
-40 tools — including `mesh` (13), which is authoring, not shot work:
+**2. `CORE_MODULES` must split.** `core` is unconditional and carries 40 tools:
 
-| `core` module | Tools | Shot mode? |
+| module | tools | shot mode? |
 |---|---|---|
 | `core` | 2 | yes |
 | `scene` | 10 | yes |
@@ -256,264 +317,324 @@ cooperation required.
 | `viewport` | 5 | yes |
 | `animation` | 6 | yes |
 
-So `core` splits into `core-shared` (24) and `core-authoring` (16) — 24 + 16 = the 40 it carries today. Without this split,
-every shot-mode process ships 16 tools it can never legally call under the mode guard.
+`core-shared` (24) and `core-authoring` (16). Note `lighting` is not a bundle — it is
+`texture-lighting` (`bundles.py:29`), which must also split so shot mode gets lighting
+without the texture-authoring surface.
 
-**Honest arithmetic for `shot` mode.** Taking whole existing bundles gives
-15 (intent) + 24 (core-shared) + 23 (camera) + 15 (lighting) + 5 (rendering)
-= **82 tools** — better than 287, short of the target. Reaching ~40 requires the gateway
-to absorb the *detail* of camera and lighting while their inspection and intent-level
-entry points stay native: camera 23 → ~8, lighting 15 → ~7 (rig construction is largely
-replaced by presets anyway). That is the concrete Phase 2 job, and it is why the gateway
-is part of the design rather than a hedge.
+**3. A typed gateway for the fat tail.** Three stable tools —
+`list_capabilities(domain, query)`, `describe_capability(name)`,
+`invoke_capability(name, args)` — expose the remainder on demand.
 
-**3. A typed gateway covers the long tail.** For operations the intent layer has not
-absorbed, three stable tools — `list_capabilities(domain, query)`,
-`describe_capability(name)`, `invoke_capability(name, args)` — expose the remaining
-surface on demand, keeping `tools/list` constant regardless of how many capabilities exist.
+**The gateway dispatches only to typed, schema-validated capabilities. It never accepts
+Python source.** Server-side validation is preserved; what is lost is *decode-time*
+constraint, since `args` advertises as an unconstrained object and providers that constrain
+generation against the schema cannot do so. The honest framing: **the gateway defers cost
+for tools never used in a session and saves nothing for tools that are** — a described
+capability's schema lands in context anyway, plus a full inference turn. It is lazy loading,
+and its win is proportional to unused surface. That is why it ranks third, behind schema
+dieting and mode scoping.
 
-**The gateway dispatches only to typed, schema-validated capabilities — the same Pydantic
-models the native tools use. It never accepts Python source.** This distinction is the
-whole point: the gateway recovers the *context* benefit of upstream's
-`execute_blender_code` while keeping the *validation* benefit this fork bought by deleting
-it. Argument errors are still caught before `bpy` is touched.
+Naming: the addon handshake already uses `capabilities` for handler names
+(`server_core.py:1156`, gated in `connection.py:187`). The gateway must not reuse that term
+in the protocol.
 
-The gateway is a fallback, not the primary interface, for two measured reasons: models
-construct arguments less reliably against a stringly-typed `invoke` than against native
-typed tools, and each discovery round trip costs a main-thread queue hop (§4). Coverage
-migrating from gateway to intent layer over time is the intended direction of travel, and
-gateway call frequency per domain is the metric that tells you which intent tool to build
-next.
+### 6.6 Shot recipe — reproducibility
 
-### 5.6 Shot recipe — reproducibility
+Each intent-layer call appends a structured entry — tool, arguments, resolved canon
+versions — to a `shot_recipe` in the `.blend`. Phase 2 records; replay is deferred until
+the intent layer settles. Under Outcome B (§3), seeds, prompts, and conditioning references
+belong in this record, which is the natural home for them.
 
-Every intent-layer call appends a structured entry to a `shot_recipe` stored in the
-`.blend`: the tool, its arguments, and the resolved canon versions. This gives a
-human-readable account of how a shot was assembled and the raw material for later replay.
+**Crash exposure:** the recipe and fingerprint live in the `.blend`, i.e. in memory until
+saved. A crash loses the provenance the design says a shot carries. Mitigation: write both
+to a sidecar on each intent call, not only on save.
 
-**Phase 1 records; it does not replay.** Building the recorder now is cheap and makes the
-format a first-class concern; building a replay engine before the intent layer's shape has
-settled would be speculative. Recording without replay is still immediately useful for
-review and debugging.
+## 7. Generative identity conditioning — conditional on §3 Outcome B
 
-If the downstream path turns out to be generative (§3), seeds and prompts belong in this
-same record, so the recipe is the natural home for them when that decision lands.
+Specified here so it is visible and costed, not built until §3 resolves.
 
-## 6. Intent layer — the tool surface
+If Blender feeds a generative model, a second canon is required, versioned with the same
+rigor as the first:
 
-Fifteen tools, expressed in the artist's vocabulary rather than Blender's:
+```python
+@dataclass(frozen=True)
+class IdentityRef:
+    canon_id: str                # same identity as the Blender-side entity
+    version: str
+    base_model: str              # provider + model + version
+    adapter_digest: str | None   # LoRA / adapter weights content hash
+    reference_digest: str        # identity reference images or embeddings
+    sampler: str; scheduler: str; steps: int; cfg: float
+    prompt_digest: str
+```
+
+This adds a `generative` fingerprint facet (enforced), binds a shot's control passes to the
+`IdentityRef` that consumed them, and extends `shot_recipe` with seeds and prompts.
+
+**It is a peer of §6, not an appendix to it.** Under Outcome B, §6 without §7 proves the
+input is consistent while the output drifts. Two shots can pass every facet in §6.2 and
+still show different faces.
+
+## 8. Intent layer
+
+Fifteen tools, in the artist's vocabulary. All return the existing envelope
+(`ok`, `data`, `warnings`, `changed_objects`, `changed_resources`) — no new response
+contract.
 
 | Tool | Purpose |
 |---|---|
-| `list_canon(kind, query)` | Discover available canon entities and their versions |
-| `link_canon(canon_id, version, alias)` | Link a canon entity; records the pinned version |
+| `list_canon(kind, query)` | Discover canon entities and versions |
+| `link_canon(canon_id, version, alias)` | Link; records the pinned version and digest |
 | `update_canon_version(alias, to_version)` | Explicit, fingerprint-checked upgrade |
-| `assemble_shot(shot_id, location, characters, preset)` | Build a shot skeleton in one call |
-| `place_character(alias, at, facing)` | Position a linked character in world space |
-| `list_presets(kind)` / `describe_preset(id)` | Discover presets and their parameters |
-| `apply_preset(preset_id, params, target)` | Apply a lighting rig, camera setup, or shot skeleton |
-| `capture_preset(name, kind, scope)` | Snapshot current setup as a reusable preset |
+| `assemble_shot(shot_id, location, characters, preset)` | Shot skeleton in one call |
+| `place_character(alias, at, facing)` | Position a linked character |
+| `list_presets(kind)` | Discover presets |
+| `describe_preset(id)` | Preset parameters |
+| `apply_preset(preset_id, params, target)` | Apply a rig or setup |
+| `capture_preset(name, kind, scope)` | Snapshot current setup (Phase 3) |
 | `set_shot_camera(preset_or_params)` | Camera placement and lens |
-| `inspect_shot()` | Structured summary: linked canon, versions, presets, overrides |
-| `compute_consistency_fingerprint(scope)` / `diff_consistency(a, b)` | Produce and compare fingerprints |
-| `assert_consistency(baseline)` | Enforce enforced-facet parity; fails with a per-facet diff |
-| `publish_shot(target, notes)` | Assert, fingerprint, and publish through the asset resolver |
+| `inspect_shot()` | Linked canon, versions, presets, overrides |
+| `compute_consistency_fingerprint(scope)` | Produce a fingerprint |
+| `diff_consistency(a, b)` | Compare two fingerprints |
+| `assert_consistency(baseline)` | Enforce parity; per-facet diff on failure |
+| `publish_shot(target, notes)` | Assert, fingerprint, publish |
 
-All return the existing envelope shape (`ok`, `data`, `warnings`, `changed_objects`,
-`changed_resources`). No new response contract; existing clients and instructions still
-apply.
+Plus `audit_episode(episode_id)` (§6.1), which runs headlessly rather than against an
+interactive session.
 
-## 7. Module layout
-
-New, none importing `bpy` except where noted:
+## 9. Module layout
 
 ```
 src/blender_mcp/server/
   canon/          registry, AssetResolver port, Studio + LocalMirror adapters
-  consistency/    fingerprint model, canonical hashing, differ, baseline policy   [pure]
-  presets/        provider protocol, blend/recipe/captured providers, resolver
-  modes.py        mode definitions, mode guard decorator
-  gateway.py      capability catalog, describe, typed dispatch
-  tools/shot.py   the twelve intent tools
+  consistency/    facets, canonical hashing, differ, baselines, exceptions   [pure]
+  presets/        provider protocol, providers, resolver
+  modes.py        mode definitions (guard itself lives in the addon)
+  gateway.py      capability catalog and typed dispatch
+  tools/shot.py   the fifteen intent tools
 
-src/blender_mcp/bundled/addon/handlers/
-  canon.py        link/override/version operations                                [bpy]
-  shot.py         assembly and placement                                          [bpy]
-  presets.py      preset application and capture                                  [bpy]
-  fingerprint.py  extractor only — reads scene, emits plain dicts                 [bpy]
+src/blender_mcp/bundled/addon/
+  mode_guard.py   dispatch-time enforcement keyed on the open .blend        [bpy]
+  handlers/canon.py, shot.py, presets.py                                    [bpy]
+  handlers/fingerprint.py   extractor only — reads scene, emits dicts       [bpy]
 ```
 
-Modified: `bundles.py` gains mode definitions; existing mutating handlers gain a mode-guard
-declaration. No existing tool schema changes, so the change is backward compatible.
+Modified: `bundles.py` (core and texture-lighting splits), `transaction.py` (track
+`libraries`), `server_core.py` (mode-guard hook in dispatch).
 
-## 8. Plugin architecture (Phase 1 delivery vehicle)
+## 10. Plugin architecture
 
-The prototype is a Blender add-on on the artist's workstation. The plugin is the MCP
-*client*; the existing addon remains the socket *server*; the MCP server sits between
-them. The loop closes back into the same Blender process.
+The plugin runs inside Blender and is the MCP *client*; the existing addon remains the
+socket *server*. The loop closes back into the same process. This is retained deliberately:
+collapsing it would build a second code path that transfers nothing to Media Center, and
+~25 ms per call is noise against inference.
 
-**This is retained deliberately.** Collapsing it — having the plugin call handlers
-in-process — would be faster locally and would build a second code path that transfers
-nothing to Media Center. Keeping the loop costs ~25ms per call against LLM inference
-measured in seconds, and makes the hosted deployment a transport swap.
+**Deadlock.** The agent loop **must not run on Blender's main thread**. A main-thread call
+blocks awaiting the MCP response; the MCP server sends a socket command; the addon queues
+it; the drain timer can never run because the main thread is blocked. Hard hang.
 
-**Mandatory threading rule.** The plugin's agent loop **must not run on Blender's main
-thread.** Calling the MCP server from the main thread deadlocks: the main thread blocks
-awaiting a response, the MCP server sends a socket command, the addon queues it, and the
-drain timer can never run because the main thread is blocked. The result is a hard hang
-requiring a force-quit.
+**Marshalling — corrected.** Revision 1 said "marshal UI updates via `bpy.app.timers`",
+which contradicts the addon's own rule at `server_core.py:383-385`: *never* call
+`timers.register()` off the main thread. The required shape is the addon's existing
+pattern: agent loop on a worker thread, results onto a `queue.Queue`, drained by **one
+persistent timer registered once on the main thread**. No `bpy` access from the worker.
 
-Required shape:
-- Agent loop and MCP client I/O on a **worker thread**.
-- UI updates marshalled back to the main thread via `bpy.app.timers`.
-- No `bpy` access from the worker thread, per the existing threading contract.
+**Reentrancy hazards to design against:**
 
-**The plugin is disposable; the server is the asset.** Media Center will bring its own
-agent loop, its own prompts, and a model we do not choose. Any consistency enforcement,
-tool filtering, or retry logic implemented in the plugin is lost at that transition.
-Everything that matters is therefore a server-side invariant. The plugin should be the
-*best* client of a mechanism that also works correctly for an unsophisticated one — never
-a substitute for that mechanism.
+- **Long renders.** `bpy.ops.render.render()` runs synchronously inside the drain timer
+  against a 180 s client timeout; with image bytes now crossing the socket the response is
+  large too. Over 180 s the stream desyncs and the UI is frozen throughout. Renders and
+  full fingerprints need to become polled async jobs, or carry a negotiated per-command
+  timeout.
+- **Artist and agent share one main thread and one file.** If the artist is in Edit Mode on
+  a mesh the agent mutates, edit-mesh and `mesh.data` desync and one side's work is lost.
+  Rule: the agent refuses to run while a modal operator is active or the file is in Edit
+  Mode, and `wm.open_mainfile` invalidates every datablock reference from prior responses.
+- **Undo granularity.** Each command pushes its own step, so a 12-command `assemble_shot`
+  costs twelve Ctrl+Z presses to reverse. One undo step per intent call.
+- **LLM transport.** HTTP/TLS from a worker thread inside Blender's bundled interpreter,
+  with studio proxy configuration and credential storage — unspecified and needed in
+  Phase 1.
 
-## 9. Error handling
+**The plugin is disposable; the server is the asset.** Media Center brings its own agent
+loop, prompts, and a model we do not choose. Anything enforced only in the plugin is lost
+at that transition — which is precisely why §6.3's guard moved into the addon.
 
-- **Mode violation** — structured MCP error naming the tool, the current mode, and the
-  mode required. Scene unchanged.
-- **Canon resolution failure** — unknown id or version resolves to an error listing
-  available versions. Never silently falls back to `latest`.
-- **Fingerprint mismatch on enforced facets** — `assert_consistency` returns `ok: false`
-  with a per-facet, per-subject diff. `publish_shot` refuses. Advisory facets produce
-  warnings and do not block.
-- **Preset application failure** — partial application rolls back via the existing
-  captured-state/`try`/`finally` discipline; the envelope reports what was and was not
-  created.
-- **Transport vs. operation failures stay separated**, per the existing contract: a
-  Blender-rejected command must not drop a healthy socket.
+## 11. Error handling
 
-## 10. Security invariants
+- **Mode violation** — refused at addon dispatch, naming tool, file mode, and required
+  mode. Scene unchanged.
+- **Canon resolution failure** — lists available versions; never silently falls back to
+  `latest`.
+- **Digest mismatch on open** — `load_post` reports which library drifted; the shot opens
+  read-only pending an explicit decision.
+- **Enforced-facet mismatch** — `ok: false` with a per-facet, per-subject diff; a matching
+  `ConsistencyException` downgrades it to a warning. `publish_shot` refuses without one.
+- **Preset failure** — rolls back via the captured-state discipline. `transaction.py` must
+  add `libraries` to `_TRACKED_COLLECTIONS` first, or a failed `link_canon` leaks a library.
+- **Transport vs. operation failures stay separated**, per the existing contract.
 
-Deleting `execute_blender_code` closed the worst sink but did not close the **source**.
+## 12. Security invariants
+
+Removing `execute_blender_code` closed the worst sink, not the source:
 `search_sketchfab_models` still pulls attacker-controllable titles and descriptions into
-the model's context — the exact prompt-injection vector upstream's `safe_mode.py` names.
-With 287 typed tools as the sink, injected text can still steer toward deletion, render
-output paths, and destructive `apply=True` operations.
+context — the prompt-injection vector upstream's `safe_mode.py` names.
 
-Invariants:
+1. **No arbitrary code execution, in any form** — not a tool, not a gateway capability, not
+   a debug path.
+2. **Never link or append a `.blend` from outside an allowlisted library root.** A hostile
+   `.blend` carries drivers that execute on load; this design depends on linking, so the
+   mitigation is a path allowlist enforced **addon-side**, rooted at the canon and preset
+   libraries.
+3. **Open finding — `handlers/polyhaven.py:362` violates #2 today.** It calls
+   `bpy.data.libraries.load(main_file_path, link=False)` on a `.blend` **downloaded from
+   the network**. Revision 1 asserted third-party assets arrive as glTF; that is true of
+   Sketchfab and false of Poly Haven. **This is a live vulnerability in `main`, independent
+   of this design, and should be fixed on its own schedule** — restrict Poly Haven to
+   glTF/FBX/OBJ, or route `.blend` downloads through the allowlist.
+4. **Untrusted text is contained** — asset-search tools are not registered in `shot` mode;
+   where registered, provider titles and descriptions are truncated and tagged untrusted in
+   the envelope. **Not yet implemented**; revision 1 stated this as an invariant when it is
+   a work item.
+5. **Explicit paths only** for publishing, rendering, and export. No silent overwrites.
 
-1. **No arbitrary code execution, in any form.** Not a tool, not a gateway capability, not
-   a debug path. Upstream's `safe_mode.py` is a 972-line AST allowlist whose own docstring
-   concedes it is *"not a sandbox around Blender"* and covers only the MCP path while the
-   addon socket still accepts raw `execute_code` from any local process. Deleting the tool
-   is the stronger position and this fork keeps it.
+## 13. Testing
 
-2. **Never link or append a `.blend` from outside the canon library root.** A hostile
-   `.blend` carries drivers that execute on load, which is why upstream's safe mode blocks
-   `wm.link`/`wm.append` outright. This design *depends* on linking, so the mitigation is
-   provenance: a path allowlist enforced **addon-side**, rooted at the canon and preset
-   library paths. Third-party assets continue to arrive as glTF, which is comparatively
-   inert — a property to preserve deliberately rather than by accident.
-
-3. **Untrusted text is contained.** Asset-search tools are **not registered in `shot`
-   mode** at all. Where they are registered, provider-supplied titles and descriptions are
-   truncated and tagged as untrusted in the envelope.
-
-4. **Explicit paths only.** Publishing, rendering, and export write only to paths supplied
-   by the caller or resolved through the asset resolver. No silent overwrites — the
-   existing repo rule, restated because the canon library raises the stakes.
-
-## 11. Testing
-
-The pure/impure split (§5.2) is what makes this testable in CI without Blender.
-
-| Area | Tests | Needs Blender? |
+| Area | Tests | Blender? |
 |---|---|---|
-| Fingerprint hashing, canonicalization, diffing | Golden fixtures of extractor dicts → expected rows; facet-by-facet drift cases; ordering and float-canonicalization stability | No |
-| Baseline policy | Enforced vs. advisory grading; baseline advance surfaces newly-inconsistent shots | No |
-| Version pinning | `link_canon` records concrete versions; `latest` never persists; `update_canon_version` re-fingerprints | No |
-| `AssetResolver` adapters | `LocalMirrorResolver` against a temp tree; contract tests both adapters satisfy | No |
-| Mode guard | Every mutating handler declares modes; out-of-mode calls refused; regression test asserting no handler is undeclared | No |
-| Bundle/mode registration | `shot` mode registers the expected set; no transitive leakage (the class of bug `7bc50c3` fixed) | No |
-| Preset providers | Each provider against the protocol; provenance stamped on application | Partly |
-| Path allowlist | Traversal, symlink, and outside-root rejection | No |
-| Gateway dispatch | Capability arguments validated identically to native tools; unknown capability rejected | No |
+| Canonical hashing, tolerance comparison, differ | Golden extractor dicts → expected rows; per-facet drift; float32 round-trip stability | No |
+| Baseline and exception policy | Enforced vs advisory grading; waiver downgrades; baseline advance lists newly-inconsistent shots | No |
+| Version pinning | Concrete versions recorded; `latest` never persisted; digest re-check on open | No |
+| `AssetResolver` adapters | Contract tests both satisfy; `LocalMirrorResolver` on a temp tree | No |
+| Mode guard | Out-of-mode refused at dispatch; regression test that no mutating handler is undeclared; **two processes with different toolsets cannot bypass it** | No |
+| Bundle splits | `shot` registers the expected set; payload stays under the §6.5 budget; no transitive leakage | No |
+| Path allowlist | Traversal, symlink, outside-root rejection; Poly Haven `.blend` path | No |
+| Gateway dispatch | Arguments validated identically to native tools | No |
+| **Extractor correctness** | **Runs in the existing `docker/blender` container** against real scenes | **In container** |
 
-**Manual Blender 5.1 verification required** (cannot run in CI): linked-canon override
-behavior, extractor correctness against real scenes, preset application and rollback, and
-the plugin threading rule of §8 — specifically that the agent loop on a worker thread does
-not hang Blender on the first tool call.
+Revision 1 listed extractor correctness as manual-only. That was wrong, and it matters: the
+extractor is where nearly every §6.2 hole lives, and golden fixtures of extractor output
+otherwise test the hasher against an assumption about what `bpy` emits.
 
-## 12. Phasing
+Still manual: linked-override behavior across Blender versions, preset rollback in a live
+session, and the §10 threading rule.
+
+## 14. Phasing
+
+Revision 1's Phase 1 was too large and, notably, **contained no plugin** — despite the
+plugin being the prototype.
 
 | Phase | Content | Gate |
 |---|---|---|
-| **0 — Spike** | Plugin ↔ MCP loop on a worker thread. Prove no deadlock; measure real round-trip latency. Throwaway code. | Loop runs without hanging Blender; latency understood |
-| **1 — Demo** | Canon registry + `LocalMirrorResolver`, fingerprint + baseline, preset resolver with all three providers, the fifteen intent tools, mode guard. The artist-facing prototype. | An artist assembles two shots and the system proves they are consistent |
-| **2 — Portability** | `CORE_MODULES` split; mode-scoped registration; typed gateway; `StudioAssetResolver` adapter. | A generic MCP client connecting to `shot` mode receives ~40 tools and can complete a shot end to end |
-| **3 — Hosted** | Session model, connection router, headless Alma deployment, concurrency. | Media Center can drive a shot end to end |
+| **0 — Spike** | Plugin ↔ MCP loop on a worker thread with queue + persistent timer. Prove no deadlock; measure round-trip. Throwaway. | Blender does not hang on first tool call |
+| **1 — Demo** | Plugin (agent loop, UI panel, credentials). One canon character + one location, hand-built. `LocalMirrorResolver`. `blend` preset provider only. Six tools: `link_canon`, `apply_preset`, `set_shot_camera`, `place_character`, `compute_consistency_fingerprint`, `diff_consistency`. Extractor + hasher for `asset`, `material`, `color`, `format`. | An artist builds two shots; a deliberate drift is caught and a legitimate change is not |
+| **2 — Enforcement** | Addon mode guard. Baselines, exceptions, `assert_consistency`, `publish_shot`. `load_post` digest re-check. `transaction.py` library tracking. `shot_recipe` recording. | A shot cannot be published inconsistent, from any client configuration |
+| **3 — Portability** | `CORE_MODULES` and `texture-lighting` splits; schema diet on the 20 heaviest; typed gateway; `StudioAssetResolver`; `recipe` and `captured` providers; `audit_episode`. | Generic MCP client gets a shot-mode payload under 60K tokens and completes a shot |
+| **4 — Hosted** | Session model, connection router, concurrency. | Media Center drives a shot end to end |
 
-Phases 0–2 run entirely on a local workstation. Phase 3 is not built now — only not
-designed out. Specifically: the mode guard, the resolver port, and the server-side
-context mechanism all exist in Phases 1–2 precisely so Phase 3 is a deployment change.
+The Docker work already on `docker-blender` moves headless closer than revision 1 assumed;
+Phase 3's audit and batch-upgrade runners depend on it, so that branch is on the critical
+path rather than parallel to it.
 
-## 13. Decisions recorded
+## 15. Decisions recorded
 
 | # | Question | Decision |
 |---|---|---|
-| 1 | What does "consistent" mean? | Facet rows with per-facet digests (§5.2). Graded: `asset`/`material`/`rig`/`color` enforced; `lens`/`light` advisory. |
-| 2 | Do shots float or pin canon versions? | **Pin.** Immutable; upgrades explicit and fingerprint-checked. |
-| 3 | Enforcement mechanism? | Structural (linked, not appended) in `shot` mode, backed by a server-side mode guard. |
-| 4 | Preset authoring route? | All three, behind one provider protocol. Not an architectural commitment. |
-| 5 | Gateway or native tools? | Native intent tools primary; typed gateway for the long tail; never arbitrary code. |
-| 6 | Collapse the plugin↔MCP loop locally? | **No.** Keep it, so hosted is a transport swap. |
-| 7 | Port upstream's `safe_mode.py`? | **No** — it guards a tool this fork deleted. Port its *threat model* instead (§10). |
+| 1 | What does "consistent" mean? | Six facet rows, digest as fast path and tolerance on values as verdict (§6.2). |
+| 2 | Float or pin canon versions? | **Pin** — with open-time re-verification, episode audit, and a batch upgrade path. |
+| 3 | Enforcement mechanism? | **Addon-side guard keyed on the open `.blend`.** Reversed from revision 1: process-scoped guards are not invariants. |
+| 4 | Is drift structurally prevented? | **No.** Detected. Revision 1's claim was false (§6.3). |
+| 5 | Context target? | **Tokens, not tool count.** Under 60K for shot mode; 2 KB per-tool budget. |
+| 6 | Gateway role? | Third priority, behind schema dieting and mode scoping; typed only; win proportional to unused surface. |
+| 7 | Collapse the plugin↔MCP loop locally? | **No.** |
+| 8 | Port upstream's `safe_mode.py`? | **No** — it guards a deleted tool. Port its threat model (§12). |
+| 9 | Generative identity conditioning? | **Blocked on §3.** Specified in §7, unfunded until the render path is decided. |
 
-## 14. Deferred, with the reason
+## 16. Deferred
 
-- **Shot recipe replay** — format recorded in Phase 1; replay engine deferred until the
-  intent layer's shape settles.
-- **Concurrency and the connection router** — single-in-flight socket is correct for one
-  artist and one Blender. Phase 3.
-- **Headless Alma, GPU-in-container, EGL/OpenGL viewport capture** — not on the local
-  path. Phase 3. `get_viewport_screenshot` works locally, which the demo benefits from.
-- **Multi-provider degradation** — Phase 1 picks the model. The intent layer is partial
-  insurance; real evaluation belongs to Phase 3.
-- **Upstream `9224fe3`** (addon panel hierarchy) — worth revisiting when the plugin's UI
-  is built, to avoid redoing panel organization already done upstream.
+- Shot recipe **replay** — format recorded in Phase 2; engine deferred.
+- Concurrency and the connection router — Phase 4.
+- Multi-provider degradation — Phase 1 picks the model; evaluation belongs to Phase 4.
+- Animation and performance continuity (walk cycles, facial rig conventions, control-rig
+  version). `transform` catches proportion, not performance. **Named, not solved.**
+- Audio and lipsync — out of scope, flagged as an acknowledged gap.
+- Multi-file shots (layout/anim/lighting files linking each other), which is the normal
+  series structure. This design assumes one `.blend` per shot; revisit before Phase 3.
+- Upstream `9224fe3` (addon panel hierarchy) — revisit when the plugin UI is built.
 
-## 15. Open questions
+## 17. Open questions
 
-1. **Which asset-management system** backs `StudioAssetResolver`, and does it expose
-   immutable version URIs? Shapes the adapter, not the port. Needed before Phase 2.
-2. **Which materials are identity-bearing?** The `material` facet needs a tagging
-   convention (naming, custom property, or a canon-side manifest). Needed in Phase 1;
-   proposed default is a canon-side manifest, since it survives artists renaming things.
-3. **Does the seeding project preserve stable identifiers** across Maya → Blender? If
-   canon IDs are regenerated per conversion run, pinning breaks. Worth raising with that
-   project now rather than discovering it in Phase 2.
-4. **Is `lens` really advisory for this show?** Some productions treat lens continuity
-   within a scene as enforced. Cheap to reclassify; the facet exists either way.
+1. **Which asset-management system**, and does it expose immutable, content-stable version
+   references? Blocks §6.1's pinning guarantee. Needed before Phase 2.
+2. **Which materials are identity-bearing?** Needs a tagging convention; proposed default
+   is a canon-side manifest, which survives artists renaming things.
+3. **Does the Maya → Blender seeding project preserve stable identifiers** across
+   conversion runs? If IDs are regenerated per run, pinning breaks at the root. **Raise
+   with that project now**, not in Phase 3.
+4. **Is `format` (fps, resolution) episode-global or shot-level?** Treated as enforced
+   per-shot against the episode baseline; confirm with editorial.
+5. **§3 — the render path.** The largest open question in this document.
 
 ---
 
 ## Appendix A — Fork lineage and upstream divergence
 
-Verified 2026-09-10 by fetching both upstreams.
+Verified 2026-09-10 by fetching both upstreams into `refs/tmp/`; re-verified 2026-09-11
+(divergence 12 commits; `safe_mode.py` exactly 972 lines).
 
 ```
 ahujasid/blender-mcp  →  josuemontano/blender-mcp  →  jpease/blender-mcp
 ```
 
-- **0 commits behind `josuemontano`, 6 ahead.** That lineage is clean.
-- **12 commits behind `ahujasid`**, diverged at `50a37a0` (2026-08-26).
-
-Triage of the 12: nothing critical is missing.
+0 commits behind `josuemontano`; 12 behind `ahujasid`, diverged at `50a37a0` (2026-08-26).
+Nothing critical is missing.
 
 | Commit | Verdict |
 |---|---|
-| `41d98fc` safe mode (972 lines) | **Skip the code** — guards `execute_blender_code`, deleted here. **Adopt the threat model** (§10). |
+| `41d98fc` safe mode (972 lines) | **Skip the code** — guards `execute_blender_code`, deleted here. **Adopt the threat model** (§12). |
 | `b79063e` row size caps | **N/A** — patches `trajectory.py`, absent from this fork. |
-| `90f6585` PolyPizza integration | **Skip** — more tools, more untrusted text, against both goals. |
-| `c5f35d9` Dockerfile | **Skip** — `8e3ad45` is better targeted at Alma. |
-| `33de875` rename to "MCP for Blender" | **Consider** — Blender Foundation trademark avoidance; matters under a product name. |
+| `90f6585` PolyPizza | **Skip** — more tools, more untrusted text. |
+| `c5f35d9` Dockerfile | **Skip** — the `docker-blender` work is better targeted. |
+| `33de875` rename to "MCP for Blender" | **Consider** — Blender Foundation trademark avoidance. |
 | `9224fe3` addon panel hierarchy | **Revisit in Phase 1** — overlaps the plugin UI. |
 | remaining 6 | READMEs and version bumps. No. |
+
+## Appendix B — Adversarial review findings and disposition
+
+Reviewed 2026-09-11. Claims were re-verified by execution before acceptance.
+
+| # | Finding | Verified | Disposition |
+|---|---|---|---|
+| 1 | "Structurally impossible" is false; guard is process-scoped while README recommends multiple processes | **Yes** — `README.md:243+`, `server_core.py:100,476` | §6.3 rewritten; guard moved into the addon |
+| 2 | Context arithmetic counts the wrong unit; schemas are 76% of payload | **Yes** — measured | §1 and §6.5 rewritten around a token budget |
+| 3 | `color` facet misses exposure/gamma | **Yes** — `tools/lighting/rendering.py:99-100` | Facet extended |
+| 4 | `material` facet misses external texture content | Accepted (mechanism certain) | Facet extended; packed textures or content hashing |
+| 5 | `rig` facet tautological under linking | Accepted | Replaced with `transform` |
+| 6 | No re-verification on open; no episode audit; no batch upgrade; no waivers | **Yes** — absent from revision 1 | All four added (§6.1, §6.2) |
+| 7 | `AssetResolver.publish` cannot represent a shot | **Yes** | `publish_shot` added to the port |
+| 8 | `bpy.app.timers` marshalling contradicts `server_core.py:383-385` | **Yes** | §10 corrected to queue + persistent timer |
+| 9 | Render blocks main thread vs 180 s timeout; undo granularity; `libraries` untracked in rollback | **Yes** — `rendering.py:612-615`, `transaction.py:137,157,17-36` | §10, §11 |
+| 10 | Poly Haven loads network `.blend` | **Yes** — `handlers/polyhaven.py:362` | §12.3, flagged as a live vulnerability |
+| 11 | Extractor can be CI-tested via existing container | **Yes** — `docker/blender/` | §13 corrected |
+| 12 | Phase 1 too large and omits the plugin | **Yes** | §14 rewritten |
+| 13 | Missing: performance continuity, editorial format, audio, crash recovery, multi-file shots | **Yes** | `format` facet added; rest named in §16 |
+| 14 | No generative AI integration anywhere | **Yes** | §3 elevated to a decision; §7 added |
+| 15 | Appendix A unverifiable — "only `origin` exists" | **No — reviewer error.** Refs were in `refs/tmp/`; re-verified | Appendix A stands |
+| 16 | "Matched by ordering, not ID" misreads the protocol | **Partly** — a UUID is carried and checked as a desync backstop | §5 wording corrected; conclusion unchanged |
+| 17 | Tool count is 285, not 287 | **Yes** | Corrected throughout |
+
+**Measurement caveat.** The review and this author's first measurements both ran against a
+working tree on `docker-blender`, which lacks the two `perf:` commits **and has no
+`bundles.py` at all** — its `tools/__init__.py` imports every submodule unconditionally, so
+every process there advertises 285 tools (~394K tokens) regardless of
+`BLENDER_MCP_TOOLSETS`. All figures in this revision were re-measured against `main` with
+the imported source asserted. See §18.
+
+## Appendix C — Note for the `docker-blender` branch
+
+`docker-blender` branched from `b1c7037`, before bundle selection existed. On that branch
+the Docker image ships a server that registers all 285 tools (~394K tokens) with no way to
+scope it. Since the hosted deployment is the case where context matters most and the client
+is least controllable, `docker-blender` should be rebased onto `main` — or at minimum take
+`bundles.py` and the two `perf:` commits — before the container is used for anything
+beyond local testing.
