@@ -133,11 +133,32 @@ def test_blender_keeps_its_socket_on_loopback() -> None:
     )
 
 
-def test_server_dependencies_come_from_pyproject() -> None:
-    """A second dependency list in the Dockerfile would drift from the project's."""
+def _copied_sources() -> set[str]:
+    """
+    List every build-context file the Dockerfile COPYs (multi-stage copies excluded).
+
+    Returns:
+        set[str]: The source paths of every COPY instruction.
+
+    """
+    sources: set[str] = set()
+    for line in re.findall(r"^COPY\s+(?!--from)(.+)$", DOCKERFILE.read_text(), re.MULTILINE):
+        *srcs, _dest = line.split()
+        sources.update(srcs)
+    return sources
+
+
+def test_server_dependencies_are_installed_from_the_poetry_lock() -> None:
+    """
+    The image must run the exact versions CI locks and tests.
+
+    Resolving from pyproject.toml alone picks whatever is newest at build time,
+    so the container silently drifts from poetry.lock.
+    """
     text = DOCKERFILE.read_text()
-    assert re.search(r"uv pip install .*-r \S*pyproject\.toml", text), (
-        "the image should install the server's dependencies from pyproject.toml"
+    assert "poetry.lock" in _copied_sources(), "the image must copy poetry.lock to install from it"
+    assert re.search(r"poetry install\b.*--only main", text), (
+        "the image should `poetry install --only main` so only the locked runtime dependencies are installed"
     )
 
 
@@ -146,7 +167,7 @@ def test_build_context_ignore_file_admits_everything_the_dockerfile_copies() -> 
     allowed = {
         line[1:] for line in (DOCKER_DIR / "Dockerfile.dockerignore").read_text().splitlines() if line.startswith("!")
     }
-    copied = set(re.findall(r"^COPY\s+(?!--from)(\S+)\s", DOCKERFILE.read_text(), re.MULTILINE))
+    copied = _copied_sources()
     assert copied, "expected the Dockerfile to COPY files from the build context"
     assert copied <= allowed, f"COPY sources excluded from the build context: {sorted(copied - allowed)}"
 

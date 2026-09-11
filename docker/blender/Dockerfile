@@ -2,10 +2,8 @@
 # running beside it over streamable HTTP. See docker-compose.yml for the wiring.
 #
 # Built from the repository root (compose sets the context) so the server's
-# dependencies come from the project's own pyproject.toml; Dockerfile.dockerignore
+# dependencies come from the project's own poetry.lock; Dockerfile.dockerignore
 # keeps that context down to the few files the build actually reads.
-FROM ghcr.io/astral-sh/uv:0.9.16 AS uv
-
 FROM almalinux:9.8-minimal
 
 ARG BLENDER_MAJOR_MINOR=5.2
@@ -31,15 +29,32 @@ RUN wget -q "https://download.blender.org/release/Blender${BLENDER_MAJOR_MINOR}/
 # silently never loads.
 ENV BLENDER_MAJOR_MINOR=${BLENDER_MAJOR_MINOR}
 
-# The MCP server's dependencies, read from pyproject.toml so this list can never
-# drift from the project's. The server code itself is not baked in: it runs
-# from the /repo bind mount, so server edits need a restart, not a rebuild.
-COPY --from=uv /uv /usr/local/bin/uv
-ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
-COPY pyproject.toml /opt/blender-mcp/pyproject.toml
-RUN uv venv --python 3.13 /opt/blender-mcp/venv \
-    && uv pip install --python /opt/blender-mcp/venv -r /opt/blender-mcp/pyproject.toml \
-    && rm -rf /root/.cache/uv
+# The server needs Python 3.13+, which AlmaLinux 9 (and 10) do not package, so
+# install a pinned standalone CPython build - the same way Blender is installed
+# above, plus a checksum. To bump it, take the release tag, the 3.13.x version,
+# and the tarball's line from that release's SHA256SUMS.
+ARG PYTHON_VERSION=3.13.15
+ARG PYTHON_BUILD_RELEASE=20260901
+ARG PYTHON_SHA256=0651dd7157d3debf769e15a52c1de9de7fbcdc36ba72faf79fde3c44f14d9461
+RUN wget -q "https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_BUILD_RELEASE}/cpython-${PYTHON_VERSION}%2B${PYTHON_BUILD_RELEASE}-x86_64-unknown-linux-gnu-install_only.tar.gz" \
+        -O /tmp/python.tar.gz \
+    && echo "${PYTHON_SHA256}  /tmp/python.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/python.tar.gz -C /opt \
+    && rm /tmp/python.tar.gz
+
+# The MCP server's runtime dependencies, installed from poetry.lock so the
+# container runs exactly the versions CI tests. Poetry itself is only needed to
+# read the lock, so it is removed afterwards. The server code is not baked in:
+# it runs from the /repo bind mount, so server edits need a restart, not a
+# rebuild.
+ARG POETRY_VERSION=2.4.1
+COPY pyproject.toml poetry.lock /opt/blender-mcp/
+RUN /opt/python/bin/python3 -m venv /opt/poetry \
+    && /opt/poetry/bin/pip install --no-cache-dir --quiet "poetry==${POETRY_VERSION}" \
+    && /opt/python/bin/python3 -m venv /opt/blender-mcp/venv \
+    && cd /opt/blender-mcp \
+    && VIRTUAL_ENV=/opt/blender-mcp/venv /opt/poetry/bin/poetry install --only main --no-root --no-interaction \
+    && rm -rf /opt/poetry /root/.cache
 
 COPY docker/blender/start_server.py /opt/start_server.py
 COPY docker/blender/healthcheck.py /opt/healthcheck.py
