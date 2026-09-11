@@ -22,6 +22,11 @@
 > agnosticism into a requirement, which demotes Skills to a thin pointer and drops tool
 > search from the roadmap.
 >
+> **Revision 2.6** specifies the file-lifecycle and linking subsystem (§9.1) that Appendix
+> E #3 found missing, schedules it as Phase 0.5, and — from the same spike — refutes half of
+> Appendix E #2: Blender does **not** block Python writes to linked data, so the mode guard
+> has a real refusal set after all.
+>
 > **Revision 2.5** resolves the review's highest-priority risk: a spike confirms
 > `content_digest` is viable as SHA-256 over immutable published bytes (§6.1), so pinning
 > is no longer conditional. The two FATAL findings about the context lever and the missing
@@ -453,6 +458,14 @@ linked, not appended. **That was false**, for two independent reasons:
 refuses out-of-mode mutations regardless of which process sent them or how that process
 was configured. This is the only layer every path traverses.
 
+**What the guard actually refuses — settled empirically (§9.1).** Writes to linked data are
+*not* blocked by Blender: `ob.location.x = 5.0` on a linked, non-editable object succeeds
+through Python and persists. The guard's refusal set is therefore **any mutation targeting
+a datablock whose `library is not None`** — real, non-empty, and mechanically checkable at
+dispatch. Drift *through overrides*, by contrast, cannot be refused without refusing
+legitimate shot work, and is the fingerprint's job. **Two mechanisms, two non-overlapping
+jobs.**
+
 **Constraint surfaced by impact analysis (Appendix D).** `_build_command_handlers` also
 populates the handshake's `capabilities` set (`server_core.py:1156`), which the server
 gates on (`connection.py:187`). The guard must therefore reject **at dispatch** and leave
@@ -812,6 +825,76 @@ src/blender_mcp/bundled/addon/
 Modified: `bundles.py` (core and texture-lighting splits), `transaction.py` (track
 `libraries`), `server_core.py` (mode-guard hook in dispatch).
 
+### 9.1 File lifecycle and linking — the missing subsystem
+
+Appendix E #3 established that Phases 0–2 depend on four primitives with **zero lines of
+code** in this repo. This section specifies them. A spike on 2026-09-11 (Blender 5.2.1,
+headless) established the facts below; every "verified" row was executed, not reasoned.
+
+**The enabling fact: the MCP server survives a file load.**
+
+| Property | Result | Why it matters |
+|---|---|---|
+| `bpy.types.blendermcp_server` (module-level, not file data) | **survives** `open_mainfile` | The socket and its connection state are not lost |
+| `bpy.app.timers.register(..., persistent=True)` — what `server_core.py:184` already uses | **survives** | The drain loop keeps running |
+| the same timer with `persistent=False` | **does not survive** | Confirms the flag is load-bearing, not incidental |
+| data from the loaded file | visible immediately | |
+
+Without those two, none of this subsystem would be possible; they hold, so it is.
+
+**Commands to add** (addon handlers, one round trip each):
+
+| Command | `bpy` call | Notes |
+|---|---|---|
+| `open_shot` | `wm.open_mainfile` | **Invalidates every datablock reference** from prior responses. Resets `bpy.context.scene`, so mode (§6.3) and the scene-flag capability set (Appendix E #5) must be re-read after. Clears undo. |
+| `save_shot` | `wm.save_mainfile` / `save_as_mainfile` | Canon publishes **must** pass `compress=False` (§6.1 invariant 1). |
+| `reset_session` | `wm.read_factory_settings(use_empty=True)` | The explicit pool load-or-reset step §5.2 requires. |
+| `link_canon_library` | `bpy.data.libraries.load(path, link=True)` | Verified working. Must reject paths outside the allowlist (§12 invariant 2). |
+| `create_override` | `collection.override_hierarchy_create(scene, view_layer, reference=instance)` | **`object.override_create()` returns `None`** — verified. The hierarchy call on the collection is the working API; an implementation that reaches for the object-level one will silently produce nothing. |
+| `list_libraries` | walk `bpy.data.libraries` + digest verify | `bpy.types.Library` exposes no checksum, mtime or size (§6.1), so this must hash the file itself. |
+| `reload_library` / `relocate_library` | `wm.lib_reload` / `wm.lib_relocate` | Needed for `update_canon_version`. |
+| `load_post` hook | `bpy.app.handlers.load_post` + `@persistent` | Open-time digest re-verification (§6.1). |
+
+**Untested hazard, and the first thing Phase 0 must settle.** Calling `wm.open_mainfile`
+from *inside* the drain-timer callback is reentrant — the callback's own execution context
+is freed mid-call. This could not be tested headlessly because `bpy.app.timers` do not fire
+in `--background` (no event loop). It needs the GUI session or the container rig. **If it
+crashes, `open_shot` must defer the load to a subsequent timer tick and return its response
+before the file changes** — which makes `open_shot` the one command whose response cannot
+describe its own result. Design for that possibility rather than discovering it.
+
+**`transaction.py` must track `libraries`** before `link_canon_library` ships, or a failed
+link leaks a library datablock (§11).
+
+#### The mode guard is rehabilitated — Appendix E #2 was half wrong
+
+The review argued the guard has no refusal set, because writes to linked canon *"are
+already refused by Blender at the RNA level."* **That is empirically false.** Verified:
+
+```
+linked object:  is_editable = False,  library is not None
+ob.location.x = 5.0   →  SUCCEEDED, and the value persisted: (5.0, 0.0, 0.0)
+```
+
+**Blender's Python API does not block writes to linked data.** `is_editable` is advisory to
+the UI; RNA accepts the assignment, and the change affects everything the shot renders. For
+a server that drives Blender entirely through Python, that is a live, silent drift vector
+with nothing else standing in front of it. The guard has a real, non-empty refusal set:
+**any mutation targeting a datablock whose `library is not None`.** That is mechanically
+checkable at dispatch, and it is exactly the class of write nothing else prevents.
+
+The review's *other* claim is confirmed, and remains a limit on what the guard can promise:
+
+```
+override material slot → link='OBJECT' → assign local material   →  SUCCEEDED
+override transform write                                          →  SUCCEEDED
+```
+
+So overrides do permit drift by design, and the guard cannot refuse those without refusing
+legitimate shot work. **The correct division: the guard refuses writes to linked data; the
+fingerprint catches drift through overrides.** Two mechanisms, two non-overlapping jobs —
+which is what §6.3 should have said instead of claiming prevention outright.
+
 ## 10. Plugin architecture
 
 The plugin runs inside Blender and is the MCP *client*; the existing addon remains the
@@ -918,7 +1001,8 @@ plugin being the prototype.
 
 | Phase | Content | Gate |
 |---|---|---|
-| **0 — Spike** | Plugin ↔ MCP loop on a worker thread with queue + persistent timer. Prove no deadlock; measure round-trip. Throwaway. | Blender does not hang on first tool call |
+| **0 — Spike** | Plugin ↔ MCP loop on a worker thread with queue + persistent timer. Prove no deadlock; measure round-trip. **Plus: does `wm.open_mainfile` called from inside the drain timer crash?** (§9.1 — needs the GUI or container rig; not testable headlessly). Throwaway. | Blender does not hang on first tool call, and the reentrancy answer is known |
+| **0.5 — File lifecycle** | The §9.1 handler family: `open_shot`, `save_shot`, `reset_session`, `link_canon_library`, `create_override`, `list_libraries`, `reload_library`, `relocate_library`, `load_post` hook. `transaction.py` gains `libraries`. **This is the critical path — everything below depends on it and revision 2 omitted it entirely.** | A shot file can be opened, a canon library linked, an override created, and the result saved and reopened with the link intact |
 | **1 — Demo** | Plugin (agent loop, UI panel, credentials). One canon character + one location, hand-built. `LocalMirrorResolver`. `blend` preset provider only. Six tools: `link_canon`, `apply_preset`, `set_shot_camera`, `place_character`, `compute_consistency_fingerprint`, `diff_consistency`. Extractor + hasher for `asset`, `material`, `color`, `format`. Workflow guidance authored as portable MCP Resources, with a thin `blender-mcp-authoring` Skill pointing at them (§6.5 Lever 3). | An artist builds two shots; a deliberate drift is caught and a legitimate change is not |
 | **2 — Enforcement** | Addon mode guard. Baselines, exceptions, `assert_consistency`, `publish_shot`. `load_post` digest re-check. `transaction.py` library tracking. `shot_recipe` recording. | A shot cannot be published inconsistent, from any client configuration |
 | **3 — Portability** | `CORE_MODULES` and `texture-lighting` splits; schema diet on the 20 heaviest; typed gateway; `StudioAssetResolver`; `recipe` and `captured` providers; `audit_episode`. | Generic MCP client gets a shot-mode payload under 60K tokens and completes a shot |
@@ -1133,8 +1217,8 @@ on the reviewer's word.
 | # | Sev | Finding | Verified? | Status |
 |---|---|---|---|---|
 | 1 | **FATAL** | Lever 1 refuted. The `manage_modifiers` precedent is type erasure (`0b052ec`: `ModifierSpecInput` → `dict[str, Any]`), not consolidation. A discriminated union of 30 variants costs 37,263 B vs 39,729 B split — **6.2%**, not 97%. The spec ranks the working mechanism (erasure/gateway) 5th and the non-working one 2nd. | **Reproduced exactly** | §6.5 Lever 1 corrected to *variant scoping*; priority order still needs revision 3 |
-| 2 | **FATAL** | The §6.3 mode guard has no definable refusal set. Its residual candidate — writes to linked canon — is already refused by Blender's RNA and checked in 8 places here. A `.blend` has no file-level property (only per-`Scene`), and the spec picks no default for new/foreign/hand-edited files, so "unbypassable" is false. | Guard hook point and `_READ_ONLY_COMMANDS` verified | **OPEN** — enumerate the refusal set as concrete `cmd_type` names, or delete the guard and say the fingerprint is the only enforcement |
-| 3 | **FATAL** | Phases 0–2 depend on four subsystems with zero code: library **linking** (1 `libraries.load`, `link=False`), library **overrides** (0), `bpy.app.handlers` (0), and **`save_mainfile`/`open_mainfile` (0)**. This server cannot open or save a `.blend`, which §8.1 declares a required deliverable. | **Verified by grep** | **OPEN** — the file-lifecycle handler family is the real critical path and appears in no phase |
+| 2 | **FATAL** | The §6.3 mode guard has no definable refusal set. Its residual candidate — writes to linked canon — is *"already refused by Blender's RNA."* | **Partly REFUTED by spike.** `ob.location.x = 5.0` on a linked, non-editable object **succeeds and persists** — Blender's Python API does not block writes to linked data. The override-drift half is **confirmed** (material swap and transform both succeed). | **PARTLY RESOLVED** — the guard has a real refusal set (`library is not None`), now stated in §6.3 and §9.1. Still open: the per-`Scene` property carrier, and the default for new/foreign/hand-edited files. |
+| 3 | **FATAL** | Phases 0–2 depend on four subsystems with zero code: library **linking**, library **overrides**, `bpy.app.handlers`, and **`save_mainfile`/`open_mainfile`**. This server cannot open or save a `.blend`, which §8.1 declares a required deliverable. | **Verified by grep**, then scoped by spike | **RESOLVED** — specified in §9.1 and scheduled as **Phase 0.5**, the critical path. Spike established that the server survives a file load (module state + persistent timer), that `override_hierarchy_create` is the working API where `override_create()` returns `None`, and that one reentrancy hazard remains untestable headlessly. |
 | 4 | SERIOUS | §5's table, headed "verified by execution against `main`", cited `docker/blender/*` (absent from `main`) and `cli.py:96` (`main`'s is 51 lines). Third wrong-branch error by this author. | **Verified** | **FIXED** — both rows corrected; §13 and §14 claims now stated as conditional on a merge no phase schedules |
 | 5 | SERIOUS | Appendix D's "material finding" describes behavior the system already has: capabilities already vary per `.blend` via scene flags (`:774,784,793`). | **Verified** | **FIXED** — Appendix D corrected |
 | 6 | SERIOUS | `transform` is worse than the `rig` facet it replaced. Pose-bone scale is writable from shot mode (`handlers/animation.py:767`) and invisible to a root-transform check. World-space bounds are also frame-dependent by design. | Verified | **OPEN** — facet must be scale-only, read the evaluated depsgraph at a declared frame, and descend to pose bones |
