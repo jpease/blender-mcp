@@ -283,6 +283,72 @@ is *detectable*, but only given the three mechanisms revision 1 omitted:
 version references. §17 Q1 is unresolved. Until it is, this policy is *chosen* but not
 *safe* — hence `content_digest` rather than a path in `CanonRef`.
 
+#### `content_digest` — specified and validated by spike
+
+**SHA-256 over the published `.blend` bytes.** Spike run 2026-09-11 against Blender 5.2.1
+LTS; the non-mutation result was independently reproduced by the author.
+
+The objection was real and does not apply. Re-saving a `.blend` **is** non-deterministic:
+two fresh-process re-saves of the same input differ *from each other* — 146 of 583,632
+bytes (**0.03%**), in 58 runs of 8 bytes at a regular 72-byte stride, holding 64-bit heap
+addresses. Blender 5.2 canonicalizes most of the file; the leak is narrow but real, and no
+save flag suppresses it.
+
+It is irrelevant because **the digest is computed once at publish over bytes that are never
+rewritten**:
+
+| Operation | Effect on the published file |
+|---|---|
+| Open it | **No change** — hash identical before and after (reproduced) |
+| Link it into a shot | **No change** |
+| Copy it to a node-local cache | **Byte-identical** — cache copies are trivially verifiable |
+| Re-save it | Non-deterministic — **which is why invariant 2 below forbids it** |
+
+Cost: **~7 ms for an 18 MB / 130k-vertex asset**, I/O-bound, and **no Blender process is
+required to verify** — any worker in any language can check a pinned digest.
+
+**Invariants this imposes:**
+
+1. **Publish uncompressed.** `compress=True` avalanches a 0.03% raw difference into **97.8%
+   of compressed bytes** and diverges the file size.
+2. **A published version is never re-saved.** Re-save non-determinism is reachable only by
+   violating this, which a canon library must not do regardless.
+3. **A Blender version upgrade is a re-publish and re-pin, not an in-place re-save.**
+   (Cross-version determinism was not tested; under invariant 2 it cannot arise.)
+4. **The digest covers the `.blend` only.** Unpacked external dependencies — textures,
+   caches, nested libraries — are stored as *path strings*, so swapping a texture file
+   changes nothing in the digest. **Canon assets must pack their textures, or publish a
+   dependency-closure manifest digested alongside.** This is the same hole the `material`
+   facet closes at shot level (§6.2), and it must be closed at asset level too.
+
+**Why the digest is necessary at all — Blender's own change detection does not substitute.**
+With a library mutated in place beneath a shot:
+
+| Library mutation | Blender reports | Byte digest |
+|---|---|---|
+| Object renamed | `LIB: Object 'X' missing` | caught |
+| Vertex moved | **silent** | caught |
+| Modifier parameter changed | **silent** | caught |
+| Shader node value changed | **silent** | caught |
+| Object transform changed | **silent** | caught |
+
+Blender notices only when *name resolution* fails; everything else silently binds to the
+new content. `bpy.types.Library` exposes no checksum, no mtime, and no size. This is the
+strongest available argument for the mechanism.
+
+**Rejected alternative — a semantic content walk.** Built and run in the spike: stable
+across every save variant and across compression, and it caught all seven single-property
+mutations. But it costs **463 ms against 7 ms** (~65×), needs a full Blender process, scales
+with element count rather than file size, and every property the walk forgets is a *silent
+false negative*. Reserve it for cross-version or cross-DCC identity, which this design does
+not need under invariant 2.
+
+**A finding that closes off a tempting future design.** Rebuilding the same scene from an
+identical script is **not** deterministic even semantically — `primitive_uv_sphere_add`
+produced differing `vertex_index` / `loop_start` / UV ordering across runs with identical
+vertex coordinates. Neither digest is a build-reproducibility mechanism; both are stable
+only for a fixed file. "Re-derive the asset and check the digest matches" is not available.
+
 ### 6.2 Consistency fingerprint — making drift diffable
 
 Not a single scene hash — that reports "different" and nothing more. A fingerprint is an
