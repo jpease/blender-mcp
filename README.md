@@ -353,26 +353,25 @@ See [Installing the Blender Addon](#installing-the-blender-addon) above — poin
 
 ### Running Blender in Docker
 
-`docker/blender/` builds a headless Blender (AlmaLinux + Xvfb) that runs the addon without a GUI session, for exercising the server end to end.
+`docker/blender/` builds a stand-in for a remote Blender host: headless Blender (AlmaLinux + Xvfb) with the `blender-mcp` server running beside it over streamable HTTP. Clients reach the MCP server; Blender's own socket never leaves the container.
 
 ```bash
 cd docker/blender
-docker compose up -d --wait      # --wait blocks until Blender actually answers
+docker compose up -d --wait      # --wait blocks until Blender and the MCP server both answer
+claude mcp add --transport http blender-docker http://127.0.0.1:8000/mcp
 ```
 
-The server then connects with no configuration, since the container publishes the addon's default port.
-
 ```bash
-docker compose logs -f           # Blender and addon output
+docker compose logs -f           # Blender, addon, and MCP server output
 docker compose down
 ```
 
 Notes worth knowing before relying on it:
 
-- **The port is published on `127.0.0.1` only.** The protocol has no authentication, so anything that can reach the port can drive Blender, including reading and writing files. Don't widen the binding on a network you don't control.
-- **Use `--wait`.** Docker accepts connections on a published port before Blender is listening behind it, so a plain `up -d` returns while the container is still starting. The compose healthcheck does a real protocol round-trip, and `--wait` gates on it. Without `--wait` the server's own startup retry covers the gap, just less precisely.
-- **Paths are the container's, not yours.** Renders and exports must target a path that exists inside the container. `./output` is mounted at `/output` and advertised through `BLENDERMCP_OUTPUT_ROOTS`, so anything written there shows up on the host.
-- **The repo is mounted read-only** at `/repo`, and the addon is copied out of it on every start — so addon edits need only a `docker compose restart`, not a rebuild. Tools that try to write into the project tree will fail.
+- **Only the MCP endpoint is published, on `127.0.0.1:8000`.** Nothing is authenticated, so anything that can reach the port can drive Blender, including reading and writing files. Don't widen the binding on a network you don't control. A local stdio setup needs a local Blender; this container doesn't expose Blender's socket.
+- **Use `--wait`.** Docker accepts connections on a published port before anything is listening behind it, so a plain `up -d` returns while the container is still starting. The healthcheck round-trips both Blender's socket and an MCP `initialize`, and `--wait` gates on it.
+- **Paths are the container's, not yours.** Renders and exports must target a path that exists inside the container. `./output` is mounted at `/output` and advertised through `BLENDERMCP_OUTPUT_ROOTS`, so anything written there shows up on the host. Screenshots and render previews come back as image data over MCP.
+- **The repo is mounted read-only** at `/repo`. The addon is copied out of it and the server runs from it on every start, so code edits need only a `docker compose restart`. Dependency changes in `pyproject.toml` need a `docker compose build`. Tools that try to write into the project tree will fail.
 - **Choosing a Blender version:** `docker compose build --build-arg BLENDER_MAJOR_MINOR=5.1 --build-arg BLENDER_VERSION=5.1.1`. Both must be set together; the image records the version so the addon is installed where that Blender looks for it.
 
 ---

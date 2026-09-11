@@ -1,8 +1,10 @@
 services:
   blender:
     build:
-      context: .
-      dockerfile: Dockerfile
+      # The repository root, so the image can install the server's dependencies
+      # from pyproject.toml (Dockerfile.dockerignore trims the context).
+      context: ../..
+      dockerfile: docker/blender/Dockerfile
     # Blender only ships x86_64 Linux builds; force amd64 even on arm64 hosts
     # (e.g. Apple Silicon), which run it correctly under emulation.
     platform: linux/amd64
@@ -15,28 +17,18 @@ services:
       # hardcodes /output - a local (non-container) Blender simply leaves this
       # unset and reports its own defaults instead.
       BLENDERMCP_OUTPUT_ROOTS: /output
-    # Bound to loopback deliberately. The BlenderMCP protocol has no
-    # authentication, so publishing on 0.0.0.0 would let anyone who can reach
-    # this host drive Blender - reading files through inspect_render_output and
-    # writing them through render_scene. Change this only for a host you trust
-    # the whole network of.
+    # Only the MCP server is published: this container stands in for a remote
+    # host, and Blender's own socket never leaves it. Bound to loopback
+    # deliberately - there is no authentication, so publishing on 0.0.0.0 would
+    # let anyone who can reach this host drive Blender, including reading and
+    # writing files. Change this only for a host you trust the whole network of.
     ports:
-      - "127.0.0.1:9876:9876"
+      - "127.0.0.1:8000:8000"
     healthcheck:
-      # A TCP connect proves nothing here: Docker accepts on the published port
-      # before Blender is listening inside the container, so this does a real
-      # MCP ping round-trip instead. `docker compose up --wait` then blocks
-      # until the server genuinely answers.
-      test:
-        - CMD
-        - python3
-        - -c
-        - |
-          import socket
-          s = socket.create_connection(("127.0.0.1", 9876), timeout=3)
-          s.sendall(b'{"id": "healthcheck", "type": "ping", "params": {}}\n')
-          raise SystemExit(0 if s.recv(256) else 1)
+      # Round-trips both Blender's socket and the MCP endpoint (see the script),
+      # so `docker compose up --wait` blocks until an agent could use it.
+      test: ["CMD", "/opt/blender-mcp/venv/bin/python", "/opt/healthcheck.py"]
       interval: 2s
-      timeout: 5s
+      timeout: 8s
       retries: 30
       start_period: 3s

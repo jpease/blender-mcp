@@ -1,7 +1,7 @@
 """
 Static guards for the headless-Blender Docker rig.
 
-The three files in docker/blender only work as a unit: the Dockerfile decides
+The files in docker/blender only work as a unit: the Dockerfile decides
 which Blender is installed, and entrypoint.sh has to install the addon into
 *that* version's addons directory. Nothing at runtime catches a mismatch - the
 addon simply never loads - so the wiring is asserted here.
@@ -82,30 +82,84 @@ def test_compose_declares_the_mounted_output_root() -> None:
     )
 
 
-def test_compose_publishes_the_socket_on_loopback_only() -> None:
+def _published_ports() -> list[tuple[str, str, str]]:
     """
-    The MCP protocol has no authentication.
+    List every port mapping in the compose file.
 
-    Publishing as "9876:9876" binds every host interface, which puts scene
+    Returns:
+        list[tuple[str, str, str]]: (host bind, host port, container port) per mapping.
+
+    """
+    return re.findall(r'-\s*"((?:[^":]+:)?)(\d+):(\d+)"', COMPOSE.read_text())
+
+
+def test_compose_publishes_only_on_loopback() -> None:
+    """
+    Neither the MCP server nor Blender has authentication.
+
+    Publishing as "8000:8000" binds every host interface, which puts scene
     control plus file read/write in reach of anyone on the network.
     """
-    published = re.findall(r'-\s*"([^"]*:)?(\d+):9876"', COMPOSE.read_text())
-    assert published, "expected the compose file to publish the MCP port"
-    for host_part, _container_port in published:
+    published = _published_ports()
+    assert published, "expected the compose file to publish the MCP server's port"
+    for host_part, host_port, _container_port in published:
         assert host_part in {"127.0.0.1:", "localhost:"}, (
-            f"MCP port published as {host_part or ''}<port>:9876, which binds all interfaces; bind it to 127.0.0.1"
+            f"port published as {host_part}{host_port}, which binds all interfaces; bind it to 127.0.0.1"
         )
 
 
-def test_compose_healthcheck_does_a_real_protocol_round_trip() -> None:
+def test_compose_exposes_the_mcp_server_but_not_blender() -> None:
+    """
+    The container models a remote host: clients reach the MCP server, never Blender.
+
+    Blender's raw socket is the server's private upstream; publishing it would
+    reopen the unauthenticated path the co-located server exists to hide.
+    """
+    container_ports = {container for _host, _port, container in _published_ports()}
+    assert container_ports == {"8000"}, f"expected only the MCP port 8000 published, got {sorted(container_ports)}"
+
+
+def test_entrypoint_serves_the_mcp_server_over_http_on_the_published_port() -> None:
+    """The server must speak HTTP, on the one port compose forwards."""
+    text = ENTRYPOINT.read_text()
+    assert "BLENDERMCP_TRANSPORT=http" in text, "the container's MCP server must use the HTTP transport"
+    assert "BLENDERMCP_HTTP_PORT=8000" in text, "the server must listen on the port compose publishes"
+
+
+def test_blender_keeps_its_socket_on_loopback() -> None:
+    """Only the MCP server listens beyond the container's loopback."""
+    assert "0.0.0.0" not in (DOCKER_DIR / "start_server.py").read_text(), (
+        "start_server.py must not bind Blender's socket to all interfaces"
+    )
+
+
+def test_server_dependencies_come_from_pyproject() -> None:
+    """A second dependency list in the Dockerfile would drift from the project's."""
+    text = DOCKERFILE.read_text()
+    assert re.search(r"uv pip install .*-r \S*pyproject\.toml", text), (
+        "the image should install the server's dependencies from pyproject.toml"
+    )
+
+
+def test_build_context_ignore_file_admits_everything_the_dockerfile_copies() -> None:
+    """The allowlist must track the COPYs, or the build fails on a missing file."""
+    allowed = {
+        line[1:] for line in (DOCKER_DIR / "Dockerfile.dockerignore").read_text().splitlines() if line.startswith("!")
+    }
+    copied = set(re.findall(r"^COPY\s+(?!--from)(\S+)\s", DOCKERFILE.read_text(), re.MULTILINE))
+    assert copied, "expected the Dockerfile to COPY files from the build context"
+    assert copied <= allowed, f"COPY sources excluded from the build context: {sorted(copied - allowed)}"
+
+
+def test_compose_healthcheck_round_trips_both_blender_and_the_mcp_server() -> None:
     """
     Docker accepts on a published port before the container is listening.
 
     A connect-only check would report healthy while Blender is still starting,
-    so the healthcheck has to send a command and require a reply.
+    so the healthcheck has to send a command to each process and require a reply.
     """
-    text = COMPOSE.read_text()
-    assert "healthcheck:" in text, "compose needs a healthcheck so `up --wait` can gate on readiness"
-    healthcheck = text.split("healthcheck:", 1)[1]
-    assert '"type": "ping"' in healthcheck, "the healthcheck should send a real MCP command"
-    assert "recv" in healthcheck, "the healthcheck should require a reply, not just a connection"
+    assert "healthcheck:" in COMPOSE.read_text(), "compose needs a healthcheck so `up --wait` can gate on readiness"
+    assert "/opt/healthcheck.py" in COMPOSE.read_text().split("healthcheck:", 1)[1]
+    script = (DOCKER_DIR / "healthcheck.py").read_text()
+    assert '"type": "ping"' in script and "recv" in script, "should require a reply from Blender's socket"
+    assert '"initialize"' in script and "8000/mcp" in script, "should require the MCP server to answer initialize"

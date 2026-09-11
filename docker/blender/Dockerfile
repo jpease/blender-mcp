@@ -1,5 +1,11 @@
-# Headless Blender + Xvfb, for exercising the BlenderMCP addon end-to-end
-# without a GUI session. See docker-compose.yml for how this is wired up.
+# A "remote" Blender host: headless Blender + Xvfb, with the blender-mcp server
+# running beside it over streamable HTTP. See docker-compose.yml for the wiring.
+#
+# Built from the repository root (compose sets the context) so the server's
+# dependencies come from the project's own pyproject.toml; Dockerfile.dockerignore
+# keeps that context down to the few files the build actually reads.
+FROM ghcr.io/astral-sh/uv:0.9.16 AS uv
+
 FROM almalinux:9.8-minimal
 
 ARG BLENDER_MAJOR_MINOR=5.2
@@ -25,10 +31,23 @@ RUN wget -q "https://download.blender.org/release/Blender${BLENDER_MAJOR_MINOR}/
 # silently never loads.
 ENV BLENDER_MAJOR_MINOR=${BLENDER_MAJOR_MINOR}
 
-COPY start_server.py /opt/start_server.py
-COPY entrypoint.sh /opt/entrypoint.sh
+# The MCP server's dependencies, read from pyproject.toml so this list can never
+# drift from the project's. The server code itself is not baked in: it runs
+# from the /repo bind mount, so server edits need a restart, not a rebuild.
+COPY --from=uv /uv /usr/local/bin/uv
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+COPY pyproject.toml /opt/blender-mcp/pyproject.toml
+RUN uv venv --python 3.13 /opt/blender-mcp/venv \
+    && uv pip install --python /opt/blender-mcp/venv -r /opt/blender-mcp/pyproject.toml \
+    && rm -rf /root/.cache/uv
+
+COPY docker/blender/start_server.py /opt/start_server.py
+COPY docker/blender/healthcheck.py /opt/healthcheck.py
+COPY docker/blender/entrypoint.sh /opt/entrypoint.sh
 RUN chmod +x /opt/entrypoint.sh
 
-EXPOSE 9876
+# Only the MCP server is meant to be reached from outside; Blender's own socket
+# (9876) stays on the container's loopback.
+EXPOSE 8000
 
 ENTRYPOINT ["/opt/entrypoint.sh"]
