@@ -12,6 +12,10 @@
 > a priority order), records the GitNexus impact analysis §6.3 and §10 required
 > (Appendix D), and corrects the Phase 4 transport assumption: streamable HTTP is
 > already implemented and tested on `docker-blender`.
+>
+> **Revision 2.2** records the hosted topology (§5.1) and corrects the client constraint:
+> the MCP client is a headless agent runtime behind an AI gateway, not Media Center, and
+> which runtime is undecided.
 
 ---
 
@@ -73,6 +77,14 @@ the design was "valid under either outcome." That claim was wrong.
 **Outcome A — Blender renders final pixels.** Scene-state consistency (§6.2) is close to
 sufficient. This document stands as written.
 
+**Partial evidence (2026-09-11).** The reported hosted pipeline (§5.1) shows no generative
+image or video step in the Blender path — it ends `Blender file output → Media Center`.
+Either Blender produces the deliverable (Outcome A, and §7 closes as unfunded), or the
+generative step runs **inside Media Center**, downstream — in which case identity
+conditioning belongs to that team and §7 shrinks to a contract: this server records which
+`IdentityRef` a shot's passes were built for, and does not own the conditioning canon.
+Either reading reduces §7. Neither resolves the question.
+
 **Outcome B — Blender renders control passes** (depth / normal / segmentation / pose) that
 condition a downstream generative model which produces the delivered image. Then what
 drifts is *the model's rendering of the character*, and **identical control passes do not
@@ -111,9 +123,37 @@ most expensive available mistake.
 | **Multiple MCP server processes against one Blender is the documented configuration** | `README.md:243+` — *"Add one MCP server entry per bundle set"* | **A server-process-scoped mode guard is not an invariant** (§6.3). |
 | The addon has no concept of mode; it dispatches anything arriving on `:9876` | `addon/server_core.py:100,476` | Enforcement must live in the addon or the file (§6.3). |
 | A headless Blender container already exists | `docker/blender/{Dockerfile,entrypoint.sh,start_server.py}` | The extractor **can** be CI-tested (§13), and hosting is nearer than revision 1 assumed. |
-| Client is not ours in the hosted phase; multi-provider, generic MCP | Stated requirement | Context reduction must work server-side; no `tools/list_changed` reliance. Rules out tool search and Skills as load-bearing mechanisms (§6.5). |
+| **The MCP client in the hosted path is a headless agent runtime behind an AI gateway, and which runtime is not decided** | Stated topology (§5.1) | Design for an unknown client. Context reduction must work server-side; no `tools/list_changed` reliance. Keeps tool search and Skills off the load-bearing path (§6.5). |
 | **Streamable HTTP transport is implemented and tested** | `docker-blender@ee25ffc`; `cli.py:16-18,96`; `tests/server/test_cli_transport.py`; `tests/test_docker_rig.py` | Remote hosting needs no transport work. Phase 4 is smaller than revision 2 assumed. |
 | The handshake advertises handler names as `capabilities`, and the server gates on it | `server_core.py:1156`; `connection.py:187` | **The mode guard must not filter this set** — a mode-dependent handshake would make protocol negotiation non-deterministic (§6.3, Appendix D). |
+
+### 5.1 Hosted topology
+
+Reported 2026-09-11. The hosted path has five hops before a file comes back:
+
+```
+Media Center  →  AIGW  →  Headless Claude  →  Blender MCP  →  Headless Blender
+                                                                     ↓
+                                              Media Center  ←  Blender file output
+```
+
+What this settles:
+
+- **The MCP client is not Media Center.** It is a headless agent runtime, reached through
+  an AI gateway. **Which runtime is not decided, and AIGW abstracts it** — so client
+  identity stays an unknown, and the portability bias in §6.5 stands on that basis rather
+  than on any multi-provider commitment.
+- **Credentials and provider routing are AIGW's concern** for the hosted path, closing that
+  half of §10's open item. The local plugin still needs its own answer.
+- **The deliverable is a file returned to Media Center**, not a live session. That favors a
+  job-per-request or pooled model over long-lived interactive sessions, and makes the
+  session-model question in §16 concrete rather than theoretical.
+- **Blender is headless**, so the viewport and GPU concerns deferred in §16 apply to this
+  path — even though image bytes now cross the socket (`75a7abf`), a headless Blender may
+  have no viewport to capture.
+
+What it does **not** settle: Blender lifecycle (per job, pooled, or persistent), and what
+"Blender file output" contains — see §17 Q6-Q7.
 
 ## 6. Architecture
 
@@ -592,9 +632,10 @@ persistent timer registered once on the main thread**. No `bpy` access from the 
   with studio proxy configuration and credential storage — unspecified and needed in
   Phase 1.
 
-**The plugin is disposable; the server is the asset.** Media Center brings its own agent
-loop, prompts, and a model we do not choose. Anything enforced only in the plugin is lost
-at that transition — which is precisely why §6.3's guard moved into the addon.
+**The plugin is disposable; the server is the asset.** The hosted path drives this same
+server through a different, headless agent runtime with its own loop and prompts, selected
+behind a gateway (§5.1). Anything enforced only in the plugin is lost at that transition —
+which is precisely why §6.3's guard moved into the addon.
 
 ## 11. Error handling
 
@@ -715,6 +756,13 @@ path rather than parallel to it.
 4. **Is `format` (fps, resolution) episode-global or shot-level?** Treated as enforced
    per-shot against the episode baseline; confirm with editorial.
 5. **§3 — the render path.** The largest open question in this document.
+6. **Blender lifecycle in the hosted path** — one process per job, a warm pool, or
+   persistent per artist? Gates the router and session model (§16, Phase 4).
+7. **What does "Blender file output" contain** — a `.blend`, rendered frames, control
+   passes, or all three? Determines whether §3 is already answered in practice.
+8. **Can the hosted MCP client be non-Claude?** If AIGW may route to a non-Claude runtime,
+   portability stops being a preference and becomes a requirement, and the §6.5 priority
+   order is locked rather than provisional.
 
 ---
 
