@@ -4,7 +4,10 @@
 # under Xvfb and starts the BlenderMCP socket server via start_server.py.
 set -euo pipefail
 
-BLENDER_MAJOR_MINOR="${BLENDER_MAJOR_MINOR:-5.2}"
+# Baked into the image by the Dockerfile. Deliberately has no default here:
+# a second hardcoded version is exactly what drifts from the installed Blender,
+# and the failure is silent (the addon just never loads). Abort instead.
+BLENDER_MAJOR_MINOR="${BLENDER_MAJOR_MINOR:?must be set by the image (see Dockerfile ENV)}"
 ADDONS_DIR="$HOME/.config/blender/${BLENDER_MAJOR_MINOR}/scripts/addons"
 
 mkdir -p "$ADDONS_DIR"

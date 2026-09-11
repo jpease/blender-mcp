@@ -18,6 +18,13 @@ RUN wget -q "https://download.blender.org/release/Blender${BLENDER_MAJOR_MINOR}/
     && rm /tmp/blender.tar.xz \
     && ln -s "/opt/blender-${BLENDER_VERSION}-linux-x64/blender" /usr/local/bin/blender
 
+# An ARG is build-time only. entrypoint.sh needs the same version at run time
+# to install the addon into this Blender's addons directory, so bake it into
+# the image - otherwise a --build-arg override installs Blender X while the
+# entrypoint writes the addon where version Y would look for it, and the addon
+# silently never loads.
+ENV BLENDER_MAJOR_MINOR=${BLENDER_MAJOR_MINOR}
+
 COPY start_server.py /opt/start_server.py
 COPY entrypoint.sh /opt/entrypoint.sh
 RUN chmod +x /opt/entrypoint.sh
