@@ -7,6 +7,11 @@
 > **Revision 2** rewrites §3, §6.2, §6.3, §6.5, §10, §12, §13 and §14 after an adversarial
 > review found two fatal errors in revision 1. Every measurement and code citation below
 > was re-verified by execution against `main`. Findings and disposition: Appendix B.
+>
+> **Revision 2.1** folds the context-lever evaluation into §6.5 (five levers, verdicts and
+> a priority order), records the GitNexus impact analysis §6.3 and §10 required
+> (Appendix D), and corrects the Phase 4 transport assumption: streamable HTTP is
+> already implemented and tested on `docker-blender`.
 
 ---
 
@@ -106,7 +111,9 @@ most expensive available mistake.
 | **Multiple MCP server processes against one Blender is the documented configuration** | `README.md:243+` — *"Add one MCP server entry per bundle set"* | **A server-process-scoped mode guard is not an invariant** (§6.3). |
 | The addon has no concept of mode; it dispatches anything arriving on `:9876` | `addon/server_core.py:100,476` | Enforcement must live in the addon or the file (§6.3). |
 | A headless Blender container already exists | `docker/blender/{Dockerfile,entrypoint.sh,start_server.py}` | The extractor **can** be CI-tested (§13), and hosting is nearer than revision 1 assumed. |
-| Client is not ours in the hosted phase; multi-provider, generic MCP | Stated requirement | Context reduction must work server-side; no `tools/list_changed` reliance. |
+| Client is not ours in the hosted phase; multi-provider, generic MCP | Stated requirement | Context reduction must work server-side; no `tools/list_changed` reliance. Rules out tool search and Skills as load-bearing mechanisms (§6.5). |
+| **Streamable HTTP transport is implemented and tested** | `docker-blender@ee25ffc`; `cli.py:16-18,96`; `tests/server/test_cli_transport.py`; `tests/test_docker_rig.py` | Remote hosting needs no transport work. Phase 4 is smaller than revision 2 assumed. |
+| The handshake advertises handler names as `capabilities`, and the server gates on it | `server_core.py:1156`; `connection.py:187` | **The mode guard must not filter this set** — a mode-dependent handshake would make protocol negotiation non-deterministic (§6.3, Appendix D). |
 
 ## 6. Architecture
 
@@ -259,9 +266,16 @@ linked, not appended. **That was false**, for two independent reasons:
    is the documented configuration, and neither knows about the other.
 
 **Enforcement moves into the addon, keyed on the open file.** The `.blend` carries a
-`mode` property. The addon checks it in `_build_command_handlers` dispatch, before any
-handler runs, and refuses out-of-mode mutations regardless of which process sent them or
-how that process was configured. This is the only layer every path traverses.
+`mode` property. The addon checks it at command dispatch, before any handler runs, and
+refuses out-of-mode mutations regardless of which process sent them or how that process
+was configured. This is the only layer every path traverses.
+
+**Constraint surfaced by impact analysis (Appendix D).** `_build_command_handlers` also
+populates the handshake's `capabilities` set (`server_core.py:1156`), which the server
+gates on (`connection.py:187`). The guard must therefore reject **at dispatch** and leave
+the advertised capability set unchanged. Filtering the handler map by mode would make the
+handshake vary per open file — a client that connected under one mode would see its
+protocol negotiation shift when the artist opened a different shot.
 
 | | `shot` mode | `asset` mode |
 |---|---|---|
@@ -292,20 +306,115 @@ class PresetProvider(Protocol):
 Applied presets stamp provenance (`preset_id`, version, params) on what they create; the
 `light` facet reads it *alongside* measured parameters, not instead of them.
 
-### 6.5 Context budget — stated in tokens, enforced per tool
+### 6.5 Context budget — lever evaluation
 
 The target is **a shot-mode payload under 60K tokens (~216 KB)**, not a tool count.
 Revision 1's "~40 tools" was the wrong unit: 40 tools is already 34K tokens today.
 
-Three mechanisms, in order of leverage:
+**Where the bytes actually are** (measured on `main`, `BLENDER_MCP_TOOLSETS=all`):
 
-**1. A per-tool schema budget of 2 KB, with the 20 heaviest tools as the work item.**
-They are 22% of all bytes. `create_geometry_object` (25.3 KB) and
-`configure_render_settings` (19.6 KB) are both in the shot path and both must come down;
-the `manage_modifiers` fix (72.4 KB → 2.4 KB) is the proof the technique works and the
-template for the rest.
+| Component | Bytes | Tokens | Share |
+|---|---|---|---|
+| Input schemas | 915,287 | ~254K | **76%** |
+| Descriptions | 196,343 | ~55K | 16% |
+| Everything else | ~87K | ~24K | 7% |
 
-**2. `CORE_MODULES` must split.** `core` is unconditional and carries 40 tools:
+Per family, worst first:
+
+| Family | Tools | Bytes | Tokens | Avg B/tool | Shot mode? |
+|---|---|---|---|---|---|
+| `liquid` | 37 | 190,719 | ~53K | 5,154 | no |
+| `rigid_body` | 29 | 141,102 | ~39K | 4,865 | no |
+| `cloth` | 19 | 126,942 | ~35K | 6,681 | no |
+| `character_rigging` | 22 | 120,797 | ~34K | 5,490 | no |
+| `geometry_nodes` | 28 | 106,893 | ~30K | 3,817 | no |
+| **`camera`** | 23 | 91,102 | **~25K** | 3,960 | **yes** |
+| `texture` | 21 | 72,248 | ~20K | 3,440 | partly |
+| **`lighting`** | 15 | 63,539 | **~18K** | 4,235 | **yes** |
+| **`scene`** | 10 | 48,190 | **~13K** | 4,819 | **yes (core)** |
+| **`rendering`** | 5 | 33,079 | ~9K | **6,615** | **yes** |
+| `mesh` | 13 | 22,296 | ~6K | 1,715 | no |
+| `nd` | 10 | 14,607 | ~4K | 1,460 | no |
+
+Two readings. The five simulation/rigging families are **57% of the payload** and none are
+shot work — mode scoping removes them wholesale. But `camera` + `lighting` + `scene` +
+`rendering` alone are **~65K tokens**, already over budget before the intent layer is
+added. Shot mode cannot hit 60K by scoping alone; the heavy shot-path tools must also
+shrink. `mesh` (1,715 B/tool) and `nd` (1,460) prove the schemas *can* be lean.
+
+#### Lever 1 — Consolidation with discriminated inputs — **ADOPT**
+
+Already proven here: `manage_modifiers` went 72,410 B → 2,419 B, and the two `perf:`
+commits cut 221,105 B (~61K tokens, 18.5%) from the full payload.
+
+| Consolidate | Keep split | Why |
+|---|---|---|
+| `camera` (23 → ~8), `lighting` (15 → ~7) | — | Highest shot-path leverage; rig construction is largely replaced by presets anyway |
+| `liquid`, `cloth`, `rigid_body` configure/setup families | their `apply`/`bake`/destructive members | CLAUDE.md gates destructive operations; collapsing a `bake` into a config union hides the irreversible case behind a discriminator |
+| `rendering` (6,615 B/tool, worst average) | `render_scene` | Long-running and side-effecting; stays its own tool |
+| — | `nd`, `mesh` | Already lean; consolidation would cost clarity for ~no bytes |
+
+Portability: **fully portable.** Works for every MCP client and model.
+
+#### Lever 2 — Programmatic Tool Calling — **REJECT (PTC); DEFER (batch fallback)**
+
+**Verified current, not stale:** PTC is no longer beta-gated (no beta header;
+`code_execution_20260120` plus `allowed_callers` on a custom tool, Opus 4.5+/Sonnet 4.5+),
+but it remains **explicitly incompatible with MCP tools**, alongside `strict: true`,
+`disable_parallel_tool_use`, and forced `tool_choice`. It cannot attach to tools proxied
+through an MCP server. Not available to this project at any engineering cost.
+
+The fallback — a server-side `batch`/`script` tool composing several Blender operations in
+one round trip — is **deferred, not rejected**, and must not become `execute_blender_code`
+by another name (§12 invariant 1). A defensible version is a **declarative** sequence of
+*already-validated* tool invocations (each step a named tool plus schema-checked args, with
+bounded step count and no expression evaluation), executed under one undo step. That shape
+is worth revisiting because it also fixes the undo-granularity problem in §10 — a 12-step
+`assemble_shot` currently costs twelve Ctrl+Z presses. An imperative scripting API is not
+worth revisiting.
+
+Portability: portable (it is just another MCP tool), but it trades against §12.
+
+#### Lever 3 — Skills — **ADOPT for Phase 1, with eyes open**
+
+Skills are a **host-layer** mechanism (`.claude/skills/`), not part of the MCP server, and
+they help **only Claude Code and Claude-based hosts — not Media Center's other providers**.
+They are nonetheless worth building now, because Phases 0–2 are Claude Code plus your own
+plugin, and the repo already has six `gitnexus-*` skills as a working model.
+
+| Belongs in a Skill | Belongs in the tool docstring |
+|---|---|
+| Multi-tool workflow ("inspect before mutating"; safe ND boolean chains; how to assemble a shot) | What one tool does, its arguments, its envelope |
+| Policy and judgement (when to ask before a destructive op) | Parameter ranges and units |
+| Cross-tool sequencing and recovery | Per-tool failure modes |
+
+Rule of thumb: if it spans more than one tool, it is a Skill; if it describes one tool, it
+is a docstring — and docstrings are 16% of payload, so moving *workflow prose* out of them
+is a real saving that also improves the non-Claude experience.
+
+Portability: **Claude-only.** Therefore never the place for a correctness invariant — same
+reasoning as §10's "the plugin is disposable."
+
+#### Lever 4 — Tool search vs. server splitting — **ADOPT splitting; DEFER tool search**
+
+Both verified current. Tool search is real: `tool_search_tool_regex_20251119` /
+`tool_search_tool_bm25_20251119`, with `defer_loading: true` on deferred tools, returning
+`tool_search_tool_result`. It has a genuine advantage I had not credited — **it appends
+tool schemas rather than swapping them, preserving the prompt cache**, where adding or
+removing tools mid-session otherwise invalidates it. Constraint: the search tool itself
+must not be deferred and at least one tool must stay non-deferred, or the API returns 400.
+
+But it is **Anthropic-API-specific**: it requires the model and host to support it, and
+whether `defer_loading` can be applied to tools arriving through an `mcp_toolset` entry is
+**not something this evaluation could confirm** — treat it as unverified rather than
+assumed. Media Center is explicitly multi-provider, so tool search cannot be the primary
+mechanism.
+
+**Server splitting is protocol-level and portable**, which is why it ranks first at
+comparable cost. Mode-scoped registration (§6.3) plus the `CORE_MODULES` and
+`texture-lighting` splits below deliver the same outcome for every client.
+
+`CORE_MODULES` is unconditional and carries 40 tools:
 
 | module | tools | shot mode? |
 |---|---|---|
@@ -317,27 +426,54 @@ template for the rest.
 | `viewport` | 5 | yes |
 | `animation` | 6 | yes |
 
-`core-shared` (24) and `core-authoring` (16). Note `lighting` is not a bundle — it is
-`texture-lighting` (`bundles.py:29`), which must also split so shot mode gets lighting
+Split into `core-shared` (24) and `core-authoring` (16). `lighting` is also not a bundle —
+it is `texture-lighting` (`bundles.py:29`), which must split so shot mode gets lighting
 without the texture-authoring surface.
 
-**3. A typed gateway for the fat tail.** Three stable tools —
-`list_capabilities(domain, query)`, `describe_capability(name)`,
+#### Lever 5 — MCP Resources — **ADOPT, narrowly**
+
+The server currently exposes **one `@mcp.prompt()`** (`asset_creation_strategy`,
+`prompts.py:6`) and **zero `@mcp.resource()`**. Everything else is a Tool.
+
+Honest assessment of the ceiling: `SERVER_INSTRUCTIONS` is only ~944 tokens and is sent
+once per session, so moving it saves little. The real fit is **catalog content this design
+is about to add** — canon entity listings, preset catalogs, episode baselines. Those are
+static, enumerable reference data that a client can fetch on demand; as tools they would
+add schemas to every session's `tools/list` for data most sessions never read.
+
+Portability: **fully portable** — Resources are an MCP protocol primitive.
+
+#### Priority order
+
+By context-saving per unit of engineering, portable levers first:
+
+1. **Mode scoping + `CORE_MODULES`/`texture-lighting` splits** (Lever 4) — removes 57% of
+   payload for shot work; mechanism already exists in `bundles.py`; portable.
+2. **Schema diet on the shot-path heavies** (Lever 1) — `camera`, `lighting`, `scene`,
+   `rendering`; proven technique; portable; required because scoping alone misses budget.
+3. **Resources for catalog data** (Lever 5) — small now, prevents a new class of bloat as
+   canon and presets land; portable.
+4. **Skills for workflow prose** (Lever 3) — improves Phase 1 immediately, trims
+   docstrings for everyone, but Claude-only so never load-bearing.
+5. **Typed gateway** (below) — third-priority fallback for the long tail.
+6. **Tool search** (Lever 4) — revisit only if Media Center turns out to be Claude-only.
+7. **PTC** — unavailable.
+
+#### The typed gateway
+
+Three stable tools — `list_capabilities(domain, query)`, `describe_capability(name)`,
 `invoke_capability(name, args)` — expose the remainder on demand.
 
 **The gateway dispatches only to typed, schema-validated capabilities. It never accepts
 Python source.** Server-side validation is preserved; what is lost is *decode-time*
-constraint, since `args` advertises as an unconstrained object and providers that constrain
-generation against the schema cannot do so. The honest framing: **the gateway defers cost
-for tools never used in a session and saves nothing for tools that are** — a described
-capability's schema lands in context anyway, plus a full inference turn. It is lazy loading,
-and its win is proportional to unused surface. That is why it ranks third, behind schema
-dieting and mode scoping.
+constraint, since `args` advertises as an unconstrained object. The honest framing: **the
+gateway defers cost for tools never used in a session and saves nothing for tools that
+are** — a described capability's schema lands in context anyway, plus a full inference
+turn. Its win is proportional to unused surface.
 
 Naming: the addon handshake already uses `capabilities` for handler names
 (`server_core.py:1156`, gated in `connection.py:187`). The gateway must not reuse that term
-in the protocol.
-
+in the protocol — see §6.3 and Appendix D.
 ### 6.6 Shot recipe — reproducibility
 
 Each intent-layer call appends a structured entry — tool, arguments, resolved canon
@@ -527,10 +663,10 @@ plugin being the prototype.
 | Phase | Content | Gate |
 |---|---|---|
 | **0 — Spike** | Plugin ↔ MCP loop on a worker thread with queue + persistent timer. Prove no deadlock; measure round-trip. Throwaway. | Blender does not hang on first tool call |
-| **1 — Demo** | Plugin (agent loop, UI panel, credentials). One canon character + one location, hand-built. `LocalMirrorResolver`. `blend` preset provider only. Six tools: `link_canon`, `apply_preset`, `set_shot_camera`, `place_character`, `compute_consistency_fingerprint`, `diff_consistency`. Extractor + hasher for `asset`, `material`, `color`, `format`. | An artist builds two shots; a deliberate drift is caught and a legitimate change is not |
+| **1 — Demo** | Plugin (agent loop, UI panel, credentials). One canon character + one location, hand-built. `LocalMirrorResolver`. `blend` preset provider only. Six tools: `link_canon`, `apply_preset`, `set_shot_camera`, `place_character`, `compute_consistency_fingerprint`, `diff_consistency`. Extractor + hasher for `asset`, `material`, `color`, `format`. A `blender-mcp-authoring` Skill for cross-tool workflow guidance (§6.5 Lever 3). | An artist builds two shots; a deliberate drift is caught and a legitimate change is not |
 | **2 — Enforcement** | Addon mode guard. Baselines, exceptions, `assert_consistency`, `publish_shot`. `load_post` digest re-check. `transaction.py` library tracking. `shot_recipe` recording. | A shot cannot be published inconsistent, from any client configuration |
 | **3 — Portability** | `CORE_MODULES` and `texture-lighting` splits; schema diet on the 20 heaviest; typed gateway; `StudioAssetResolver`; `recipe` and `captured` providers; `audit_episode`. | Generic MCP client gets a shot-mode payload under 60K tokens and completes a shot |
-| **4 — Hosted** | Session model, connection router, concurrency. | Media Center drives a shot end to end |
+| **4 — Hosted** | Session model, connection router, concurrency. **Transport is done** (`ee25ffc`); this phase is orchestration only. | Media Center drives a shot end to end |
 
 The Docker work already on `docker-blender` moves headless closer than revision 1 assumed;
 Phase 3's audit and batch-upgrade runners depend on it, so that branch is on the critical
@@ -549,6 +685,11 @@ path rather than parallel to it.
 | 7 | Collapse the plugin↔MCP loop locally? | **No.** |
 | 8 | Port upstream's `safe_mode.py`? | **No** — it guards a deleted tool. Port its threat model (§12). |
 | 9 | Generative identity conditioning? | **Blocked on §3.** Specified in §7, unfunded until the render path is decided. |
+| 10 | Consolidation (Lever 1)? | **Adopt** — `camera`/`lighting`/`rendering`; keep destructive members split per CLAUDE.md gating. |
+| 11 | Programmatic Tool Calling? | **Reject** — verified still incompatible with MCP tools. Declarative batch fallback **deferred**, never imperative scripting. |
+| 12 | Skills? | **Adopt for Phase 1**, never load-bearing — Claude-only, useless to Media Center's other providers. |
+| 13 | Tool search vs. server splitting? | **Splitting** — portable. Tool search deferred: Anthropic-specific, and `defer_loading` on `mcp_toolset` is unverified. |
+| 14 | MCP Resources? | **Adopt narrowly** — for canon/preset catalog data, not for `SERVER_INSTRUCTIONS` (~944 tokens, poor return). |
 
 ## 16. Deferred
 
@@ -628,13 +769,59 @@ working tree on `docker-blender`, which lacks the two `perf:` commits **and has 
 `bundles.py` at all** — its `tools/__init__.py` imports every submodule unconditionally, so
 every process there advertises 285 tools (~394K tokens) regardless of
 `BLENDER_MCP_TOOLSETS`. All figures in this revision were re-measured against `main` with
-the imported source asserted. See §18.
+the imported source asserted. See Appendix C.
 
-## Appendix C — Note for the `docker-blender` branch
+## Appendix C — `docker-blender` branch status
 
-`docker-blender` branched from `b1c7037`, before bundle selection existed. On that branch
-the Docker image ships a server that registers all 285 tools (~394K tokens) with no way to
-scope it. Since the hosted deployment is the case where context matters most and the client
-is least controllable, `docker-blender` should be rebased onto `main` — or at minimum take
-`bundles.py` and the two `perf:` commits — before the container is used for anything
-beyond local testing.
+Re-verified 2026-09-11 (second check; the branch is moving quickly).
+
+`docker-blender` branched from `b1c7037`, **before bundle selection existed**. Its
+`tools/__init__.py` imports every submodule unconditionally and it has no `bundles.py`, so
+a server started from that container registers all 285 tools (~394K tokens) regardless of
+`BLENDER_MCP_TOOLSETS`. Since the hosted deployment is where context matters most and the
+client is least controllable, the branch should take `bundles.py` and the two `perf:`
+commits — or rebase onto `main` — before the container is used beyond local testing.
+
+**What it does have, and what this design got wrong about it.** An earlier revision of this
+analysis stated that `BLENDERMCP_TRANSPORT` was documented in the branch README but not
+implemented. **That was measured at `75a7abf` and is no longer true** — and it was always a
+claim about a branch in flight rather than a defect:
+
+| Capability | Evidence |
+|---|---|
+| Streamable HTTP transport | `ee25ffc`; `cli.py:16-18` (env vars), `cli.py:96` (`mcp.run(transport="streamable-http")`) |
+| Transport unit tests | `tests/server/test_cli_transport.py` — defaults, overrides, bad-port fallback, `sse` rejection |
+| Remote-box container rig | `d185e00`, `tests/test_docker_rig.py` |
+| Loopback binding + readiness | `89c6a93` |
+| Pinned Blender version, locked deps | `998d523`, `93ebdf7` |
+
+Consequence for §14: **Phase 4 needs no transport work.** Remote hosting is closer than
+revision 2 assumed, and the remaining Phase 4 scope is session management, the connection
+router, and concurrency.
+
+**Process note.** Two claims in this document have now been wrong because a branch advanced
+between measurement and writing. Any statement here about `docker-blender` should be read
+as "as of the commit cited," and re-checked before it is acted on.
+
+## Appendix D — GitNexus impact analysis
+
+Run 2026-09-11 after re-indexing (`analyze --index-only`; the prior index was stale at
+`a1f6175`, orphaned by the branch split). Revision 2 proposed changes to `bundles.py`,
+`transaction.py` and `server_core.py` **without** this analysis, which CLAUDE.md requires;
+this appendix closes that gap.
+
+| Symbol | Index verdict | Text-search confirmation | Assessment |
+|---|---|---|---|
+| `resolve_toolset_modules` | LOW — 0 processes, 0 modules | — | Genuinely low. The `CORE_MODULES` split (§6.5) is contained. |
+| `drain_command_queue` | **UNKNOWN** — "No callers resolved" | **8 references** — `server_core.py:183,184,195,196,267`; `tests/server/test_threading.py:130,175,225` | **False negative.** It is a `bpy.app.timers` callback passed by reference, which produces no call edge — precisely the case CLAUDE.md says not to read as safe. Real risk is moderate, and `test_threading.py:225` asserts registration. |
+| `_build_command_handlers` | LOW — 1 module, with "2 call sites dropped at index time" | **9 references**, incl. `server_core.py:899`, **`:1156` (handshake `capabilities`)**, and 7 test files | **Understated.** The mode guard (§6.3) touches the protocol handshake surface. See the constraint recorded in §6.3. |
+
+**No HIGH or CRITICAL findings.** The material result is not a risk score but the handshake
+coupling: `_build_command_handlers` serves both dispatch and capability advertisement, and
+the mode guard must touch only the former.
+
+**Methodological note.** Two of three symbols were under-reported by the graph, in both
+cases because the caller reaches the symbol through a reference class the index does not
+record (a callback passed to `bpy.app.timers.register`, a method called on a
+locally-constructed receiver). For a codebase this callback-heavy, graph verdicts are a
+starting point and the text search is not optional.
