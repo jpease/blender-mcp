@@ -20,7 +20,13 @@
 > **Revision 2.3** closes §3 — the file output is `.blend` plus rendered files, with USD
 > possible — adds the delivery contract (§8.1), scopes §7 out (§5.1), and hardens vendor
 > agnosticism into a requirement, which demotes Skills to a thin pointer and drops tool
-> search from the roadmap. **No blocking questions remain.**
+> search from the roadmap.
+>
+> **Revision 2.4 records a second adversarial review (Appendix E) that found three FATAL
+> issues. Most of its findings are OPEN and a revision 3 is required before this document
+> is planned against.** Corrected here: Lever 1's verdict and arithmetic, the shot-mode
+> budget gap (77K, not 65K), two `main`-vs-`docker-blender` citation errors, Appendix D's
+> overstated finding, and the claim that no blocking questions remain — which was false.
 
 ---
 
@@ -57,7 +63,7 @@ largest tools are **22% of all bytes**:
 
 **Schema size, not tool count, is the dominant term.** The two `perf:` commits on `main`
 cut `manage_modifiers` from 72,410 B to 2,419 B and reduced the full `all` payload by
-221,105 B (~61K tokens, 18.5%). That work attacked the right axis and should continue.
+221,105 B (~61K tokens, **15.8%** of the pre-change payload). That work attacked the right axis and should continue.
 
 These remain one problem: the 285 tools exist because the agent derives every result from
 primitives. An agent that links canon and applies a preset needs neither the modeling
@@ -152,9 +158,9 @@ consistent.
 | Rollback does not track `libraries` | `addon/transaction.py:17-36` | A failed `link_canon` leaks a library datablock (§11). |
 | **Multiple MCP server processes against one Blender is the documented configuration** | `README.md:243+` — *"Add one MCP server entry per bundle set"* | **A server-process-scoped mode guard is not an invariant** (§6.3). |
 | The addon has no concept of mode; it dispatches anything arriving on `:9876` | `addon/server_core.py:100,476` | Enforcement must live in the addon or the file (§6.3). |
-| A headless Blender container already exists | `docker/blender/{Dockerfile,entrypoint.sh,start_server.py}` | The extractor **can** be CI-tested (§13), and hosting is nearer than revision 1 assumed. |
+| A headless Blender container exists **on `docker-blender` only — not on `main`** | `git ls-tree main -- docker/` is empty; the files are on `docker-blender` | The extractor can be CI-tested **only after that branch merges**, which no phase currently schedules. §13's claim is conditional on a merge, not on today's `main`. |
 | **The MCP client in the hosted path is a headless agent runtime behind an AI gateway, and which runtime is not decided** | Stated topology (§5.1) | Design for an unknown client. Context reduction must work server-side; no `tools/list_changed` reliance. Keeps tool search and Skills off the load-bearing path (§6.5). |
-| **Streamable HTTP transport is implemented and tested** | `docker-blender@ee25ffc`; `cli.py:16-18,96`; `tests/server/test_cli_transport.py`; `tests/test_docker_rig.py` | Remote hosting needs no transport work. Phase 4 is smaller than revision 2 assumed. |
+| Streamable HTTP transport is implemented and tested — **on `docker-blender` only** | `docker-blender@ee25ffc`, whose `cli.py` carries it; `main`'s `cli.py` is 51 lines with no transport | Phase 4 needs no *new* transport work, but it does need the merge. `main` today is stdio-only. |
 | The handshake advertises handler names as `capabilities`, and the server gates on it | `server_core.py:1156`; `connection.py:187` | **The mode guard must not filter this set** — a mode-dependent handshake would make protocol negotiation non-deterministic (§6.3, Appendix D). |
 
 ### 5.1 Hosted topology
@@ -443,15 +449,40 @@ Per family, worst first:
 | `nd` | 10 | 14,607 | ~4K | 1,460 | no |
 
 Two readings. The five simulation/rigging families are **57% of the payload** and none are
-shot work — mode scoping removes them wholesale. But `camera` + `lighting` + `scene` +
-`rendering` alone are **~65K tokens**, already over budget before the intent layer is
-added. Shot mode cannot hit 60K by scoping alone; the heavy shot-path tools must also
-shrink. `mesh` (1,715 B/tool) and `nd` (1,460) prove the schemas *can* be lean.
+shot work — mode scoping removes them wholesale. But the shot-mode set is worse than an
+earlier revision stated: `core-shared` (24) + `camera` + `lighting` + `rendering` is
+**67 tools / 277,083 B / ~77K tokens** — a **22% overshoot** of the 60K budget before any
+of the fifteen §8 intent tools is registered. (The ~65K figure previously quoted here
+omitted `core-shared`.) Scoping alone cannot reach budget; the shot-path schemas must also
+shrink, and by far more than consolidation delivers. `mesh` (1,715 B/tool) and `nd` (1,460)
+prove the schemas *can* be lean.
 
-#### Lever 1 — Consolidation with discriminated inputs — **ADOPT**
+`retopology` is also missing from the table below: 27 tools / 96,777 B / ~27K tokens, the
+sixth-largest family.
 
-Already proven here: `manage_modifiers` went 72,410 B → 2,419 B, and the two `perf:`
-commits cut 221,105 B (~61K tokens, 18.5%) from the full payload.
+#### Lever 1 — Consolidation with discriminated inputs — **CONTESTED; see Appendix E #1**
+
+> **Revision 2.3's verdict here was wrong and is retained only so the error is legible.**
+> The precedent cited was not consolidation, and consolidation does not produce the saving
+> claimed. Both facts are measured in Appendix E #1. The corrected lever is *variant
+> scoping*, not consolidation. Do not plan against this section until revision 3.
+
+The cited precedent — `manage_modifiers` 72,410 B → 2,419 B — was **type erasure**, not
+consolidation: commit `0b052ec` changes `modifier: ModifierSpecInput` to
+`modifier: dict[str, Any]` and validates internally with a `TypeAdapter`. Measured,
+a discriminated union of the same 30 variants costs 37,263 B against 39,729 B for the
+variants as separate schemas — a **6.2%** saving, because `oneOf` still serializes every
+variant.
+
+The two `perf:` commits did cut 221,105 B (~61K tokens, **15.8%** of the pre-change
+payload) — but by erasure, which §6.5's own gateway section condemns as advertising "an
+unconstrained object."
+
+**The corrected lever: scope the variant set, not the type.** That union is ~10K tokens for
+one tool. If shot mode needs six modifier types rather than thirty, exposing six typed
+variants costs ~2K tokens — an ~80% cut with typing intact, and strictly better than either
+consolidation (6%) or erasure (loses wire-level shape). Erasure and the gateway are then
+reserved for surfaces whose variant set is genuinely open-ended.
 
 | Consolidate | Keep split | Why |
 |---|---|---|
@@ -540,7 +571,7 @@ comparable cost. Mode-scoped registration (§6.3) plus the `CORE_MODULES` and
 | `animation` | 6 | yes |
 
 Split into `core-shared` (24) and `core-authoring` (16). `lighting` is also not a bundle —
-it is `texture-lighting` (`bundles.py:29`), which must split so shot mode gets lighting
+it is `texture-lighting` (`bundles.py:30`), which must split so shot mode gets lighting
 without the texture-authoring surface.
 
 #### Lever 5 — MCP Resources — **ADOPT, narrowly**
@@ -873,8 +904,22 @@ path rather than parallel to it.
    with that project now**, not in Phase 3.
 4. **Is `format` (fps, resolution) episode-global or shot-level?** Treated as enforced
    per-shot against the episode baseline; confirm with editorial.
-5. ~~**§3 — the render path.**~~ — **answered 2026-09-11** (§3, §8.1). No blocking
-   questions remain; the open items above are scoping details, not gates.
+5. ~~**§3 — the render path.**~~ — **answered 2026-09-11** (§3, §8.1).
+
+**"No blocking questions remain" was wrong** (Appendix E #11). Q1 and Q3 above each state
+that they block the §6.1 pinning guarantee; relabelling them "scoping details" did not make
+them scoping details. Both are external dependencies with no named owner and no date, and
+Q9 below now outranks them.
+
+9. **Can a stable `content_digest` be computed at all?** Appendix E #8: the mechanism is
+   cited six times as what makes pinning safe and is defined nowhere, and the obvious
+   implementation may not work because `.blend` serialization may not be reproducible
+   across saves. **A spike is running.** Until it returns, every pinning claim in §6.1,
+   the `asset` facet in §6.2, open-time re-verification, and the §5.2 node-local cache are
+   conditional. This is the highest-priority open question in the document.
+10. **Does the variant-scoping lever actually reach budget?** Appendix E #1 corrected the
+    mechanism but not the arithmetic: shot mode is 77K against a 60K budget that is itself
+    underived (#13). Revision 3 must either derive the budget or change the surface.
 6. ~~**Blender lifecycle in the hosted path**~~ — **answered 2026-09-11**: job-per-request
    baseline, possibly TTL-cached, with a warm pool for performance. Design consequences in
    §5.2. Not yet fixed, but the variants share the constraints that matter.
@@ -983,12 +1028,63 @@ this appendix closes that gap.
 | `drain_command_queue` | **UNKNOWN** — "No callers resolved" | **8 references** — `server_core.py:183,184,195,196,267`; `tests/server/test_threading.py:130,175,225` | **False negative.** It is a `bpy.app.timers` callback passed by reference, which produces no call edge — precisely the case CLAUDE.md says not to read as safe. Real risk is moderate, and `test_threading.py:225` asserts registration. |
 | `_build_command_handlers` | LOW — 1 module, with "2 call sites dropped at index time" | **9 references**, incl. `server_core.py:899`, **`:1156` (handshake `capabilities`)**, and 7 test files | **Understated.** The mode guard (§6.3) touches the protocol handshake surface. See the constraint recorded in §6.3. |
 
-**No HIGH or CRITICAL findings.** The material result is not a risk score but the handshake
-coupling: `_build_command_handlers` serves both dispatch and capability advertisement, and
-the mode guard must touch only the former.
+**No HIGH or CRITICAL findings.** The practical result is that `_build_command_handlers`
+serves both dispatch and capability advertisement, so the mode guard must touch only the
+former.
+
+**Corrected 2026-09-11 (Appendix E #5).** This appendix originally presented that coupling
+as newly discovered. It is not: `_build_command_handlers` already varies with scene state —
+`server_core.py:774,784,793` gate up to 17 handlers on `blendermcp_use_polyhaven`,
+`_sketchfab` and `_nd`, which are `bpy.types.Scene` properties saved in and restored from
+the `.blend`. **Opening a different file already shifts the advertised capability set, and
+the server's cached handshake already goes stale when it does.** The guard-at-dispatch
+conclusion stands; the novelty claimed for it does not, and the pre-existing staleness is
+an unlogged defect in its own right.
 
 **Methodological note.** Two of three symbols were under-reported by the graph, in both
 cases because the caller reaches the symbol through a reference class the index does not
 record (a callback passed to `bpy.app.timers.register`, a method called on a
 locally-constructed receiver). For a codebase this callback-heavy, graph verdicts are a
 starting point and the text search is not optional.
+
+## Appendix E — Second adversarial review (2026-09-11)
+
+Reviewed against `main @ b95e7a6`. **Most findings are OPEN.** They are recorded here
+rather than dispositioned because the first review's dispositions (Appendix B) were
+themselves criticized — correctly — for documenting findings rather than fixing them. A
+finding is marked FIXED below only where the spec text actually changed.
+
+Every finding marked "verified" was independently reproduced by this author, not accepted
+on the reviewer's word.
+
+| # | Sev | Finding | Verified? | Status |
+|---|---|---|---|---|
+| 1 | **FATAL** | Lever 1 refuted. The `manage_modifiers` precedent is type erasure (`0b052ec`: `ModifierSpecInput` → `dict[str, Any]`), not consolidation. A discriminated union of 30 variants costs 37,263 B vs 39,729 B split — **6.2%**, not 97%. The spec ranks the working mechanism (erasure/gateway) 5th and the non-working one 2nd. | **Reproduced exactly** | §6.5 Lever 1 corrected to *variant scoping*; priority order still needs revision 3 |
+| 2 | **FATAL** | The §6.3 mode guard has no definable refusal set. Its residual candidate — writes to linked canon — is already refused by Blender's RNA and checked in 8 places here. A `.blend` has no file-level property (only per-`Scene`), and the spec picks no default for new/foreign/hand-edited files, so "unbypassable" is false. | Guard hook point and `_READ_ONLY_COMMANDS` verified | **OPEN** — enumerate the refusal set as concrete `cmd_type` names, or delete the guard and say the fingerprint is the only enforcement |
+| 3 | **FATAL** | Phases 0–2 depend on four subsystems with zero code: library **linking** (1 `libraries.load`, `link=False`), library **overrides** (0), `bpy.app.handlers` (0), and **`save_mainfile`/`open_mainfile` (0)**. This server cannot open or save a `.blend`, which §8.1 declares a required deliverable. | **Verified by grep** | **OPEN** — the file-lifecycle handler family is the real critical path and appears in no phase |
+| 4 | SERIOUS | §5's table, headed "verified by execution against `main`", cited `docker/blender/*` (absent from `main`) and `cli.py:96` (`main`'s is 51 lines). Third wrong-branch error by this author. | **Verified** | **FIXED** — both rows corrected; §13 and §14 claims now stated as conditional on a merge no phase schedules |
+| 5 | SERIOUS | Appendix D's "material finding" describes behavior the system already has: capabilities already vary per `.blend` via scene flags (`:774,784,793`). | **Verified** | **FIXED** — Appendix D corrected |
+| 6 | SERIOUS | `transform` is worse than the `rig` facet it replaced. Pose-bone scale is writable from shot mode (`handlers/animation.py:767`) and invisible to a root-transform check. World-space bounds are also frame-dependent by design. | Verified | **OPEN** — facet must be scale-only, read the evaluated depsgraph at a declared frame, and descend to pose bones |
+| 7 | SERIOUS | §6.2 still insufficient. Drift passing all six enforced facets: `hide_render`, view-layer `material_override`, constraints on the override root, drivers, pose-bone scale, `unit_settings.scale_length`, and **render determinism** (samples, denoiser, seed, compute device). | Verified against registered tools | **OPEN** — render determinism is a category error, not an omission: renders are a required deliverable and a warm pool is heterogeneous hardware |
+| 8 | SERIOUS | `content_digest` is cited 6× as what makes pinning safe and is **never defined**. `.blend` files may not be byte-reproducible across saves. | Absence verified; non-determinism **unmeasured by the reviewer** | **SPIKE RUNNING** — see §17 Q9 |
+| 9 | SERIOUS | The Blender command socket has **no authentication** (0 hits for auth/token/hmac) yet dispatches 278 handlers, writes caller-supplied paths, and makes outbound calls. Not among §12's five invariants. | **Verified** | **OPEN** — dominant risk for the pooled multi-tenant deployment in §5.2 |
+| 10 | SERIOUS | §8.1's USD caveat is backwards. `export_custom_properties` is default **True** and already used in this repo (`cloth/exporting.py:191`); `USDHook` (4.1+) covers layer metadata; and `UsdModelAPI.assetInfo` ships `identifier`/`name`/`version` with a pluggable resolver — i.e. USD already standardizes what §6.1 invents. The real lossiness is **materials** (`generate_preview_surface` approximates to ~5 node types), which threatens the *enforced* `material` facet. | Repo side verified; **doc claims not independently verified** | **OPEN** — rewrite decision 20; confront whether `assetInfo` + Ar replaces §6.1 rather than threatens it |
+| 11 | MOD | "No blocking questions remain" is contradicted by §17's own text (Q1 "blocks §6.1's pinning guarantee"; Q3 "pinning breaks at the root"). Q1–Q4 were relabelled, not answered. | Verified | **OPEN** |
+| 12 | MOD | 18.5% should be **15.8%** (divided by the post-reduction payload); shot mode is 77K not 65K; `retopology` missing from the family table; `scene` stays whole in shot mode carrying `reset_scene` and `remove_scene_objects`. | **Verified** | **PARTLY FIXED** — percentages and shot-mode arithmetic corrected; `scene` split still open |
+| 13 | MOD | The 60K budget is asserted, never derived. Decision 5's "2 KB/tool" implies 108 tools against a 67+15 shot surface — two targets in one decision. | Verified | **OPEN** |
+| 14 | MOD | §7 was convenience-scoped. §3 still says building §6 alone and calling it an end-to-end guarantee is "the most expensive available mistake"; decision 18 is a transfer with no named recipient. | Verified — both sentences are in the document | **OPEN** |
+| 15 | MOD | Job-per-request breaks three assumptions: cold resolvers per job, sidecar path/ownership/retention unspecified, and pool load-or-reset requires the missing file-lifecycle code (#3). | Verified | **OPEN** |
+| 16 | MOD | §8.1's manifest is insufficient: missing engine build/device, samples/denoiser/seed, **facet-schema version**, external texture hashes, AOV inventory, exception expiry, and any tamper-evidence. | Verified | **OPEN** |
+| 17 | MINOR | `bundles.py:29` is `retopology`; `texture-lighting` is `:30`. | Verified | **FIXED** |
+
+**Absent entirely** (no finding number; nothing in the spec addresses these): who fingerprints
+the canon library itself when it is republished; the repair workflow when `assert_consistency`
+fails on 40 shots at once; cost in tokens, container-minutes and sidecar storage; concurrency
+on the canon and shot registries; and facet-schema evolution invalidating stored baselines.
+
+**Sound, per the reviewer:** §10 plugin architecture (verified verbatim against
+`server_core.py:177,183-184,250,383-385`), §6.4 preset providers, and the pure-hasher /
+`bpy`-extractor split in §13. Spot-checked citations that hold: `transaction.py` lacking
+`libraries`, the exposure/gamma path, `polyhaven.py:362`, `connection.py:187`, one prompt
+and zero resources, 285 tools, schemas at 76–77.5%, top-20 at 23%, the 57% sim-family share,
+and the per-family byte table within 1.5%.
