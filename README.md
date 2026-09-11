@@ -274,6 +274,18 @@ Store Sketchfab API keys in **Edit → Preferences → Add-ons → Blender MCP**
 
 Configure host and port with `BLENDER_HOST` and `BLENDER_PORT` environment variables (defaults: `localhost`, `9876`).
 
+**Client transport**
+
+The server speaks stdio by default, which is what every client config above launches. To host it beside a Blender on another machine instead, serve streamable HTTP and point the client at its URL:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `BLENDERMCP_TRANSPORT` | `stdio` | `stdio`, or `http` for streamable HTTP. |
+| `BLENDERMCP_HTTP_HOST` | `127.0.0.1` | Address the HTTP server binds. |
+| `BLENDERMCP_HTTP_PORT` | `8000` | Port the HTTP server listens on; the endpoint is `/mcp`. |
+
+HTTP mode has no authentication. It rejects requests whose `Host` header isn't loopback (DNS-rebinding protection), but anything that can reach the port can drive Blender, so keep it on a trusted host.
+
 The server retries its first connection, so starting Blender and your MCP client in either order works:
 
 | Variable | Default | Purpose |
