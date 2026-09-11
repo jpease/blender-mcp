@@ -504,8 +504,66 @@ Applied presets stamp provenance (`preset_id`, version, params) on what they cre
 
 ### 6.5 Context budget — lever evaluation
 
-The target is **a shot-mode payload under 60K tokens (~216 KB)**, not a tool count.
-Revision 1's "~40 tools" was the wrong unit: 40 tools is already 34K tokens today.
+#### The budget, derived
+
+Revision 2.3 asserted 60K tokens without derivation (Appendix E #13). It is not an
+independent number: **it is a function of the smallest client context window we commit to
+supporting**, which — under vendor agnosticism (decision 17) — is a decision nobody has
+made.
+
+`tools/list` is paid once per session, on the first turn, and must coexist with the system
+prompt, the conversation, scene-inspection results (which are not small), and reasoning. A
+defensible ceiling is **25–30% of the floor context**:
+
+| Floor context | @25% | @30% |
+|---|---|---|
+| 128K | 32K | 38K |
+| **200K** | 50K | **60K** |
+| 1M | 250K | 300K |
+
+**60K is exactly "200K floor at 30%."** That is the assumption the number encodes, and it
+should be stated rather than inherited. If a 128K client must be supported, the budget is
+~38K and the analysis below does not reach it by any combination of levers. **See §17 Q11.**
+
+#### The gap, and what actually closes it — measured
+
+Where the bytes are inside shot mode: **`$defs` are 41% of the payload** (116,093 B) and the
+top 10 tools are 39%. The fat is nested model definitions, not parameter count — which is
+what makes scoping effective and consolidation ineffective (Appendix E #1).
+
+| Step | Tools | Bytes | Tokens |
+|---|---|---|---|
+| Current shot mode | 67 | 281,237 | **78.1K** |
+| − `create_geometry_object`, `remove_scene_objects`, `reset_scene` from `scene` | 64 | 252,417 | 70.1K |
+| − `camera.rigs` (6 tools) → gateway | 58 | 233,816 | 64.9K |
+| − light **construction** (4 tools) → replaced by presets | 54 | 198,977 | 55.3K |
+| − engine scoping (drop Eevee variants) | 54 | 193,777 | **53.8K** |
+| **+ 15 intent tools** | 69 | — | **see below** |
+
+Each removal is justified by the design, not by byte-chasing: shot assembly does not
+*create* geometry (its 16 `$defs` are geometry-type variants — 25,279 B alone), does not
+reset or delete scenes, reaches camera rigs rarely enough for a gateway round trip, and
+gets its lighting from presets (§6.4) rather than by constructing lights by hand.
+
+**Whether the budget is met turns on the intent layer's own schema discipline:**
+
+| Intent-tool assumption | 15 tools cost | Shot mode total | vs 60K |
+|---|---|---|---|
+| At the median existing tool (3,141 B) | 47,115 B / 13.1K | 240,892 B / **66.9K** | **over by 6.9K** |
+| At ~1,000 B — simple signatures | 15,000 B / 4.2K | 208,777 B / **58.0K** | **fits** |
+
+`link_canon(canon_id, version, alias)` is three strings; it has no business costing what the
+median existing tool costs. **So the intent layer's 1 KB-per-tool ceiling is not a nicety —
+it is the difference between meeting the budget and missing it**, and it must be a
+reviewed constraint on §8, not an aspiration.
+
+#### Bundle splits this requires
+
+Beyond `CORE_MODULES` and `texture-lighting` (below), `scene` must split — it currently
+carries `create_geometry_object` (authoring) plus `reset_scene` and `remove_scene_objects`
+(destructive) into every shot-mode process, which also makes the destructive-operation story
+in §6.3 incoherent. `camera` must separate `camera.rigs`, and `lighting` must separate
+construction from inspection and environment.
 
 **Where the bytes actually are** (measured on `main`, `BLENDER_MCP_TOOLSETS=all`):
 
@@ -1216,7 +1274,7 @@ on the reviewer's word.
 
 | # | Sev | Finding | Verified? | Status |
 |---|---|---|---|---|
-| 1 | **FATAL** | Lever 1 refuted. The `manage_modifiers` precedent is type erasure (`0b052ec`: `ModifierSpecInput` → `dict[str, Any]`), not consolidation. A discriminated union of 30 variants costs 37,263 B vs 39,729 B split — **6.2%**, not 97%. The spec ranks the working mechanism (erasure/gateway) 5th and the non-working one 2nd. | **Reproduced exactly** | §6.5 Lever 1 corrected to *variant scoping*; priority order still needs revision 3 |
+| 1 | **FATAL** | *(arithmetic now resolved — see §6.5; the mechanism correction stands)* Lever 1 refuted. The `manage_modifiers` precedent is type erasure (`0b052ec`: `ModifierSpecInput` → `dict[str, Any]`), not consolidation. A discriminated union of 30 variants costs 37,263 B vs 39,729 B split — **6.2%**, not 97%. The spec ranks the working mechanism (erasure/gateway) 5th and the non-working one 2nd. | **Reproduced exactly** | §6.5 Lever 1 corrected to *variant scoping*; priority order still needs revision 3 |
 | 2 | **FATAL** | The §6.3 mode guard has no definable refusal set. Its residual candidate — writes to linked canon — is *"already refused by Blender's RNA."* | **Partly REFUTED by spike.** `ob.location.x = 5.0` on a linked, non-editable object **succeeds and persists** — Blender's Python API does not block writes to linked data. The override-drift half is **confirmed** (material swap and transform both succeed). | **PARTLY RESOLVED** — the guard has a real refusal set (`library is not None`), now stated in §6.3 and §9.1. Still open: the per-`Scene` property carrier, and the default for new/foreign/hand-edited files. |
 | 3 | **FATAL** | Phases 0–2 depend on four subsystems with zero code: library **linking**, library **overrides**, `bpy.app.handlers`, and **`save_mainfile`/`open_mainfile`**. This server cannot open or save a `.blend`, which §8.1 declares a required deliverable. | **Verified by grep**, then scoped by spike | **RESOLVED** — specified in §9.1 and scheduled as **Phase 0.5**, the critical path. Spike established that the server survives a file load (module state + persistent timer), that `override_hierarchy_create` is the working API where `override_create()` returns `None`, and that one reentrancy hazard remains untestable headlessly. |
 | 4 | SERIOUS | §5's table, headed "verified by execution against `main`", cited `docker/blender/*` (absent from `main`) and `cli.py:96` (`main`'s is 51 lines). Third wrong-branch error by this author. | **Verified** | **FIXED** — both rows corrected; §13 and §14 claims now stated as conditional on a merge no phase schedules |
@@ -1228,7 +1286,7 @@ on the reviewer's word.
 | 10 | SERIOUS | §8.1's USD caveat is backwards. `export_custom_properties` is default **True** and already used in this repo (`cloth/exporting.py:191`); `USDHook` (4.1+) covers layer metadata; and `UsdModelAPI.assetInfo` ships `identifier`/`name`/`version` with a pluggable resolver — i.e. USD already standardizes what §6.1 invents. The real lossiness is **materials** (`generate_preview_surface` approximates to ~5 node types), which threatens the *enforced* `material` facet. | Repo side verified; **doc claims not independently verified** | **OPEN** — rewrite decision 20; confront whether `assetInfo` + Ar replaces §6.1 rather than threatens it |
 | 11 | MOD | "No blocking questions remain" is contradicted by §17's own text (Q1 "blocks §6.1's pinning guarantee"; Q3 "pinning breaks at the root"). Q1–Q4 were relabelled, not answered. | Verified | **OPEN** |
 | 12 | MOD | 18.5% should be **15.8%** (divided by the post-reduction payload); shot mode is 77K not 65K; `retopology` missing from the family table; `scene` stays whole in shot mode carrying `reset_scene` and `remove_scene_objects`. | **Verified** | **PARTLY FIXED** — percentages and shot-mode arithmetic corrected; `scene` split still open |
-| 13 | MOD | The 60K budget is asserted, never derived. Decision 5's "2 KB/tool" implies 108 tools against a 67+15 shot surface — two targets in one decision. | Verified | **OPEN** |
+| 13 | MOD | The 60K budget is asserted, never derived. Decision 5's "2 KB/tool" implies 108 tools against a 67+15 shot surface — two targets in one decision. | Verified | **RESOLVED** — §6.5 derives it as a function of the floor context window (60K = 200K floor at 30%) and records the floor itself as §17 Q11. The per-tool figure is now a **1 KB ceiling on intent tools specifically**, which the measurement shows is what decides whether the budget is met. |
 | 14 | MOD | §7 was convenience-scoped. §3 still says building §6 alone and calling it an end-to-end guarantee is "the most expensive available mistake"; decision 18 is a transfer with no named recipient. | Verified — both sentences are in the document | **OPEN** |
 | 15 | MOD | Job-per-request breaks three assumptions: cold resolvers per job, sidecar path/ownership/retention unspecified, and pool load-or-reset requires the missing file-lifecycle code (#3). | Verified | **OPEN** |
 | 16 | MOD | §8.1's manifest is insufficient: missing engine build/device, samples/denoiser/seed, **facet-schema version**, external texture hashes, AOV inventory, exception expiry, and any tamper-evidence. | Verified | **OPEN** |
