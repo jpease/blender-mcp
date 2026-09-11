@@ -93,10 +93,15 @@ Consistency there is **identity conditioning** — reference embeddings, adapter
 weights, base-model version, sampler, scheduler, seed, prompt — a second canon of a
 different kind, needing the same versioning rigor as the first.
 
-Under Outcome B this document specifies the *input* half of a two-part problem; §7
-specifies the second half conditionally. **Until this is decided, treat §7 as unfunded
-scope, not absent scope.** Building §6 alone and calling it a consistency guarantee is the
-most expensive available mistake.
+Under Outcome B this document specifies the *input* half of a two-part problem. The second
+half is **out of this project's scope** (§5.1, §7) whoever answers §3 — but it does not
+stop existing. **Building §6 alone and calling it an end-to-end consistency guarantee
+remains the most expensive available mistake**; the guarantee this project can make is
+scoped to the file output, and someone must own the rest.
+
+What §3 still decides for this project is what the file output must *contain* — final
+pixels, or control passes plus the identity binding that lets a downstream step stay
+consistent.
 
 ## 4. Non-goals
 
@@ -152,8 +157,44 @@ What this settles:
   path — even though image bytes now cross the socket (`75a7abf`), a headless Blender may
   have no viewport to capture.
 
-What it does **not** settle: Blender lifecycle (per job, pooled, or persistent), and what
-"Blender file output" contains — see §17 Q6-Q7.
+**Scope of this project within that pipeline.** This design owns the middle three hops:
+
+```
+Media Center  →  AIGW  →  Headless Claude  │  Blender MCP  →  Headless Blender  →  file output  │  →  Media Center
+     └──────── other teams ────────────────┘  └────────── this project ─────────────────────────┘
+```
+
+Everything upstream of the MCP boundary — gateway, runtime selection, prompting, model
+choice — belongs to other teams. Everything downstream of the file output likewise. This
+project is responsible for the contract at both seams: what a client may ask for, and what
+the file output guarantees.
+
+### 5.2 Execution model
+
+Reported 2026-09-11, not yet fixed: **job-per-request as the baseline**, possibly with a
+TTL cache of loaded files, and a warm pool for performance. Consequences that hold across
+all three variants:
+
+- **No long-lived in-memory scene.** The `.blend` on disk is the state carrier, which is
+  why the fingerprint and `shot_recipe` must be written to a sidecar on each intent call
+  rather than only on save (§6.6) — a job that ends without saving otherwise loses them.
+- **Two session models, and the server must assume neither.** The local plugin path
+  (Phases 0-2) is long-lived and interactive; the hosted path is short and batch. Anything
+  that assumes a persistent session breaks one of them.
+- **Cold start is the performance risk, and canon linking is its largest term.** Each job
+  opens a shot and resolves its linked canon libraries. If those resolve across a network
+  mount, per-job cost scales with the number of linked entities. The canon library should
+  be node-local or cached, and `content_digest` (§6.1) is what makes a local cache safe to
+  trust.
+- **A pooled worker must fully load the target file before serving a job.** The mode guard
+  (§6.3) is keyed on the open `.blend`; a worker reused across jobs while still holding a
+  previous file would evaluate the guard against the wrong mode. Pool reuse requires an
+  explicit load-or-reset step, not an assumption that the previous job left the process
+  clean.
+- **`audit_episode` and the batch upgrade path (§6.1) fit this model naturally** — both are
+  already headless batch jobs rather than interactive operations.
+
+What remains unsettled: what "Blender file output" contains — see §17 Q7.
 
 ## 6. Architecture
 
@@ -525,9 +566,19 @@ belong in this record, which is the natural home for them.
 saved. A crash loses the provenance the design says a shot carries. Mitigation: write both
 to a sidecar on each intent call, not only on save.
 
-## 7. Generative identity conditioning — conditional on §3 Outcome B
+## 7. Generative identity conditioning — out of scope, contract only
 
-Specified here so it is visible and costed, not built until §3 resolves.
+**Resolved by scope, not by §3.** This project's responsibility ends at the Blender file
+output (§5.1). Identity conditioning operates on or after that output, so it belongs to
+whichever team owns the generative step — regardless of how §3 is answered. §3 still
+determines what the file output must *contain*; it no longer determines whether this
+project builds a second canon.
+
+What remains this project's obligation is the **seam**: if the downstream step is
+generative, a shot must record which identity its passes were built for, so the two canons
+can be joined later. That is one field in `shot_recipe`, not a subsystem.
+
+The shape below is retained as the contract to hand to that team, not as work to schedule.
 
 If Blender feeds a generative model, a second canon is required, versioned with the same
 rigor as the first:
@@ -547,9 +598,11 @@ class IdentityRef:
 This adds a `generative` fingerprint facet (enforced), binds a shot's control passes to the
 `IdentityRef` that consumed them, and extends `shot_recipe` with seeds and prompts.
 
-**It is a peer of §6, not an appendix to it.** Under Outcome B, §6 without §7 proves the
-input is consistent while the output drifts. Two shots can pass every facet in §6.2 and
-still show different faces.
+**It is a peer of §6, owned elsewhere.** Under Outcome B, §6 without this proves the input
+is consistent while the output drifts: two shots can pass every facet in §6.2 and still
+show different faces. That risk does not disappear because the work sits with another
+team — it becomes a handoff to manage rather than a subsystem to build, and this document's
+consistency claims must be stated as scoped to the Blender file output.
 
 ## 8. Intent layer
 
@@ -725,12 +778,16 @@ path rather than parallel to it.
 | 6 | Gateway role? | Third priority, behind schema dieting and mode scoping; typed only; win proportional to unused surface. |
 | 7 | Collapse the plugin↔MCP loop locally? | **No.** |
 | 8 | Port upstream's `safe_mode.py`? | **No** — it guards a deleted tool. Port its threat model (§12). |
-| 9 | Generative identity conditioning? | **Blocked on §3.** Specified in §7, unfunded until the render path is decided. |
+| 9 | Generative identity conditioning? | **Out of scope** — superseded by decision 18. §3 still governs what the file output contains. |
 | 10 | Consolidation (Lever 1)? | **Adopt** — `camera`/`lighting`/`rendering`; keep destructive members split per CLAUDE.md gating. |
 | 11 | Programmatic Tool Calling? | **Reject** — verified still incompatible with MCP tools. Declarative batch fallback **deferred**, never imperative scripting. |
 | 12 | Skills? | **Adopt for Phase 1**, never load-bearing — Claude-only, useless to Media Center's other providers. |
 | 13 | Tool search vs. server splitting? | **Splitting** — portable. Tool search deferred: Anthropic-specific, and `defer_loading` on `mcp_toolset` is unverified. |
 | 14 | MCP Resources? | **Adopt narrowly** — for canon/preset catalog data, not for `SERVER_INSTRUCTIONS` (~944 tokens, poor return). |
+| 15 | Project scope within the pipeline? | **MCP → headless Blender → file output** (§5.1). Upstream and downstream hops belong to other teams; this project owns the contract at both seams. |
+| 16 | Hosted execution model? | **Job-per-request baseline**, TTL cache and warm pool as performance options. The server must assume neither this nor the plugin's long-lived session (§5.2). |
+| 17 | May the hosted client be non-Claude? | **Leave it open.** Portability stays the tiebreak in §6.5; revisit only if it becomes a blocker. |
+| 18 | Does §7 belong to this project? | **No** — resolved by scope (§5.1), independent of §3. This project owns one `shot_recipe` field, not a second canon. |
 
 ## 16. Deferred
 
@@ -756,13 +813,15 @@ path rather than parallel to it.
 4. **Is `format` (fps, resolution) episode-global or shot-level?** Treated as enforced
    per-shot against the episode baseline; confirm with editorial.
 5. **§3 — the render path.** The largest open question in this document.
-6. **Blender lifecycle in the hosted path** — one process per job, a warm pool, or
-   persistent per artist? Gates the router and session model (§16, Phase 4).
+6. ~~**Blender lifecycle in the hosted path**~~ — **answered 2026-09-11**: job-per-request
+   baseline, possibly TTL-cached, with a warm pool for performance. Design consequences in
+   §5.2. Not yet fixed, but the variants share the constraints that matter.
 7. **What does "Blender file output" contain** — a `.blend`, rendered frames, control
-   passes, or all three? Determines whether §3 is already answered in practice.
-8. **Can the hosted MCP client be non-Claude?** If AIGW may route to a non-Claude runtime,
-   portability stops being a preference and becomes a requirement, and the §6.5 priority
-   order is locked rather than provisional.
+   passes, or all three? **Inquiry in progress.** The single highest-value open question
+   remaining: it likely answers §3 in practice, and it defines the downstream seam this
+   project is responsible for.
+8. ~~**Can the hosted MCP client be non-Claude?**~~ — **answered 2026-09-11**: left open
+   deliberately. Portability remains the tiebreak in §6.5; revisit only if it blocks.
 
 ---
 
