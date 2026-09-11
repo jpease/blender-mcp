@@ -22,6 +22,11 @@
 > agnosticism into a requirement, which demotes Skills to a thin pointer and drops tool
 > search from the roadmap.
 >
+> **Revision 2.5** resolves the review's highest-priority risk: a spike confirms
+> `content_digest` is viable as SHA-256 over immutable published bytes (§6.1), so pinning
+> is no longer conditional. The two FATAL findings about the context lever and the missing
+> file-lifecycle code remain open.
+>
 > **Revision 2.4 records a second adversarial review (Appendix E) that found three FATAL
 > issues. Most of its findings are OPEN and a revision 3 is required before this document
 > is planned against.** Corrected here: Lever 1's verdict and arithmetic, the shot-mode
@@ -895,6 +900,7 @@ context — the prompt-injection vector upstream's `safe_mode.py` names.
 | Mode guard | Out-of-mode refused at dispatch; regression test that no mutating handler is undeclared; **two processes with different toolsets cannot bypass it** | No |
 | Bundle splits | `shot` registers the expected set; payload stays under the §6.5 budget; no transitive leakage | No |
 | Path allowlist | Traversal, symlink, outside-root rejection; Poly Haven `.blend` path | No |
+| `content_digest` | Stable across open, link and copy; publish rejects `compress=True`; re-save of a published version refused (invariant 2); dependency manifest covers unpacked textures (invariant 4) | Partly — open/link/copy need the container |
 | Gateway dispatch | Arguments validated identically to native tools | No |
 | **Extractor correctness** | **Runs in the existing `docker/blender` container** against real scenes | **In container** |
 
@@ -977,12 +983,13 @@ that they block the §6.1 pinning guarantee; relabelling them "scoping details" 
 them scoping details. Both are external dependencies with no named owner and no date, and
 Q9 below now outranks them.
 
-9. **Can a stable `content_digest` be computed at all?** Appendix E #8: the mechanism is
-   cited six times as what makes pinning safe and is defined nowhere, and the obvious
-   implementation may not work because `.blend` serialization may not be reproducible
-   across saves. **A spike is running.** Until it returns, every pinning claim in §6.1,
-   the `asset` facet in §6.2, open-time re-verification, and the §5.2 node-local cache are
-   conditional. This is the highest-priority open question in the document.
+9. ~~**Can a stable `content_digest` be computed at all?**~~ — **answered 2026-09-11 by
+   spike.** Yes: SHA-256 over immutable published bytes, ~7 ms, no Blender needed to
+   verify. Specified in §6.1. Pinning, the `asset` facet, open-time re-verification and the
+   node-local cache are no longer conditional. Two residual items are now design
+   requirements rather than open questions: canon assets must **pack textures or publish a
+   digested dependency manifest** (§6.1 invariant 4), and a version upgrade is a
+   **re-publish, not an in-place re-save** (invariant 3).
 10. **Does the variant-scoping lever actually reach budget?** Appendix E #1 corrected the
     mechanism but not the arithmetic: shot mode is 77K against a 60K budget that is itself
     underived (#13). Revision 3 must either derive the budget or change the surface.
@@ -1132,7 +1139,7 @@ on the reviewer's word.
 | 5 | SERIOUS | Appendix D's "material finding" describes behavior the system already has: capabilities already vary per `.blend` via scene flags (`:774,784,793`). | **Verified** | **FIXED** — Appendix D corrected |
 | 6 | SERIOUS | `transform` is worse than the `rig` facet it replaced. Pose-bone scale is writable from shot mode (`handlers/animation.py:767`) and invisible to a root-transform check. World-space bounds are also frame-dependent by design. | Verified | **OPEN** — facet must be scale-only, read the evaluated depsgraph at a declared frame, and descend to pose bones |
 | 7 | SERIOUS | §6.2 still insufficient. Drift passing all six enforced facets: `hide_render`, view-layer `material_override`, constraints on the override root, drivers, pose-bone scale, `unit_settings.scale_length`, and **render determinism** (samples, denoiser, seed, compute device). | Verified against registered tools | **OPEN** — render determinism is a category error, not an omission: renders are a required deliverable and a warm pool is heterogeneous hardware |
-| 8 | SERIOUS | `content_digest` is cited 6× as what makes pinning safe and is **never defined**. `.blend` files may not be byte-reproducible across saves. | Absence verified; non-determinism **unmeasured by the reviewer** | **SPIKE RUNNING** — see §17 Q9 |
+| 8 | SERIOUS | `content_digest` is cited 6× as what makes pinning safe and is **never defined**. `.blend` files may not be byte-reproducible across saves. | **Spike 2026-09-11 (Blender 5.2.1); non-mutation independently reproduced** | **RESOLVED — TRUE BUT IRRELEVANT.** Re-save is non-deterministic (0.03%, heap addresses) but open/link/copy do not mutate, so SHA-256 over immutable published bytes works at ~7 ms. Specified in §6.1 with four invariants. The spike also showed Blender's own change detection is silent for every mutation except failed name resolution — strengthening the case for the mechanism. |
 | 9 | SERIOUS | The Blender command socket has **no authentication** (0 hits for auth/token/hmac) yet dispatches 278 handlers, writes caller-supplied paths, and makes outbound calls. Not among §12's five invariants. | **Verified** | **OPEN** — dominant risk for the pooled multi-tenant deployment in §5.2 |
 | 10 | SERIOUS | §8.1's USD caveat is backwards. `export_custom_properties` is default **True** and already used in this repo (`cloth/exporting.py:191`); `USDHook` (4.1+) covers layer metadata; and `UsdModelAPI.assetInfo` ships `identifier`/`name`/`version` with a pluggable resolver — i.e. USD already standardizes what §6.1 invents. The real lossiness is **materials** (`generate_preview_surface` approximates to ~5 node types), which threatens the *enforced* `material` facet. | Repo side verified; **doc claims not independently verified** | **OPEN** — rewrite decision 20; confront whether `assetInfo` + Ar replaces §6.1 rather than threatens it |
 | 11 | MOD | "No blocking questions remain" is contradicted by §17's own text (Q1 "blocks §6.1's pinning guarantee"; Q3 "pinning breaks at the root"). Q1–Q4 were relabelled, not answered. | Verified | **OPEN** |
