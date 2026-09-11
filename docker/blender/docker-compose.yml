@@ -15,5 +15,28 @@ services:
       # hardcodes /output - a local (non-container) Blender simply leaves this
       # unset and reports its own defaults instead.
       BLENDERMCP_OUTPUT_ROOTS: /output
+    # Bound to loopback deliberately. The BlenderMCP protocol has no
+    # authentication, so publishing on 0.0.0.0 would let anyone who can reach
+    # this host drive Blender - reading files through inspect_render_output and
+    # writing them through render_scene. Change this only for a host you trust
+    # the whole network of.
     ports:
-      - "9876:9876"
+      - "127.0.0.1:9876:9876"
+    healthcheck:
+      # A TCP connect proves nothing here: Docker accepts on the published port
+      # before Blender is listening inside the container, so this does a real
+      # MCP ping round-trip instead. `docker compose up --wait` then blocks
+      # until the server genuinely answers.
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import socket
+          s = socket.create_connection(("127.0.0.1", 9876), timeout=3)
+          s.sendall(b'{"id": "healthcheck", "type": "ping", "params": {}}\n')
+          raise SystemExit(0 if s.recv(256) else 1)
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 3s

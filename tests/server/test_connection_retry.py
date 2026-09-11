@@ -17,7 +17,7 @@ from blender_mcp.server import connection as connection_module
 
 
 class _Connection:
-    """Fails `fail_times` connect attempts, then succeeds."""
+    """Fails `fail_times` connect attempts, then succeeds and answers commands."""
 
     def __init__(self, fail_times):
         self.attempts = 0
@@ -26,6 +26,10 @@ class _Connection:
     def connect(self):
         self.attempts += 1
         return self.attempts > self._fail_times
+
+    def send_command(self, _command, *_args, **_kwargs):
+        # Once connected this Blender is ready, so the readiness probe passes.
+        return {}
 
 
 class _Sleeper:
@@ -136,3 +140,115 @@ def test_get_blender_connection_still_raises_when_every_attempt_fails(monkeypatc
         assert blender.attempts == 2
     finally:
         connection_module._blender_connection = None
+
+
+# ---------------------------------------------------------------------------
+# A socket that accepts but does not answer
+# ---------------------------------------------------------------------------
+#
+# Docker publishes a container's port before the process inside is listening,
+# so connect() succeeds instantly and the plain connect retry never fires. The
+# two situations need different budgets: nothing listening should fail fast,
+# while a socket that accepts but cannot answer is something mid-startup and
+# worth waiting on.
+
+
+class _AcceptsButSilent:
+    """Connects immediately, but only answers commands after `ready_after` probes."""
+
+    def __init__(self, ready_after):
+        self.attempts = 0
+        self.probes = 0
+        self._ready_after = ready_after
+
+    def connect(self):
+        self.attempts += 1
+        return True
+
+    def ready(self):
+        self.probes += 1
+        return self.probes > self._ready_after
+
+
+def test_waits_out_a_socket_that_accepts_before_blender_answers() -> None:
+    blender = _AcceptsButSilent(ready_after=4)
+    sleeper = _Sleeper()
+
+    ok = connection_module.connect_with_retry(
+        blender,
+        attempts=2,
+        delay=0.5,
+        sleep=sleeper,
+        probe=lambda c: c.ready(),
+        startup_attempts=10,
+    )
+
+    assert ok is True
+    assert blender.probes == 5
+    assert len(sleeper.delays) == 4
+
+
+def test_an_accepting_socket_does_not_consume_the_refused_budget() -> None:
+    """The 2-attempt budget is for 'nothing listening', not for a slow boot."""
+    blender = _AcceptsButSilent(ready_after=3)
+
+    ok = connection_module.connect_with_retry(
+        blender, attempts=1, delay=0, sleep=_Sleeper(), probe=lambda c: c.ready(), startup_attempts=10
+    )
+
+    assert ok is True
+
+
+def test_gives_up_once_the_startup_budget_is_exhausted() -> None:
+    blender = _AcceptsButSilent(ready_after=99)
+    sleeper = _Sleeper()
+
+    ok = connection_module.connect_with_retry(
+        blender, attempts=3, delay=0.5, sleep=sleeper, probe=lambda c: c.ready(), startup_attempts=4
+    )
+
+    assert ok is False
+    assert blender.probes == 4
+    assert len(sleeper.delays) == 3
+
+
+def test_nothing_listening_still_fails_fast_even_with_a_large_startup_budget() -> None:
+    blender = _Connection(fail_times=99)
+    sleeper = _Sleeper()
+
+    ok = connection_module.connect_with_retry(
+        blender, attempts=2, delay=0.5, sleep=sleeper, probe=lambda _c: True, startup_attempts=50
+    )
+
+    assert ok is False
+    assert blender.attempts == 2, "a refused connection must not draw on the startup budget"
+
+
+def test_startup_attempts_setting_defaults_and_reads_the_environment(monkeypatch) -> None:
+    monkeypatch.delenv("BLENDER_STARTUP_ATTEMPTS", raising=False)
+    assert connection_module.startup_attempts() == connection_module.DEFAULT_STARTUP_ATTEMPTS
+
+    monkeypatch.setenv("BLENDER_STARTUP_ATTEMPTS", "9")
+    assert connection_module.startup_attempts() == 9
+
+
+def test_readiness_probe_reports_false_when_the_command_fails() -> None:
+    class _Silent:
+        def send_command(self, *_a, **_k):
+            raise ConnectionResetError("peer reset")
+
+    assert connection_module.connection_is_ready(_Silent()) is False
+
+
+def test_readiness_probe_reports_true_when_blender_answers() -> None:
+    class _Answering:
+        def __init__(self):
+            self.commands = []
+
+        def send_command(self, command, *_a, **_k):
+            self.commands.append(command)
+            return {}
+
+    blender = _Answering()
+    assert connection_module.connection_is_ready(blender) is True
+    assert blender.commands == ["ping"]

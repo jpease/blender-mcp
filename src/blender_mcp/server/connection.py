@@ -30,6 +30,14 @@ DEFAULT_PORT = 9876
 DEFAULT_CONNECT_ATTEMPTS = 3
 DEFAULT_CONNECT_RETRY_DELAY = 0.5
 
+# A separate, much larger budget for a socket that accepts but cannot answer
+# yet. Docker publishes a container's port before Blender is listening inside
+# it, so connect() succeeds immediately and only a real command reveals that
+# Blender is still booting - measured at ~9s for this rig. Nothing listening at
+# all stays on the small budget above, so a genuinely absent Blender still
+# fails in about a second instead of hanging for half a minute.
+DEFAULT_STARTUP_ATTEMPTS = 40
+
 _addon_handshake = None
 _addon_handshake_checked = False
 _addon_handshake_lock = threading.Lock()
@@ -319,6 +327,21 @@ def connect_attempts() -> int:
         return DEFAULT_CONNECT_ATTEMPTS
 
 
+def startup_attempts() -> int:
+    """
+    Read how long to keep waiting on a socket that accepts but stays silent.
+
+    Returns:
+        int: Configured attempt count, never below 1.
+
+    """
+    try:
+        return max(1, int(os.getenv("BLENDER_STARTUP_ATTEMPTS", DEFAULT_STARTUP_ATTEMPTS)))
+    except ValueError:
+        logger.warning("Ignoring unparseable BLENDER_STARTUP_ATTEMPTS; using %s", DEFAULT_STARTUP_ATTEMPTS)
+        return DEFAULT_STARTUP_ATTEMPTS
+
+
 def connect_retry_delay() -> float:
     """
     Read how long to wait between initial-connection attempts, in seconds.
@@ -334,8 +357,37 @@ def connect_retry_delay() -> float:
         return DEFAULT_CONNECT_RETRY_DELAY
 
 
+def connection_is_ready(connection: BlenderConnection) -> bool:
+    """
+    Report whether a connected Blender actually answers a command.
+
+    An accepted socket is not proof of readiness when a port forwarder sits in
+    front of Blender, so this asks for a real reply. `ping` is used because it
+    is the cheapest command every addon build exposes.
+
+    Args:
+        connection: A connected BlenderConnection.
+
+    Returns:
+        bool: True when Blender answered, False when it did not.
+
+    """
+    try:
+        connection.send_command("ping")
+    except Exception as exc:
+        logger.info("Socket accepted but Blender is not answering yet: %s", exc)
+        return False
+    return True
+
+
 def connect_with_retry(
-    connection: BlenderConnection, *, attempts: int, delay: float, sleep: Callable[[float], None] | None = None
+    connection: BlenderConnection,
+    *,
+    attempts: int,
+    delay: float,
+    sleep: Callable[[float], None] | None = None,
+    probe: Callable[[BlenderConnection], bool] | None = None,
+    startup_attempts: int = 0,
 ) -> bool:
     """
     Attempt `connection.connect()` until it succeeds or the attempts run out.
@@ -351,19 +403,40 @@ def connect_with_retry(
         delay: Seconds to wait between attempts.
         sleep: Injectable sleep, for tests. Resolved at call time so patching
             `time.sleep` on this module works too.
+        probe: Optional readiness check run after connecting. Without it an
+            accepted socket counts as success, which is wrong behind a port
+            forwarder that accepts before Blender is listening.
+        startup_attempts: Separate budget for the case where the socket is
+            accepted but `probe` says Blender is not answering. Kept apart from
+            `attempts` so a slow boot can be waited out without making an
+            absent Blender slow to report.
 
     Returns:
-        bool: True once connected, False if every attempt failed.
+        bool: True once connected and ready, False if every attempt failed.
 
     """
     sleeper = time.sleep if sleep is None else sleep
-    for attempt in range(1, attempts + 1):
-        if connection.connect():
+    unreachable_left = attempts
+    starting_left = startup_attempts
+
+    while True:
+        connected = connection.connect()
+        if connected and (probe is None or probe(connection)):
             return True
-        if attempt < attempts:
-            logger.info("Blender not reachable (attempt %s/%s); retrying in %ss", attempt, attempts, delay)
-            sleeper(delay)
-    return False
+
+        if connected:
+            starting_left -= 1
+            remaining = starting_left
+            reason = "Blender is accepting connections but has not finished starting"
+        else:
+            unreachable_left -= 1
+            remaining = unreachable_left
+            reason = "Blender is not reachable"
+
+        if remaining <= 0:
+            return False
+        logger.info("%s; retrying in %ss (%s attempts left)", reason, delay, remaining)
+        sleeper(delay)
 
 
 def get_blender_connection():
@@ -391,7 +464,13 @@ def get_blender_connection():
         host = os.getenv("BLENDER_HOST", DEFAULT_HOST)
         port = int(os.getenv("BLENDER_PORT", DEFAULT_PORT))
         _blender_connection = BlenderConnection(host=host, port=port)
-        if not connect_with_retry(_blender_connection, attempts=connect_attempts(), delay=connect_retry_delay()):
+        if not connect_with_retry(
+            _blender_connection,
+            attempts=connect_attempts(),
+            delay=connect_retry_delay(),
+            probe=connection_is_ready,
+            startup_attempts=startup_attempts(),
+        ):
             logger.error("Failed to connect to Blender")
             _blender_connection = None
             raise Exception("Could not connect to Blender. Make sure the Blender addon is running.")

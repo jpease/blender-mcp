@@ -80,3 +80,32 @@ def test_compose_declares_the_mounted_output_root() -> None:
     assert re.search(rf"-\s*\./output:{re.escape(root)}\b", text), (
         f"BLENDERMCP_OUTPUT_ROOTS={root} is not the path ./output is mounted at"
     )
+
+
+def test_compose_publishes_the_socket_on_loopback_only() -> None:
+    """
+    The MCP protocol has no authentication.
+
+    Publishing as "9876:9876" binds every host interface, which puts scene
+    control plus file read/write in reach of anyone on the network.
+    """
+    published = re.findall(r'-\s*"([^"]*:)?(\d+):9876"', COMPOSE.read_text())
+    assert published, "expected the compose file to publish the MCP port"
+    for host_part, _container_port in published:
+        assert host_part in {"127.0.0.1:", "localhost:"}, (
+            f"MCP port published as {host_part or ''}<port>:9876, which binds all interfaces; bind it to 127.0.0.1"
+        )
+
+
+def test_compose_healthcheck_does_a_real_protocol_round_trip() -> None:
+    """
+    Docker accepts on a published port before the container is listening.
+
+    A connect-only check would report healthy while Blender is still starting,
+    so the healthcheck has to send a command and require a reply.
+    """
+    text = COMPOSE.read_text()
+    assert "healthcheck:" in text, "compose needs a healthcheck so `up --wait` can gate on readiness"
+    healthcheck = text.split("healthcheck:", 1)[1]
+    assert '"type": "ping"' in healthcheck, "the healthcheck should send a real MCP command"
+    assert "recv" in healthcheck, "the healthcheck should require a reply, not just a connection"

@@ -99,6 +99,7 @@ In Blender's 3D viewport, press `N` → open the **BlenderMCP** tab → click **
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
+  - [Running Blender in Docker](#running-blender-in-docker)
 
 ---
 
@@ -241,6 +242,8 @@ blender-mcp install-addon
 
 In Blender: **Preferences → Add-ons** → disable and re-enable **Interface: Blender MCP** (or restart Blender).
 
+Keep the addon in step with the server. The server reports a mismatch on connect rather than failing: an older addon still works, but loses features that depend on newer addon support — screenshots and render inspection fall back to writing through a shared filesystem, which only works when the server and Blender are on the same machine.
+
 ---
 
 ## Usage
@@ -271,13 +274,25 @@ Store Sketchfab API keys in **Edit → Preferences → Add-ons → Blender MCP**
 
 Configure host and port with `BLENDER_HOST` and `BLENDER_PORT` environment variables (defaults: `localhost`, `9876`).
 
+The server retries its first connection, so starting Blender and your MCP client in either order works:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `BLENDER_CONNECT_ATTEMPTS` | `3` | Tries when nothing is listening at all. Kept small so a Blender that simply isn't running is reported in about a second. Set to `1` for the old fail-immediately behaviour. |
+| `BLENDER_STARTUP_ATTEMPTS` | `40` | Tries when the socket is accepted but Blender has not answered yet — the case where Blender is still starting behind a port forwarder. |
+| `BLENDER_CONNECT_RETRY_DELAY` | `0.5` | Seconds between tries. |
+
+**Output locations**
+
+`BLENDERMCP_OUTPUT_ROOTS` (colon-separated) names directories Blender should offer first when asked where it can write renders and exports. The addon reports these through its handshake, along with its own temp and home directories, so the agent knows which paths are real. Leave it unset for a local Blender; it exists for setups where Blender's filesystem is not yours, such as the Docker rig below.
+
 ---
 
 ## Troubleshooting
 
 **Connection issues**
 
-Ensure the Blender addon server is running. Don't run `blender-mcp` manually outside your MCP client. If the first command fails, try again—it often works after that. Restart both Claude and Blender if problems persist.
+Ensure the Blender addon server is running. Don't run `blender-mcp` manually outside your MCP client. The first connection is retried automatically while Blender finishes starting, so a failure here usually means the addon server was never started (or is on another port). Restart both Claude and Blender if problems persist.
 
 **Timeout errors**
 
@@ -323,6 +338,30 @@ This uses the `setuptools` backend declared in `pyproject.toml`'s `[build-system
 ### Installing the addon from a local checkout
 
 See [Installing the Blender Addon](#installing-the-blender-addon) above — point **Preferences → Add-ons → Install…** at `src/blender_mcp/bundled/addon/` in your checkout instead of a downloaded release.
+
+### Running Blender in Docker
+
+`docker/blender/` builds a headless Blender (AlmaLinux + Xvfb) that runs the addon without a GUI session, for exercising the server end to end.
+
+```bash
+cd docker/blender
+docker compose up -d --wait      # --wait blocks until Blender actually answers
+```
+
+The server then connects with no configuration, since the container publishes the addon's default port.
+
+```bash
+docker compose logs -f           # Blender and addon output
+docker compose down
+```
+
+Notes worth knowing before relying on it:
+
+- **The port is published on `127.0.0.1` only.** The protocol has no authentication, so anything that can reach the port can drive Blender, including reading and writing files. Don't widen the binding on a network you don't control.
+- **Use `--wait`.** Docker accepts connections on a published port before Blender is listening behind it, so a plain `up -d` returns while the container is still starting. The compose healthcheck does a real protocol round-trip, and `--wait` gates on it. Without `--wait` the server's own startup retry covers the gap, just less precisely.
+- **Paths are the container's, not yours.** Renders and exports must target a path that exists inside the container. `./output` is mounted at `/output` and advertised through `BLENDERMCP_OUTPUT_ROOTS`, so anything written there shows up on the host.
+- **The repo is mounted read-only** at `/repo`, and the addon is copied out of it on every start — so addon edits need only a `docker compose restart`, not a rebuild. Tools that try to write into the project tree will fail.
+- **Choosing a Blender version:** `docker compose build --build-arg BLENDER_MAJOR_MINOR=5.1 --build-arg BLENDER_VERSION=5.1.1`. Both must be set together; the image records the version so the addon is installed where that Blender looks for it.
 
 ---
 
