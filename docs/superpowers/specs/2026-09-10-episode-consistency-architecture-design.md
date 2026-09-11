@@ -22,6 +22,12 @@
 > agnosticism into a requirement, which demotes Skills to a thin pointer and drops tool
 > search from the roadmap.
 >
+> **Revision 2.8** replaces the context *target* with a policy — minimize rather than fill,
+> since unneeded bytes buy nothing — keeps 50K (a 200K floor at 25%) as a ceiling rather
+> than a goal, and adds the §13.1 task-success bar as the stopping rule that makes
+> minimization safe. Also corrects a standing error: `tools/list` occupies context on
+> **every** turn, not once per session.
+>
 > **Revision 2.7** derives the context budget from the floor context window instead of
 > asserting it, and measures the five scoping moves taking shot mode from 78.1K to 53.8K
 > tokens — closing the last FATAL's arithmetic. The budget is met only if intent tools hold
@@ -509,7 +515,28 @@ Applied presets stamp provenance (`preset_id`, version, params) on what they cre
 
 ### 6.5 Context budget — lever evaluation
 
-#### The budget, derived
+#### The budget policy — minimize, don't fill
+
+**Decided 2026-09-11: there is no target size. The surface should be as small as still
+works well; unneeded bytes buy nothing.** That reframes the budget from a quota to spend
+into a ratchet, and it has three consequences worth stating plainly:
+
+1. **The context-window arithmetic below yields a *ceiling*, not a goal.** Fitting it is
+   necessary and not sufficient. A design that lands at 50K when 35K would work equally
+   well has failed, even though it "met budget."
+2. **Every scoping move in the ladder is taken on its merits**, whether or not a number
+   forces it. `create_geometry_object` does not belong in shot mode because shot assembly
+   does not create geometry — not because it happens to cost 25,279 B.
+3. **Deferred surface is nearly free**, which raises the value of the gateway (§6.5) and of
+   Resources (Lever 5) above where an arithmetic-driven design would rank them.
+
+**"Smallest that still works well" needs a stopping rule, or it becomes "smallest."**
+Without one, cutting continues past the point where the agent can no longer find the tool
+it needs or construct its arguments — and that failure is silent at the payload level and
+expensive at the task level. The rule: **cut, then measure against a task-success bar.**
+See §13.1.
+
+#### The ceiling, derived
 
 Revision 2.3 asserted 60K tokens without derivation (Appendix E #13). It is not an
 independent number: **it is a function of the smallest client context window we commit to
@@ -527,8 +554,26 @@ defensible ceiling is **25–30% of the floor context**:
 | 1M | 250K | 300K |
 
 **60K is exactly "200K floor at 30%."** That is the assumption the number encodes, and it
-should be stated rather than inherited. If a 128K client must be supported, the budget is
-~38K and the analysis below does not reach it by any combination of levers. **See §17 Q11.**
+should be stated rather than inherited.
+
+**A correction that matters here.** An earlier revision called `tools/list` a cost "paid
+once per session, on the first turn." It is not: the API is stateless, tool definitions are
+re-sent every request, and they **occupy** context on every turn. Prompt caching makes them
+cheap in dollars, not in tokens. The percentages above are therefore *permanent occupancy*,
+which argues for the stingier end of the range.
+
+**Adopted ceiling: 50K — a 200K floor at 25%.** 200K is where every current frontier model
+sits; 128K binds only for older or smaller models, and routing a long, tool-heavy shot
+assembly to one is a poor choice on its own merits. 30% was rejected because the measured
+projection (58.0K) would fit it with no margin at all, and a budget with no margin is a
+coincidence rather than a plan.
+
+**The ladder below reaches 53.8K before intent tools and ~58.0K after — still above the
+50K ceiling.** Under the minimize policy that is not a failure to be explained away but
+the current position on a ratchet that should keep turning: the next candidates are the
+remaining heavy animation tools (`manage_nla_tracks` 6,955 B, `manage_animation_driver`
+5,741 B, `bake_evaluated_animation` 4,950 B) and the two large camera configuration tools,
+all of which are gateway-reachable.
 
 #### The gap, and what actually closes it — measured
 
@@ -1057,6 +1102,44 @@ otherwise test the hasher against an assumption about what `bpy` emits.
 Still manual: linked-override behavior across Blender versions, preset rollback in a live
 session, and the §10 threading rule.
 
+### 13.1 The task-success bar — the stopping rule for minimization
+
+§6.5 sets the surface to "as small as still works well." That is the right policy and it is
+unbounded without a definition of *works well*, because over-cutting fails **silently at the
+payload level and expensively at the task level**: the payload keeps shrinking and looks
+like progress while the agent quietly loses the ability to find a tool or construct its
+arguments.
+
+**The bar.** A small fixed set of representative shot-assembly tasks — on the order of a
+dozen, not a suite — each with a machine-checkable outcome:
+
+| Task shape | Pass condition |
+|---|---|
+| Link a canon character and place it | Correct canon id and version linked; object at the requested transform |
+| Apply a lighting preset to a shot | Preset provenance stamped; expected lights created |
+| Set a camera to a named framing | Camera exists with the requested lens and target |
+| Assemble a two-character shot from a brief | Both linked at pinned versions; fingerprint computes |
+| Reproduce a shot's fingerprint and diff it against a baseline | Diff matches the expected facet rows |
+| Catch a deliberately introduced drift | `assert_consistency` fails on the right facet and subject |
+
+**Metrics that decide whether a cut is kept:** task completion rate, first-try tool-argument
+validity (how often a call is accepted without a retry), and turns-to-completion. The first
+two are what a shrinking surface actually damages.
+
+**Procedure.** Cut, run the bar, keep the cut if the metrics hold. Stop when they degrade.
+This makes minimization a measured ratchet rather than an aesthetic preference, and it gives
+the gateway an empirical boundary: surface whose removal costs nothing on the bar belongs
+behind it, and surface whose removal costs completion rate does not.
+
+**It also settles the one question Appendix E #1 left open.** Whether `dict[str, Any]`
+erasure meaningfully hurts first-try argument validity — the fork between the typed line and
+the gateway — is an empirical question nobody has measured. The same bar measures it: run it
+with `manage_modifiers` typed and erased, and compare. Until then, §6.5's preference for
+variant scoping over erasure is reasoned, not evidenced.
+
+**Cost discipline.** Each run exercises a model against a real Blender, so the bar must stay
+small enough to run on every scoping change. A dozen tasks is a budget, not a starting point.
+
 ## 14. Phasing
 
 Revision 1's Phase 1 was too large and, notably, **contained no plugin** — despite the
@@ -1068,7 +1151,7 @@ plugin being the prototype.
 | **0.5 — File lifecycle** | The §9.1 handler family: `open_shot`, `save_shot`, `reset_session`, `link_canon_library`, `create_override`, `list_libraries`, `reload_library`, `relocate_library`, `load_post` hook. `transaction.py` gains `libraries`. **This is the critical path — everything below depends on it and revision 2 omitted it entirely.** | A shot file can be opened, a canon library linked, an override created, and the result saved and reopened with the link intact |
 | **1 — Demo** | Plugin (agent loop, UI panel, credentials). One canon character + one location, hand-built. `LocalMirrorResolver`. `blend` preset provider only. Six tools: `link_canon`, `apply_preset`, `set_shot_camera`, `place_character`, `compute_consistency_fingerprint`, `diff_consistency`. Extractor + hasher for `asset`, `material`, `color`, `format`. Workflow guidance authored as portable MCP Resources, with a thin `blender-mcp-authoring` Skill pointing at them (§6.5 Lever 3). | An artist builds two shots; a deliberate drift is caught and a legitimate change is not |
 | **2 — Enforcement** | Addon mode guard. Baselines, exceptions, `assert_consistency`, `publish_shot`. `load_post` digest re-check. `transaction.py` library tracking. `shot_recipe` recording. | A shot cannot be published inconsistent, from any client configuration |
-| **3 — Portability** | Bundle splits — `CORE_MODULES`, `texture-lighting`, **`scene`** (authoring + destructive out), **`camera.rigs`**, **lighting construction**; schema diet on the 20 heaviest; typed gateway; `StudioAssetResolver`; `recipe` and `captured` providers; `audit_episode`. | Generic MCP client gets a shot-mode payload **measured** under the §6.5 budget and completes a shot |
+| **3 — Portability** | **The §13.1 task-success bar first** — minimization is unsafe without it. Then bundle splits (`CORE_MODULES`, `texture-lighting`, **`scene`**, **`camera.rigs`**, **lighting construction**); schema diet on the 20 heaviest; typed gateway; `StudioAssetResolver`; `recipe` and `captured` providers; `audit_episode`. | Payload ratcheted down as far as the bar allows, under the 50K ceiling, with the bar's metrics holding |
 | **4 — Hosted** | Session model, connection router, concurrency. **Transport is done** (`ee25ffc`); this phase is orchestration only. | Media Center drives a shot end to end |
 
 The Docker work already on `docker-blender` moves headless closer than revision 1 assumed;
@@ -1083,7 +1166,7 @@ path rather than parallel to it.
 | 2 | Float or pin canon versions? | **Pin** — with open-time re-verification, episode audit, and a batch upgrade path. |
 | 3 | Enforcement mechanism? | **Addon-side guard keyed on the open `.blend`.** Reversed from revision 1: process-scoped guards are not invariants. |
 | 4 | Is drift structurally prevented? | **No.** Detected. Revision 1's claim was false (§6.3). |
-| 5 | Context target? | **Tokens, not tool count**, derived from the floor context window: 60K = a 200K floor at 30% (§6.5). Intent tools carry a **1 KB ceiling**, which measurement shows decides whether the budget is met. The floor itself is §17 Q11. |
+| 5 | Context target? | **Minimize, don't fill.** No target size — the surface should be as small as still works well (§6.5). A 50K ceiling (200K floor at 25%) is the safety bound, not the goal. Intent tools carry a **1 KB ceiling**. The stopping rule is the task-success bar in §13.1, without which "smallest" cuts into capability. |
 | 6 | Gateway role? | Third priority, behind schema dieting and mode scoping; typed only; win proportional to unused surface. |
 | 7 | Collapse the plugin↔MCP loop locally? | **No.** |
 | 8 | Port upstream's `safe_mode.py`? | **No** — it guards a deleted tool. Port its threat model (§12). |
@@ -1141,11 +1224,12 @@ Q9 below now outranks them.
     by measurement** (§6.5). Five scoping moves take shot mode 78.1K → 53.8K. The budget is
     met *only if* intent tools average ~1 KB; at the median existing tool size they cost
     13.1K and the total lands 6.9K over. The 1 KB ceiling on §8 is now a hard constraint.
-11. **What is the minimum client context window we commit to supporting?** The 60K budget
-    is "200K floor at 30%" (§6.5). A 128K floor implies ~38K, which **no combination of the
-    measured levers reaches**. A product decision, not a technical one, and the last thing
-    gating the context work — vendor agnosticism (decision 17) forbids inferring it from
-    whichever model we happen to use first.
+11. ~~**What is the minimum client context window we commit to supporting?**~~ —
+    **answered 2026-09-11: minimize rather than target.** No fixed floor to fill; the
+    surface should be as small as still works well, since unneeded bytes buy nothing. A
+    200K-floor-at-25% **ceiling** of 50K is adopted as the safety bound (§6.5). This
+    converts the remaining question from "what number?" to "what is the stopping rule?",
+    answered by the task-success bar in §13.1.
 6. ~~**Blender lifecycle in the hosted path**~~ — **answered 2026-09-11**: job-per-request
    baseline, possibly TTL-cached, with a warm pool for performance. Design consequences in
    §5.2. Not yet fixed, but the variants share the constraints that matter.
