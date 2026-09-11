@@ -16,6 +16,11 @@
 > **Revision 2.2** records the hosted topology (§5.1) and corrects the client constraint:
 > the MCP client is a headless agent runtime behind an AI gateway, not Media Center, and
 > which runtime is undecided.
+>
+> **Revision 2.3** closes §3 — the file output is `.blend` plus rendered files, with USD
+> possible — adds the delivery contract (§8.1), scopes §7 out (§5.1), and hardens vendor
+> agnosticism into a requirement, which demotes Skills to a thin pointer and drops tool
+> search from the roadmap. **No blocking questions remain.**
 
 ---
 
@@ -68,7 +73,27 @@ surface nor its schemas.
 4. Ship an artist-facing prototype as a **Blender plugin on a local workstation**, on a
    path where hosting it for Media Center is a deployment change, not a rewrite.
 
-## 3. Scope decision required: what does Blender produce?
+## 3. What Blender produces — answered
+
+**Answered 2026-09-11.** The file output is **`.blend` plus rendered files**, both
+required; **USD is possible but not committed**. Combined with the scope boundary in §5.1,
+this closes the question for this project.
+
+What it settles:
+
+- **Scene-state consistency (§6.2) is the right guarantee**, because scene state determines
+  both deliverables — the `.blend` *is* the state, and the renders are a function of it.
+  The `format` facet (resolution, pixel aspect, fps) is enforced precisely because rendered
+  files ship.
+- **§7 stays out of scope** (§5.1). If a generative step consumes these outputs downstream,
+  its identity conditioning belongs to that team; this project's obligation is the seam.
+- **This document's consistency claim is scoped to the file output** and should be stated
+  that way to anyone consuming it.
+
+The delivery contract this implies is specified in §8.1. The original framing is retained
+below because it explains why the answer matters.
+
+### 3.1 Why this mattered (retained)
 
 **This is not a non-goal.** It determines whether the rest of this document is a
 consistency guarantee or merely a precondition to one. Revision 1 deferred it and claimed
@@ -456,12 +481,18 @@ worth revisiting.
 
 Portability: portable (it is just another MCP tool), but it trades against §12.
 
-#### Lever 3 — Skills — **ADOPT for Phase 1, with eyes open**
+#### Lever 3 — Skills — **ADOPT as a thin pointer only**
 
-Skills are a **host-layer** mechanism (`.claude/skills/`), not part of the MCP server, and
-they help **only Claude Code and Claude-based hosts — not Media Center's other providers**.
-They are nonetheless worth building now, because Phases 0–2 are Claude Code plus your own
-plugin, and the repo already has six `gitnexus-*` skills as a working model.
+**Vendor agnosticism is a stated requirement (decision 17), not a preference.** That
+demotes Skills from where revision 2.1 put them. Skills are a **host-layer** mechanism
+(`.claude/skills/`) that helps only Claude Code and Claude-based hosts, so no workflow
+guidance may live there *first*.
+
+**Write the guidance once, in portable form** — MCP Resources for cross-tool workflow
+content (§6.5 Lever 5) and docstrings for per-tool content — and let a
+`blender-mcp-authoring` Skill be a **thin pointer** into it. That keeps the Phase 1
+accelerator without creating a second source of truth that the hosted path cannot read. A
+Skill that duplicates portable content will drift from it; a Skill that points at it cannot.
 
 | Belongs in a Skill | Belongs in the tool docstring |
 |---|---|
@@ -488,8 +519,9 @@ must not be deferred and at least one tool must stay non-deferred, or the API re
 But it is **Anthropic-API-specific**: it requires the model and host to support it, and
 whether `defer_loading` can be applied to tools arriving through an `mcp_toolset` entry is
 **not something this evaluation could confirm** — treat it as unverified rather than
-assumed. Media Center is explicitly multi-provider, so tool search cannot be the primary
-mechanism.
+assumed. Given that vendor agnosticism is a requirement (decision 17), tool search is **not
+adopted** rather than merely deferred: it may not be the mechanism the budget depends on,
+and building toward it would misdirect effort that portable levers need.
 
 **Server splitting is protocol-level and portable**, which is why it ranks first at
 comparable cost. Mode-scoped registration (§6.3) plus the `CORE_MODULES` and
@@ -631,6 +663,33 @@ contract.
 Plus `audit_episode(episode_id)` (§6.1), which runs headlessly rather than against an
 interactive session.
 
+### 8.1 Delivery contract
+
+A job's output is a **delivery**: an artifact set plus a manifest, produced by
+`publish_shot` and returned across the §5.1 seam.
+
+| Artifact | Status | Notes |
+|---|---|---|
+| `.blend` | **required** | The artist-refinable record. Carries `shot_recipe`, fingerprint, and pinned canon versions. |
+| Rendered files | **required** | Paths, format, colour space, and frame range recorded in the manifest — never inferred by the consumer. |
+| USD | **possible** | Not committed; see the export caveat below. |
+
+The manifest is the seam's contract and must be sufficient on its own: artifact paths and
+checksums, the shot's fingerprint rows, pinned canon `(canon_id, version, content_digest)`
+for every linked entity, applied preset provenance, the Blender version that produced it,
+and any `ConsistencyException` in force. A consumer must never have to open the `.blend` to
+learn what it is.
+
+**USD export caveat — design for it now, build it later.** USD is the studio's stated
+interchange direction, and Blender exports it, but the export is **lossy in exactly the
+places this design depends on**: evaluated modifiers lose their live definitions, linked
+library overrides flatten, and canon linkage is not preserved by the format. An exported
+USD that silently drops `(canon_id, version)` breaks the pinning guarantee for anything
+downstream that trusts it. If USD is adopted, provenance must be written explicitly as USD
+custom metadata, and the exporter must be treated as a **fingerprint-bearing surface** —
+i.e. a USD delivery carries its own facet rows asserting what survived. Scheduling this is
+premature; designing the `.blend` and manifest so the data exists to export is not.
+
 ## 9. Module layout
 
 ```
@@ -757,7 +816,7 @@ plugin being the prototype.
 | Phase | Content | Gate |
 |---|---|---|
 | **0 — Spike** | Plugin ↔ MCP loop on a worker thread with queue + persistent timer. Prove no deadlock; measure round-trip. Throwaway. | Blender does not hang on first tool call |
-| **1 — Demo** | Plugin (agent loop, UI panel, credentials). One canon character + one location, hand-built. `LocalMirrorResolver`. `blend` preset provider only. Six tools: `link_canon`, `apply_preset`, `set_shot_camera`, `place_character`, `compute_consistency_fingerprint`, `diff_consistency`. Extractor + hasher for `asset`, `material`, `color`, `format`. A `blender-mcp-authoring` Skill for cross-tool workflow guidance (§6.5 Lever 3). | An artist builds two shots; a deliberate drift is caught and a legitimate change is not |
+| **1 — Demo** | Plugin (agent loop, UI panel, credentials). One canon character + one location, hand-built. `LocalMirrorResolver`. `blend` preset provider only. Six tools: `link_canon`, `apply_preset`, `set_shot_camera`, `place_character`, `compute_consistency_fingerprint`, `diff_consistency`. Extractor + hasher for `asset`, `material`, `color`, `format`. Workflow guidance authored as portable MCP Resources, with a thin `blender-mcp-authoring` Skill pointing at them (§6.5 Lever 3). | An artist builds two shots; a deliberate drift is caught and a legitimate change is not |
 | **2 — Enforcement** | Addon mode guard. Baselines, exceptions, `assert_consistency`, `publish_shot`. `load_post` digest re-check. `transaction.py` library tracking. `shot_recipe` recording. | A shot cannot be published inconsistent, from any client configuration |
 | **3 — Portability** | `CORE_MODULES` and `texture-lighting` splits; schema diet on the 20 heaviest; typed gateway; `StudioAssetResolver`; `recipe` and `captured` providers; `audit_episode`. | Generic MCP client gets a shot-mode payload under 60K tokens and completes a shot |
 | **4 — Hosted** | Session model, connection router, concurrency. **Transport is done** (`ee25ffc`); this phase is orchestration only. | Media Center drives a shot end to end |
@@ -786,7 +845,9 @@ path rather than parallel to it.
 | 14 | MCP Resources? | **Adopt narrowly** — for canon/preset catalog data, not for `SERVER_INSTRUCTIONS` (~944 tokens, poor return). |
 | 15 | Project scope within the pipeline? | **MCP → headless Blender → file output** (§5.1). Upstream and downstream hops belong to other teams; this project owns the contract at both seams. |
 | 16 | Hosted execution model? | **Job-per-request baseline**, TTL cache and warm pool as performance options. The server must assume neither this nor the plugin's long-lived session (§5.2). |
-| 17 | May the hosted client be non-Claude? | **Leave it open.** Portability stays the tiebreak in §6.5; revisit only if it becomes a blocker. |
+| 17 | May the hosted client be non-Claude? | **Vendor agnostic is a requirement.** No Claude-only feature may be load-bearing. Tool search is not adopted; Skills are a thin pointer over portable content. |
+| 19 | What does the file output contain? | **`.blend` + rendered files, both required; USD possible.** Delivery contract in §8.1. Closes §3 for this project. |
+| 20 | USD? | **Design for, do not build.** The export is lossy exactly where pinning matters, so provenance must be explicit metadata and a USD delivery carries its own facet rows (§8.1). |
 | 18 | Does §7 belong to this project? | **No** — resolved by scope (§5.1), independent of §3. This project owns one `shot_recipe` field, not a second canon. |
 
 ## 16. Deferred
@@ -812,14 +873,13 @@ path rather than parallel to it.
    with that project now**, not in Phase 3.
 4. **Is `format` (fps, resolution) episode-global or shot-level?** Treated as enforced
    per-shot against the episode baseline; confirm with editorial.
-5. **§3 — the render path.** The largest open question in this document.
+5. ~~**§3 — the render path.**~~ — **answered 2026-09-11** (§3, §8.1). No blocking
+   questions remain; the open items above are scoping details, not gates.
 6. ~~**Blender lifecycle in the hosted path**~~ — **answered 2026-09-11**: job-per-request
    baseline, possibly TTL-cached, with a warm pool for performance. Design consequences in
    §5.2. Not yet fixed, but the variants share the constraints that matter.
-7. **What does "Blender file output" contain** — a `.blend`, rendered frames, control
-   passes, or all three? **Inquiry in progress.** The single highest-value open question
-   remaining: it likely answers §3 in practice, and it defines the downstream seam this
-   project is responsible for.
+7. ~~**What does "Blender file output" contain**~~ — **answered 2026-09-11**: `.blend` and
+   rendered files, both required; USD possible but uncommitted. See §3 and §8.1.
 8. ~~**Can the hosted MCP client be non-Claude?**~~ — **answered 2026-09-11**: left open
    deliberately. Portability remains the tiebreak in §6.5; revisit only if it blocks.
 
