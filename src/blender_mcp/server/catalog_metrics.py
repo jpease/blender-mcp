@@ -67,12 +67,13 @@ class PayloadReport:
         return self.total_bytes / BYTES_PER_TOKEN
 
 
-def _compact(value: Any) -> str:
+def _compact(value: dict[str, Any]) -> str:
     """
     Serialize a value to JSON using the most compact separators.
 
     Args:
-        value: Any JSON-serializable value.
+        value: A JSON-serializable mapping, matching the shape every call site passes
+            (a dumped tool, or its `inputSchema`).
 
     Returns:
         The compact JSON string, matching the separators used on the wire.

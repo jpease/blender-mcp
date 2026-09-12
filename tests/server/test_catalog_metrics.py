@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
+
 from blender_mcp.server.catalog_metrics import (
     BYTES_PER_TOKEN,
     PayloadReport,
@@ -18,7 +20,7 @@ class _FakeTool:
 
     name: str
     description: str
-    inputSchema: dict[str, Any]  # noqa: N815 - mirrors the MCP wire field name
+    inputSchema: dict[str, Any]  # ruff: ignore[mixed-case-variable-in-class-scope] - mirrors the MCP wire field name
 
     def model_dump(self, *, exclude_none: bool = False) -> dict[str, Any]:
         dumped: dict[str, Any] = {
@@ -37,17 +39,17 @@ def _tool(name: str = "t", description: str = "d") -> _FakeTool:
 
 def test_tool_bytes_excludes_none_fields() -> None:
     """Null fields never cross the wire, so they must not be counted."""
-    assert tool_bytes(_tool()) == len(
-        '{"name":"t","description":"d","inputSchema":{"type":"object"}}'
-    )
+    assert tool_bytes(_tool()) == len('{"name":"t","description":"d","inputSchema":{"type":"object"}}')
 
 
 def test_payload_bytes_sums_tools() -> None:
+    """Payload bytes must equal the sum of each tool's own byte count."""
     tools = [_tool("a"), _tool("b")]
     assert payload_bytes(tools) == tool_bytes(tools[0]) + tool_bytes(tools[1])
 
 
 def test_payload_report_splits_schema_and_description() -> None:
+    """The report must split total bytes into per-tool, schema, and description parts."""
     report = payload_report([_tool("a", "hello")])
     assert isinstance(report, PayloadReport)
     assert report.tool_count == 1
@@ -59,4 +61,6 @@ def test_payload_report_splits_schema_and_description() -> None:
 
 def test_bytes_per_token_is_documented_not_guessed() -> None:
     """The divisor is an estimate; it must stay explicit so callers can see it."""
-    assert BYTES_PER_TOKEN == 3.6
+    # rel=0, abs=0 makes this an exact-equality check (any other value fails) without
+    # tripping ruff's float-equality-comparison rule on a bare `==` between two floats.
+    assert pytest.approx(3.6, rel=0, abs=0) == BYTES_PER_TOKEN
