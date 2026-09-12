@@ -1,6 +1,6 @@
 # Phase 1 Task State
 
-Updated: 2026-09-11T23:00-06:00 (end of session 1)
+Updated: 2026-09-11T23:20-06:00 (end of session 1)
 
 Plan: `docs/superpowers/plans/2026-09-11-phase-1-catalog.md`
 Handoff: `docs/superpowers/plans/2026-09-11-phase-1-handoff.md`
@@ -276,5 +276,15 @@ can be reviewed and reversed cheaply. Nothing here is pushed.
 - The end-of-phase gate (`pytest && ruff check . && ruff format --check . && basedpyright`) has not
   been run as written, and per ruling 3 it cannot pass repo-wide. Run the per-file form plus the
   unchanged-baseline comparison instead.
-- Spec §4.6's byte ladder is still stale in the spec itself. Correcting it is not Phase 1 work, but
-  it materially affects Phase 3 planning — see the reconciliation section above.
+- ~~Spec §4.6's byte ladder is still stale in the spec itself.~~ **Corrected 2026-09-11** in the
+  same session: §4.6's byte/token columns, its "over by 6.4K" conclusion, the `all` token figure
+  (~333K -> ~328K), the schema share (76% -> 77.5%), the `$defs` share (41% -> 38%), `nd_boolean`
+  (1,659 -> 1,596 B, the old figure having counted nulls), and §2.4's "shot mode is ~77K" -> "~50K".
+  A dated correction block records the old values.
+
+  **The old byte column could not be sourced to any state of `main`.** The obvious explanation — that
+  it predated the 2026-09-09 schema work (`04d5f36`, `73c9c4b`, `0b052ec`) — was tested and is false:
+  at `f9f51d5`, the commit before all three, rung 0 measures 249,194 B (still not 277,083), and the
+  `camera.rigs` / `lighting.construction` groups measure 8,351 B and 12,257 B there too, identical to
+  today. Those group sizes have never changed, so 18,229 and 27,126 were never measurements of this
+  repository. What the schema work shrank was `core`, 189,625 B -> 119,634 B.

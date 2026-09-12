@@ -91,7 +91,7 @@ to resolve and the most damaging to discover late.**
 
 ### 2.4 The context surface — **measured, least load-bearing, and first to build**
 
-285 tools; the full `tools/list` is ~328K tokens and shot mode is ~77K. This is real and it
+285 tools; the full `tools/list` is ~328K tokens and shot mode is ~50K (§4.6). This is real and it
 is the one problem fully inside this project's control, which is why it has historically
 absorbed attention out of proportion to its weight. It is §4.6, near the end, deliberately.
 
@@ -354,24 +354,51 @@ tool still reachable through the gateway.
 context-window arithmetic yields a **ceiling, not a goal** — 50K tokens, a 200K floor at 25%
 of permanent occupancy. Landing under it is necessary, not sufficient.
 
-Where the bytes are (measured on `main`, `exclude_none=True`, what FastMCP actually
-serialises): 285 tools, ~333K tokens for `all`. **Input schemas are 76% of the payload and
-`$defs` are 41% of shot mode** — nested model definitions, not parameter counts. That is why
-scoping works and consolidation does not: a discriminated union of 30 variants costs
-37,263 B against 39,729 B split, a **6.2%** saving, because `oneOf` still serializes every
-variant.
+Where the bytes are (re-measured 2026-09-11 at `a1ec347` by `scripts/measure_catalog.py`,
+`exclude_none=True`, what FastMCP actually serialises): 285 tools, **1,180,620 B / ~328K
+tokens** for `all`. **Input schemas are 77.5% of the payload and `$defs` are 38% of shot
+mode** — nested model definitions, not parameter counts. That is why scoping works and
+consolidation does not: a discriminated union of 30 variants costs 37,263 B against 39,729 B
+split, a **6.2%** saving, because `oneOf` still serializes every variant.
 
-**The ladder, with every tool named:**
+**The ladder, with every tool named.** Byte and token columns re-measured 2026-09-11; rung 0 at
+`3b27c1d` (before Phase 1 changed anything), rungs 1-3 at `a1ec347`. Rung 1 has since landed as
+Phase 1 Task 3; rungs 2 and 3 are Task 5.
 
 | Rung | Removed | Tools | Bytes | Tokens |
 |---|---|---|---|---|
-| 0 | shot mode today | 67 | 277,083 | **77.0K** |
-| 1 | `create_geometry_object`, `remove_scene_objects`, `reset_scene` | 64 | 248,449 | 69.0K |
-| 2 | `camera.rigs` — `create_camera_path_rig`, `create_crane_camera_rig`, `create_dolly_camera_rig`, `create_orbit_camera_rig`, `duplicate_camera_rig`, `match_camera_transform` | 58 | 230,220 | 64.0K |
-| 3 | `lighting.construction` — `create_light`, `configure_light`, `aim_light`, `configure_light_linking`, `create_studio_lighting` (**five**, presets replace them) | 53 | 203,094 | **56.4K** |
+| 0 | shot mode today | 67 | 179,203 | **49.8K** |
+| 1 | `create_geometry_object`, `remove_scene_objects`, `reset_scene` | 64 | 150,569 | 41.8K |
+| 2 | `camera.rigs` — `create_camera_path_rig`, `create_crane_camera_rig`, `create_dolly_camera_rig`, `create_orbit_camera_rig`, `duplicate_camera_rig`, `match_camera_transform` | 58 | 142,218 | 39.5K |
+| 3 | `lighting.construction` — `create_light`, `configure_light`, `aim_light`, `configure_light_linking`, `create_studio_lighting` (**five**, presets replace them) | 53 | 129,961 | **36.1K** |
 
-**After three rungs, shot mode is 56.4K against a 50K ceiling — over by 6.4K, before a single
-intent tool.** That is the honest position. Further candidates, by size:
+**After three rungs, shot mode is 36.1K against a 50K ceiling — 13.9K under, before a single
+intent tool.** Shot mode is in fact already marginally under the ceiling at rung 0. That is a
+materially better position than this section claimed before it was re-measured, and it changes
+what the rest of the section is for: the levers below are no longer needed to reach the ceiling,
+so they must be justified by the minimize policy (Decision 5) on their own merits, or deferred.
+
+> **Correction, 2026-09-11.** The byte and token columns above previously read 277,083 / 77.0K,
+> 248,449 / 69.0K, 230,220 / 64.0K and 203,094 / 56.4K, and the paragraph concluded that shot mode
+> was "over by 6.4K". Those figures did not reproduce: rung 0 was overstated by 97,880 B, and the
+> rung 2 and rung 3 deltas by roughly 2.2x. Every *tool count* in the ladder was and is exact, as
+> are the rung 0->1 delta of 28,634 B and the per-tool sizes listed below, which is why the error
+> survived review. The measured group deltas are `camera.rigs` **8,351 B** (was 18,229) and
+> `lighting.construction` **12,257 B** (was 27,126).
+>
+> **The byte column does not correspond to any state of `main` that could be found.** The obvious
+> explanation — that it predates the schema work of 2026-09-09 (`04d5f36` bundle-leak fix,
+> `73c9c4b` and `0b052ec` union refactors) — was tested and is false. Measured at `f9f51d5`, the
+> commit before all three, rung 0 is 249,194 B, still not 277,083; and the `camera.rigs` and
+> `lighting.construction` groups measure **8,351 B and 12,257 B there too — byte-identical to
+> today**. Those two group sizes have never changed, so 18,229 and 27,126 were not measurements of
+> this repository at any point. What the schema work did shrink was `core`, from 189,625 B to
+> 119,634 B, which is the whole of rung 0's drop. Treat the old byte column as unsourced.
+>
+> Phase 1's implementation plan inherited these figures; see
+> `docs/superpowers/plans/PHASE1_TASK_STATE.md` for the measurement method and provenance rules.
+
+Further candidates, by size:
 `configure_render_settings` 19,577 B, `configure_lighting_quality` 10,882 B,
 `configure_camera_render_gate` 8,848 B, `configure_camera` 8,210 B, `create_camera` 6,971 B,
 `manage_nla_tracks` 6,893 B, `add_camera_constraint` 6,800 B, `configure_procedural_sky`
@@ -381,7 +408,7 @@ could then configure Cycles only, while the `color` facet enforces engine as a v
 
 **The 1 KB intent-tool ceiling is not achievable at this repo's documentation standard, and
 buying it costs what §7 measures.** Only 3 of 285 tools are under 1,000 B, all trivial
-utilities. `nd_boolean` — three string parameters — costs 1,659 B, of which **754 B is the
+utilities. `nd_boolean` — three string parameters — costs 1,596 B, of which **754 B is the
 description**. Descriptions are the binding term, and they are the only surface an agent has
 for canon and consistency semantics. **Treat ~1.5 KB as the realistic intent-tool target and
 accept that the ceiling does not close the gap by itself.**
