@@ -59,6 +59,12 @@ def test_payload_report_splits_schema_and_description() -> None:
     assert report.total_bytes == report.per_tool["a"]
 
 
+def test_payload_report_rejects_duplicate_tool_names() -> None:
+    """A repeated tool name is a malformed payload, not a quantity to silently collapse."""
+    with pytest.raises(ValueError, match="dup"):
+        payload_report([_tool("dup"), _tool("dup")])
+
+
 def test_bytes_per_token_is_documented_not_guessed() -> None:
     """The divisor is an estimate; it must stay explicit so callers can see it."""
     # rel=0, abs=0 makes this an exact-equality check (any other value fails) without

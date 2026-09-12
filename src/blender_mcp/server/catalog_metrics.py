@@ -122,6 +122,13 @@ def payload_report(tools: Sequence[_Dumpable]) -> PayloadReport:
         A `PayloadReport` splitting total bytes by tool, and further by schema versus
         description contribution.
 
+    Raises:
+        ValueError: If two tools share the same name. A name-keyed report has no way to
+            represent that case other than silently overwriting one tool's bytes with the
+            other's while still accumulating both into `schema_bytes`/`description_bytes` -
+            an internally inconsistent, artificially smaller report. Treat it as a malformed
+            payload instead.
+
     """
     per_tool: dict[str, int] = {}
     schema_bytes = 0
@@ -129,7 +136,10 @@ def payload_report(tools: Sequence[_Dumpable]) -> PayloadReport:
 
     for tool in tools:
         dumped = tool.model_dump(exclude_none=True)
-        per_tool[dumped["name"]] = len(_compact(dumped))
+        name = dumped["name"]
+        if name in per_tool:
+            raise ValueError(f"duplicate tool name in payload: {name!r}")
+        per_tool[name] = len(_compact(dumped))
         schema_bytes += len(_compact(dumped.get("inputSchema") or {}))
         description_bytes += len(dumped.get("description") or "")
 

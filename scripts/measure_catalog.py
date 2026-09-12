@@ -10,6 +10,7 @@ Usage:
 
 import asyncio
 import os
+import subprocess
 import sys
 
 from pathlib import Path
@@ -33,18 +34,56 @@ from blender_mcp.server.app import mcp  # ruff: ignore[module-import-not-at-top-
 from blender_mcp.server.catalog_metrics import payload_report  # ruff: ignore[module-import-not-at-top-of-file]
 
 
+def _git_revision() -> str:
+    """
+    Identify the git revision this measurement was taken against.
+
+    A byte count without its revision is not reproducible: this project has already
+    published wrong numbers by measuring the right checkout at the wrong commit. Marks an
+    unclean working tree as dirty, since a number measured against uncommitted changes is
+    not the same fact as one measured at a clean commit.
+
+    Returns:
+        A short revision like `270958a` or `270958a (dirty)`, or a message explaining why
+        no revision could be determined (git missing, or not a repository), rather than
+        raising.
+
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown (git unavailable or not a repository)"
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    return f"{sha} (dirty)" if status else sha
+
+
 def main() -> None:
     """
     Print a payload report for the tool selection named on the command line.
 
     Reads the bundle selection from `sys.argv[1]` (already applied to
     `BLENDER_MCP_TOOLSETS` above), lists the tools FastMCP would advertise for that
-    selection, and prints total size, a schema/description split, and the ten heaviest
-    tools by wire bytes.
+    selection, and prints the measured revision, total size, a schema/description split,
+    and the ten heaviest tools by wire bytes.
 
     """
     report = payload_report(asyncio.run(mcp.list_tools()))
     selection = os.environ["BLENDER_MCP_TOOLSETS"] or "(core only)"
+    print(f"revision  : {_git_revision()}")
     print(f"selection : {selection}")
     print(f"tools     : {report.tool_count}")
     print(f"bytes     : {report.total_bytes:,}")
