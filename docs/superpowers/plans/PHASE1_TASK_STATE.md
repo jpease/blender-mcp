@@ -1,6 +1,6 @@
 # Phase 1 Task State
 
-Updated: 2026-09-11T22:25-06:00
+Updated: 2026-09-11T22:35-06:00
 
 Plan: `docs/superpowers/plans/2026-09-11-phase-1-catalog.md`
 Handoff: `docs/superpowers/plans/2026-09-11-phase-1-handoff.md`
@@ -49,7 +49,7 @@ materially strengthens the plan's decision to defer variant scoping, MCP Resourc
 | # | Task | Status | Commit | Byte delta | Notes |
 |---|---|---|---|---|---|
 | 1 | Payload measurement harness | **done** | `27ec3aa`, `270958a`, `313740a` | n/a (adds no tools) | Plan's `measure_catalog.py` set the env var after importing `blender_mcp`; corrected to set it first. Two fix rounds: lint, then duplicate-name rejection + revision provenance. |
-| 2 | Make bundle tests capable of failing | not started | — | n/a | Also lands `ALL_MODULES` dedup, needed by Task 5's alias. |
+| 2 | Make bundle tests capable of failing | **done** | `d8163e3` | n/a (tests only) | 98/100. Canary proven: deleting `"mesh"` from `CORE_MODULES` gives 9 failed / 6 passed. `ALL_MODULES` dedup moved to Task 5, where a real failing test drives it. |
 | 3 | Split `scene` authoring/destructive tools | not started | — | — | |
 | 4 | Split `CORE_MODULES` | not started | — | — | |
 | 5 | Split `camera` and `texture-lighting` | not started | — | — | Requires lazy package re-export; see Known issues. |
@@ -90,12 +90,35 @@ None yet.
 - **Task 5's commit message cites stale byte figures** (18,229 B for `camera.rigs`, 27,126 B for
   `lighting.construction`). Measured values are 8,351 B and 12,257 B; the measured ones will be used.
 - **`ALL_MODULES` does not deduplicate.** Task 5's deprecated `texture-lighting` alias would
-  duplicate the `lighting.*` modules and break Task 2's no-duplicates assertion. Dedup lands in
-  Task 2.
+  duplicate the `lighting.*` modules and break Task 2's no-duplicates assertion. **Dedup lands in
+  Task 5, not Task 2** — in Task 2 nothing produces a duplicate, so the change would have been
+  untestable, which is the vacuous-assertion bug class Task 2 exists to remove. Task 2's assertion
+  is instead a deliberate canary; the Task 2 critic confirmed it fires by injecting a
+  duplicate-producing alias (23 != 21).
 - `CLAUDE.md` carries an unrelated uncommitted GitNexus re-index edit that predates this session. It
   is deliberately left unstaged and out of every task commit.
 
-## Current rubric score — Task 1 (fresh-context critic, opus, four lenses)
+## Rubric scores by task (fresh-context critics, four lenses each)
+
+### Task 2 (sonnet)
+
+| Dimension | Score | Gate | Pass? |
+|---|---|---|---|
+| Capability preservation (30) | 30 | 24 | yes |
+| Measurement integrity (25) | 25 | 20 | yes |
+| Test integrity (25) | 24 | 20 | yes |
+| Code quality (20) | 19 | 16 | yes |
+| **Total (100)** | **98** | **90** | **PASS**, zero critical |
+
+The critic settled a question I raised but deliberately did not pre-judge: `resolved == ALL_MODULES`
+is *not* the tautology bug class, because `ALL_MODULES` is built independently from
+`CORE_MODULES + BUNDLES` at module scope rather than echoed back from the function's own read — it
+proved this by making the `all` branch return `ALL_MODULES[:-1]` and watching the test fail.
+
+Minor parked: the docstring at `tests/server/test_bundles.py:52` says "with no duplicates", which
+overstates what is enforced until Task 5 lands the dedup.
+
+### Task 1 (opus)
 
 | Dimension | Score | Gate | Pass? |
 |---|---|---|---|

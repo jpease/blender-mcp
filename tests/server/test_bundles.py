@@ -8,25 +8,51 @@ import pytest
 
 from blender_mcp.server.bundles import ALL_MODULES, CORE_MODULES, resolve_toolset_modules
 
+_CORE_TODAY = (
+    "core",
+    "scene",
+    "mesh",
+    "model",
+    "object_animation",
+    "viewport",
+    "animation",
+)
+
 
 @pytest.mark.parametrize(
     ("raw_value", "expected"),
     [
-        (None, CORE_MODULES),
-        ("", CORE_MODULES),
-        ("  ", CORE_MODULES),
-        ("cloth", (*CORE_MODULES, "cloth")),
-        ("cloth,liquid", (*CORE_MODULES, "cloth", "liquid")),
-        (" cloth , liquid ", (*CORE_MODULES, "cloth", "liquid")),
-        ("cloth,cloth", (*CORE_MODULES, "cloth")),
-        ("rigid-body", (*CORE_MODULES, "rigid_body", "scene_physics")),
-        ("all", ALL_MODULES),
-        ("ALL", ALL_MODULES),
+        (None, _CORE_TODAY),
+        ("", _CORE_TODAY),
+        ("  ", _CORE_TODAY),
+        ("cloth", (*_CORE_TODAY, "cloth")),
+        ("cloth,liquid", (*_CORE_TODAY, "cloth", "liquid")),
+        (" cloth , liquid ", (*_CORE_TODAY, "cloth", "liquid")),
+        ("cloth,cloth", (*_CORE_TODAY, "cloth")),
+        ("rigid-body", (*_CORE_TODAY, "rigid_body", "scene_physics")),
     ],
 )
 def test_resolve_toolset_modules(raw_value: str | None, expected: tuple[str, ...]) -> None:
-    """Every documented BLENDER_MCP_TOOLSETS value resolves to the modules it should import."""
+    """
+    Every documented BLENDER_MCP_TOOLSETS value resolves to the modules it should import.
+
+    The expected tuples are spelled out rather than referencing CORE_MODULES, so that a change
+    to the core set fails this test instead of silently redefining what it asserts.
+    """
     assert resolve_toolset_modules(raw_value) == expected
+
+
+def test_core_modules_matches_the_documented_core_set() -> None:
+    """CORE_MODULES is what the parametrized cases above assume it is."""
+    assert CORE_MODULES == _CORE_TODAY
+
+
+@pytest.mark.parametrize("raw_value", ["all", "ALL"])
+def test_all_sentinel_selects_every_module(raw_value: str) -> None:
+    """The `all` sentinel resolves to every module, in a stable order, with no duplicates."""
+    resolved = resolve_toolset_modules(raw_value)
+    assert resolved == ALL_MODULES
+    assert len(resolved) == len(set(resolved))
 
 
 def test_resolve_toolset_modules_rejects_unknown_bundle() -> None:
