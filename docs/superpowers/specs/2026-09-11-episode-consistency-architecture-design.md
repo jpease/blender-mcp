@@ -521,6 +521,11 @@ deliberately introduced drift.
 
 ## 8. Phasing
 
+**Implementation plan:** `docs/superpowers/plans/2026-09-11-phase-1-catalog.md` covers the
+measurement harness and the bundle splits — the part of Phase 1 that is fully specified. The
+gateway, Resources, variant scoping and the success bar are deferred there with reasons; the
+bar in particular cannot be planned until §7.1's threshold question is closed.
+
 **Sequenced by independence, not by weight.** Phase 1 is the context work even though §2.4
 ranks it the least load-bearing risk, because it is the only phase that depends on none of
 the open questions, adds no domain tools, and is not invalidated if the consistency design
