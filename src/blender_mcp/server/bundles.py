@@ -21,6 +21,7 @@ CORE_MODULES: tuple[str, ...] = (
 # `core` is always included regardless of selection; it is not a selectable name.
 BUNDLES: dict[str, tuple[str, ...]] = {
     "camera": ("camera",),
+    "scene-authoring": ("scene_authoring",),
     "cloth": ("cloth",),
     "liquid": ("liquid",),
     "rigid-body": ("rigid_body", "scene_physics"),

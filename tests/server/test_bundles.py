@@ -1,6 +1,7 @@
 """Regression coverage for BLENDER_MCP_TOOLSETS bundle selection."""
 
 import importlib
+import json
 import subprocess
 import sys
 
@@ -84,6 +85,28 @@ def _tool_count_for_toolsets(raw_value: str | None) -> int:
     return int(result.stdout.strip())
 
 
+def _tool_names_for_toolsets(raw_value: str | None) -> set[str]:
+    """
+    Tool names a server process registers for a given BLENDER_MCP_TOOLSETS value.
+
+    Args:
+        raw_value: The BLENDER_MCP_TOOLSETS value to set, or None to leave it unset.
+
+    Returns:
+        The set of tool names that a fresh server process advertises for that selection.
+
+    """
+    env_assignment = f"os.environ['BLENDER_MCP_TOOLSETS'] = {raw_value!r}\n" if raw_value is not None else ""
+    script = (
+        "import asyncio, os, json\n"
+        f"{env_assignment}"
+        "from blender_mcp.server import mcp\n"
+        "print(json.dumps([t.name for t in asyncio.run(mcp.list_tools())]))\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+    return set(json.loads(result.stdout))
+
+
 def test_unset_toolsets_registers_only_core_bundle() -> None:
     """A server started without BLENDER_MCP_TOOLSETS registers only the always-on core tools."""
     core_only_count = _tool_count_for_toolsets(None)
@@ -99,3 +122,17 @@ def test_selecting_a_bundle_adds_its_tools_on_top_of_core() -> None:
     everything_count = _tool_count_for_toolsets("all")
 
     assert core_only_count < with_cloth_count < everything_count
+
+
+def test_scene_authoring_tools_are_not_in_the_core_surface() -> None:
+    """Geometry creation and destructive scene ops must not ship in every process."""
+    core_tools = _tool_names_for_toolsets(None)
+    for name in ("create_geometry_object", "reset_scene", "remove_scene_objects"):
+        assert name not in core_tools, f"{name} is still registered by the core surface"
+
+
+def test_scene_authoring_bundle_restores_them() -> None:
+    """No capability is lost -- the same tools are reachable by asking for the bundle."""
+    authoring_tools = _tool_names_for_toolsets("scene-authoring")
+    for name in ("create_geometry_object", "reset_scene", "remove_scene_objects"):
+        assert name in authoring_tools
