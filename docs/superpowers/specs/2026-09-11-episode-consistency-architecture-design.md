@@ -89,11 +89,16 @@ conversion project regenerates identifiers per run, pinning breaks at the root. 
 has no named owner for this question and no date. **This is the cheapest thing on this list
 to resolve and the most damaging to discover late.**
 
-### 2.4 The context surface — **measured, and the least load-bearing item here**
+### 2.4 The context surface — **measured, least load-bearing, and first to build**
 
-285 tools; the full `tools/list` is ~333K tokens and shot mode is ~77K. This is real and it
+285 tools; the full `tools/list` is ~328K tokens and shot mode is ~77K. This is real and it
 is the one problem fully inside this project's control, which is why it has historically
 absorbed attention out of proportion to its weight. It is §4.6, near the end, deliberately.
+
+**It is nonetheless Phase 1 (§8), and that is not a contradiction.** Risks are ordered by
+damage; phases are ordered by independence. This work waits on nobody, adds no domain tools,
+and survives the consistency design being wrong — which makes it the right thing to build
+first and still the least important thing on this list.
 
 ## 3. Constraints (verified by execution)
 
@@ -281,7 +286,7 @@ covers a real hole, and the survey has not been done.
 ### 4.4 Presets
 
 One provider protocol (`list` / `describe` / `apply`), three providers: `blend`
-(artist-authored, Phase 1), `recipe` (parameterized code, Phase 2), `captured` (Phase 3).
+(artist-authored, Phase 3), `recipe` (parameterized code, Phase 4), `captured` (deferred).
 Applied presets stamp provenance on what they create, which the `light` facet reads
 alongside measured parameters.
 
@@ -301,7 +306,7 @@ None of this exists today: zero hits for library overrides, `bpy.app.handlers`,
 state, not file data, and `server_core.py:184` already registers the drain timer
 `persistent=True` — verified to survive where an otherwise identical `persistent=False`
 timer does not. *(Caveat: verified in `--background`, where §3 says the server would not
-have started. Re-verify under Xvfb in Phase 0.)*
+have started. Re-verify under Xvfb in Phase 2.)*
 
 | Command | `bpy` | Notes |
 |---|---|---|
@@ -315,7 +320,7 @@ have started. Re-verify under Xvfb in Phase 0.)*
 | `unlink_libraries` | purge | Required before reuse; previously missing |
 | `load_post` hook | `bpy.app.handlers` + `@persistent` | Opt-in digest re-verification (§4.1) |
 
-**Open hazards, all Phase 0 work:**
+**Open hazards, all Phase 2 work:**
 
 - **Reentrancy.** `wm.open_mainfile` from inside the drain-timer callback frees that
   callback's context. Untestable headlessly (timers do not fire in `--background`), so it
@@ -336,6 +341,14 @@ with **no authentication** (§10 Q8) — currently the dominant risk for a poole
 and not addressed by the link/append allowlist, which does not cover them.
 
 ### 4.6 The context surface
+
+**Almost none of this is additive, which is why it is Phase 1.** Bundle splits regroup
+entries in a `bundles.py` that already exists; variant scoping edits schemas already
+written; Resources are a protocol primitive that adds no tools; the measurement harness is
+tooling. The only additions are the gateway's three machinery tools, and they are net
+strongly negative — 3 added to stop advertising 264. Measured: `core-shared` after the
+splits is **21 tools / 17.6K tokens**, against 285 tools / ~328K today, with every other
+tool still reachable through the gateway.
 
 **Policy: minimize, do not fill.** There is no target size; unneeded bytes buy nothing. The
 context-window arithmetic yields a **ceiling, not a goal** — 50K tokens, a 200K floor at 25%
@@ -508,14 +521,23 @@ deliberately introduced drift.
 
 ## 8. Phasing
 
+**Sequenced by independence, not by weight.** Phase 1 is the context work even though §2.4
+ranks it the least load-bearing risk, because it is the only phase that depends on none of
+the open questions, adds no domain tools, and is not invalidated if the consistency design
+in §4.2 turns out wrong. The risks are ordered by damage in §2; the phases are ordered by
+what can be built without waiting on anyone.
+
+**Phase 1 adds no domain tools.** Everything in it is subtractive or editorial except three
+gateway machinery tools, which exist to stop advertising 264 others. Adding tools beyond the
+285 that exist is deferred to Phase 3, and then only where no existing tool covers the job.
+
 | Phase | Content | Gate |
 |---|---|---|
-| **0 — Spikes** | Xvfb rig. Plugin↔MCP loop on a worker thread. `open_mainfile` reentrancy under a real event loop. Re-verify the persistent-timer result with the server actually running. | No hang; reentrancy answer known |
-| **0.5 — File lifecycle** | §4.5 handler family; `transaction.py` gains `libraries`; `docker-blender` takes `bundles.py`. **Critical path.** | Open a shot, link canon, create an override, save, reopen with the link intact |
-| **1 — Demo** | Plugin (agent loop, UI, credentials). One canon character + location, hand-built. `LocalMirrorResolver`. `blend` presets. Six tools. Extractor + hasher for `asset`, `material`, `color`, `format`, `artifact`. **Round-trip check.** | Two shots; a deliberate drift caught, a legitimate change not; a `.blend` that reproduces its own frames |
-| **2 — Enforcement** | Addon mode guard incl. `obj.data`. Baselines, exceptions, `assert_consistency`, `publish_shot`, manifest. `load_post` opt-in digest re-check. `shot_recipe` recording. Socket authentication. | A shot cannot publish inconsistent from any client configuration |
-| **3 — Portability** | §7.1 bar **first**. Then bundle splits, variant scoping, Resources, gateway, `StudioAssetResolver`, `recipe` presets, `audit_episode`. | Payload ratcheted down as far as the bar allows |
-| **4 — Hosted** | Session model, router, pooling, concurrency, multi-provider evaluation. | Media Center drives a shot end to end |
+| **1 — Catalog** | Measurement harness (payload by tool, family and bundle, as a test). Bundle splits: `CORE_MODULES` → `core-shared`/`core-authoring`, `texture-lighting`, `scene` (authoring + destructive out), `camera.rigs`, `lighting.construction`. Variant scoping on the heaviest schemas. MCP Resources for reference content. Typed gateway (3 machinery tools). Xvfb rig. §7.1 bar **written against the existing 285**, establishing a baseline before anything changes. | Advertised payload falls from ~328K to ~19K tokens with **no capability lost and no domain tool added**; the bar scores no worse after the cuts than before |
+| **2 — Primitives** | Plugin↔MCP loop on a worker thread. `open_mainfile` reentrancy under a real event loop; re-verify the persistent-timer result with the server actually running. Then the §4.5 file-lifecycle family; `transaction.py` gains `libraries`; `docker-blender` takes `bundles.py`. **The first genuinely additive work, and inescapable — this server cannot currently open or save a `.blend`.** | Open a shot, link canon, create an override, save, reopen with the link intact; no hang |
+| **3 — Consistency** | Canon registry + `LocalMirrorResolver`; `content_digest`; extractor + hasher for `asset`, `material`, `color`, `format`, `artifact`; the round-trip check; `blend` presets — seeded from `create_studio_lighting`, which is already a preset in all but name. Artist-facing plugin (agent loop, UI, credentials). One canon character and location, hand-built. | Two shots; a deliberate drift caught and a legitimate change not; a `.blend` that reproduces its own frames |
+| **4 — Enforcement** | Addon mode guard including `obj.data`. Baselines, exceptions, `assert_consistency`, `publish_shot`, manifest. `load_post` opt-in digest re-check. `shot_recipe` recording. Socket authentication. `StudioAssetResolver`, `recipe` presets, `audit_episode`. | A shot cannot publish inconsistent from any client configuration |
+| **5 — Hosted** | Session model, router, pooling, concurrency, multi-provider evaluation. | Media Center drives a shot end to end |
 
 ## 9. Decisions
 
@@ -531,6 +553,7 @@ deliberately introduced drift.
 | 8 | Generative identity conditioning is out of scope; this project owns one `shot_recipe` field binding a shot to the identity its passes were built for. |
 | 9 | The plugin↔MCP loop is kept rather than collapsed. |
 | 10 | USD is designed for, not built; provenance is default-on, and the material network is the real loss. |
+| 11 | Phases are sequenced by independence, not by risk weight. No domain tool is added before Phase 3, and then only where no existing tool covers the job — `create_studio_lighting` already covers lighting presets, `set_object_transform` covers placement, and the camera surface covers framing. |
 
 ## 10. Open questions
 
@@ -581,7 +604,7 @@ Three adversarial reviews (2026-09-11). Full text in git history of the supersed
 | R1 | `rig` facet tautological under linking | **Resolved** — replaced by `transform`, now incl. pose bones |
 | R1 | No open-time re-verification, episode audit, batch upgrade, or waivers | **Resolved** — §4.1, §4.2 |
 | R2 | Consolidation saves 6.2%, not 97%; precedent was type erasure | **Resolved** — §4.6 |
-| R2 | Phases depended on four subsystems with zero code | **Resolved** — §4.5, Phase 0.5 |
+| R2 | Phases depended on four subsystems with zero code | **Resolved** — §4.5, Phase 2 |
 | R2 | `content_digest` never defined | **Resolved** — §4.1 |
 | R2 | Poly Haven loads network `.blend` (`handlers/polyhaven.py:362`) | **Open** — live vulnerability, §10 Q8 |
 | R2 | Socket has no authentication | **Open** — §10 Q8 |
@@ -589,7 +612,7 @@ Three adversarial reviews (2026-09-11). Full text in git history of the supersed
 | R3 | Ladder scored against a rejected ceiling; rung 3 misdescribed (5 tools, not 4) | **Resolved** — §4.6 re-derived, tools named |
 | R3 | "Writes to linked data persist" was false — they are non-durable but render-affecting | **Resolved** — §2.1, §4.3 |
 | R3 | Guard predicate empty on overrides; must reach `obj.data.library` | **Resolved** — §4.3 |
-| R3 | Addon refuses background mode; every hosted job needs a display server | **Resolved** — §3, §7, Phase 0 |
+| R3 | Addon refuses background mode; every hosted job needs a display server | **Resolved** — §3, §7, Phase 1 (Xvfb rig) |
 | R3 | Deliverable never fingerprinted | **Partly** — `render`/`artifact` facets and round-trip check designed, unproven (§10 Q1) |
 | R3 | Task-success bar has no threshold; key metric unobservable here | **Open** — §7.1 states the limits |
 | R3 | 1 KB intent ceiling unachievable; only 3 of 285 tools are under it | **Resolved** — §4.6, target raised to ~1.5 KB |
