@@ -241,7 +241,7 @@ command = "blender-mcp"
 blender-mcp registers close to 300 tools in total. Sending all of them to a client on every
 connection can be large enough to eat into the context available for the actual task, so by
 default a server process only registers its **core** bundle — scene inspection, mesh/object
-editing, viewport, and animation (~40 tools). Everything else is opt-in per domain, selected with
+editing, viewport, and animation (~37 tools). Everything else is opt-in per domain, selected with
 the `BLENDER_MCP_TOOLSETS` environment variable (a comma-separated list of bundle names, or `all`
 for the previous everything-registered behavior):
 
@@ -249,6 +249,7 @@ for the previous everything-registered behavior):
 |---|---|
 | *(default, always on)* | scene inspection, mesh/object editing, viewport, animation |
 | `camera` | camera placement, framing, shots |
+| `scene-authoring` | declarative geometry creation, scene reset, object removal |
 | `cloth` | cloth simulation |
 | `liquid` | fluid/liquid simulation |
 | `rigid-body` | rigid body physics, scene physics |
