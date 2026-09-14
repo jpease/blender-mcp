@@ -2068,3 +2068,41 @@ pre-existing baseline, confirming no new lint debt was introduced across any of 
 What remains before an end-of-phase commit/push decision: the user's own review and go-ahead.
 This session's brief was explicit that no code should be committed; that instruction has been
 followed throughout -- every task's diff sits in the working tree, verified but unstaged.
+
+## Phase 1 complete -- pushed
+
+The user reviewed an adversarial evaluation of an alternative (search/dispatch gateway) design
+before committing, on both the original mode/bundle approach and a narrower additive proposal on
+top of it; both were independently reviewed and both came back **DO NOT PROCEED**, converging with
+this project's own already-made decisions (spec Decisions #6/#7: tool search not adopted, no
+arbitrary code execution including as a gateway capability; §4.6's "typed gateway... saves nothing
+for used surface"; deferral to Phase 1b pending Phase 2 and the §7.1 bar). Tasks 4-6 were then
+committed as planned.
+
+- Tasks 4-6: `025b1c7` (feat, all three tasks' code + tests + README) + `cbd40fc` (docs, this file).
+  **Deviation from `2026-09-11-phase-1-handoff.md:85-87`**, noted here rather than silently: that
+  doc says Tasks 3/4/5 must not be batched into one commit so each byte delta stays traceable in
+  git history. Tasks 4-6 were developed in one continuous working-tree diff with no saved
+  intermediate states, so a clean per-task split wasn't reconstructable after the fact without
+  guessing at hunk boundaries; batching was the honest choice. The byte deltas stay traceable in
+  this file's per-task tables above instead of in commit history.
+- `1be6131`: fixed a wrong spec citation in `bundles.py` found during the second adversarial
+  review -- it cited spec Sec 4.7 (thread architecture) to justify "the add-on chooses the
+  surface," when selection is actually a human/config decision made once per MCP client entry,
+  before the process starts (README "Tool Bundles"; spec Sec 4.3 defines the two surfaces).
+- **End-of-phase gate, re-run and verified clean:** `pytest` 647 passed; `measure_catalog.py all`
+  285 tools / 1,181,038 B (capability intact); `ruff check .` 9,834 errors (down from the
+  9,868 baseline -- improved, no new debt); `ruff format --check .` 12 unformatted (unchanged);
+  `basedpyright` 71 errors / 4 warnings (unchanged).
+- **Pushed:** `origin/main` `3b27c1d..1be6131`.
+
+**Not run this session, and not part of the mechanical gate above:** the spec's own Phase 1a
+acceptance row also requires "the bar scores no worse after the cuts than before" -- the §7.1
+success bar (60 paired trials across 12 task classes, non-inferiority on a 90% bootstrap CI,
+>= 2 models, plus a server-side dispatch-count metric). It is fully specified (see "§7.1's
+threshold question answered" above) and designed to run retrospectively against `upstream/main`,
+but has not been executed. Phase 1's code is committed, pushed, and mechanically verified;
+the spec's full acceptance bar is a separate, larger, still-open piece of work.
+
+Next per the plan's own recommended sequence (`2026-09-11-phase-1-catalog.md:829`): Phase 2
+("Primitives" -- the plugin/MCP file-open/save loop), not the deferred gateway/Resources work.
