@@ -7,20 +7,11 @@ from typing import get_type_hints
 
 import pytest
 
+from conftest import StubFactory
 from pydantic import TypeAdapter, ValidationError
 from test_mutation_transaction import FakeCollection, _load_addon
 
 from blender_mcp.server.tools import scene
-
-
-class _Connection:
-    def __init__(self, result) -> None:
-        self.calls = []
-        self._result = result
-
-    def send_command(self, command, params):
-        self.calls.append((command, params))
-        return self._result
 
 
 def _fake_object(name, *, type="MESH", scale=(1.0, 1.0, 1.0), polygons=(), modifiers=(), animation_data=None):
@@ -70,9 +61,8 @@ def test_validate_scene_is_registered_and_read_only(monkeypatch) -> None:
     assert "validate_scene" in server._READ_ONLY_COMMANDS
 
 
-def test_validate_scene_dispatches_scope_and_max_findings(monkeypatch) -> None:
-    connection = _Connection({"findings": []})
-    monkeypatch.setattr(scene, "get_blender_connection", lambda: connection)
+def test_validate_scene_dispatches_scope_and_max_findings(stub_blender_connection: StubFactory) -> None:
+    connection = stub_blender_connection({"findings": []})
 
     asyncio.run(scene.validate_scene(ctx=None, scene_name="Scene", scope=["cloth", "liquid"], max_findings=50))
 

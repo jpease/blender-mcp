@@ -1,6 +1,13 @@
 # pyright: reportCallIssue=false, reportInvalidTypeForm=false
 # ruff: file-ignore[docstring-missing-exception, docstring-missing-returns, too-many-arguments, too-many-positional-arguments, unused-function-argument]
-"""Typed scene composition, native geometry, hierarchy, and modifier tools."""
+"""
+Typed scene composition, hierarchy, constraint, modifier and validation tools.
+
+Registers the seven tools that stayed in the core surface, including the cross-domain
+`validate_scene` preflight. Geometry authoring and destructive scene operations live in
+`scene_authoring.py` (bundle: `scene-authoring`); the shared input base and Blender
+dispatch helper live in `_scene_shared.py`.
+"""
 
 import asyncio
 import functools
@@ -9,15 +16,11 @@ import operator
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model, model_validator
+from pydantic import Field, TypeAdapter, create_model, model_validator
 
 from ..app import mcp
-from ..connection import get_blender_connection
-from .envelope import STALE_INDEX_WARNING, ok
-
-
-class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+from ._scene_shared import _call, _StrictModel
+from .envelope import STALE_INDEX_WARNING
 
 
 class TransformPatch(_StrictModel):
@@ -299,17 +302,6 @@ ModifierSpecInput = Annotated[functools.reduce(operator.or_, _modifier_variants)
 # that one tool's advertised JSON schema on every client connection, at a cost of roughly 19K
 # tokens for detail no single call ever needs more than one variant of.
 modifier_spec_adapter = TypeAdapter(ModifierSpecInput)
-
-
-def _call(command: str, params: dict[str, Any], changed_objects: list[str] | None = None) -> dict:
-    result = get_blender_connection().send_command(command, params)
-    resources: list[str] = []
-    objects = changed_objects or []
-    if isinstance(result, dict):
-        result = dict(result)
-        objects = result.pop("changed_objects", objects)
-        resources = result.pop("changed_resources", resources)
-    return ok(result, changed_objects=objects, changed_resources=resources)
 
 
 @mcp.tool()

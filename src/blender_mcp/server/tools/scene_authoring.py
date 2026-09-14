@@ -1,12 +1,28 @@
+# Every tool takes `ctx` by convention so any of them can reach the FastMCP context without a
+# signature change; none here uses it. Tool signatures are deliberately flat rather than
+# wrapped in one nested object: a named top-level parameter is far easier for a model to fill
+# correctly, and that legibility is worth the extra advertised schema it costs.
+# ruff: file-ignore[too-many-arguments, too-many-positional-arguments, unused-function-argument]
+# A tool docstring is wire payload sent to every client on every connection. `_documentation.py`
+# strips a `Raises:` section and discards it (so it costs no advertised bytes) and folds a
+# `Returns:` section into the shared envelope suffix it appends to every description (so it
+# refines rather than duplicates). Neither is written for these three tools because they raise
+# only the validation errors their summaries already state and return the unremarkable standard
+# envelope documented in envelope.py; add a `Returns:` only when `data` carries a shape worth
+# naming. The same file-ignore covers the `@model_validator` methods below, which pydantic
+# calls rather than any caller who could act on a Raises: section; each states its rule in its
+# one-line summary, while the module-level helpers they delegate to carry full Raises:.
+# ruff: file-ignore[docstring-missing-exception, docstring-missing-returns]
+# pydantic's discriminated-union and `Annotated` forms defeat pyright's call/type-form checks.
 # pyright: reportCallIssue=false, reportInvalidTypeForm=false
-# ruff: file-ignore[docstring-missing-exception, docstring-missing-returns, too-many-arguments, too-many-positional-arguments, unused-function-argument]
 """
 Scene authoring and destructive scene operations.
 
-Split out of `scene.py` so a shot-assembly process does not advertise them. Geometry
-creation carries sixteen type variants (~25 KB of schema) that shot work never uses, and
-`reset_scene`/`remove_scene_objects` are destructive operations that a shot surface should
-not offer at all. Everything here stays reachable through the `scene-authoring` bundle.
+Split out of `scene.py` so a shot-assembly process does not advertise them. Geometry creation
+carries ten geometry kinds across sixteen nested models - by far the heaviest schema in the
+former core surface - that shot work never uses, and `reset_scene`/`remove_scene_objects` are
+destructive operations that a shot surface should not offer at all. Everything here stays
+reachable through the `scene-authoring` bundle.
 """
 
 import asyncio
@@ -17,7 +33,25 @@ from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ..app import mcp
-from .scene import _call, _StrictModel
+from ._scene_shared import _call, _StrictModel
+
+
+def _require_one_value_per(name: str, values: list | None, expected: int, domain: str) -> None:
+    """
+    Validate that an optional parallel array carries one entry per domain element.
+
+    Args:
+        name: Field name, used verbatim in the error message.
+        values: The optional array to check. `None` means "not supplied" and always passes.
+        expected: Number of elements in the domain the array runs parallel to.
+        domain: Singular noun for one domain element, e.g. `"point"` or `"stroke point"`.
+
+    Raises:
+        ValueError: If `values` is supplied and its length is not `expected`.
+
+    """
+    if values is not None and len(values) != expected:
+        raise ValueError(f"{name} must contain one value per {domain}")
 
 
 class MeshGeometry(_StrictModel):
@@ -126,12 +160,10 @@ class PointCloudGeometry(_StrictModel):
 
     @model_validator(mode="after")
     def validate_radii(self) -> "PointCloudGeometry":
-        """Require one finite, non-negative radius per point when supplied."""
-        if self.radii is not None:
-            if len(self.radii) != len(self.points):
-                raise ValueError("radii must contain one value per point")
-            if any(radius < 0 for radius in self.radii):
-                raise ValueError("radii must be non-negative")
+        """Require one non-negative radius per point when supplied; finiteness comes from _StrictModel."""
+        _require_one_value_per("radii", self.radii, len(self.points), "point")
+        if self.radii is not None and any(radius < 0 for radius in self.radii):
+            raise ValueError("radii must be non-negative")
         return self
 
 
@@ -142,6 +174,37 @@ class GeometryAttribute(_StrictModel):
     data_type: Literal["FLOAT", "INT", "BOOLEAN", "FLOAT_VECTOR", "FLOAT_COLOR", "BYTE_COLOR"]
     domain: Literal["POINT", "CURVE", "STROKE", "LAYER"]
     values: Annotated[list[Any], Field(max_length=2_000_000)]
+
+
+def _validate_attributes(attributes: list[GeometryAttribute], counts: dict[str, int], label: str) -> None:
+    """
+    Validate attribute domains and value counts against the domains a geometry supports.
+
+    `GeometryAttribute` permits more domains than any single geometry type accepts, so each
+    geometry declares the domains it supports and their sizes here. Keying the size lookup on
+    the same mapping that defines the allowlist keeps the two rules from drifting apart.
+
+    Args:
+        attributes: Attributes to validate.
+        counts: Supported domain name to the number of elements in that domain, in the
+            order the domains should be listed if the allowlist check fails.
+        label: Geometry name used to open the allowlist error, e.g. `"Curves"`.
+
+    Raises:
+        ValueError: If an attribute uses an unsupported domain, or carries a number of
+            values that does not match the size of its domain.
+
+    """
+    unsupported = sorted({attribute.domain for attribute in attributes} - counts.keys())
+    if unsupported:
+        raise ValueError(f"{label} attributes only support {' or '.join(counts)} domains: {unsupported}")
+    for attribute in attributes:
+        expected = counts[attribute.domain]
+        if len(attribute.values) != expected:
+            raise ValueError(
+                f"Attribute '{attribute.name}' on {attribute.domain} requires {expected} values, "
+                f"received {len(attribute.values)}"
+            )
 
 
 class CurvesGeometry(_StrictModel):
@@ -159,12 +222,12 @@ class CurvesGeometry(_StrictModel):
         """Ensure curve offsets and optional values match their domains."""
         if any(size < 1 for size in self.curve_sizes) or sum(self.curve_sizes) != len(self.points):
             raise ValueError("curve_sizes must be positive and sum to the number of points")
-        if self.cyclic is not None and len(self.cyclic) != len(self.curve_sizes):
-            raise ValueError("cyclic must contain one value per curve")
-        invalid_domains = sorted({attribute.domain for attribute in self.attributes} - {"POINT", "CURVE"})
-        if invalid_domains:
-            raise ValueError(f"Curves attributes only support POINT or CURVE domains: {invalid_domains}")
-        _validate_attribute_lengths(self.attributes, len(self.points), len(self.curve_sizes))
+        _require_one_value_per("cyclic", self.cyclic, len(self.curve_sizes), "curve")
+        _validate_attributes(
+            self.attributes,
+            {"POINT": len(self.points), "CURVE": len(self.curve_sizes)},
+            "Curves",
+        )
         return self
 
 
@@ -180,8 +243,7 @@ class GreasePencilStroke(_StrictModel):
     def validate_point_data(self) -> "GreasePencilStroke":
         """Require point-domain arrays to match the stroke's point count."""
         for name, values in (("radii", self.radii), ("opacities", self.opacities)):
-            if values is not None and len(values) != len(self.points):
-                raise ValueError(f"{name} must contain one value per stroke point")
+            _require_one_value_per(name, values, len(self.points), "stroke point")
         return self
 
 
@@ -195,13 +257,13 @@ class GreasePencilFrame(_StrictModel):
     @model_validator(mode="after")
     def validate_attributes(self) -> "GreasePencilFrame":
         """Validate drawing-local point and stroke attribute lengths."""
-        invalid_domains = sorted({attribute.domain for attribute in self.attributes} - {"POINT", "STROKE"})
-        if invalid_domains:
-            raise ValueError(f"Grease Pencil drawing attributes only support POINT or STROKE: {invalid_domains}")
-        _validate_attribute_lengths(
+        _validate_attributes(
             self.attributes,
-            sum(len(stroke.points) for stroke in self.strokes),
-            len(self.strokes),
+            {
+                "POINT": sum(len(stroke.points) for stroke in self.strokes),
+                "STROKE": len(self.strokes),
+            },
+            "Grease Pencil drawing",
         )
         return self
 
@@ -218,16 +280,6 @@ class GreasePencilGeometry(_StrictModel):
 
     kind: Literal["GREASEPENCIL"] = "GREASEPENCIL"
     layers: Annotated[list[GreasePencilLayer], Field(min_length=1, max_length=10_000)]
-
-
-def _validate_attribute_lengths(attributes: list[GeometryAttribute], point_count: int, curve_count: int) -> None:
-    for attribute in attributes:
-        expected = point_count if attribute.domain == "POINT" else curve_count
-        if len(attribute.values) != expected:
-            raise ValueError(
-                f"Attribute '{attribute.name}' on {attribute.domain} requires {expected} values, "
-                f"received {len(attribute.values)}"
-            )
 
 
 class VolumeGeometry(_StrictModel):
@@ -271,7 +323,13 @@ async def create_geometry_object(
     rotation: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
 ) -> dict:
-    """Create one native Blender geometry object from a validated declarative specification."""
+    """
+    Create one native Blender geometry object from a validated declarative spec.
+
+    Transforms are parent-local; rotation is XYZ Euler radians; scale components must be
+    non-zero. name must not already be in use. A named collection_name is created if it does
+    not exist; omit it to use the active collection.
+    """
     return await asyncio.to_thread(
         _call,
         "create_geometry_object",
@@ -293,7 +351,7 @@ async def remove_scene_objects(
     managed_rig: ManagedRigSelector | None = None,
     confirm_remove: bool = False,
 ) -> dict:
-    """Remove only the named scene objects after dependency inspection and explicit confirmation."""
+    """Remove scene objects given by exactly one of object_names or managed_rig; requires confirm_remove=True."""
     if not confirm_remove:
         raise ValueError("confirm_remove=True is required")
     if (object_names is None) == (managed_rig is None):
@@ -317,7 +375,13 @@ async def reset_scene(
     scene_name: str | None = None,
     purge_orphaned_data: bool = True,
 ) -> dict:
-    """Clear one scene to an empty, deterministic starting state after explicit confirmation."""
+    """
+    Clear a scene to an empty state; requires confirm_reset=True.
+
+    Clears the scene named by scene_name, or the active scene when omitted. Unless
+    purge_orphaned_data=False, also purges every orphaned local datablock in the whole
+    file, not only the ones this scene released.
+    """
     if not confirm_reset:
         raise ValueError("confirm_reset=True is required")
     return await asyncio.to_thread(
