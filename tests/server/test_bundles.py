@@ -181,3 +181,54 @@ def test_readme_documents_every_bundle_name() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     missing = sorted(name for name in BUNDLES if f"`{name}`" not in readme)
     assert not missing, f"bundles missing from README's table: {missing}"
+
+
+def _tool_annotations_for_toolsets(raw_value: str | None) -> dict[str, dict[str, bool]]:
+    """
+    Destructive/read-only hints a server process advertises for a given selection.
+
+    Measured in a subprocess for the same reason the name set is: only a process that imported
+    the modules through `tools/__init__` has run `finalize_tool_documentation`, so annotations
+    are absent from any tool imported late into the test process.
+
+    Args:
+        raw_value: The BLENDER_MCP_TOOLSETS value to set, or None to leave it unset.
+
+    Returns:
+        Tool name mapped to its `destructive` and `read_only` hints.
+
+    """
+    env = {key: value for key, value in os.environ.items() if key != TOOLSETS_ENV_VAR}
+    if raw_value is not None:
+        env[TOOLSETS_ENV_VAR] = raw_value
+    script = (
+        "import asyncio, json\n"
+        "from blender_mcp.server import mcp\n"
+        "print(json.dumps({\n"
+        "    t.name: {\n"
+        '        "destructive": bool(t.annotations and t.annotations.destructiveHint),\n'
+        '        "read_only": bool(t.annotations and t.annotations.readOnlyHint),\n'
+        "    }\n"
+        "    for t in asyncio.run(mcp.list_tools())\n"
+        "}))\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True, env=env)
+    return json.loads(result.stdout)
+
+
+def test_scene_authoring_tools_advertise_their_destructiveness() -> None:
+    """
+    The tools moved out of core because they are destructive must say so on the wire.
+
+    `destructiveHint` is what a client reads when deciding whether a call is safe, and it is
+    the stated reason these tools are not in the default surface. `reset_scene` in particular
+    matches no destructive name prefix, so only its entry in `_DESTRUCTIVE_TOOLS` marks it.
+    """
+    annotations = _tool_annotations_for_toolsets("scene-authoring")
+
+    for name in ("reset_scene", "remove_scene_objects"):
+        assert annotations[name]["destructive"], f"{name} is destructive but does not advertise it"
+        assert not annotations[name]["read_only"], f"{name} mutates but advertises read_only"
+    assert not annotations["create_geometry_object"]["destructive"], (
+        "create_geometry_object adds an object; marking it destructive would devalue the hint"
+    )

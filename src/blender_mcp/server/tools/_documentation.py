@@ -93,6 +93,7 @@ _DESTRUCTIVE_PREFIXES = (
     "transfer_",
 )
 _DESTRUCTIVE_TOOLS = {
+    "reset_scene",
     "apply_liquid_quality_profile",
     "apply_polyhaven_texture",
     "assign_bone_custom_shapes",
