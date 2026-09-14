@@ -240,15 +240,26 @@ command = "blender-mcp"
 
 blender-mcp registers close to 300 tools in total. Sending all of them to a client on every
 connection can be large enough to eat into the context available for the actual task, so by
-default a server process only registers its **core** bundle — scene inspection, mesh/object
-editing, viewport, and animation (~37 tools). Everything else is opt-in per domain, selected with
-the `BLENDER_MCP_TOOLSETS` environment variable (a comma-separated list of bundle names, or `all`
-for the previous everything-registered behavior):
+default a server process only registers its **core** bundle — scene inspection, object editing,
+viewport, and animation (~21 tools). Everything else is opt-in, selected with the
+`BLENDER_MCP_TOOLSETS` environment variable (a comma-separated list of names, or `all` for the
+previous everything-registered behavior).
+
+A name is either a **mode** — one word for the surface an artist is working in — or a **bundle**,
+for fine-grained control. Modes are curated presets over bundles and compose with them, e.g.
+`shot,retopology`:
+
+| Mode | Selects |
+|---|---|
+| `shot` | assembling, animating, lighting and rendering a scene: `camera`, `lighting`, `rendering` |
+| `asset` | authoring or revising canon: `core-authoring`, `scene-authoring`, `texture`, `retopology`, `geometry-nodes` |
 
 | Bundle | Adds |
 |---|---|
-| *(default, always on)* | scene inspection, mesh/object editing, viewport, animation |
-| `camera` | camera placement, framing, shots |
+| *(default, always on)* | scene inspection, object editing, viewport, animation |
+| `core-authoring` | mesh and model creation/editing |
+| `camera` | camera placement, framing, shots (rig construction is separate, see `camera-rigs`) |
+| `camera-rigs` | orbit/dolly/crane/path rig construction |
 | `scene-authoring` | declarative geometry creation, scene reset, object removal |
 | `cloth` | cloth simulation |
 | `liquid` | fluid/liquid simulation |
@@ -256,12 +267,15 @@ for the previous everything-registered behavior):
 | `geometry-nodes` | geometry nodes, ND toolkit |
 | `character-rigging` | armatures, rigging |
 | `retopology` | retopology workflows |
-| `texture-lighting` | materials/textures, lighting |
+| `lighting` | lighting inspection, environment, render-quality settings (construction is separate, see `lighting-construction`) |
+| `lighting-construction` | creating/aiming/linking lights, studio-lighting presets (also carries all of `lighting`'s render-quality tools — `configure_lighting_quality`, `configure_color_management`, `render_lighting_preview` — since the studio-lighting preset calls the last one directly) |
+| `texture` | materials/textures |
+| `texture-lighting` | **deprecated**, kept for existing configs: `texture` + `lighting` + `lighting-construction` |
 | `rendering` | render + inspect render output |
 | `assets` | Poly Haven, Sketchfab |
 
-Add one MCP server entry per bundle set you want available this session — set the env var on that
-entry, not globally, so each client config controls exactly which tools it sees:
+Add one MCP server entry per mode or bundle set you want available this session — set the env var
+on that entry, not globally, so each client config controls exactly which tools it sees:
 
 **Claude Desktop / Claude Code** (`claude_desktop_config.json`, or `claude mcp add`'s `--env` flag):
 
