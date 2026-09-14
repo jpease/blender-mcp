@@ -51,15 +51,20 @@ materially strengthens the plan's decision to defer variant scoping, MCP Resourc
 | 1 | Payload measurement harness | **done** | `27ec3aa`, `270958a`, `313740a` | n/a (adds no tools) | Plan's `measure_catalog.py` set the env var after importing `blender_mcp`; corrected to set it first. Two fix rounds: lint, then duplicate-name rejection + revision provenance. |
 | 2 | Make bundle tests capable of failing | **done** | `d8163e3` | n/a (tests only) | 98/100. Canary proven: deleting `"mesh"` from `CORE_MODULES` gives 9 failed / 6 passed. `ALL_MODULES` dedup moved to Task 5, where a real failing test drives it. |
 | 3 | Split `scene` authoring/destructive tools | **done** | `56ab3f0` | **−28,634 B** off the default surface | 97/100. Default 40 / 119,634 -> 37 / **91,000**. `scene-authoring` restores 40 / 119,634. Also edited `tests/test_scene_tools.py` (not in the brief) and `README.md`. |
-| 4 | Split `CORE_MODULES` | **not started** | — | predicted **−27,605 B** | Next task. See predictions below. |
-| 5 | Split `camera` and `texture-lighting` | **not started** | — | predicted **−20,608 B** off the shot surface | **Blocked on a design change the plan does not describe.** See "Task 5 is not what the plan thinks it is" below. |
-| 6 | Pin the shot-mode payload ceiling | **not started** | — | n/a | Predicted ceiling **129,961 B** / 53 tools. |
+| 4 | Add `shot`/`asset` modes, split `CORE_MODULES` | **done (uncommitted)** | — | **−27,605 B** off the default surface (matches prediction exactly) | 93/100 after 4 review cycles, zero critical. Default 21 tools / 63,395 B. `MODES` deviates from the plan text — see below. |
+| 5 | Split `camera` and `texture-lighting` | **done (uncommitted)** | — | `shot` = 53 tools / **203,094 B** (see correction below; supersedes the session-1 ladder's 129,961 B prediction) | 94/100 after 4 review cycles, zero critical this cycle (4 critical found+fixed across cycles 1-3). PEP 562 lazy attribute resolution (`tools/_lazy_package.py`, AST-based since cycle 2), shared by `camera/__init__.py` and `lighting/__init__.py`. |
+| 6 | Pin the shot-mode payload ceiling | **done (uncommitted)** | — | n/a (adds a test, no tool) | 94/100 after 4 review cycles, zero critical, unanimously declared converged by all three critics on the final cycle. Ceiling test lives in `test_bundles.py` (relocated there in its own cycle 1), pinned at the measured **203,094 B**, not the session-1 prediction of 129,961 B. |
 
 ## Where the next session picks up
 
-**Tasks 1-3 are done, reviewed and committed. Task 4 is next.** Read this file, then
-`docs/superpowers/plans/2026-09-11-phase-1-handoff.md` (still accurate except where corrected here),
-then the plan. Everything below is measured on this branch at `56ab3f0`, not estimated.
+**Tasks 1-3 are done, reviewed and committed. Tasks 4, 5 and 6 are done and reviewed, but
+uncommitted per each one's review-loop brief (see their review-loop sections below). Phase 1
+(Tasks 1-6) is now fully implemented and reviewed; nothing has been pushed and nothing beyond
+Tasks 1-3 has been committed -- see each task's own section for what remains, if anything, before
+an end-of-phase commit/push decision.** Read this file, then
+`docs/superpowers/plans/2026-09-11-phase-1-handoff.md` (still accurate except where corrected
+here), then the plan. Everything below is measured on this branch at `56ab3f0` unless a later
+section states a newer commit/measurement.
 
 ### Predicted outcomes for Tasks 4-6 (derived by me at `56ab3f0`; verify, do not trust)
 
@@ -271,7 +276,10 @@ can be reviewed and reversed cheaply. Nothing here is pushed.
 
 ## What is NOT done
 
-- Tasks 4, 5 and 6 are not started.
+- ~~Tasks 4, 5 and 6 are not started.~~ **Stale as of the end of this session:** all three are
+  now done and reviewed (see each task's own section below for scores/cycles), still
+  uncommitted. This line is end-of-session-1's snapshot, left as historical record rather than
+  rewritten; trust the per-task sections and the top "Tasks" table over this line.
 - **Nothing has been pushed.** The push is a single end-of-phase gate per handoff §03.
 - The end-of-phase gate (`pytest && ruff check . && ruff format --check . && basedpyright`) has not
   been run as written, and per ruling 3 it cannot pass repo-wide. Run the per-file form plus the
@@ -910,3 +918,1153 @@ those are the right tasks, and no number of repeats fixes a badly chosen suite.
 capability-catalog format, a dispatch path reusing the existing Pydantic validation, the
 `capabilities` naming collision with the addon handshake, and - the real one - data from Task 6
 and the bar's dispatch metric showing the byte/round-trip trade is worth making.
+
+---
+
+# Task 4: `shot`/`asset` modes and the core split
+
+Implemented against `docs/superpowers/plans/2026-09-11-phase-1-catalog.md`'s Task 4, on top of
+`547ba0a`. Scope confirmed with the user as Task 4 only, followed by its own review loop; Tasks 5
+and 6 are out of scope for this session. Nothing committed, per the brief.
+
+**Files:** `src/blender_mcp/server/bundles.py`, `tests/server/test_bundles.py`, `README.md`.
+
+## Deviation from the plan (found before writing code)
+
+The plan's Task 4 snippet (`2026-09-11-phase-1-catalog.md:579-584`) defines `MODES` using
+standalone `"lighting"` and `"texture"` bundle names. Those do not exist yet - today `BUNDLES` only
+has the fused `"texture-lighting": ("texture", "lighting")`; splitting it is Task 5's job. Taken
+literally, Task 4's own `MODES` dict and `test_mode_names_resolve_to_their_bundle_sets` would
+`KeyError` before Task 5 lands.
+
+**Resolution:** both modes use `"texture-lighting"` (the bundle key that exists today) in place of
+the plan's `"lighting"`/`"texture"`. `shot = ("camera", "texture-lighting", "rendering")`,
+`asset = ("core-authoring", "scene-authoring", "texture-lighting", "retopology", "geometry-nodes")`.
+This means `shot` still drags texture-authoring tools in for now - exactly the problem the plan
+says Task 5 exists to fix, and exactly why the plan says to "expect `shot` to still be large at
+this point." *Cost if wrong:* Task 5 must remember to swap `"texture-lighting"` for `"texture"` in
+both modes once the split lands, or `shot`/`asset` silently keep carrying the wrong half.
+
+## Verified baseline (measured, not assumed)
+
+| Check | Before | After |
+|---|---|---|
+| `pytest` | 619 passed | **624 passed** |
+| ruff, `bundles.py` / `test_bundles.py` | 0 errors | 0 errors |
+| ruff format --check, touched files | formatted | formatted |
+| `basedpyright`, touched files | 0 errors | 0 errors |
+| repo-wide `ruff check .` | 9,868 errors | 9,844 (no new debt; touched files were already 0) |
+| repo-wide `ruff format --check .` | 12 unformatted | 12 unformatted (unchanged) |
+| `all` (capability preservation) | 285 tools / 1,180,620 B | **285 tools / 1,181,038 B** (unchanged tool count; bytes drift is pre-existing docstring text, not this change) |
+| default (core) | 37 tools / 91,000 B | **21 tools / 63,395 B** = **−27,605 B**, matching the plan's prediction exactly |
+| `core-authoring` | n/a | 37 tools / 91,000 B (byte-for-byte restores the old core - lossless split) |
+| `shot` | n/a | **85 tools / 319,395 B / ~88.7K tokens** |
+| `asset` | n/a | **141 tools / 469,528 B / ~130.4K tokens** |
+
+`shot`'s 85 tools reconciles with the Replan section's earlier `camera,texture-lighting,rendering`
+measurement of 101 tools: 101 − 16 (mesh + model, now moved to `core-authoring`) = 85, confirmed.
+Both mode figures are still large by design - Task 5 is what brings `shot` down; do not treat
+these as final.
+
+Ruff caught two errors on first pass in the new test code (`import-private-name` on a direct
+`from ... import _ordered_unique`, fixed by calling `bundles._ordered_unique` instead; a
+docstring-capitalization miss) - both fixed before this baseline was taken.
+
+## What was NOT touched
+
+Task 5 and 6 are unstarted. `camera`/`lighting` package internals, the PEP 562 lazy re-export
+design Task 5 needs, and the shot-mode budget regression test are all still open, as recorded
+above.
+
+## Task 4 review loop
+
+Review of the Task 4 diff only (`bundles.py`, `test_bundles.py`, `README.md`), per the same
+rubric as the Task 1-3 loop: architecture 40 (gate 34), DRY 35 (gate 29.75), comments 25
+(gate 21.25); exit >= 90 overall with zero critical failures. No commits made by this loop.
+
+## Cycle 1 - scores
+
+| Dimension | Score | Gate | Verdict |
+|---|---|---|---|
+| Clean architecture | 36/40 | 34 | pass |
+| DRY | 29/35 | 29.75 | fail (just under) |
+| Comments/docs | 22/25 | 21.25 | pass |
+| **Total** | **87/100** | 90 | fail |
+
+Critical failures: **none** (all three fresh-context critics agreed).
+
+### Cycle 1 repairs applied
+
+| # | Finding (critic) | Repair |
+|---|---|---|
+| 1 | `MODES` values were never validated against `BUNDLES` keys; a typo in `MODES` would surface as a bare `KeyError` deep inside `resolve_toolset_modules` rather than the module's established "validate before it can surprise a caller" pattern (Architect) | New `_check_modes_are_well_formed()`, run once at import time, raises (not asserts, so it survives `python -O`) a specific `ValueError` for either a mode/bundle name collision or a mode naming a bundle that doesn't exist. Mutation-verified: typo'd `"geometry-nods"` now fails at import with a named error instead of a delayed `KeyError` |
+| 2 | Mode/bundle namespace disjointness was enforced only by a test, not by the code (Architect) | Folded into the same `_check_modes_are_well_formed()` check above |
+| 3 | `tools/__init__.py`'s module docstring said `BLENDER_MCP_TOOLSETS` selects "bundle names from `..bundles.BUNDLES`", now incomplete since mode names also work and are resolved first (Architect) | Docstring updated to name both `MODES` and `BUNDLES` |
+| 4 | `test_mode_names_resolve_to_their_bundle_sets` duplicated the exact production formula it was testing (`_ordered_unique(CORE_MODULES + ...)`), breaking this file's own established convention of deriving test expectations independently (DRY) | Rewritten to a plain set comprehension plus three separate assertions (core-first, set equality, no duplicates), matching `test_all_sentinel_selects_every_module`'s pattern exactly |
+| 5 | README's new mode table restated `MODES`' content with no drift test, unlike the bundle table (DRY) | New `test_readme_documents_every_mode_and_its_bundle_list`, checking both mode names and each mode's listed bundle names appear in README |
+| 6 | The "sorted, joined, or `(none)`" error-message formatting was spelled out twice in `resolve_toolset_modules` (DRY) | `_format_names()` helper, one definition, both clauses use it |
+| 7 | `test_resolve_toolset_modules_error_lists_modes_separately_from_bundles`'s docstring said "not eleven domains" - stale the moment this diff added `core-authoring`, the 12th bundle (Comment) | Reworded to "not every bundle", which cannot drift as `BUNDLES` grows |
+| 8 | The `MODES` comment cited `(spec 4.7)` / `Spec 4.3` with no file path, inconsistent with the file-and-line citation two lines below it in the same comment block (Comment) | Cites the spec file path explicitly, matching the plan citation's traceability |
+
+Deferred by explicit judgement: Architect's finding #4 (`core-authoring` naming reads like it
+could be part of the always-on `core` surface) - low-blame (name came from the plan's own
+snippet), and the existing comment on `BUNDLES` ("`core` is always included... it is not a
+selectable name") already disambiguates it for a reader of the file.
+
+### Post-repair verification
+
+| Check | Result |
+|---|---|
+| `pytest` | **625 passed** |
+| ruff: `bundles.py`, `test_bundles.py`, `tools/__init__.py` | 0 errors |
+| `ruff format --check`, same files + README | formatted |
+| `basedpyright`, same files | 0 errors |
+| repo-wide `ruff check .` | 9,844 (unchanged from pre-cycle) |
+| repo-wide `ruff format --check .` | 12 unformatted (unchanged) |
+| `all` (capability preservation) | 285 tools / 1,181,038 B - unchanged |
+| Mutation test | typo'd bundle name inside `MODES` now fails at import with a specific `ValueError` (previously would have been a live `KeyError` the first time that mode was resolved) |
+
+Regression label vs. cycle 1 entry state: **improved** (no regressions found during repair).
+
+## Cycle 2 - scores
+
+| Dimension | C1 | C2 | Gate | Verdict |
+|---|---|---|---|---|
+| Clean architecture | 36 | **38/40** | 34 | pass |
+| DRY | 29 | **28/35** | 29.75 | fail vs. table figure; **80.0% vs. the rubric's stated 80% exit gate** |
+| Comments/docs | 22 | **24/25** | 21.25 | pass |
+| **Total** | 87 | **90/100** | 90 | **meets the numeric total for the first time** |
+
+Critical failures: **none** (both cycles, all six critic reports).
+
+Note on the DRY gate: `04 - 100-Point Rubric`'s table header says "Gate >= 80%" but its own
+figure for DRY (29.75/35) is actually 85%, not 80% (40*0.8 = 32, not 34; 35*0.8 = 28, not 29.75).
+The prose in `05 - Project Brief`'s exit-gates section is unambiguous: "at least 80% of the
+available points in every rubric dimension." Following precedent from the Task 1-3 loop (which
+explicitly computed real percentages against 80% and passed dimensions below the table's point
+figures, e.g. cycle 7's architecture 33/40 = 82.5% "yes"), 28/35 = exactly 80% **passes** the
+true gate even though it is below the table's 29.75. Total 90/100 also meets the numeric exit
+gate. Per the process brief's mandatory minimum, the loop continues to at least four complete
+cycles regardless.
+
+### Cycle 2 repairs applied
+
+| # | Finding (critic) | Repair |
+|---|---|---|
+| 1 | `_check_modes_are_well_formed()` (added in cycle 1) checked mode/bundle collisions and unknown-bundle references, but not a mode colliding with `ALL_SENTINEL` - a mode literally named `all` would be silently swallowed by the sentinel branch and never reach `_expand_modes`, unreachable with no error anywhere (Architect) | Added a third check; mutation-verified (`"shot"` renamed to `"All"` in a scratch copy) that it now fails at import with a named error |
+| 2 | The new validator reimplemented `_format_names`' exact "sorted, comma-joined" formatting inline instead of reusing the helper cycle 1 had just built for the identical purpose (DRY) | `_format_names` moved above the validator (and `TOOLSETS_ENV_VAR`/`ALL_SENTINEL` moved above `MODES`, since the new sentinel check needs `ALL_SENTINEL` to already exist); validator's three raises all call it |
+| 3 | `test_readme_documents_every_bundle_name` and the cycle-1-added `test_readme_documents_every_mode_and_its_bundle_list` each independently re-read README from disk and repeated the identical "is `name` backtick-documented" filter three times total across the two tests (DRY) | New `_readme_text()` (cached) and `_names_missing_from_readme()` helpers; all three call sites use both |
+| 4 | Cycle 1's rewrite of `test_mode_names_resolve_to_their_bundle_sets` fixed the worse problem (test mirroring production logic) but copied `test_all_sentinel_selects_every_module`'s three-assertion body verbatim, creating a second instance of the same shape (DRY, minor) | Extracted `_assert_resolves_exactly_to()`, used by both tests; kept the `_CORE_TODAY`-not-`CORE_MODULES` canary property from cycle 1's fix |
+| 5 | `Sec4.7`/`Sec4.3` citation spacing inconsistent with the plan citation's spacing two lines below in the same comment block (Comment, minor) | `Sec 4.7` / `Sec 4.3` |
+
+Deferred by explicit judgement: Architect's repeat note on `core-authoring` naming (already
+deferred in cycle 1, re-confirmed fine by the cycle 2 architect); Comment's note on the `MODES`
+comment block's density (both critics who saw it called it non-blocking, and it documents a
+genuine, temporary deviation that will be deleted outright once Task 5 lands).
+
+### Post-repair verification
+
+| Check | Result |
+|---|---|
+| `pytest` | **625 passed** |
+| ruff: `bundles.py`, `test_bundles.py`, `tools/__init__.py` | 0 errors |
+| `ruff format --check`, same files + README | formatted |
+| `basedpyright`, same files | 0 errors |
+| repo-wide `ruff check .` | 9,844 (unchanged) |
+| repo-wide `ruff format --check .` | 12 unformatted (unchanged) |
+| `all` (capability preservation) | 285 tools / 1,181,038 B - unchanged |
+| Mutation test | mode name `"All"` colliding with the sentinel now fails at import with a specific `ValueError` |
+
+Regression label vs. cycle 1 post-repair state: **improved** (no regressions; reordering
+`TOOLSETS_ENV_VAR`/`ALL_SENTINEL`/`_format_names` above `MODES` changed no behavior, confirmed
+by full suite + capability check both before and after).
+
+## Cycle 3 - scores
+
+| Dimension | C1 | C2 | C3 | Gate | Verdict |
+|---|---|---|---|---|---|
+| Clean architecture | 36 | 38 | **38/40** | 34 (85%) / true 80% = 32 | pass, both readings |
+| DRY | 29 | 28 | **30/35** | 29.75 (85%) / true 80% = 28 | pass, both readings |
+| Comments/docs | 22 | 24 | **25/25** | 21.25 (85%) / true 80% = 20 | pass, both readings; **converged** (Comment critic: 22 -> 24 -> 25, zero new findings this cycle) |
+| **Total** | 87 | 90 | **93/100** | 90 | **pass** |
+
+Critical failures: **none** (all three cycles, nine critic reports).
+
+All four exit gates are now met by every reading of the rubric: total >= 90 (93), every
+dimension >= 80% by both the table's point figures and the brief's stated percentage, zero
+critical failures across three full cycles, and the code compiles/passes tests (627 passed).
+
+### Cycle 3 repairs applied
+
+| # | Finding (critic) | Repair |
+|---|---|---|
+| 1 | The module docstring never mentions `MODES`; a reader orienting from the top of the file has no signal the file has grown a second, artist-facing preset tier over `BUNDLES` (Architect) | Added one paragraph naming both tiers and pointing at `resolve_toolset_modules` |
+| 2 | `_expand_modes` silently passes an unrecognized name through as if it were a bundle name (`MODES.get(name, (name,))`); this is safe only because its one caller always validates first, but that precondition lived only in the caller's control flow, not the callee's contract (Architect) | Documented the precondition and the caller guarantee explicitly in the docstring |
+| 3 | `test_readme_documents_every_mode_and_its_bundle_list`'s per-mode bundle loop re-verified, name by name, facts already covered by `test_readme_documents_every_bundle_name` (checks all of `BUNDLES`, a superset) plus the import-time `unknown_bundles` guarantee - it could never independently fail, and its error message claimed row-scoped checking it wasn't doing (DRY) | Renamed to `test_readme_documents_every_mode_name`; dropped the redundant per-mode loop, kept only the genuinely new mode-*name* check |
+| 4 | `test_mode_and_bundle_namespaces_do_not_collide` restated an invariant `_check_modes_are_well_formed()` already enforces unconditionally at import time - a real collision would fail test *collection* itself, so the dedicated test had no scenario where it could independently fail, and was strictly weaker than production (case-sensitive vs. production's case-insensitive sentinel match) (DRY) | Replaced with parametrized `test_check_modes_are_well_formed_rejects_each_invariant_violation`, which monkeypatches `MODES` and exercises the validator directly against all three failure modes (bundle collision, sentinel collision, unknown-bundle reference) |
+
+No Comment-dimension findings this cycle (score 25/25); the comment critic explicitly recommended treating that dimension as converged and not re-scanning it in a further cycle.
+
+### Post-repair verification
+
+| Check | Result |
+|---|---|
+| `pytest` | **627 passed** |
+| ruff: `bundles.py`, `test_bundles.py`, `tools/__init__.py` | 0 errors |
+| `ruff format --check`, same files + README | formatted |
+| `basedpyright`, same files | 0 errors |
+| repo-wide `ruff check .` | 9,844 (unchanged) |
+| repo-wide `ruff format --check .` | 12 unformatted (unchanged) |
+| `all` (capability preservation) | 285 tools / 1,181,038 B - unchanged |
+| New mutation-based test | `test_check_modes_are_well_formed_rejects_each_invariant_violation` passes all three parametrized cases, replacing what had been manual one-off mutation checks in earlier cycles' verification tables with a committed regression test |
+
+Regression label vs. cycle 2 post-repair state: **improved** (two new tests added, one test
+renamed with reduced-but-still-correct scope, no regressions - full suite, lint, format, type
+check and capability count all re-verified clean).
+
+## Cycle 4 - scores (final)
+
+| Dimension | C1 | C2 | C3 | C4 | Gate | Verdict |
+|---|---|---|---|---|---|---|
+| Clean architecture | 36 | 38 | 38 | **38/40** | 34 (85%) / true 80% = 32 | pass, both readings; converged (36, 38, 38 across three independent panels) |
+| DRY | 29 | 28 | 30 | **32/35** | 29.75 (85%) / true 80% = 28 | pass, both readings; converged (critic: "nothing that rises to a reportable finding") |
+| Comments/docs | 22 | 24 | 25 | **23/25** | 21.25 (85%) / true 80% = 20 | pass, both readings; **one genuine regression found and fixed** (see below) |
+| **Total** | 87 | 90 | 93 | **93/100** | 90 | **pass** |
+
+Critical failures: **none** (all four cycles, twelve critic reports).
+
+Cycle 3's comment critic declared the dimension converged, but that verdict covered only code
+that existed *before* cycle 3's own repairs. Cycle 4's comment critic was scoped specifically at
+the four pieces of new cycle-3 material a fresh reviewer had not yet checked, and found one real
+defect: `test_check_modes_are_well_formed_rejects_each_invariant_violation`'s docstring claimed
+"`resolve_toolset_modules`'s own case-insensitive sentinel match is why the `ALL` case triggers
+here" - false. That test calls `bundles._check_modes_are_well_formed()` directly and never calls
+`resolve_toolset_modules` at all; the case-insensitive match that actually fires is the
+validator's own independent check. Lesson consistent with the Task 1-3 loop's own finding: a
+docstring written *during* a repair is new code and needs the same verification as new logic.
+
+Architecture's cycle 4 critic also found one small, genuine gap worth fixing on its own merits
+(not required to hit the gate, which was already cleared): `_check_modes_are_well_formed` caught
+three ways `MODES` could be malformed but not a repeated bundle name within one mode's own tuple
+(e.g. `"shot": ("camera", "camera", "rendering")`) - `_ordered_unique` downstream would silently
+absorb the duplicate, so the validator's own stated job ("catch each way MODES can go bad") was
+not actually exhaustive.
+
+### Cycle 4 repairs applied
+
+| # | Finding (critic) | Repair |
+|---|---|---|
+| 1 | New mutation test's docstring misattributed the "ALL" case's case-insensitive match to `resolve_toolset_modules`, which the test never calls (Comment, Important - a verified factual inaccuracy) | Rewritten to correctly attribute it to `_check_modes_are_well_formed`'s own independent sentinel check, and to state explicitly that the test never calls `resolve_toolset_modules` |
+| 2 | `_check_modes_are_well_formed`'s three checks did not catch a mode repeating a bundle name within its own tuple - an authoring typo `_ordered_unique` would silently absorb (Architect, Minor but cheap and genuine) | Added a fourth check (`duplicated = {mode for mode, members in MODES.items() if len(members) != len(set(members))}`); new parametrized case in the mutation test proves it fires |
+
+Deferred by explicit judgement: Architect's second cycle-4 finding (`resolve_toolset_modules`
+could split its validate-then-expand shape into a named, independently-testable unit to mirror
+`_check_modes_are_well_formed`) - the critic's own assessment was "not worth doing now... splitting
+purely for symmetry risks the kind of over-abstraction the repo's own CLAUDE.md warns against,"
+which I agree with; the function is five short, already-named steps, not a design problem.
+
+### Post-repair verification
+
+| Check | Result |
+|---|---|
+| `pytest` | **628 passed** |
+| ruff: `bundles.py`, `test_bundles.py`, `tools/__init__.py` | 0 errors |
+| `ruff format --check`, same files + README | formatted |
+| `basedpyright`, same files | 0 errors |
+| repo-wide `ruff check .` | 9,844 (unchanged) |
+| repo-wide `ruff format --check .` | 12 unformatted (unchanged) |
+| `all` (capability preservation) | 285 tools / 1,181,038 B - unchanged |
+| New mutation case | `("shot", ("camera", "camera", "rendering"))` now fails at import-time validation with `"mode(s) repeat a bundle name in their own tuple: shot"` |
+
+Regression label vs. cycle 3 post-repair state: **improved** (one real documentation defect
+fixed, one real validation gap closed, no new regressions - full suite/lint/format/type-check/
+capability all re-verified clean).
+
+## Stopping rationale
+
+Four complete cycles have now run, meeting the process brief's mandatory minimum. All four exit
+gates are met with margin: total 93/100 (>= 90), every dimension >= 80% by both the table's point
+figures and the brief's stated percentage (architecture 95%, DRY 91.4%, comments 92%), zero
+critical failures across twelve independent critic reports, and the code compiles and passes
+tests (628 passed, up from the pre-Task-4 baseline of 619, all new).
+
+The loop closes here rather than continuing, for the same reason the Task 1-3 loop eventually
+gave for stopping: architecture and DRY are explicitly declared converged by their cycle-4
+critics (architecture: "three independent panels scored 36, 38, 38... a fifth cycle would very
+likely reproduce the 36-38 band... measuring panel variance, not remaining defects"; DRY: "I did
+not find anything that rises to a reportable finding"). Comments is not declared converged
+outright - cycle 4 found one real regression in cycle 3's own new material - but every cycle so
+far has found genuinely new, real, fixable issues rather than repeating stale ones, and the score
+trend (22 -> 24 -> 25 -> 23, still net-improving from cycle 1 and always >= its gate) shows no
+sign of the oscillate-without-improving pattern that justified the Task 1-3 loop's *continuation*
+past four cycles. Unlike that loop, this one hit all four exit gates on its second cycle and has
+held them with increasing margin since; there is no unmet gate left to chase.
+
+**Task 4 is done, reviewed, and uncommitted, per the brief.** Nothing pushed. Task 5 is next
+(see "Task 5 is not what the plan thinks it is" above for its known design blocker), followed by
+Task 6. Both are out of scope for this session per the user's explicit scope confirmation.
+
+---
+
+# Task 5: split `camera` and `texture-lighting`
+
+Implemented on top of `547ba0a` (Task 4, uncommitted). Scope: Task 5 only, followed by its own
+review loop; Task 6 is next. Nothing committed, per the brief.
+
+**Files:** `src/blender_mcp/server/bundles.py`, `tests/server/test_bundles.py`, `README.md`.
+**Added:** `src/blender_mcp/server/tools/_lazy_package.py`.
+**Rewritten:** `src/blender_mcp/server/tools/camera/__init__.py`,
+`src/blender_mcp/server/tools/lighting/__init__.py`.
+
+## Step 1: measured submodule layout (not guessed)
+
+| Package | Submodules (tool count each) | Total |
+|---|---|---|
+| `camera` | animation (5), core (4), inspection (2), rigs (6), shots (2), targeting (4) | 23 |
+| `lighting` | construction (5), environment (3), inspection (4), rendering (3) | 15 |
+| `texture` | baking (1), images (4), materials (9), previews (1), uv (5), validation (1) | 21 |
+
+Matches the plan's own tool-count claims exactly (23 camera, 15 lighting, 21 texture).
+
+## The design: PEP 562 lazy re-export, as the session-1 handoff specified
+
+`camera/__init__.py` and `lighting/__init__.py` previously star-imported every submodule, so any
+dotted `importlib.import_module` on one submodule still ran the parent `__init__.py` first and
+registered every sibling — verified empirically in session 1, confirmed again here before
+writing any code (`.venv/bin/python -c "..."` importing `camera.core` alone still showed all 23
+camera tools registered, pre-fix).
+
+**Fix:** a new shared helper, `tools/_lazy_package.py`, provides `lazy_getattr`/`lazy_dir`. Both
+`camera/__init__.py` and `lighting/__init__.py` now define only a PEP 562 module-level
+`__getattr__`/`__dir__` pair (plus, for `camera`, the pre-existing `_call` re-export from
+`_shared.py`, which carries no `@mcp.tool()` side effect) — no submodule is imported until
+something asks for one of its names. `bundles.py` selects submodules by dotted name
+(`camera.core`, `camera.rigs`, ...); each import first runs the now-lightweight parent
+`__init__.py`, then imports exactly the requested submodule and nothing else.
+
+**Verified empirically** (not just argued): with `BLENDER_MCP_TOOLSETS=camera`, `camera.rigs` is
+absent from `sys.modules` after import; accessing `camera.create_orbit_camera_rig` (a rigs.py
+function, the same attribute-access pattern `tests/server/tools/camera/test_tools.py` uses
+throughout) resolves correctly through `__getattr__` and *then* `camera.rigs` appears in
+`sys.modules`, lazily, on demand.
+
+The helper is factored out once rather than duplicated between the two packages (DRY) — a
+first-cycle finding this avoided rather than one a critic had to catch.
+
+## The splits made
+
+| Bundle | Submodules | Tools | Notes |
+|---|---|---|---|
+| `camera` | animation, core, inspection, shots, targeting | 17 | `camera.inspection` included, per the session-1 handoff's explicit requirement — omitting it would drop `all` below 285 |
+| `camera-rigs` | rigs | 6 | new |
+| `lighting` | environment, inspection, rendering | 10 | |
+| `lighting-construction` | construction | 5 | new |
+| `texture` | (whole package) | 21 | new, standalone |
+| `texture-lighting` | = `texture` + `lighting` + `lighting-construction`, computed | 36 | **deprecated alias**, kept for existing client configs; not hand-listed, so it cannot drift from the bundles it replaces |
+
+`MODES["shot"] = ("camera", "lighting", "rendering")` (was `("camera", "texture-lighting",
+"rendering")`); `MODES["asset"] = ("core-authoring", "scene-authoring", "texture", "retopology",
+"geometry-nodes")` (was `..., "texture-lighting", ...`). `asset` drops lighting entirely — a
+mode that authors canon does not light or render a specific shot — which is what makes the two
+modes disjoint outside core, not just smaller.
+
+`ALL_MODULES`'s pre-existing `_ordered_unique` dedup (added during Task 4's cycles) absorbs the
+repeat the `texture-lighting` alias introduces with no further code change; this is the
+"Task 2's `test_all_sentinel_selects_every_module` fires as a canary, not a regression" scenario
+the session-1 handoff predicted, confirmed.
+
+## A material correction to the session-1 ladder's byte prediction
+
+Session 1's "Predicted outcomes for Tasks 4-6" table (above) predicted `shot` at **129,961 B /
+36.1K tokens** after Task 5, sourced from a "scratch ladder script" not part of the reviewed
+codebase. **Measured** with the actual bundle split, using the audited, test-covered
+`payload_report` (Task 1) via `scripts/measure_catalog.py shot`:
+
+| Selection | Tools | Bytes | Tokens |
+|---|---|---|---|
+| `shot` (`camera,lighting,rendering`) | 53 | **203,094** | **56.4K** |
+| `asset` | 126 | 406,919 | 113.0K |
+| `all` | 285 | 1,181,038 | 328.1K (unchanged — no domain tool added or removed) |
+| default (`core`) | 21 | 63,395 | 17.6K (unchanged from Task 4) |
+
+Tool count matches the session-1 prediction exactly (53). Bytes do not, by 73,133 B (+56%).
+**Independently reproduced two ways**, not just read off the script once:
+
+1. `scripts/measure_catalog.py shot` (subprocess, full server import): 203,094 B.
+2. `payload_report(...)` summed directly over the 53 tool names that make up `shot` (21 core +
+   17 camera + 10 lighting + 5 rendering): `63,395 + 71,447 (camera, 17 tools) + 35,483
+   (lighting, 10 tools) + 32,769 (rendering, 5 tools) = 203,094`, bit-exact.
+
+Also directly summed the two subtracted groups' own bytes with the same function, by tool name:
+`camera.rigs` (6 tools) = **18,229 B**; the 5 tool names defined in `lighting/construction.py`
+= **27,126 B**. These are the spec's *original* figures — the ones session 1's TASK_STATE
+explicitly declared unreproducible ("18,229 and 27,126 were never measurements of this
+repository") in favor of 8,351 B / 12,257 B from the same scratch ladder script. That script is
+not part of the reviewed codebase and was never itself measured against `payload_report`; given
+two independent reproductions above landing on the spec's original numbers instead, **the
+spec's original 18,229 B / 27,126 B are correct, and session 1's "verified empirically... never
+changed" claim about 8,351 B / 12,257 B does not hold up** under the audited measurement path.
+Recorded here rather than silently overwritten, per this project's own house rule about numbers
+in prose.
+
+**A second, separate error caught by the cycle-1 comment critic in the paragraph above, before
+this doc was final:** the 27,126 B figure is real (it is what the 5 `construction.py` tool
+*names* cost), but it is **not** what selecting the standalone `lighting-construction` bundle
+actually costs at runtime, because I wrote it from a hand-summed tool-name list rather than by
+running the live selection — the exact discipline gap this project's house rule exists to catch.
+`lighting/construction.py:13` does `from .rendering import render_lighting_preview`, because
+`create_studio_lighting` calls `render_lighting_preview` directly as part of its own
+implementation (not an accidental import). Importing `construction` therefore always imports
+all of `lighting/rendering.py` too, registering its other 2 tools (`configure_lighting_quality`,
+`configure_color_management`) as an unavoidable side effect. Measured live
+(`BLENDER_MCP_TOOLSETS=lighting-construction`, not hand-summed): **8 tools / 43,733 B net of
+core**, not 5 tools / 27,126 B. Fixed by making the dependency explicit in `bundles.py`:
+`BUNDLES["lighting-construction"] = ("lighting.construction", "lighting.rendering")`, rather
+than letting it happen as an undocumented transitive import. The `camera.rigs` figure has no
+equivalent problem — `rigs.py` has no cross-submodule imports, confirmed by grep, and 18,229 B
+is genuinely what `camera-rigs` alone costs.
+
+**Consequence:** ~36K tokens is not the floor bundle splitting alone reaches; **~56.4K tokens
+is.** Task 6's ceiling must use 203,094 B, not 129,961 B. This also means the spec's own
+"expect shot in the neighbourhood of 53 tools / ~36K tokens" (§4.6, restated in the plan) needs
+the same correction session 1 already applied once to the byte ladder — flagged for whoever
+next touches spec §4.6, out of scope to fix here (Task 5's files are `bundles.py`,
+`test_bundles.py`, `README.md`).
+
+## Deviation from the plan's own Step 2 test snippet
+
+The plan's Task 5 Step 2 snippet asserts `"create_studio_lighting" in shot`. `create_studio_lighting`
+is defined in `lighting/construction.py`, the exact submodule the plan's own Interfaces line
+(`lighting-construction` as a separate bundle) and the session-1 ladder (rung 3, "− lighting.
+construction", landing at the 53-tool target) say `shot` must exclude. Followed the plan's own
+instruction ("confirm the exact tool names... before committing to those prefixes") and wrote
+the test against verified real names instead; recorded in `tests/server/test_bundles.py`'s
+docstring for `test_shot_mode_excludes_texture_authoring_and_light_or_rig_construction`.
+
+## Verified baseline (measured, not assumed)
+
+| Check | Before (Task 4) | After |
+|---|---|---|
+| `pytest` | 628 passed | **638 passed** |
+| ruff, all Task 5 files | — | 0 errors |
+| `ruff format --check`, all Task 5 files | — | formatted |
+| `basedpyright`, all Task 5 files | — | 0 errors |
+| repo-wide `ruff check .` | 9,844 | **9,834** (net improvement — the old star-import `__init__.py`s carried lint debt the rewrite removed; no new debt) |
+| repo-wide `ruff format --check .` | 12 unformatted | 12 unformatted (unchanged) |
+| `all` (capability preservation) | 285 tools / 1,181,038 B | **285 tools / 1,181,038 B** (unchanged — byte-identical, confirming the split is lossless) |
+| `camera` alone (net of core) | n/a | 17 tools / 71,447 B |
+| `camera-rigs` alone (net of core) | n/a | 6 tools / 18,229 B |
+| `lighting` alone (net of core) | n/a | 10 tools / 35,483 B |
+| `lighting-construction` alone (net of core) | n/a | **8 tools / 43,733 B** (5 `construction` + 3 `lighting.rendering`, which `create_studio_lighting` genuinely depends on — see correction above) |
+| `texture` alone (net of core) | n/a | 21 tools / 70,946 B |
+| `shot` (`camera,lighting,rendering`) | n/a (was 85 tools / 319,395 B under Task 4's `texture-lighting`-fused `shot`) | **53 tools / 203,094 B / 56.4K tokens** |
+| `asset` | n/a (was 141 tools / 469,528 B under Task 4) | **126 tools / 406,919 B / 113.0K tokens** |
+
+## What was NOT touched
+
+`texture/__init__.py` — already a standalone star-import package with no internal split needed
+for Task 5 (the fused bundle was always `("texture", "lighting")` at the *package* level, not
+merged internals). Task 6 (the shot-mode budget regression test) is next.
+
+## Known issues found, corrected in this task
+
+- Superseded the "Task 5's `camera` bundle omits `camera.inspection`" risk noted in session 1 —
+  included from the first draft, verified present in `resolve_toolset_modules("camera")`.
+- Superseded the "`ALL_MODULES` does not deduplicate" risk — the dedup already existed
+  (added during Task 4's review cycles) and required no new code, only the alias to exercise it.
+- Corrected the session-1 byte-ladder prediction for `shot`, as detailed above.
+
+## Task 5 review loop
+
+Same rubric as Tasks 1-4 (architecture 40/gate 34, DRY 35/gate 29.75, comments 25/gate 21.25;
+exit >= 90, zero critical, minimum four cycles). Fresh-context critics dispatched in parallel per
+cycle, each given only the goal, the six changed/added files, and the rubric.
+
+## Cycle 1 — scores
+
+| Dimension | Score | Gate | Verdict |
+|---|---|---|---|
+| Clean architecture | 27/40 | 34 | **fail** |
+| DRY | 31/35 | 29.75 | pass |
+| Comments/docs | 15/25 | 21.25 | **fail** |
+| **Total** | **73/100** | 90 | fail |
+
+**Two CRITICAL failures found**, both real, both fixed this cycle.
+
+### Critical #1 (Architect) — `lazy_getattr`'s scan order leaked the excluded submodule
+
+`_lazy_package.lazy_getattr` imports each `_SUBMODULES` entry in order until one defines the
+requested name — and importing a submodule to check it is itself a side effect that registers
+its tools. With the original tuple order (`rigs` third of six; `construction` first of four),
+resolving an ordinary in-bundle name defined in a *later* submodule (e.g.
+`camera.create_camera_target`, in `targeting`) imported every submodule before it too, including
+the one the bundle split exists to exclude. Verified empirically both ways (broken and fixed).
+**Fix:** reordered both `_SUBMODULES` tuples so the excluded submodule sorts last —
+`("animation", "core", "inspection", "shots", "targeting", "rigs")` and `("environment",
+"inspection", "rendering", "construction")`. Since the excluded submodule is always the sole
+opt-in one per package today, sorting it last fully closes the leak for every other name.
+
+### Critical #2 (Comment) — the `lighting-construction` byte figure was hand-summed, not measured live, and wrong
+
+Detailed above under "A second, separate error caught by the cycle-1 comment critic." The
+5-tool/27,126 B figure was correct for the 5 tool *names* but not for what selecting the bundle
+actually registers, because `construction.py` has a genuine, unremovable call-dependency on
+`lighting/rendering.py`. **Fix:** `BUNDLES["lighting-construction"]` now explicitly carries
+`"lighting.rendering"` too; true net-of-core cost is 8 tools / 43,733 B.
+
+### Important findings (Architect + DRY, convergent)
+
+Both critics independently flagged the same gap from different angles: `_SUBMODULES` in
+`camera/__init__.py`/`lighting/__init__.py` and the dotted entries in `bundles.py`'s `BUNDLES`
+enumerate the same submodules a second time, with nothing tying the two together — an added or
+renamed submodule updated in one place and not the other silently orphans it from whichever path
+was missed. **Fix:** two new tests, `test_camera_lazy_attribute_submodules_match_the_camera_bundles`
+and its lighting equivalent, assert the sets match.
+
+**Also added** (Architect, as the concrete regression the scan-order bug needed):
+`test_camera_attribute_access_does_not_leak_the_excluded_rig_submodule` and its lighting
+equivalent — subprocess tests that select the trimmed bundle, access an ordinary in-bundle
+attribute, and assert the excluded submodule's tools are still absent. Mutation-verified: both
+fail against the pre-fix tuple order and pass against the fix.
+
+### Minor findings
+
+| # | Critic | Finding | Disposition |
+|---|---|---|---|
+| 1 | DRY | Two dedicated tests (`test_camera_bundle_excludes_rig_construction_but_keeps_inspection`, `test_lighting_bundle_excludes_construction`) were fully subsumed by the parametrized `test_resolve_toolset_modules` rows once those rows exist | **Fixed** — deleted; their rationale (why `camera.inspection` matters, why `lighting-construction` needs `lighting.rendering`) moved to comments on the parametrize table instead |
+| 2 | DRY | README's per-mode bundle-composition prose isn't drift-checked against `MODES` (pre-existing gap, not introduced by this diff) | Deferred — low priority per the critic's own assessment; would extend `test_readme_documents_every_mode_name`'s scope beyond what this diff touches |
+| 3 | Comment | `__getattr__`'s docstring states exception propagation in prose instead of a `Raises:` block, inconsistent with `lazy_getattr`'s own docstring | **Rejected** — adding a `Raises:` block here trips ruff's `docstring-extraneous-exception` (DOC502), the same conflict Task 4's cycle 4 hit and resolved the same way: state it in prose, above the (absent) `Raises:` block |
+| 4 | Architect | No `__all__` alongside the PEP 562 hooks | Deferred — critic's own assessment was "harmless today... low priority"; confirmed by grep nothing does `from camera import *` |
+
+### What critics confirmed was solid (no penalty)
+
+- `_BUNDLES_BASE`/`BUNDLES` two-step construction does not reintroduce the Cycle 6 mutable-alias
+  anti-pattern — confirmed by direct mutation attempts on both objects (Architect).
+- `MODES` well-formedness, `_lazy_package.py`'s placement, the bundle-selection path used at
+  actual server startup (independent of the `__getattr__` bug), README's table accuracy, and the
+  `shot`/`asset`/`all` totals in the "material correction" section were all independently
+  re-verified and confirmed correct (all three critics).
+
+### Post-cycle-1 verification
+
+| Check | Result |
+|---|---|
+| `pytest` | **640 passed** (638 after initial Task 5 implementation + 2 net from consolidating 2 old tests into 6 new ones) |
+| ruff, all Task 5 files | 0 errors |
+| `ruff format --check`, all Task 5 files | formatted |
+| `basedpyright`, all Task 5 files | 0 errors, 0 warnings |
+| `all` (capability preservation) | 285 tools / 1,181,038 B — unchanged |
+| `shot` | 53 tools / 203,094 B — unchanged (uses `lighting`, not `lighting-construction`, so Critical #2's fix does not move this figure) |
+| `lighting-construction` alone (net of core) | corrected: 8 tools / 43,733 B |
+| Mutation tests | both new leak-regression tests fail against the pre-fix tuple order and pass against the fix, confirmed by temporarily reverting and re-running |
+
+Regression label vs. cycle 1 entry state: **improved** (two real, verified defects fixed; no
+regressions — full suite/lint/format/type-check/capability all re-verified clean after repairs).
+
+## Cycle 2 — scores
+
+| Dimension | C1 | C2 | Gate | Verdict |
+|---|---|---|---|---|
+| Clean architecture | 27 | **27/40** | 34 | **fail** (flat — see below) |
+| DRY | 31 | **31/35** | 29.75 | pass |
+| Comments/docs | 15 | **24/25** | 21.25 | pass |
+| **Total** | 73 | **82/100** | 90 | fail |
+
+**One more CRITICAL failure found**, now fixed. Zero critical in DRY/Comment this cycle.
+
+### Critical #3 (Architect) — `lazy_dir` unconditionally imported every submodule, and a missing/typo'd name still imported the excluded one
+
+Cycle 1's reordering fix protected only `lazy_getattr`'s linear-scan short-circuit for names
+that resolve inside an in-bundle submodule. Cycle 2's architect stress-tested whether the
+mechanism generalizes and found it does not, two ways, both **guaranteed, not edge-case**:
+
+1. `lazy_dir` (`_lazy_package.py`) walked its *entire* `_SUBMODULES` tuple unconditionally —
+   `dir(camera)`, an ordinary REPL/IDE/debugger operation, always imported and registered
+   `camera.rigs` regardless of tuple order. Reproduced: `dir(camera)` under
+   `BLENDER_MCP_TOOLSETS=camera` put `create_orbit_camera_rig` in `mcp.list_tools()`.
+2. `lazy_getattr`'s reordering only helps when the requested name resolves in an earlier
+   submodule; a name that exists *nowhere* (a typo, a `hasattr` feature-probe) still walked the
+   whole tuple, including the excluded submodule, before raising `AttributeError` — importing it
+   along the way regardless.
+
+**Fix — structural, not another reordering:** `_lazy_package.py` now resolves names by parsing
+each candidate submodule's source with `ast` (`_submodule_top_level_names`, new,
+`functools.cache`d) rather than importing it to check with `hasattr`. `lazy_getattr` looks a
+name up in the parsed name set *before* importing anything, so only the one submodule that
+actually defines the name is ever imported, and a name matching none of them imports nothing.
+`lazy_dir` returns the union of every submodule's parsed name set, importing nothing at all.
+Both `camera/__init__.py` and `lighting/__init__.py` updated to pass `__file__` through so the
+source files can be located. **Empirically verified the static parse agrees exactly with the
+real runtime attribute set** for all 10 camera/lighting submodules (zero mismatches, checked
+name-by-name against `vars()` on the actually-imported module) before relying on it — this
+matters because the AST scan is stricter in kind than `hasattr` (it must independently discover
+every way a name reaches a module's `__dict__`: `def`/`class`/assignment *and*
+`import`/`from...import` bindings, the latter easy to miss and confirmed present in `rigs.py`/
+`targeting.py`'s re-exports from `_shared.py`).
+
+Four new regression tests (`test_camera_dir_does_not_leak_the_excluded_rig_submodule` and its
+lighting equivalent, `test_camera_missing_attribute_does_not_leak_the_excluded_rig_submodule`
+and, implicitly, cycle 1's two attribute-access tests continue to cover the original bug).
+Mutation-verified: reverted `_lazy_package.py` to the old `hasattr`-scan design and confirmed
+all four fail; restored and confirmed all pass.
+
+### Important (DRY) — leak-regression tests hand-rolled subprocess-script machinery that already existed
+
+`_tool_names_for_toolsets` (used by most of this file's other subprocess-based tests) gained an
+optional `prelude: str` parameter so a test can inject extra statements (an attribute access, a
+`dir()` call) before the tool list is captured. The four leak-regression tests (two from cycle 1,
+two new this cycle) now call it instead of hand-rolling their own `subprocess.run` + script
+string, removing the third/fourth copy of that pattern DRY flagged.
+
+### What critics confirmed was solid (no penalty)
+
+- The cycle-1 `_SUBMODULES`-vs-`BUNDLES` sync tests are a genuine, non-vacuous drift guard, not
+  gameable by a symmetric bug in both lists (DRY, confirmed by reasoning about what each list
+  independently encodes).
+- `BUNDLES["lighting-construction"]`'s explicit `"lighting.rendering"` entry remains the right
+  design at this bundle count (~15) — a computed dependency graph would be over-engineering
+  (Architect).
+- The cycle-1 correction to `PHASE1_TASK_STATE.md` (8 tools / 43,733 B) reproduces exactly;
+  `shot`/`asset`/`all` totals unaffected as claimed (Comment, independently re-measured).
+- README's `lighting-construction` row was still slightly imprecise ("also carries `lighting`'s
+  render-preview tool" undercounts — it's 3 tools, not 1) — see next repair.
+
+### Minor (Comment) — README still undercounted the `lighting-construction` bleed
+
+Fixed: reworded to name all three tools (`configure_lighting_quality`, `configure_color_management`,
+`render_lighting_preview`) rather than implying only one rides along.
+
+### Post-cycle-2 verification
+
+| Check | Result |
+|---|---|
+| `pytest` | **643 passed** |
+| ruff, all Task 5 files | 0 errors |
+| `ruff format --check`, all Task 5 files | formatted |
+| `basedpyright`, all Task 5 files | 0 errors, 0 warnings |
+| repo-wide `ruff check .` | 9,834 (unchanged from cycle 1) |
+| repo-wide `ruff format --check .` | 12 unformatted (unchanged) |
+| `all` (capability preservation) | 285 tools / 1,181,038 B — unchanged |
+| `shot` | 53 tools / 203,094 B — unchanged |
+| Empirical dir()/missing-name checks | `dir(camera)` and a missing-attribute lookup under `BLENDER_MCP_TOOLSETS=camera` both leave `create_orbit_camera_rig` absent from `mcp.list_tools()`; legitimate access (`camera.create_orbit_camera_rig`) still resolves correctly and registers exactly `camera.rigs` |
+| Mutation tests | All four leak-regression tests fail against the reverted `hasattr`-scan design and pass against the fix |
+
+Regression label vs. cycle 1 post-repair state: **improved** (one more real critical defect
+found and fixed, one DRY finding fixed, one doc precision fix; no regressions).
+
+Architecture stayed flat at 27/40 despite fixing the critical bug the cycle-1 architect missed,
+because cycle 2's architect found a *second*, more severe instance of the same bug class in the
+twin function (`lazy_dir`) the first review didn't examine as closely. That is expected,
+consistent with this project's established pattern (Task 1-3 loop's cycle 3 structural
+escalation) rather than a sign of a wrong fix — the structural rewrite (parse, don't import) is
+what actually closes the bug class this time, rather than another narrow reordering.
+
+## Cycle 3 — scores
+
+| Dimension | C1 | C2 | C3 | Gate | Verdict |
+|---|---|---|---|---|---|
+| Clean architecture | 27 | 27 | **35/40** | 34 | pass (87.5%) |
+| DRY | 31 | 31 | **34/35** | 29.75 | pass (97%) |
+| Comments/docs | 15 | 24 | **17/25** | 21.25 | **fail** (68%) |
+| **Total** | 73 | 82 | **86/100** | 90 | fail |
+
+**One more CRITICAL failure found**, in comments, now fixed. Architecture cleared its gate for
+the first time this cycle — the structural (parse, don't import) rewrite held up under a
+dedicated stress-test pass, including an adversarial synthetic-submodule probe the architect
+built specifically to find gaps the AST scan might miss.
+
+### Critical #4 (Comment) — the `_SUBMODULES` ordering comments' own safety claim was false
+
+Cycle 2's rewrite made tuple order irrelevant to *whether* an unwanted submodule gets imported
+(the AST scan handles that regardless of order). But the comments explaining `_SUBMODULES`'
+ordering overcorrected, claiming order "plays no role" and that "no name is [duplicated]" across
+submodules — both false. Verified independently: `FollowForwardAxis`/`UpAxis` (from
+`camera/_shared.py`) are re-exported by *both* `rigs.py` and `targeting.py`; `render_lighting_preview`
+is defined in `lighting/rendering.py` and re-exported by `construction.py`. For these specific
+names, order **is** load-bearing: `lazy_getattr` returns the first tuple match, so with
+`targeting`/`rendering` checked before `rigs`/`construction`, these names resolve without
+touching the excluded submodule; reversed, they'd resolve to the identical value but leak the
+import. A maintainer trusting the false comment and reordering `_SUBMODULES` (e.g. alphabetizing
+it) would silently reintroduce a real leak. **Fix:** both comments rewritten to state the true
+invariant, citing the concrete colliding names; new regression test
+`test_camera_shared_names_resolve_via_the_in_bundle_submodule_not_rigs` accesses
+`camera.FollowForwardAxis`/`camera.UpAxis` directly and asserts `rigs` stays unregistered.
+Mutation-verified: reversing `_SUBMODULES`' order (moving `rigs` first) makes this test fail;
+restored order passes.
+
+### Important (Comment) — a claimed cycle-2 README repair was never actually applied
+
+`PHASE1_TASK_STATE.md`'s cycle-2 write-up claimed the `lighting-construction` README row was
+"fixed: reworded to name all three tools." It was not — the README still had the pre-fix
+singular wording. This is a real process failure (a controller claiming a repair that was
+recorded but never executed) worth stating plainly rather than glossing over. **Fixed now**:
+README's row names all three tools (`configure_lighting_quality`, `configure_color_management`,
+`render_lighting_preview`).
+
+### Important (Architect) — the AST-parsing invariant was hand-verified once, not test-enforced
+
+The "zero mismatches across all 10 submodules" claim in `_lazy_package.py`'s docstring was true
+(independently re-verified by two different critics this cycle, using two different scripts) but
+rested on a one-off manual check, not a standing test — exactly the kind of claim this task has
+twice already had to walk back. **Fix:** new
+`test_ast_derived_submodule_names_match_the_real_runtime_attributes`, run in a subprocess (this
+file's "no in-process tool-module imports" rule), imports every camera/lighting submodule for
+real and asserts its `vars()` matches `_submodule_top_level_names`'s static parse, for all 10.
+This also closed the door on the adversarial gap the architect demonstrated with a *synthetic*
+submodule (loop/`with`/conditional/tuple-unpacking/walrus/star-import bindings the AST scan
+doesn't handle) — none of those patterns exist in the real 10 submodules today (confirmed by
+grep), and the new test will fail the day one of them does, rather than silently under-reporting
+a name as a future `AttributeError`.
+
+### Minor (DRY) — asymmetric leak-test coverage
+
+Camera had a missing-attribute leak test; lighting did not. Added
+`test_lighting_missing_attribute_does_not_leak_the_excluded_construction_submodule`, mirroring
+the camera one.
+
+### Minor (Comment) — `_submodule_top_level_names`'s docstring overstated general completeness
+
+"Covers every way a module-level name normally reaches a module's own `__dict__`" read as a
+general guarantee; true only for these specific files (no tuple-unpacking, augmented assignment,
+or conditional module-level bindings exist in them today). Docstring now says "currently" and
+states the caveat explicitly, pointing at the new standing test as the thing that would catch it
+changing.
+
+### What critics confirmed was solid (no penalty)
+
+- The AST rewrite is genuinely correct for the codebase as it exists today (Architect,
+  independently reproduced the "zero mismatches" result rather than trusting it, then built an
+  adversarial synthetic submodule to actively try to break it).
+- The five leak-regression tests correctly use the `prelude`-parameterized
+  `_tool_names_for_toolsets` rather than duplicating subprocess-script machinery (DRY).
+- `camera`/`lighting` `__init__.py` docstrings (module-level) accurately describe the AST-based
+  mechanism with no stale reordering-era claims remaining, aside from the one `_SUBMODULES`
+  comment defect this cycle fixed (Comment, DRY both independently checked and agreed).
+- All numeric claims in cycle 2's verification table reproduced exactly (Comment): 643 passed,
+  9,834 repo-wide ruff errors, 285/1,181,038 for `all`, 53/203,094 for `shot`,
+  8 tools / 43,733 B for `lighting-construction` net of core.
+
+### Post-cycle-3 verification
+
+| Check | Result |
+|---|---|
+| `pytest` | **646 passed** |
+| ruff, all Task 5 files | 0 errors |
+| `ruff format --check`, all Task 5 files | formatted |
+| `basedpyright`, all Task 5 files | 0 errors, 0 warnings |
+| repo-wide `ruff check .` | 9,834 (unchanged) |
+| repo-wide `ruff format --check .` | 12 unformatted (unchanged) |
+| `all` (capability preservation) | 285 tools / 1,181,038 B — unchanged |
+| `shot` | 53 tools / 203,094 B — unchanged |
+| Mutation test | reversing camera's `_SUBMODULES` order (moving `rigs` first) makes the new shared-name regression test fail; restored order passes |
+
+Regression label vs. cycle 2 post-repair state: **improved** (one more real critical defect
+fixed — this time in documentation accuracy rather than code — plus a genuine process failure
+caught and corrected; two coverage/robustness gaps closed; no regressions).
+
+Four cycles is the process brief's mandatory minimum. Reached it this cycle. Total (86) remains
+below the 90 exit gate, driven entirely by comments/docs dropping to 68% on a genuine critical
+finding; architecture and DRY both now comfortably clear their gates. Cycle 4 continues.
+
+## Cycle 4 — scores (final)
+
+| Dimension | C1 | C2 | C3 | C4 | Gate | Verdict |
+|---|---|---|---|---|---|---|
+| Clean architecture | 27 | 27 | 35 | **36/40** | 34 | pass (90%) |
+| DRY | 31 | 31 | 34 | **33/35** | 29.75 | pass (94%) |
+| Comments/docs | 15 | 24 | 17 | **25/25** | 21.25 | pass (100%) |
+| **Total** | 73 | 82 | 86 | **94/100** | 90 | **pass** |
+
+Critical failures: **none** this cycle (all three panels). Zero critical across the four cycles
+except cycles 1-3's now-fixed defects.
+
+All four exit gates met: total 94/100 (>= 90), every dimension >= 80% (90%/94%/100%), zero
+critical failures this cycle, code compiles and passes tests (646 passed).
+
+### Cycle 4 findings and repairs
+
+Both the architect and DRY critic independently converged on the same finding — a strong signal
+per this loop's own established pattern (Task 1-3 loop's Cycle 2, Task 4's Cycle 1) that
+independent convergence marks a real issue, not panel noise:
+
+| # | Finding (critics) | Repair |
+|---|---|---|
+| 1 | `test_ast_derived_submodule_names_match_the_real_runtime_attributes` hardcoded a *third* copy of the camera/lighting submodule lists inside its subprocess script string, rather than reading `camera._SUBMODULES`/`lighting._SUBMODULES` live. A submodule added to `_SUBMODULES` would silently stop being covered by this test rather than failing -- the same "one-off check, not a standing guard" failure mode this exact test was written to close, recurring one level up (Architect, DRY, independently) | Script now built from `repr({"blender_mcp.server.tools.camera": camera._SUBMODULES, "blender_mcp.server.tools.lighting": lighting._SUBMODULES})`, using the already-safe bare-package imports at the top of the file. Re-verified: 46/46 pass, ruff/format/basedpyright clean |
+
+The architect's two Minor findings (a vestigial `from ._shared import _call as _call` re-export
+in `camera/__init__.py` with no consumer outside the package, asymmetric with `lighting/__init__.py`
+which has none; and process-noise comments citing "Task 5 cycle-N critic" that will read as
+meaningless once this file ages out) were **deferred by explicit judgement**: the `_call`
+re-export predates Task 5 entirely (it's the same pattern `liquid/__init__.py`, `cloth/__init__.py`,
+`character_rigging/__init__.py` and `rigid_body/__init__.py` already use repo-wide, not something
+this task introduced), and removing a pre-existing repo convention is out of Task 5's scope
+(`bundles.py`, the two `__init__.py` lazy-machinery rewrites, `test_bundles.py`, `README.md`).
+The cycle-reference comments are, per the architect's own assessment, "not urgent... can be
+batched into normal cleanup."
+
+The comment critic found **zero findings this cycle** — the first clean pass any critic has had
+on this diff across all four cycles — after deliberately trying hardest to find a third instance
+of the "confident but false claim" pattern that produced critical findings in cycles 2 and 3:
+independently re-enumerating every name collision across all 10 submodules from scratch,
+mutation-testing the cycle-3 fix directly (reversed the tuple order, confirmed the regression
+test fails; restored, confirmed it passes) rather than trusting the "verified by hand" note, and
+re-deriving the "exactly these two collisions are load-bearing" claim by hand against an
+alphabetical-reordering counterfactual.
+
+### Post-cycle-4 verification
+
+| Check | Result |
+|---|---|
+| `pytest` | **646 passed** |
+| ruff, all Task 5 files | 0 errors |
+| `ruff format --check`, all Task 5 files | formatted |
+| `basedpyright`, all Task 5 files | 0 errors, 0 warnings |
+| repo-wide `ruff check .` | 9,834 (unchanged across all four cycles) |
+| repo-wide `ruff format --check .` | 12 unformatted (unchanged) |
+| `all` (capability preservation) | 285 tools / 1,181,038 B — unchanged across all four cycles |
+| `shot` | 53 tools / 203,094 B — unchanged across all four cycles |
+
+Regression label vs. cycle 3 post-repair state: **improved** (one real drift-risk finding fixed,
+confirmed by two independent critics; two items deferred with recorded reasons; comments/docs
+cleared its gate for the first time, at 100%, after the most adversarial verification pass any
+dimension received in this loop).
+
+## Stopping rationale
+
+Four complete cycles run, meeting the process brief's mandatory minimum. All four exit gates are
+met: total 94/100 (>= 90), every dimension >= 80% by a comfortable margin (architecture 90%, DRY
+94%, comments 100%), zero critical failures in this cycle, and the code compiles and passes
+tests (646 passed, up from 619 immediately before Task 5 started).
+
+This loop found and fixed **four real CRITICAL defects across its four cycles** — more than any
+prior task's loop, and unlike the Task 1-3 and Task 4 loops (which converged on architecture/DRY
+early and mostly polished comments thereafter), every one of Task 5's critical findings was a
+genuine correctness defect in the lazy-import mechanism itself or in a comment making a false
+safety claim about it, not a style or documentation nit:
+
+1. Cycle 1: the original `hasattr`-import-scan leaked the excluded submodule on ordinary
+   in-bundle attribute access, order-dependent.
+2. Cycle 2: the cycle-1 reordering fix was incomplete -- `dir()` leaked unconditionally, and any
+   missing/typo'd name still leaked. Required a structural rewrite (parse, don't import).
+3. Cycle 3: the rewrite's own `_SUBMODULES` ordering comments made a false safety claim ("order
+   plays no role"), when two real name collisions (`FollowForwardAxis`/`UpAxis`,
+   `render_lighting_preview`) mean order genuinely is load-bearing. Also caught a real process
+   failure: a claimed README repair from cycle 2 that was never actually applied.
+4. Cycle 4: none -- the first cycle with zero critical findings, and the first cycle every
+   dimension cleared its gate simultaneously.
+
+The declining-then-zero critical-finding trend (2, 1, 1→0 fixed, 0), the two DRY findings that
+have each been the *only* actionable item in their cycle and were fixed cleanly, and comments/
+docs going from this loop's most volatile dimension (15→24→17→25) to a clean 25/25 after the
+most adversarial verification pass of the whole loop, together indicate convergence rather than
+survivorship — each fix was independently verified by mutation testing (revert the fix, confirm
+the regression test fails; restore, confirm it passes), not just re-read and trusted.
+
+**Task 5 is done, reviewed, and uncommitted, per the brief.** Nothing pushed. Task 6 is next.
+
+---
+
+# Task 6: pin the shot-mode payload ceiling
+
+Implemented on top of Task 5 (uncommitted). Scope: Task 6 only, per the plan
+(`2026-09-11-phase-1-catalog.md:726-801`), followed by its own review loop. Nothing committed.
+
+**Files:** `tests/server/test_catalog_metrics.py`.
+
+## Step 1: measured both modes, by mode name
+
+At `547ba0a` (dirty; Tasks 1-5 uncommitted), via `scripts/measure_catalog.py`:
+
+| Selection | Tools | Bytes | Tokens |
+|---|---|---|---|
+| `shot` (`camera,lighting,rendering`) | 53 | **203,094** | 56.4K |
+| `asset` (`core-authoring,scene-authoring,texture,retopology,geometry-nodes`) | 126 | 406,919 | 113.0K |
+
+These are the figures Task 5's own review loop already measured and independently re-verified
+across four cycles (see "Task 5" above) -- not re-derived here, since nothing between Task 5's
+last measurement and this one touched a tool description or a bundle. `shot` is the one the
+plan's Task 6 asks for a ceiling test on; `asset` is recorded per Step 1's instruction but has no
+ceiling test (the plan's Step 2 only writes one for `shot`).
+
+## Step 2: the regression test, using the measured number, not the plan's prediction
+
+The plan's own Task 6 Step 2 snippet imports `payload_bytes` from `catalog_metrics` -- a
+function the plan's own self-review section says was deleted in an earlier task as a dead
+second aggregation path, with an explicit instruction not to reintroduce it. Used
+`payload_report(...).total_bytes` instead, which is what the self-review names as the intended
+replacement.
+
+`SHOT_MODE_BYTE_CEILING = 203_094` (measured, not the plan's/spec's predicted ~36K-token /
+129,961 B figure -- see Task 5's "material correction" section for why that prediction was
+wrong). `_payload_bytes_for_toolsets` mirrors `tests/server/test_bundles.py`'s subprocess-isolation
+helpers: this file must not import a tool module in-process either, and the env var is set
+inside the child script before `blender_mcp` is imported (Task 1's ruling on import order).
+
+## Steps 3-4: verified pass, then verified it can fail
+
+`pytest tests/server/test_catalog_metrics.py -v` -> 8 passed, including the new test.
+
+Proved the ceiling can actually fail, per the plan's Step 4: temporarily changed the selection
+string to `"camera,lighting,lighting-construction,rendering"` (adding back the bundle Task 5
+split out) and re-ran just the new test -- **failed**, `230,220 > 203,094`. Reverted; re-ran the
+full file -- 8 passed again.
+
+## Verified baseline (measured, not assumed)
+
+| Check | Before | After |
+|---|---|---|
+| `pytest` | 646 passed | **647 passed** |
+| ruff, `test_catalog_metrics.py` | 0 errors | 0 errors |
+| `ruff format --check`, same file | formatted | formatted |
+| `basedpyright`, same file | 0 errors | 0 errors |
+| repo-wide `ruff check .` | 9,834 | 9,834 (unchanged) |
+| repo-wide `ruff format --check .` | 12 unformatted | 12 unformatted (unchanged) |
+| `all` (capability preservation) | 285 tools / 1,181,038 B | 285 tools / 1,181,038 B (unchanged -- this task adds a test, no tool) |
+| Mutation test | widening the selection to re-include `lighting-construction` fails the new test as shown above; the original selection passes |
+
+## Task 6 review loop
+
+Same rubric as Tasks 1-5 (architecture 40/gate 34, DRY 35/gate 29.75, comments 25/gate 21.25;
+exit >= 90, zero critical, minimum four cycles). This is a much smaller diff than Task 5's (one
+new test, one new helper, one constant, in one file already following an established pattern
+from `test_bundles.py`), so a faster convergence is plausible but not assumed -- run the same
+rigor regardless.
+
+## Cycle 1 — scores
+
+| Dimension | Score | Gate | Verdict |
+|---|---|---|---|
+| Clean architecture | 33/40 | 34 | fail (82.5%; clears the true 80% = 32 reading) |
+| DRY | 27/35 | 29.75 | fail (77%; also fails the true 80% = 28 reading) |
+| Comments/docs | 24/25 | 21.25 | pass (96%) |
+| **Total** | **84/100** | 90 | fail |
+
+Critical failures: **none** (all three critics).
+
+### Findings and repairs
+
+Architect and DRY independently converged on the same root issue from different angles, a
+pattern this loop's earlier tasks (and Task 5's own cycles) have repeatedly found to mark a real
+defect rather than panel noise:
+
+| # | Finding (critic) | Repair |
+|---|---|---|
+| 1 | The test hardcoded `"camera,lighting,rendering"` instead of naming the `"shot"` mode it claims to test (`MODES["shot"]` in `bundles.py`). Today identical; if the mode's composition ever changes, the test would silently keep measuring the stale, former expansion instead of what a real `BLENDER_MCP_TOOLSETS=shot` client actually gets (Architect, DRY -- independently) | `_payload_bytes_for_toolsets("shot")`, the mode name |
+| 2 | `_payload_bytes_for_toolsets` in `test_catalog_metrics.py` was a fourth near-duplicate hand-rolled subprocess-isolation script, when this project has explicit precedent (documented in Task 5's own cycles) of DRY critics flagging exactly this shape and fixing it by extending an existing shared helper (DRY) | Moved to `test_bundles.py` as a direct sibling of `_tool_names_for_toolsets`, following its established env-stripping pattern exactly rather than approximately |
+| 3 | This subprocess-based, full-server-import test did not belong in `test_catalog_metrics.py`, whose other 7 tests are pure `_FakeTool`-based unit tests with an implicit "no I/O" convention, and whose subject (shot-mode composition) is a `bundles.py`/mode concern that already lives in `test_bundles.py` next to `test_shot_mode_excludes_texture_authoring_and_light_or_rig_construction` (Architect) | Relocated `SHOT_MODE_BYTE_CEILING`, the helper, and the test itself into `test_bundles.py`; `test_catalog_metrics.py` reverted to its pre-Task-6 pure-unit-test state |
+| 4 | The moved helper's docstring claimed to "mirror" `test_bundles.py`'s pattern but actually diverged (no `env=` dict, overwrote the var inside the script instead) (Architect, Minor) | Now literally follows the same env-dict-stripping pattern as `_tool_names_for_toolsets`, not just an approximation of it |
+
+Two items deferred by explicit critic judgement, not by me: whether the "prove it can fail" step
+should become a permanent parametrized test (Architect: no -- `test_bundles.py` already
+structurally covers the same invariant via `test_shot_mode_excludes_texture_authoring_and_light_or_rig_construction`,
+and a permanent version would go stale for unrelated reasons as the mode composition evolves);
+whether `SHOT_MODE_BYTE_CEILING`'s hardcoded literal needs a more durable source (Architect: no
+-- well-commented with provenance, and no code-level Task 5 artifact exists to reference instead
+since `payload_bytes` was deliberately deleted).
+
+### Post-cycle-1 verification
+
+| Check | Result |
+|---|---|
+| `pytest` | **647 passed** (moved, not added -- same count as before the relocation) |
+| ruff, `test_bundles.py` + `test_catalog_metrics.py` | 0 errors |
+| `ruff format --check`, same files | formatted |
+| `basedpyright`, same files | 0 errors, 0 warnings |
+| repo-wide `ruff check .` | 9,834 (unchanged) |
+| repo-wide `ruff format --check .` | 12 unformatted (unchanged) |
+| `all` (capability preservation) | 285 tools / 1,181,038 B — unchanged |
+| `shot` | 53 tools / 203,094 B — unchanged |
+| Mutation test (re-run after relocation) | widening the selection to `"camera,lighting,lighting-construction,rendering"` still fails (`230,220 > 203,094`) from its new home in `test_bundles.py`; reverted, passes |
+
+Regression label vs. cycle 1 entry state: **improved** (test relocated to its correct file,
+duplication eliminated by direct pattern reuse rather than approximation, mode-name coupling to
+`bundles.py`'s actual source of truth restored; no regressions).
+
+## Cycle 2 — scores
+
+| Dimension | C1 | C2 | Gate | Verdict |
+|---|---|---|---|---|
+| Clean architecture | 33 | **36/40** | 34 | pass (90%) |
+| DRY | 27 | **30/35** | 29.75 | pass (85.7%) |
+| Comments/docs | 24 | **25/25** | 21.25 | pass (100%) |
+| **Total** | 84 | **91/100** | 90 | **pass** |
+
+Critical failures: **none**. All four exit gates already met this cycle (total 91, every
+dimension >= 80%, zero critical, 647 tests passing) — but two real findings remained
+(Architect and DRY converged independently, the same signal this loop treats as trustworthy),
+so they were fixed rather than deferred just because the gate was already cleared.
+
+### Findings and repairs
+
+| # | Finding (critics) | Repair |
+|---|---|---|
+| 1 | Cycle 1's "fixed by extending an existing shared helper" was inaccurate: no extraction happened, just a new function copy-pasting the same env-build/subprocess-run boilerplate a third time (`_tool_names_for_toolsets`, `_payload_bytes_for_toolsets`, `_tool_annotations_for_toolsets` each independently repeated it). The task-state doc's own cycle-1 characterization of the fix didn't match the code (Architect, DRY -- independently, DRY also traced the exact duplicated lines in the third, pre-existing helper) | New `_run_server_script(raw_value, script) -> str`, the one place all three helpers build their environment and invoke Python; each keeps only its own script body and stdout parsing |
+| 2 | `_payload_bytes_for_toolsets` carried `@functools.cache` justified by "mirrors `_tool_names_for_toolsets`... for the same reason" -- but the caching half of that reasoning doesn't hold for a function with exactly one call site, and contradicts the file's own established convention (`_tool_annotations_for_toolsets`, also single-call, is deliberately not cached) (Architect) | Cache dropped; docstring now says why (matches `_tool_annotations_for_toolsets`'s convention, add it back if a second caller appears) |
+
+### A transient flake, investigated and ruled out as a false alarm
+
+Both the DRY and Comment critics independently observed one spurious failure each in their
+*own* review sessions: two shot-mode tests failing together with numbers consistent with
+`lighting-construction` leaking into `shot`. Both critics, independently, correctly self-diagnosed
+the cause as their own concurrent process invocations (running `measure_catalog.py` and `pytest`
+at the same time, or similar) rather than a code defect, and neither scored against it. I
+independently stress-tested the same two tests **5 consecutive isolated runs, zero failures**,
+before applying this cycle's repairs. Recorded here rather than silently ignored, per this
+project's own standard for anomalies: this is very likely explained by this loop's own practice
+of running multiple critic subagents in parallel against the same shared working tree, at least
+one of which (the architect, per its own report) deliberately mutates `bundles.py` on disk as
+part of its verification methodology -- a real, if narrow, operational hazard of parallel
+critics sharing a live checkout, not a defect in the reviewed code. No further action taken;
+noting it so a future session doesn't waste time chasing a phantom.
+
+### Post-cycle-2 verification
+
+| Check | Result |
+|---|---|
+| `pytest` | **647 passed** |
+| ruff, `test_bundles.py` | 0 errors |
+| `ruff format --check`, same file | formatted |
+| `basedpyright`, same file | 0 errors, 0 warnings |
+| repo-wide `ruff check .` | 9,834 (unchanged) |
+| repo-wide `ruff format --check .` | 12 unformatted (unchanged) |
+| `all` (capability preservation) | 285 tools / 1,181,038 B — unchanged |
+| `shot` | 53 tools / 203,094 B — unchanged |
+| Mutation test | widened the real `MODES["shot"]` definition in `bundles.py` (not a test-local string) to add back `lighting-construction`; `test_shot_mode_payload_stays_under_its_ceiling` fails (`230,220 > 203,094`) through the new `_run_server_script` helper chain exactly as before; reverted, passes |
+
+Regression label vs. cycle 1 post-repair state: **improved** (real duplication eliminated with
+an actual extraction this time, not just a claim of one; caching brought into line with the
+file's own convention; a potential false-alarm investigated and ruled out rather than ignored;
+no regressions).
+
+## Cycle 3 — scores
+
+| Dimension | C1 | C2 | C3 | Gate | Verdict |
+|---|---|---|---|---|---|
+| Clean architecture | 33 | 36 | **37/40** | 34 | pass (92.5%) |
+| DRY | 27 | 30 | **32/35** | 29.75 | pass (91.4%) |
+| Comments/docs | 24 | 25 | **25/25** | 21.25 | pass (100%, third clean cycle) |
+| **Total** | 84 | 91 | **94/100** | 90 | **pass** |
+
+Critical failures: **none**. All three critics independently reported convergence this cycle:
+Architect ("this dimension is converged... a 4th cycle would very likely just re-discover the
+same single minor finding or produce panel noise"), DRY ("essentially converged... the one gap
+found... does not indicate unconverged design"), Comment ("no inaccurate, overclaimed, or stale
+documentation... found").
+
+### Finding and repair
+
+Architect and DRY independently found the same one remaining item:
+`test_ast_derived_submodule_names_match_the_real_runtime_attributes` (added in Task 5's cycle 3,
+untouched by Task 6 until now) still hand-rolled its own `subprocess.run([sys.executable, "-c",
+script], capture_output=True, text=True, check=True)` call rather than going through the new
+`_run_server_script` helper -- the one call site cycle 2's sweep missed, since that test predates
+`_run_server_script` and doesn't touch `BLENDER_MCP_TOOLSETS` at all (it imports submodules
+directly via `importlib`, unrelated to the toolset-env-isolation concern `_run_server_script`
+exists for). Both critics agreed this is low-risk and cheap to fix, not evidence the cycle-2
+extraction was incomplete on its own terms. **Fixed:** now calls
+`_run_server_script(None, script)`. Incidentally also fixes a latent inconsistency: previously
+this was the one subprocess call in the file that did *not* explicitly strip the parent shell's
+ambient `BLENDER_MCP_TOOLSETS` before running, unlike every other helper here.
+
+### Post-cycle-3 verification
+
+| Check | Result |
+|---|---|
+| `pytest` | **647 passed** |
+| ruff, `test_bundles.py` | 0 errors |
+| `ruff format --check`, same file | formatted |
+| `basedpyright`, same file | 0 errors, 0 warnings |
+| repo-wide `ruff check .` | 9,834 (unchanged) |
+| repo-wide `ruff format --check .` | 12 unformatted (unchanged) |
+| `all` (capability preservation) | 285 tools / 1,181,038 B — unchanged |
+| `shot` | 53 tools / 203,094 B — unchanged |
+
+Regression label vs. cycle 2 post-repair state: **improved** (last stray subprocess call
+brought under the shared helper; no regressions).
+
+## Cycle 4 — scores (final)
+
+| Dimension | C1 | C2 | C3 | C4 | Gate | Verdict |
+|---|---|---|---|---|---|---|
+| Clean architecture | 33 | 36 | 37 | **37/40** | 34 | pass (92.5%), converged |
+| DRY | 27 | 30 | 32 | **35/35** | 29.75 | pass (100%), converged |
+| Comments/docs | 24 | 25 | 25 | **22/25** | 21.25 | pass (88%) |
+| **Total** | 84 | 91 | 94 | **94/100** | 90 | **pass** |
+
+Critical failures: **none**. Architect and DRY both reported zero findings and an explicit
+"converged" verdict this cycle -- a fresh, skeptical final pass (full-file reads, live
+mutation-test reproduction against the real `bundles.py`, a complete `_run_server_script`
+call-site sweep) that corroborated cycle 3's convergence claim rather than merely repeating it.
+
+### One finding, fixed: stale top-of-file status table
+
+The comment critic's final-cycle pass found the one real issue of this cycle, and it is the most
+valuable kind this loop watches for: a **verified-false claim**, though not in Task 6's own diff
+-- in this file's own top-of-file "Tasks" table and "Where the next session picks up" /
+"What is NOT done" sections, which still said Task 6 was "not started" and Tasks 4-6 "not
+started," even though the Task 6 section itself (this section) had already documented three
+converged review cycles. This is end-of-session-1 snapshot text that was never updated as Tasks
+4-6 completed across this session -- exactly the kind of staleness a future session picking up
+this file cold would be misled by. **Fixed:** the top "Tasks" table's Task 6 row, the "Where the
+next session picks up" paragraph, and the "What is NOT done" line all now correctly state Tasks
+4-6 are done and reviewed, uncommitted, with the historical text struck through and left as
+record rather than deleted.
+
+### Post-cycle-4 verification
+
+| Check | Result |
+|---|---|
+| `pytest` | **647 passed** |
+| ruff, `test_bundles.py` | 0 errors |
+| `ruff format --check`, same file | formatted |
+| `basedpyright`, same file | 0 errors, 0 warnings |
+| repo-wide `ruff check .` | 9,834 (unchanged across all four cycles) |
+| repo-wide `ruff format --check .` | 12 unformatted (unchanged) |
+| `all` (capability preservation) | 285 tools / 1,181,038 B — unchanged across all four cycles |
+| `shot` | 53 tools / 203,094 B — unchanged across all four cycles |
+| Mutation test | widened the real `MODES["shot"]` in `bundles.py` one final time; ceiling test fails (`230,220 > 203,094`) exactly as every prior cycle; reverted, passes |
+
+## Stopping rationale
+
+Four complete cycles run, meeting the process brief's mandatory minimum. All four exit gates met
+with margin: total 94/100 (>= 90), every dimension >= 80% (architecture 92.5%, DRY 100%, comments
+88%), zero critical failures across all four cycles (twelve independent critic reports), code
+compiles and passes tests (647 passed, up from 619 immediately before Task 5 started, 646 before
+Task 6).
+
+Unlike Task 5's loop (four real critical defects found and fixed across its cycles), Task 6's
+loop found no critical defects at any point -- appropriate to its much smaller scope (one test,
+relocated once for a real architectural reason in cycle 1, then incrementally de-duplicated in
+cycles 2-3). Architecture and DRY each independently declared convergence on their own final
+cycle with zero new findings; comments/docs held a clean run of three consecutive cycles (24, 25,
+25) before this cycle's genuine but non-blocking finding about stale document state elsewhere in
+the file, now fixed. The pattern across both this loop and Task 5's -- independent critics
+converging on the same finding being a reliable signal of a real defect, and "converged" verdicts
+being borne out by a skeptical follow-up cycle finding nothing new -- held again here.
+
+**Task 6 is done, reviewed, and uncommitted, per the brief.** Nothing pushed.
+
+---
+
+# Phase 1 (Tasks 1-6): status at the end of this session
+
+All six tasks are implemented. Tasks 1-3 are committed (`27ec3aa`/`270958a`/`313740a`,
+`d8163e3`, `56ab3f0`). Tasks 4, 5 and 6 are implemented and each passed its own 4-cycle review
+loop (93/100, 94/100, 94/100 respectively, zero critical in every final cycle) but remain
+**uncommitted**, per this session's explicit brief not to commit. Nothing has been pushed, at
+any point.
+
+| Selection | Tools | Bytes | Tokens |
+|---|---|---|---|
+| `all` | 285 | 1,181,038 | ~328.1K (unchanged all session -- no domain tool added or removed) |
+| default (`core`) | 21 | 63,395 | ~17.6K |
+| `shot` (`camera,lighting,rendering`) | 53 | 203,094 | ~56.4K (pinned by Task 6's ceiling test) |
+| `asset` | 126 | 406,919 | ~113.0K |
+
+647 tests pass (up from 608 at the start of session 1). Repo-wide `ruff check .` sits at 9,834
+errors and `ruff format --check .` at 12 unformatted files -- both unchanged from session 1's
+pre-existing baseline, confirming no new lint debt was introduced across any of the six tasks.
+
+What remains before an end-of-phase commit/push decision: the user's own review and go-ahead.
+This session's brief was explicit that no code should be committed; that instruction has been
+followed throughout -- every task's diff sits in the working tree, verified but unstaged.
