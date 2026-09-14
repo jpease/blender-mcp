@@ -91,12 +91,16 @@ BUNDLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
 TOOLSETS_ENV_VAR = "BLENDER_MCP_TOOLSETS"
 ALL_SENTINEL = "all"
 
-# Artist-facing presets over BUNDLES. The add-on is the MCP client
-# (docs/superpowers/specs/2026-09-11-episode-consistency-architecture-design.md Sec 4.7), so the
-# surface is selected by the plugin, not by a human editing a config file - it wants one word,
-# not a comma list. Sec 4.3 of that spec defines exactly these two working surfaces: `shot`
-# assembles, animates, lights and renders; `asset` authors or revises canon. A mode still resolves
-# to modules through BUNDLES, so it adds no module of its own and cannot move `all`'s tool count.
+# Artist-facing presets over BUNDLES. Selection is a human/config decision made once per MCP
+# client entry, before the server process starts (README.md "Tool Bundles": one entry per
+# mode/bundle set, `BLENDER_MCP_TOOLSETS` set on that entry) - not something the add-on or a
+# live session decides at runtime. Modes exist so that config wants one word for the surface an
+# artist is working in, not a comma list of bundles.
+# (docs/superpowers/specs/2026-09-11-episode-consistency-architecture-design.md Sec 4.3 defines
+# exactly these two working surfaces: `shot` assembles, animates, lights and renders; `asset`
+# authors or revises canon. Sec 4.7 is unrelated - it covers the addon's thread architecture, not
+# toolset selection.) A mode still resolves to modules through BUNDLES, so it adds no module of
+# its own and cannot move `all`'s tool count.
 #
 # The two modes are disjoint outside core (enforced by
 # `test_shot_and_asset_modes_share_only_the_core_surface`): `shot` takes `lighting`, not
