@@ -82,7 +82,7 @@ Then in Blender: **Edit → Preferences → Add-ons** → enable **Interface: Bl
 
 In Blender's 3D viewport, press `N` → open the **BlenderMCP** tab → click **Start MCP Server**. That's it — ask Claude to build something.
 
-> **Note:** By default the server only registers its core scene/mesh/object toolset (~40 tools) to
+> **Note:** By default the server only registers its core scene/mesh/object toolset to
 > keep `tools/list` small. See [Tool Bundles](#tool-bundles) below to add domains like cloth, liquid,
 > or rigging. Running more than one server process for the *same* bundle selection (e.g. two default
 > `blender` entries in both Cursor and Claude Desktop) is redundant — each opens its own connection to

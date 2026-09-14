@@ -1,13 +1,26 @@
 """Regression coverage for BLENDER_MCP_TOOLSETS bundle selection."""
 
-import importlib
+import functools
+import importlib.util
 import json
+import os
+import re
 import subprocess
 import sys
 
 import pytest
 
-from blender_mcp.server.bundles import ALL_MODULES, CORE_MODULES, resolve_toolset_modules
+from conftest import REPO_ROOT
+
+from blender_mcp.server import bundles
+from blender_mcp.server.bundles import (
+    ALL_MODULES,
+    ALL_SENTINEL,
+    BUNDLES,
+    CORE_MODULES,
+    TOOLSETS_ENV_VAR,
+    resolve_toolset_modules,
+)
 
 _CORE_TODAY = (
     "core",
@@ -18,6 +31,9 @@ _CORE_TODAY = (
     "viewport",
     "animation",
 )
+
+# Tools deliberately absent from the core surface and reachable only via `scene-authoring`.
+_SCENE_AUTHORING_TOOLS = ("create_geometry_object", "reset_scene", "remove_scene_objects")
 
 
 @pytest.mark.parametrize(
@@ -50,9 +66,18 @@ def test_core_modules_matches_the_documented_core_set() -> None:
 
 @pytest.mark.parametrize("raw_value", ["all", "ALL"])
 def test_all_sentinel_selects_every_module(raw_value: str) -> None:
-    """The `all` sentinel resolves to every module, in a stable order, with no duplicates."""
+    """
+    The `all` sentinel resolves to core plus every bundle, core first, with no duplicates.
+
+    The expectation is recomputed from BUNDLES -- the authored source of truth -- rather than
+    compared against ALL_MODULES, which is what the function under test returns. Asserting
+    against ALL_MODULES would pass for any bug in how ALL_MODULES itself is built.
+    """
     resolved = resolve_toolset_modules(raw_value)
-    assert resolved == ALL_MODULES
+    every_bundle_module = {module for modules in BUNDLES.values() for module in modules}
+
+    assert resolved[: len(_CORE_TODAY)] == _CORE_TODAY
+    assert set(resolved) == set(_CORE_TODAY) | every_bundle_module
     assert len(resolved) == len(set(resolved))
 
 
@@ -63,31 +88,29 @@ def test_resolve_toolset_modules_rejects_unknown_bundle() -> None:
 
 
 def test_every_bundle_module_is_a_real_tools_submodule() -> None:
-    """Every module named in BUNDLES/CORE_MODULES actually exists under blender_mcp.server.tools."""
+    """
+    Every module named in BUNDLES/CORE_MODULES actually exists under blender_mcp.server.tools.
+
+    Uses `find_spec` rather than importing: a tool module registers its tools onto a
+    process-global FastMCP singleton at import time, so importing all of them here would
+    leave every later test in this session looking at the full catalog regardless
+    of the selection under test. Nothing in this file may import a tool module in-process.
+    """
     for module_name in ALL_MODULES:
-        importlib.import_module(f"blender_mcp.server.tools.{module_name}")
+        assert importlib.util.find_spec(f"blender_mcp.server.tools.{module_name}") is not None, (
+            f"{module_name} is named by a bundle but does not exist"
+        )
 
 
-def _tool_count_for_toolsets(raw_value: str | None) -> int:
-    env_assignment = f"os.environ['BLENDER_MCP_TOOLSETS'] = {raw_value!r}\n" if raw_value is not None else ""
-    script = (
-        "import asyncio, os\n"
-        f"{env_assignment}"
-        "from blender_mcp.server import mcp\n"
-        "print(len(asyncio.run(mcp.list_tools())))\n"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return int(result.stdout.strip())
-
-
-def _tool_names_for_toolsets(raw_value: str | None) -> set[str]:
+@functools.cache
+def _tool_names_for_toolsets(raw_value: str | None) -> frozenset[str]:
     """
     Tool names a server process registers for a given BLENDER_MCP_TOOLSETS value.
+
+    Cached: each selection costs a full server import, and several tests ask for the same
+    ones. The selection is passed through an explicit environment rather than inherited, so a
+    developer who exports BLENDER_MCP_TOOLSETS in their own shell cannot change what these
+    tests measure. `None` means the variable is genuinely absent from the child process.
 
     Args:
         raw_value: The BLENDER_MCP_TOOLSETS value to set, or None to leave it unset.
@@ -96,43 +119,65 @@ def _tool_names_for_toolsets(raw_value: str | None) -> set[str]:
         The set of tool names that a fresh server process advertises for that selection.
 
     """
-    env_assignment = f"os.environ['BLENDER_MCP_TOOLSETS'] = {raw_value!r}\n" if raw_value is not None else ""
+    env = {key: value for key, value in os.environ.items() if key != TOOLSETS_ENV_VAR}
+    if raw_value is not None:
+        env[TOOLSETS_ENV_VAR] = raw_value
     script = (
-        "import asyncio, os, json\n"
-        f"{env_assignment}"
+        "import asyncio, json\n"
         "from blender_mcp.server import mcp\n"
         "print(json.dumps([t.name for t in asyncio.run(mcp.list_tools())]))\n"
     )
-    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
-    return set(json.loads(result.stdout))
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True, env=env)
+    return frozenset(json.loads(result.stdout))
 
 
-def test_unset_toolsets_registers_only_core_bundle() -> None:
-    """A server started without BLENDER_MCP_TOOLSETS registers only the always-on core tools."""
-    core_only_count = _tool_count_for_toolsets(None)
-    everything_count = _tool_count_for_toolsets("all")
+def test_selecting_a_bundle_adds_exactly_that_bundle_on_top_of_core() -> None:
+    """
+    Selecting one bundle adds its own tools to core and nothing else.
 
-    assert 0 < core_only_count < everything_count
+    Asserted as a set relation rather than as `core < cloth < all` counts: an ordering of
+    three integers holds even if the wrong tools were added, which is the regression that
+    would actually matter here.
+    """
+    core_only = _tool_names_for_toolsets(None)
+    with_cloth = _tool_names_for_toolsets("cloth")
+    everything = _tool_names_for_toolsets(ALL_SENTINEL)
+
+    assert core_only, "a default process must still advertise the core surface"
+    assert core_only < with_cloth < everything, "each selection must be a strict superset of the last"
+    assert with_cloth - core_only, "selecting cloth must add tools core does not already have"
+    assert (with_cloth - core_only).isdisjoint(_tool_names_for_toolsets("retopology") - core_only)
 
 
-def test_selecting_a_bundle_adds_its_tools_on_top_of_core() -> None:
-    """Selecting one bundle registers strictly more tools than core alone, and fewer than 'all'."""
-    core_only_count = _tool_count_for_toolsets(None)
-    with_cloth_count = _tool_count_for_toolsets("cloth")
-    everything_count = _tool_count_for_toolsets("all")
+def test_all_advertises_the_tool_count_quoted_in_bundles_docs() -> None:
+    """
+    The tool count quoted in bundles.py's module docstring is what `all` actually advertises.
 
-    assert core_only_count < with_cloth_count < everything_count
+    Parsed out of the docstring rather than restated here, so the prose and the measured
+    catalog are pinned to each other and neither can rot alone. Scoped to this test: a
+    module-level parse would turn a harmless rewording into a collection error for the file.
+    """
+    quoted = re.search(r"\((\d+) tools, per", bundles.__doc__ or "")
+    assert quoted, "bundles.py's docstring no longer quotes a tool count in the expected form"
+    assert len(_tool_names_for_toolsets(ALL_SENTINEL)) == int(quoted.group(1))
 
 
 def test_scene_authoring_tools_are_not_in_the_core_surface() -> None:
     """Geometry creation and destructive scene ops must not ship in every process."""
     core_tools = _tool_names_for_toolsets(None)
-    for name in ("create_geometry_object", "reset_scene", "remove_scene_objects"):
+    for name in _SCENE_AUTHORING_TOOLS:
         assert name not in core_tools, f"{name} is still registered by the core surface"
 
 
 def test_scene_authoring_bundle_restores_them() -> None:
     """No capability is lost -- the same tools are reachable by asking for the bundle."""
     authoring_tools = _tool_names_for_toolsets("scene-authoring")
-    for name in ("create_geometry_object", "reset_scene", "remove_scene_objects"):
-        assert name in authoring_tools
+    for name in _SCENE_AUTHORING_TOOLS:
+        assert name in authoring_tools, f"{name} is not reachable through the scene-authoring bundle"
+
+
+def test_readme_documents_every_bundle_name() -> None:
+    """README's bundle table is what users read to learn the names, so it must track BUNDLES."""
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    missing = sorted(name for name in BUNDLES if f"`{name}`" not in readme)
+    assert not missing, f"bundles missing from README's table: {missing}"
