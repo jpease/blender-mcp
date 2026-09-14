@@ -25,7 +25,7 @@ python_files = ["test_*.py"]
 testpaths = ["tests"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "scripts"]
 pythonVersion = "3.13"
 typeCheckingMode = "basic"
 reportMissingImports = false

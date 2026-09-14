@@ -1,20 +1,26 @@
 """
 Measure the `tools/list` payload a server process advertises.
 
-Every registered tool's schema is sent to every client on every request, so the payload is
-permanent context occupancy rather than a one-time cost. These helpers are pure: they take
-already-built tool objects and return byte counts, so they can be unit-tested without a
-FastMCP app and without Blender.
+See `bundles.py` for why an advertised payload is permanent context cost rather than a
+one-time startup cost. These helpers are pure: they take already-built tool objects and
+return byte counts, so they can be unit-tested without a FastMCP app and without Blender.
+
+Nothing at runtime imports this module. It ships inside the package deliberately: `scripts/`
+is not an importable package, and keeping the pure half here is what makes it testable.
 """
 
 import json
 
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Protocol
 
 # Rough divisor for turning bytes into a token estimate. JSON schema text tokenizes denser
 # than prose, so this is an approximation kept explicit rather than buried in a call site.
+# 3.6 is an unvalidated rule of thumb -- no measurement in this repo derives it. Treat every
+# printed token figure as order-of-magnitude, and re-derive this against a real tokenizer
+# before using token counts to argue a threshold has been met.
 BYTES_PER_TOKEN: float = 3.6
 
 
@@ -40,20 +46,48 @@ class PayloadReport:
     """
     Byte accounting for one `tools/list` response.
 
+    `payload_report` is the only supported constructor. `per_tool` is a read-only view, so a
+    frozen report is immutable through and through; it is not hashable, since it carries a
+    mapping. `total_bytes`, `tool_count` and `total_tokens` are properties derived from
+    `per_tool`, so a report cannot disagree with itself.
+
     Attributes:
-        total_bytes: Total wire bytes across every tool in the response.
-        tool_count: Number of tools included in the response.
         per_tool: Wire bytes contributed by each tool, keyed by tool name.
         schema_bytes: Total bytes attributable to `inputSchema` across all tools.
-        description_bytes: Total bytes attributable to `description` across all tools.
+        description_bytes: Total bytes attributable to `description` across all tools,
+            excluding each value's two surrounding quotes.
 
     """
 
-    total_bytes: int
-    tool_count: int
-    per_tool: dict[str, int] = field(default_factory=dict)
-    schema_bytes: int = 0
-    description_bytes: int = 0
+    per_tool: Mapping[str, int]
+    schema_bytes: int
+    description_bytes: int
+
+    def __post_init__(self) -> None:
+        """Freeze `per_tool` so the documented immutability holds however the report was built."""
+        object.__setattr__(self, "per_tool", MappingProxyType(dict(self.per_tool)))
+
+    @property
+    def total_bytes(self) -> int:
+        """
+        Total wire bytes across every tool in the response.
+
+        Returns:
+            The sum of every tool's byte contribution.
+
+        """
+        return sum(self.per_tool.values())
+
+    @property
+    def tool_count(self) -> int:
+        """
+        Number of tools included in the response.
+
+        Returns:
+            How many tools the payload advertises.
+
+        """
+        return len(self.per_tool)
 
     @property
     def total_tokens(self) -> float:
@@ -67,48 +101,42 @@ class PayloadReport:
         return self.total_bytes / BYTES_PER_TOKEN
 
 
-def _compact(value: dict[str, Any]) -> str:
+def _json_bytes(value: dict[str, Any] | str) -> int:
     """
-    Serialize a value to JSON using the most compact separators.
+    Compute the wire bytes of any JSON-serializable value.
+
+    This is the single definition of "how many bytes does this occupy on the wire" - every
+    counter in this module routes through it, so no figure is computed in a different
+    encoding. (`description_bytes` alone then subtracts its two delimiting quotes; see
+    `_text_bytes`.) The encoding is ASCII-escaped, so the string's length is exactly its
+    byte count.
 
     Args:
-        value: A JSON-serializable mapping, matching the shape every call site passes
-            (a dumped tool, or its `inputSchema`).
+        value: A dumped tool, an `inputSchema` mapping, or a description string.
 
     Returns:
-        The compact JSON string, matching the separators used on the wire.
+        The byte count of its compact JSON encoding.
 
     """
-    return json.dumps(value, separators=(",", ":"))
+    return len(json.dumps(value, separators=(",", ":")))
 
 
-def tool_bytes(tool: _Dumpable) -> int:
-    """
-    Compute the wire bytes one tool contributes to a `tools/list` payload.
+def _text_bytes(text: str) -> int:
+    r"""
+    Compute the wire bytes a string contributes as a JSON value, excluding its quotes.
+
+    Measuring the encoded form rather than `len(text)` keeps this counter in the same unit
+    as the schema and total counters: a non-ASCII character costs what it actually costs on
+    the wire (an em dash is six bytes as `\u2014`, not one).
 
     Args:
-        tool: A tool-like object exposing `model_dump(exclude_none=...)`.
+        text: The raw string value, such as a tool description.
 
     Returns:
-        The number of bytes the compact JSON encoding of the tool occupies, excluding
-        fields that are never sent (i.e. fields whose value is `None`).
+        The byte count of its compact JSON encoding, less the two surrounding quotes.
 
     """
-    return len(_compact(tool.model_dump(exclude_none=True)))
-
-
-def payload_bytes(tools: Sequence[_Dumpable]) -> int:
-    """
-    Compute the total wire bytes for a `tools/list` response.
-
-    Args:
-        tools: The tools that would be advertised in the response.
-
-    Returns:
-        The sum of `tool_bytes` across all tools.
-
-    """
-    return sum(tool_bytes(tool) for tool in tools)
+    return _json_bytes(text) - 2
 
 
 def payload_report(tools: Sequence[_Dumpable]) -> PayloadReport:
@@ -123,11 +151,8 @@ def payload_report(tools: Sequence[_Dumpable]) -> PayloadReport:
         description contribution.
 
     Raises:
-        ValueError: If two tools share the same name. A name-keyed report has no way to
-            represent that case other than silently overwriting one tool's bytes with the
-            other's while still accumulating both into `schema_bytes`/`description_bytes` -
-            an internally inconsistent, artificially smaller report. Treat it as a malformed
-            payload instead.
+        ValueError: If two tools share a name; a name-keyed report cannot represent that
+            case without silently under-counting.
 
     """
     per_tool: dict[str, int] = {}
@@ -138,14 +163,15 @@ def payload_report(tools: Sequence[_Dumpable]) -> PayloadReport:
         dumped = tool.model_dump(exclude_none=True)
         name = dumped["name"]
         if name in per_tool:
+            # Overwriting per_tool[name] while still accumulating both tools into
+            # schema_bytes/description_bytes would yield an internally inconsistent,
+            # artificially smaller report. A repeated name is a malformed payload.
             raise ValueError(f"duplicate tool name in payload: {name!r}")
-        per_tool[name] = len(_compact(dumped))
-        schema_bytes += len(_compact(dumped.get("inputSchema") or {}))
-        description_bytes += len(dumped.get("description") or "")
+        per_tool[name] = _json_bytes(dumped)
+        schema_bytes += _json_bytes(dumped.get("inputSchema") or {})
+        description_bytes += _text_bytes(dumped.get("description") or "")
 
     return PayloadReport(
-        total_bytes=sum(per_tool.values()),
-        tool_count=len(per_tool),
         per_tool=per_tool,
         schema_bytes=schema_bytes,
         description_bytes=description_bytes,
