@@ -844,3 +844,69 @@ the mutation now fails.
 | core payload | 37 tools / **91,000 B** | unchanged across all seven cycles |
 
 Nothing committed, per the brief.
+
+---
+
+# Replan: modes, phase order, and the §7.1 threshold
+
+Three changes made after the Tasks 1-3 review loop, in response to the observation that
+hand-editing `BLENDER_MCP_TOOLSETS` is poor UX for an artist.
+
+## 1. Tasks 4 and 5 recast around the two modes
+
+The spec (§4.3) already defines the artist-shaped vocabulary - `shot` assembles, animates,
+lights and renders; `asset` authors or revises canon - and §4.7 establishes that the **add-on is
+the MCP client**, so the thing choosing a surface is the plugin, which wants one word rather than
+a comma list of eleven domain names.
+
+**Modes do not replace bundles.** A mode still resolves to modules, and the sub-splits are what
+make `shot` small enough to be worth selecting. Modes are a curated preset layer over `BUNDLES`;
+bundles remain for fine-grained control, and `shot,retopology` composes.
+
+- **Task 4** now adds `MODES` (`shot`, `asset`) plus the `core-shared`/`core-authoring` split, with
+  tests for namespace collision and mode/bundle composition.
+- **Task 5** now justifies the camera and texture-lighting splits by what the modes require: today
+  `shot` cannot take lighting without 21 tools of texture authoring, because `texture-lighting`
+  fuses two unrelated domains. Its tests assert the property that matters - the two modes are
+  disjoint outside core - rather than restating bundle contents.
+- **Task 6** measures by mode name and records both figures with the revision.
+
+Measured today, for the plan's own numbers: `camera,rendering` = 65 tools / 59.3K tokens;
+`camera,texture-lighting,rendering` = 101 tools / 96.4K tokens (texture rides along);
+`scene-authoring,geometry-nodes,retopology` = 105 tools / 93.3K tokens.
+
+**A correction carried into the spec:** ~36K tokens is the floor for `shot` by bundle splitting
+alone. The ~19K gate refers to the *default* surface (`core-shared`), not to a working shot
+surface. §4.6 conflated the two; it now states both.
+
+## 2. Phase 2 ordered before the rest of Phase 1
+
+Phase 1 splits into **1a** (Tasks 1-6: harness, splits, modes) and **1b** (variant scoping,
+Resources, gateway, Xvfb rig), with **Phase 2 between them**. Two reasons, both recorded in §8:
+
+- The gateway's value proposition is "defer cost for unused surface," and the bar cannot say which
+  surface goes unused until Task 6 produces mode-shaped baselines.
+- **This server cannot open or save a `.blend`.** Tuning which tools an artist is offered, while
+  the artist cannot open their own shot, optimises the wrong surface.
+
+## 3. §7.1's threshold question answered
+
+The section previously listed four "honest limits" and defined no threshold, which made it a
+stopping rule that could not stop anything. Now specified:
+
+| Was open | Now |
+|---|---|
+| No threshold, n, or repeats | 12 tasks x 5 repeats = 60 paired trials per arm |
+| No definition of "worse" | **Non-inferiority**: fails if the lower bound of a 90% bootstrap CI on `(cut - baseline)` drops below **-10pp**. Margin derived from the task set - one task class of twelve is 8.3pp - not picked arbitrarily |
+| First-try argument validity unobservable | **Dropped**, and replaced by **server-side dispatch count** (every call crosses the dispatch helper). Median dispatches per task must not rise >25%. This is the metric that catches a gateway trading bytes for round-trips |
+| Generalises only to the model it runs | Scoped honestly: run on **>= 2 models**, must be non-inferior on both, models recorded with the result |
+| Must exist before the cuts or it validates nothing | **Dissolved.** Every pre-cut state is addressable in git - `upstream/main` registers all 285 tools with no bundle selection - so the bar runs **retrospectively**. Satisfied by version control, not calendar order |
+
+**Still genuinely open**, and stated as such rather than papered over: whether ~a dozen tasks is
+the right *breadth*. The statistics are sound for the tasks chosen; they say nothing about whether
+those are the right tasks, and no number of repeats fixes a badly chosen suite.
+
+**Consequence:** the gateway is no longer blocked on a decision. Its remaining blockers are a
+capability-catalog format, a dispatch path reusing the existing Pydantic validation, the
+`capabilities` naming collision with the addon handshake, and - the real one - data from Task 6
+and the bar's dispatch metric showing the byte/round-trip trade is worth making.

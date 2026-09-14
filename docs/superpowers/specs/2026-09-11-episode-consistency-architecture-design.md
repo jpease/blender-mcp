@@ -346,9 +346,14 @@ and not addressed by the link/append allowlist, which does not cover them.
 entries in a `bundles.py` that already exists; variant scoping edits schemas already
 written; Resources are a protocol primitive that adds no tools; the measurement harness is
 tooling. The only additions are the gateway's three machinery tools, and they are net
-strongly negative — 3 added to stop advertising 264. Measured: `core-shared` after the
-splits is **21 tools / 17.6K tokens**, against 285 tools / ~328K today, with every other
-tool still reachable through the gateway.
+strongly negative — 3 added to stop advertising 264.
+
+**Two figures, not to be conflated.** `core-shared` after the splits is projected at **21 tools /
+17.6K tokens** — that is the *default* surface, and it is what the ~19K gate refers to. A working
+`shot` surface adds camera, lighting and rendering on top and lands near **36K tokens** (rung 3
+below). Neither figure assumes a gateway; both are reachable by bundle splitting alone. The
+gateway's contribution is to make the tools *outside* the selected mode still reachable, not to
+shrink the mode itself.
 
 **Policy: minimize, do not fill.** There is no target size; unneeded bytes buy nothing. The
 context-window arithmetic yields a **ceiling, not a goal** — 50K tokens, a 200K floor at 25%
@@ -533,23 +538,53 @@ link a canon character and place it; apply a lighting preset; set a camera to a 
 framing; assemble a two-character shot; reproduce a fingerprint and diff it; catch a
 deliberately introduced drift.
 
-**Honest limits, which must be fixed before it is trusted:**
+**Sampling.** Twelve tasks x five repeats = 60 trials per arm, paired: the same tasks, the
+same fixtures, and the same seeds where seedable, run against both the baseline revision and
+the cut. Pairing matters more than n here - it removes task difficulty as a variance source,
+which is the dominant one.
 
-- **No threshold is defined.** With a dozen binary tasks, one stochastic failure moves the
-  rate by 8 points. A stopping rule without a threshold and a baseline is a vibe check.
-  Specify n, repeats, and the degradation that fails a cut.
-- **First-try argument validity is not observable from inside this project.** Schema-invalid
-  calls are rejected host-side; the envelope carries no retry telemetry. Either the harness
-  instruments the client it drives, or that metric is dropped.
-- **It generalizes only to the model it runs.** Vendor agnosticism means a bar tuned on one
-  runtime may not transfer.
-- **Ordering.** It must exist before §4.6's cuts are made, or it validates nothing it was
-  introduced to protect.
+**Primary metric.** Task success rate over the machine-checkable outcomes above.
+
+**The rule, stated as non-inferiority rather than equality.** A cut **fails** if the lower
+bound of a 90% bootstrap confidence interval on `(cut - baseline)` falls below **-10
+percentage points**. The question a cut must answer is not "did nothing change" but "did
+nothing meaningfully get worse"; an equality test on 60 binary trials rejects on noise alone.
+The -10pp margin is chosen against the task set, not picked from the air: one task class of
+twelve failing outright is 8.3pp, so the margin says *no more than a single task class may
+regress, and it must be within noise of that*.
+
+**Secondary metric, replacing first-try argument validity.** That metric is dropped: it is
+not observable from inside this project and instrumenting someone else's client is not a
+dependency worth taking. It is replaced by **dispatch count to completion**, counted
+server-side - every tool call crosses the dispatch helper, so the server can count them
+without client cooperation. A cut whose success rate holds while its dispatch count climbs
+has not saved anything; it has moved cost from advertised bytes into round-trips, which is
+precisely the failure mode a gateway risks. **Rule:** median dispatches per task must not
+rise by more than 25%.
+
+**Vendor agnosticism, honestly scoped.** A bar is model-specific by construction and no
+amount of design changes that. So it is run on **at least two models** and a cut must be
+non-inferior on both; the models used are recorded with every result. This does not make the
+bar portable - it makes the claim falsifiable on more than one runtime, which is the most
+this method can offer.
+
+**Ordering - resolved, and no longer a blocker.** The original objection was that the bar
+must exist before §4.6's cuts or it validates nothing. The cuts have since been made, but the
+objection dissolves: every pre-cut state is still addressable in git. `upstream/main`
+registers all 285 tools with no bundle selection at all, and each Phase 1 cut landed as its
+own commit. The bar can therefore be written now and run **retrospectively** against any
+revision in that range, which satisfies the requirement by version control rather than by
+calendar order. Any bar result must name the two revisions it compared.
+
+**What remains genuinely open.** Whether ~a dozen tasks is enough breadth to represent shot
+assembly at all. The statistics above are sound for the tasks chosen; they say nothing about
+whether those tasks are the right ones, and no amount of repeats fixes a badly chosen suite.
 
 ## 8. Phasing
 
 **Implementation plan:** `docs/superpowers/plans/2026-09-11-phase-1-catalog.md` covers the
-measurement harness and the bundle splits — the part of Phase 1 that is fully specified. The
+measurement harness, the bundle splits and the mode presets — Phase 1a, the part that is fully
+specified. The
 gateway, Resources, variant scoping and the success bar are deferred there with reasons; the
 bar in particular cannot be planned until §7.1's threshold question is closed.
 
@@ -563,9 +598,26 @@ what can be built without waiting on anyone.
 gateway machinery tools, which exist to stop advertising 264 others. Adding tools beyond the
 285 that exist is deferred to Phase 3, and then only where no existing tool covers the job.
 
+**Phase 1 is split, and Phase 2 runs before its remainder.** Tasks 1-6 of the catalog plan -
+the measurement harness, the bundle splits, and the mode presets - land first and are done
+when `shot` and `asset` are selectable. Everything else Phase 1 once contained (variant
+scoping, MCP Resources, the typed gateway, the Xvfb rig) moves **after Phase 2**, for two
+reasons. First, the gateway's value proposition is "defer cost for unused surface", and
+§7.1's bar cannot say which surface goes unused until there are mode-shaped baselines to
+measure against - those come out of Task 6. Second, and more bluntly: this server cannot
+open or save a `.blend` file. Tuning which tools an artist is offered, while the artist
+cannot open their own shot, optimises the wrong surface. Phase 2 is the smaller gate and
+the one a user would notice first.
+
+**The ~19K token gate belongs to the default surface, not to `shot`.** Measured against the
+current tree, bundle splitting alone brings shot-shaped work to roughly 36K tokens (§4.6's
+rung 3). Reaching ~19K for a working shot surface needs variant scoping and the gateway on
+top, which is why the gate is restated per-phase below rather than claimed once.
+
 | Phase | Content | Gate |
 |---|---|---|
-| **1 — Catalog** | Measurement harness (payload by tool, family and bundle, as a test). Bundle splits: `CORE_MODULES` → `core-shared`/`core-authoring`, `texture-lighting`, `scene` (authoring + destructive out), `camera.rigs`, `lighting.construction`. Variant scoping on the heaviest schemas. MCP Resources for reference content. Typed gateway (3 machinery tools). Xvfb rig. §7.1 bar **written against the existing 285**, establishing a baseline before anything changes. | Advertised payload falls from ~328K to ~19K tokens with **no capability lost and no domain tool added**; the bar scores no worse after the cuts than before |
+| **1a — Catalog** | Measurement harness (payload by tool, family and bundle, as a test). Bundle splits: `CORE_MODULES` → `core-shared`/`core-authoring`, `texture`/`lighting` separated, `camera-rigs`, `lighting-construction`, `scene` (authoring + destructive out, **done**). **Mode presets `shot` and `asset`** resolving to curated bundle sets, so a client selects one word. §7.1 bar written and run retrospectively against `upstream/main`. | `shot` and `asset` are selectable; `all` still advertises 285 tools with **no capability lost and no domain tool added**; the bar scores no worse after the cuts than before |
+| **1b — Deferral** (after Phase 2) | Variant scoping on the heaviest schemas. MCP Resources for reference content. Typed gateway (3 machinery tools), which needs its own spec section first. Xvfb rig. | Advertised payload for a working `shot` surface falls to ~19K tokens, with the §7.1 bar non-inferior on both metrics |
 | **2 — Primitives** | Plugin↔MCP loop on a worker thread. `open_mainfile` reentrancy under a real event loop; re-verify the persistent-timer result with the server actually running. Then the §4.5 file-lifecycle family; `transaction.py` gains `libraries`; `docker-blender` takes `bundles.py`. **The first genuinely additive work, and inescapable — this server cannot currently open or save a `.blend`.** | Open a shot, link canon, create an override, save, reopen with the link intact; no hang |
 | **3 — Consistency** | Canon registry + `LocalMirrorResolver`; `content_digest`; extractor + hasher for `asset`, `material`, `color`, `format`, `artifact`; the round-trip check; `blend` presets — seeded from `create_studio_lighting`, which is already a preset in all but name. Artist-facing plugin (agent loop, UI, credentials). One canon character and location, hand-built. | Two shots; a deliberate drift caught and a legitimate change not; a `.blend` that reproduces its own frames |
 | **4 — Enforcement** | Addon mode guard including `obj.data`. Baselines, exceptions, `assert_consistency`, `publish_shot`, manifest. `load_post` opt-in digest re-check. `shot_recipe` recording. Socket authentication. `StudioAssetResolver`, `recipe` presets, `audit_episode`. | A shot cannot publish inconsistent from any client configuration |

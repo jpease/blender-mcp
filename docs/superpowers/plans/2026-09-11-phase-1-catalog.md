@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Cut the advertised `tools/list` payload from ~328K tokens to ~19K without losing capability and without adding a single domain tool.
+**Goal:** Give a client two artist-shaped surfaces - `shot` and `asset` - selectable by one word, cutting the advertised `tools/list` payload without losing capability and without adding a single domain tool. Tasks 1-6 bring shot-shaped work to roughly 36K tokens, which is the floor for bundle splitting alone; the spec's ~19K gate needs variant scoping and the gateway, both deferred to after Phase 2.
 
-**Architecture:** Every change is subtractive or editorial. Bundle definitions are regrouped so a server process registers only the domains its client asked for; the heaviest schemas shed variants they do not need; static reference content moves to MCP Resources; and a typed gateway makes everything that is no longer advertised still reachable. Three gateway machinery tools are the only additions, and they exist to stop advertising 264 others.
+**Architecture:** Every change is subtractive or editorial. Bundle definitions are regrouped so a server process registers only the domains its client asked for, and two mode presets sit over those bundles so the selection is one artist-facing word rather than a comma list of domain names. Nothing here adds a tool. Variant scoping, MCP Resources and the typed gateway - the levers that would close the remaining distance to ~19K - are deferred to after Phase 2, with reasons stated below.
 
 **Tech Stack:** Python 3.13, FastMCP, Pydantic v2, pytest, ruff, basedpyright, Docker + Xvfb for the Blender rig.
 
@@ -500,21 +500,33 @@ capability is lost. Core payload drops by 28,634 B."
 
 ---
 
-## Task 4: Split `CORE_MODULES` into `core-shared` and `core-authoring`
+## Task 4: Add `shot` and `asset` mode presets, and split core so `shot` carries no authoring
 
-`core` is unconditional and carries 24 tools after Task 3. `mesh` (13 tools) and `model` (3) are authoring surfaces that every process pays for.
+**Why this is framed as modes, not more bundles.** §4.3 of the spec defines exactly two working
+surfaces: `shot` assembles, animates, lights and renders; `asset` authors or revises canon. Those
+are the words an artist thinks in. Eleven domain bundle names are not — and the add-on is the MCP
+*client* (§4.7), so the thing selecting a surface is the plugin, which wants to set one word.
+
+**Modes do not replace bundles; they sit on top of them.** A mode still has to resolve to a set of
+modules, and Task 5's splits are what make `shot` small enough to be worth selecting at all.
+Bundles remain for fine-grained control; modes are the curated presets over them.
+
+Measured today, the closest thing to `shot` (`camera,rendering`) is **65 tools / 59.3K tokens**, and
+pulling lighting in drags texture authoring with it — `camera,texture-lighting,rendering` is **101
+tools / 96.4K tokens**. That is the problem Tasks 4 and 5 exist to fix.
 
 **Files:**
-- Modify: `src/blender_mcp/server/bundles.py:10-20,35`
+- Modify: `src/blender_mcp/server/bundles.py`
 - Modify: `tests/server/test_bundles.py`
+- Modify: `README.md`
 
 **Interfaces:**
-- Consumes: `resolve_toolset_modules` semantics from Task 2.
-- Produces: `CORE_MODULES` reduced to the shared set; new bundle `core-authoring`.
+- Consumes: `resolve_toolset_modules` and `_ordered_unique` semantics as they stand after Task 3.
+- Produces: `MODES` mapping; `CORE_MODULES` reduced to the shared set; new bundle `core-authoring`.
 
-- [ ] **Step 1: Update the canary and add the new expectation**
+- [ ] **Step 1: Write the failing tests**
 
-In `tests/server/test_bundles.py`, change `_CORE_TODAY` to the post-split set and add a test:
+In `tests/server/test_bundles.py`, update the canary and add mode coverage:
 
 ```python
 _CORE_TODAY = (
@@ -529,22 +541,54 @@ _CORE_TODAY = (
 def test_core_authoring_bundle_restores_mesh_and_model() -> None:
     """mesh and model leave the unconditional core but stay reachable."""
     assert resolve_toolset_modules("core-authoring") == (*_CORE_TODAY, "mesh", "model")
+
+
+def test_mode_names_resolve_to_their_bundle_sets() -> None:
+    """A mode is one word that expands to a curated bundle list."""
+    for mode, bundles in MODES.items():
+        expected = _ordered_unique(CORE_MODULES + tuple(m for b in bundles for m in BUNDLES[b]))
+        assert resolve_toolset_modules(mode) == expected
+
+
+def test_mode_and_bundle_namespaces_do_not_collide() -> None:
+    """`BLENDER_MCP_TOOLSETS` takes one namespace, so a name may not mean two things."""
+    assert not (set(MODES) & set(BUNDLES)), "a mode name shadows a bundle name"
+    assert ALL_SENTINEL not in MODES
+
+
+def test_modes_are_composable_with_bundles() -> None:
+    """An artist in shot mode who needs one extra domain must not have to abandon the mode."""
+    resolved = resolve_toolset_modules("shot,retopology")
+    assert set(resolve_toolset_modules("shot")) < set(resolved)
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/server/test_bundles.py -v`
-Expected: FAIL on `test_core_modules_matches_the_documented_core_set` and on `test_core_authoring_bundle_restores_mesh_and_model`.
+Expected: FAIL on the four tests above and on `test_core_modules_matches_the_documented_core_set`.
 
-- [ ] **Step 3: Make the split**
+- [ ] **Step 3: Make the core split and add the mode layer**
 
-In `src/blender_mcp/server/bundles.py`, change `CORE_MODULES` to drop `"mesh"` and `"model"`, and add to `BUNDLES`:
+In `src/blender_mcp/server/bundles.py`, drop `"mesh"` and `"model"` from `CORE_MODULES`, add
+`"core-authoring": ("mesh", "model")` to `BUNDLES`, and introduce modes **below** `BUNDLES`:
 
 ```python
-    "core-authoring": ("mesh", "model"),
+# Artist-facing presets over BUNDLES. The add-on is the MCP client (spec 4.7), so the surface
+# is selected by the plugin, not by a human editing a config file - it wants one word, not a
+# comma list. Spec 4.3 defines exactly these two working surfaces.
+MODES: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "shot": ("camera", "lighting", "rendering"),
+        "asset": ("core-authoring", "scene-authoring", "texture", "retopology", "geometry-nodes"),
+    }
+)
 ```
 
-Update the module docstring to say that `core` is now the shared surface and that mesh/model authoring is opt-in.
+Then expand modes in `resolve_toolset_modules` before the bundle lookup, so a name is resolved
+once and `shot,retopology` composes. Validation must reject an unknown name against
+`BUNDLES | MODES | {ALL_SENTINEL}`, and the error message must list modes separately from bundles
+— an artist typing `shots` should be told the modes are `shot` and `asset`, not handed eleven
+domain names.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -554,37 +598,54 @@ Expected: PASS.
 - [ ] **Step 5: Verify no capability was lost**
 
 Run: `python scripts/measure_catalog.py all`
-Expected: **still 285 tools.** `ALL_MODULES` is derived from `CORE_MODULES + BUNDLES`, so a mistake here shows up as a changed total. If the count moved, a module is either duplicated or orphaned.
+Expected: **still 285 tools.** `ALL_MODULES` derives from `CORE_MODULES + BUNDLES`; modes add no
+modules of their own, so the total must not move. If it did, a module is duplicated or orphaned.
 
-- [ ] **Step 6: Measure and commit**
+- [ ] **Step 6: Measure both modes and record the numbers**
 
-Run: `python scripts/measure_catalog.py` — expect ~21 tools.
+Run `python scripts/measure_catalog.py shot` and `... asset`. Record both in
+`PHASE1_TASK_STATE.md` **with the revision**. Expect `shot` to still be large at this point —
+Task 5 is what brings it down — and do not quote either figure in a module docstring; that is
+what the harness output is for.
+
+- [ ] **Step 7: Update the README and commit**
+
+Document modes above the bundle table: two rows, `shot` and `asset`, stating that a mode is the
+normal choice and bundles are for fine-grained control. Keep the existing bundle table.
 
 ```bash
-git add src/blender_mcp/server/bundles.py tests/server/test_bundles.py
-git commit -m "refactor(bundles): split CORE_MODULES into shared and authoring
+git add src/blender_mcp/server/bundles.py tests/server/test_bundles.py README.md
+git commit -m "feat(bundles): add shot and asset mode presets over the bundle set
 
-mesh and model are authoring surfaces that every server process paid for
-unconditionally, including shot-assembly processes that never model. They
-move to an opt-in core-authoring bundle.
+The add-on is the MCP client, so the surface is chosen by the plugin rather
+than by a human editing a config file. Spec 4.3 defines two working surfaces;
+this exposes them as one-word selections that expand to curated bundle sets.
 
-ALL_MODULES still resolves to every module, so 'all' remains 285 tools and
-no capability is lost."
+mesh and model also leave the unconditional core into core-authoring, so a
+shot-assembly process no longer pays for authoring tools it never calls.
+
+Modes add no modules of their own: 'all' remains 285 tools."
 ```
 
 ---
 
-## Task 5: Split `camera` and `texture-lighting`
+## Task 5: Split `camera` and `texture-lighting` so the two modes are actually disjoint
 
-Camera rigs are six tools worth 18,229 B that a shot reaches rarely. Light *construction* is five tools worth 27,126 B that presets replace. `texture-lighting` bundles two unrelated domains, so shot mode cannot take lighting without texture authoring.
+`shot` and `asset` are only useful if selecting one does not drag in the other's surface. Two
+bundles currently prevent that. `texture-lighting` fuses two unrelated domains, so `shot` cannot
+take lighting without 21 tools of texture authoring (70,946 B). And `camera` carries six rig-
+construction tools (18,229 B) that a shot reaches rarely, while light *construction* is five tools
+(27,126 B) that presets replace.
 
 **Files:**
-- Modify: `src/blender_mcp/server/bundles.py:22-33`
+- Modify: `src/blender_mcp/server/bundles.py`
 - Modify: `tests/server/test_bundles.py`
+- Modify: `README.md`
 
 **Interfaces:**
-- Consumes: bundle semantics from Task 4.
-- Produces: bundles `camera` (core/targeting/animation/shots), `camera-rigs`, `lighting`, `lighting-construction`, `texture`.
+- Consumes: mode semantics from Task 4.
+- Produces: bundles `camera`, `camera-rigs`, `lighting`, `lighting-construction`, `texture`;
+  `texture-lighting` retired.
 
 - [ ] **Step 1: Confirm the submodule layout before editing**
 
@@ -593,96 +654,71 @@ Record the exact submodule filenames. The bundle entries below must match them; 
 
 - [ ] **Step 2: Write the failing tests**
 
-Append to `tests/server/test_bundles.py`:
+Assert the property that matters — that the modes no longer overlap — rather than spelling out
+bundle contents, which would restate the source:
 
 ```python
-_CAMERA_RIG_TOOLS = {
-    "create_camera_path_rig",
-    "create_crane_camera_rig",
-    "create_dolly_camera_rig",
-    "create_orbit_camera_rig",
-    "duplicate_camera_rig",
-    "match_camera_transform",
-}
+def test_shot_and_asset_modes_share_only_the_core_surface() -> None:
+    """Selecting shot must not drag in asset authoring, and vice versa."""
+    core = set(_tool_names_for_toolsets(None))
+    shot = set(_tool_names_for_toolsets("shot")) - core
+    asset = set(_tool_names_for_toolsets("asset")) - core
 
-_LIGHT_CONSTRUCTION_TOOLS = {
-    "create_light",
-    "configure_light",
-    "aim_light",
-    "configure_light_linking",
-    "create_studio_lighting",
-}
+    assert shot and asset, "each mode must add tools of its own"
+    assert shot.isdisjoint(asset), f"modes overlap outside core: {sorted(shot & asset)}"
 
 
-def test_camera_bundle_excludes_rigs() -> None:
-    """The camera bundle covers framing and targeting; rigs are opt-in."""
-    assert _tool_names_for_toolsets("camera") & _CAMERA_RIG_TOOLS == set()
-
-
-def test_camera_rigs_bundle_restores_them() -> None:
-    assert _CAMERA_RIG_TOOLS <= _tool_names_for_toolsets("camera-rigs")
-
-
-def test_lighting_bundle_excludes_construction() -> None:
-    """Shot mode gets lighting inspection and environment; construction is opt-in."""
-    assert _tool_names_for_toolsets("lighting") & _LIGHT_CONSTRUCTION_TOOLS == set()
-
-
-def test_lighting_construction_bundle_restores_them() -> None:
-    assert _LIGHT_CONSTRUCTION_TOOLS <= _tool_names_for_toolsets("lighting-construction")
-
-
-def test_texture_is_separable_from_lighting() -> None:
-    """Selecting lighting must not drag in the texture-authoring surface."""
-    lighting_only = _tool_names_for_toolsets("lighting")
-    texture_only = _tool_names_for_toolsets("texture")
-    assert texture_only - lighting_only, "texture bundle adds nothing beyond lighting"
-    assert "manage_uv_maps" not in lighting_only or "manage_uv_maps" in texture_only
+def test_shot_mode_excludes_texture_authoring() -> None:
+    """Lighting must be selectable without the texture surface it used to be fused to."""
+    shot = _tool_names_for_toolsets("shot")
+    assert "create_studio_lighting" in shot
+    assert not {t for t in shot if t.startswith(("create_material", "apply_texture"))}
 ```
+
+Confirm the exact tool names in Step 1's output before committing to those prefixes.
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `pytest tests/server/test_bundles.py -k "camera or lighting or texture" -v`
-Expected: FAIL — `Unknown BLENDER_MCP_TOOLSETS bundle(s): camera-rigs`.
+Run: `pytest tests/server/test_bundles.py -v`
+Expected: FAIL on both — `texture-lighting` currently puts texture tools in `shot`.
 
-- [ ] **Step 4: Rewrite the bundle table**
+- [ ] **Step 4: Make the splits**
 
-In `src/blender_mcp/server/bundles.py`, replace the `camera` and `texture-lighting` entries using the real submodule names from Step 1. The shape:
+Replace `"texture-lighting": ("texture", "lighting")` with separate `"texture"` and `"lighting"`
+entries, and add `"camera-rigs"` and `"lighting-construction"` carrying the rig and construction
+submodules. Update `MODES["shot"]` to take `lighting` without `lighting-construction`, and
+`MODES["asset"]` to take `texture`.
 
-```python
-    "camera": ("camera.core", "camera.targeting", "camera.animation", "camera.shots"),
-    "camera-rigs": ("camera.rigs",),
-    "lighting": ("lighting.inspection", "lighting.environment", "lighting.rendering"),
-    "lighting-construction": ("lighting.construction",),
-    "texture": ("texture",),
-```
-
-**This requires `resolve_toolset_modules` and `tools/__init__.py` to accept dotted submodule paths.** `importlib.import_module(f".{name}", package=__name__)` already handles `"camera.core"` — verify with a quick REPL check before relying on it. Keep `texture-lighting` as a deprecated alias mapping to `("texture", "lighting.inspection", "lighting.environment", "lighting.rendering", "lighting.construction")` so existing client configs keep working; the Global Constraints forbid breaking them.
+**`texture-lighting` is a documented public name**; removing it is a breaking change for any
+existing client config. Either keep it as a deprecated alias resolving to `texture,lighting`, or
+state the break in the README and the commit message. Do not remove it silently.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/server/test_bundles.py -v`
-Expected: PASS. `test_every_bundle_module_is_a_real_tools_submodule` also validates the dotted paths import.
+Expected: PASS.
 
-- [ ] **Step 6: Verify 'all' is still complete**
+- [ ] **Step 6: Verify no capability was lost, then measure**
 
-Run: `python scripts/measure_catalog.py all`
-Expected: **285 tools.** A dotted-path typo shows up here as a missing module.
+Run: `python scripts/measure_catalog.py all` — expect **285 tools**.
+Run: `python scripts/measure_catalog.py shot` — expect roughly **53 tools / ~36K tokens**
+(§4.6's rung 3). If it lands materially above that, a bundle is still fused; if below, check
+`all` first, because the likely cause is an orphaned module rather than a win.
 
-- [ ] **Step 7: Commit**
+**This is the floor for bundle splitting alone.** ~36K is not the spec's ~19K gate, and no further
+regrouping will close that distance — variant scoping and the gateway are what remain. Record the
+measured figure rather than the hoped-for one.
+
+- [ ] **Step 7: Update the README and commit**
 
 ```bash
-git add src/blender_mcp/server/bundles.py tests/server/test_bundles.py
-git commit -m "refactor(bundles): separate camera rigs, light construction and texture
+git add src/blender_mcp/server/bundles.py tests/server/test_bundles.py README.md
+git commit -m "refactor(bundles): separate texture from lighting and rigs from camera
 
-Three bundles conflated surfaces a shot process needs with surfaces it does
-not. Camera rigs are six tools and 18,229 B reached rarely enough for a
-gateway round trip; light construction is five tools and 27,126 B that
-presets replace; and texture-lighting forced a shot process to take texture
-authoring in order to get lighting.
-
-texture-lighting is kept as a deprecated alias so existing client configs
-continue to resolve. 'all' still registers 285 tools."
+shot mode could not take lighting without 21 tools of texture authoring,
+because texture-lighting fused two unrelated domains. Splitting them, and
+lifting camera rigs and light construction into their own bundles, is what
+makes shot and asset disjoint outside the shared core."
 ```
 
 ---
@@ -695,13 +731,18 @@ With the splits done, lock the win in so it cannot silently regress.
 - Modify: `tests/server/test_catalog_metrics.py`
 
 **Interfaces:**
-- Consumes: `payload_report` (Task 1), the new bundle names (Tasks 3–5).
+- Consumes: `payload_report` (Task 1), the mode presets and bundle names (Tasks 3-5).
 - Produces: a regression ceiling other tasks must not breach.
 
-- [ ] **Step 1: Measure the post-split shot surface**
+- [ ] **Step 1: Measure both modes, by mode name**
 
-Run: `python scripts/measure_catalog.py camera,lighting,rendering`
-Record tool count, bytes and tokens. Expected in the neighbourhood of 53 tools / ~203,000 B / ~56K tokens per the spec's ladder.
+Run `python scripts/measure_catalog.py shot` and `python scripts/measure_catalog.py asset`.
+Record tool count, bytes and tokens **for each, with the revision**, in `PHASE1_TASK_STATE.md`.
+Expect `shot` in the neighbourhood of 53 tools / ~36K tokens after Task 5's splits.
+
+These two figures are what the §7.1 bar measures against, and what tells the gateway design
+which surface actually goes unused - so record what the harness prints, not what this plan
+predicted. If they disagree, the plan is wrong, not the measurement.
 
 - [ ] **Step 2: Write the regression test using the measured number**
 
@@ -781,11 +822,11 @@ The remaining Phase 1 items from spec §8 are **not** written as tasks here, bec
 
 **MCP Resources.** Needs a decision about *what* content moves. `SERVER_INSTRUCTIONS` is only ~944 tokens, so moving it earns little; the real fit is catalog data — canon and preset listings — which do not exist until Phase 3. Planning Resources now would be planning a container for content that has not been written.
 
-**Typed gateway.** This is a design piece, not a refactor: it needs a capability catalog format, a dispatch mechanism that reuses the existing Pydantic validation, and a resolution to the naming collision with the addon handshake's existing `capabilities` field (`server_core.py:1156`, gated at `connection.py:187`). It deserves its own spec section and its own plan.
+**Typed gateway.** This is a design piece, not a refactor: it needs a capability catalog format, a dispatch mechanism that reuses the existing Pydantic validation, and a resolution to the naming collision with the addon handshake's existing `capabilities` field (`server_core.py:1156`, gated at `connection.py:187`). It deserves its own spec section and its own plan. **Its blocker is no longer the §7.1 threshold question**, which the spec now answers; it is that a gateway trades advertised bytes for round-trips, and only Task 6's mode-shaped baselines plus the bar's dispatch-count metric can say whether that trade is worth making. Design it after Phase 2, against data.
 
-**Xvfb rig and the §7.1 success bar.** §7.1 states three unresolved limits in the spec itself: no threshold or baseline is defined, "first-try argument validity" is not observable from inside this project because schema-invalid calls are rejected host-side, and a bar tuned on one runtime may not generalize under vendor agnosticism. **A stopping rule with no threshold is not a stopping rule**, and writing tasks against it would encode that gap rather than close it.
+**Xvfb rig.** Still deferred, but no longer for the reason given here originally. **§7.1's limits are now resolved in the spec**: the bar specifies n, repeats and a non-inferiority margin; first-try argument validity is dropped as unobservable and replaced by server-side dispatch count; vendor agnosticism is scoped to "must pass on at least two models"; and the ordering objection dissolves because every pre-cut state is still addressable in git, so the bar runs retrospectively against `upstream/main`. What remains genuinely open is whether a dozen tasks is the right *breadth* - a question no amount of repeats answers. Write the bar's plan next; it no longer blocks on a decision.
 
-**Recommended sequence:** land Tasks 1–6, which are independent of all of the above and deliver the bulk of the win. Then close the §7.1 threshold question and write the bar's plan; the gateway and Resources follow once the bar can tell you whether a cut cost anything.
+**Recommended sequence:** land Tasks 1-6, which are independent of all of the above and deliver the bulk of the win. **Then Phase 2**, not the deferred items: this server cannot open or save a `.blend`, and tuning which tools an artist is offered while they cannot open their own shot optimises the wrong surface. §7.1's threshold question is now answered in the spec, and the bar can be run retrospectively against `upstream/main`, so it no longer blocks anything. The gateway and Resources follow Phase 2, once Task 6's mode-shaped baselines can tell the bar which surface actually goes unused.
 
 ## Self-review
 
@@ -793,6 +834,6 @@ The remaining Phase 1 items from spec §8 are **not** written as tasks here, bec
 
 **Placeholder scan.** No "TBD", no "add error handling", no "similar to Task N". Every code step carries the code. Two steps deliberately require the implementer to look something up rather than trust this document — Task 5 Step 1 (confirm real submodule filenames) and Task 6 Step 1 (measure before pinning) — because guessing either would produce a wrong constant.
 
-**Type consistency.** `payload_report` / `payload_bytes` / `tool_bytes` / `PayloadReport` / `BYTES_PER_TOKEN` are defined in Task 1 and used with those exact names in Tasks 3 and 6. `_tool_names_for_toolsets` is defined in Task 3 Step 1 and reused in Task 5. `_CORE_TODAY` is introduced in Task 2 and updated in Task 4 Step 1 — the only symbol this plan deliberately redefines, and the redefinition is a step with a failing-test gate in front of it.
+**Type consistency.** `payload_report` / `PayloadReport` / `BYTES_PER_TOKEN` are defined in Task 1 and used with those exact names in Tasks 3-6. (`payload_bytes` and `tool_bytes` were specified here originally and have since been deleted as dead second paths to a number `payload_report` already returns; do not reintroduce them.) `_tool_names_for_toolsets` is defined in Task 3 Step 1 and reused in Tasks 5 and 6. `MODES` is introduced in Task 4 Step 3 and extended in Task 5 Step 4. `_CORE_TODAY` is introduced in Task 2 and updated in Task 4 Step 1 - the only symbol this plan deliberately redefines, and the redefinition is a step with a failing-test gate in front of it.
 
 **Known risk this plan does not remove.** `tools/__init__.py` imports submodules dynamically via `importlib.import_module`, so the GitNexus graph cannot resolve those edges — impact analysis on `CORE_MODULES` and `BUNDLES` returns `UNKNOWN` for exactly that reason. Both were confirmed by text search to be referenced only in `bundles.py` and `tests/server/test_bundles.py`. Re-confirm by text search rather than by graph before changing them, and treat `test_every_bundle_module_is_a_real_tools_submodule` plus the `all`-count check in Tasks 4 and 5 as the real safety net.
