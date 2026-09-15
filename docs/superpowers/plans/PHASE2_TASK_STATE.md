@@ -1982,3 +1982,55 @@ uncovered nodes, the container measurements, and the gate figures in the state t
   endpoint stays loopback-published in the meantime), and did not touch the healthcheck's `start_period`,
   `interval` or `retries` — the container reached healthy in 12 s on this host, so nothing needed loosening,
   but a slower host may need `start_period` raised, and that has not been measured.
+
+---
+
+## Task 2 — the reentrancy strategy
+
+### Step 1: the decision rule, recorded 2026-09-15 BEFORE the spike was written or run
+
+This section is committed **on its own, before any spike code exists**, so the ordering plan §0.4 demands is
+provable from `git log` rather than asserted by the date on this line. The rule is copied **verbatim** from
+plan §0.4 "Q1 — reentrancy strategy"; the only edit is the removal of its leading bullet markers' indentation.
+
+> **Q1 — reentrancy strategy.** The spec offers two options (two-phase validate-then-load answering *before* the
+> swap, or an async job with polling) and rejects a third (defer and answer first) because it cannot report a
+> post-answer failure. All three framings assume the drain callback cannot survive the load and therefore cannot
+> answer after it. **That assumption has never been tested.** Task 2 tests it, under a decision rule stated in
+> advance so the answer cannot be rationalised after the fact:
+>
+> - **If the callback survives the swap and can still `sendall` on its client socket** → adopt
+>   **synchronous validate-then-swap, answer after the swap**. It is the only option whose answer is truthful by
+>   construction, it needs no new job/polling surface, and it keeps one request → one response, which
+>   `connection.py:195-231` already depends on.
+> - **If the callback does not survive** → adopt the **async job with polling** (`open_shot` returns a job id;
+>   **`get_session_info`** reports `queued`/`loading`/`ready`/`failed`). The spec is right that two-phase
+>   answer-before-swap cannot report a post-validation failure, so it is not the fallback. **The poll surface is
+>   `get_session_info`** — the command Task 3 item 4 defines, which exists in both branches. An earlier revision
+>   called it `get_session_status` here and `get_session_info` everywhere else; there is one command and its name
+>   is `get_session_info`. This branch adds **fields** to it (job id, state), not a second command, so it does not
+>   add an eleventh tool to Task 9's budget.
+
+**The escalation clause, also recorded in advance** (plan Task 2 Step 6, and §09): an outcome that fits neither
+branch cleanly — the example given is "the callback survives but `sendall` fails intermittently" — is an
+**escalation, not a third branch**. If that happens I stop and report rather than inventing a resolution.
+
+**What "survives" will be taken to mean**, fixed now so it cannot be loosened later. All four must hold for the
+first branch to be selected:
+
+1. the Python frame of the drain callback resumes after `bpy.ops.wm.open_mainfile` returns — i.e. a statement
+   *after* the operator call executes, in the same invocation;
+2. `client.sendall(...)` on the socket object held by that frame returns without raising, and the bytes are
+   **received by the client process** (the client's own read is the evidence, not the server's return);
+3. the drain timer is still registered afterwards and fires again;
+4. the next queued command executes, against the **new** file.
+
+A partial result — any of the four failing, or any of them succeeding only intermittently across repeats — is
+the escalation case, not a pass.
+
+**Constraints on the spike, recorded with the rule** (plan Task 2 Steps 2 and 8, TASK_STATE pickup contract):
+
+- `__spike_open` must be added to `_READ_ONLY_COMMANDS` for its lifetime. Otherwise `_run_handler`
+  (`server_core.py:1247`, wrap at `:1314`) routes it through `mutation_transaction` and the spike triggers the
+  §0.3 finding 7 data-destruction bug that **Task 4 has not fixed yet**.
+- No spike code lands. The task's commit is docs-only, and `git status` must show no spike residue.
