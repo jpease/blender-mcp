@@ -170,11 +170,11 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | # | Task | Tier | Status | Commit | Notes |
 |---|---|---|---|---|---|
 | 1 | Land the live-Blender acceptance rig on `main` | Opus | **Done — 94/100 after cycle-4 repairs** | `2852803` + repairs |  9 files ported, full `output_roots` wiring + 30 → 31 bump, ported lint debt cleaned to zero, `scripts/blender_rig.py` written, Step 5 re-verified live and **re-run end to end after each repair cycle**, README documented, `scripts/revert_matrix.py` landed so the revert evidence is reproducible. Repairs R1-R22 (cycle 2) and A1-A6/B1-B5/C1-C4/D1/F1-F10 (cycle 3); see both repair tables. **Acceptance criteria 2 and 3 now PASS** against a real container, after the decision-8 follow-up ported the HTTP transport (a tenth file) and fixed the two `entrypoint.sh` defects the first container run exposed. |
-| 2 | Decide the reentrancy strategy by experiment | Opus | **Done** | `969df10` (rule), `9608561` (evidence + spec), `807ef52` (`use_scripts` gap), + the cycle-2 repair commit | Decision rule committed **before** the spike existed, so the branch could not be picked after seeing the result. **Decided: synchronous validate-then-swap, answer after the swap** — the callback survives, all four pre-registered conditions met, 7/7 swaps, no intermittency. Async-job-with-polling rejected; its premise is false. **Six rig runs** on 5.2.2 (see the per-run tally). Findings with downstream teeth: the scene-gated capability set follows the swapped file; `bpy.context.window` is `None` for the rest of the swapping tick but operators still run and it recovers by the next tick; the ordering hazard is demonstrated on both sides of the drain budget; `bpy.data.is_dirty` is a usable pre-swap guard and unsaved work is otherwise destroyed silently; five path-leaking error shapes flagged for Task 5. No production code changed; spike deleted. |
+| 2 | Decide the reentrancy strategy by experiment | Opus | **Done** | `969df10` (rule), `9608561` (evidence + spec), `807ef52` (`use_scripts` gap), `c54b8b6` (cycle 1+2 repairs), + the re-score repair commit | Decision rule committed **before** the spike existed, so the branch could not be picked after seeing the result. **Decided: synchronous validate-then-swap, answer after the swap** — the callback survives, all four pre-registered conditions met, **18/18** swaps, no intermittency. Async-job-with-polling rejected; its premise is false. **Six rig runs** on 5.2.2 (see the per-run tally). Findings with downstream teeth: the scene-gated capability set follows the swapped file; `bpy.context.window` is `None` for the rest of the swapping tick but operators still run and it recovers by the next tick; the ordering hazard is demonstrated on both sides of the drain budget; `bpy.data.is_dirty` is a usable pre-swap guard and unsaved work is otherwise destroyed silently; five path-leaking error shapes flagged for Task 5. No production code changed; spike deleted. |
 | 3 | Drain-loop file-swap barrier, session epoch, failure handlers | Opus | Not started | — | **Inherits protocol 31; asserts, does not bump** (decision 2). |
 | 4 | Make rollback survive a file swap, track `libraries` | Opus | Not started | — | |
 | 5 | The filesystem trust boundary | Opus | Not started | — | Promotes `output_roots.py`, landed here. |
-| 6 | Addon file-lifecycle handlers | Opus | Not started | — | |
+| 6 | Addon file-lifecycle handlers | Opus | Not started | — | **Inherits from Task 2:** `open_shot` must refuse when `bpy.data.is_dirty` unless the caller passes an explicit discard flag (unsaved work is otherwise destroyed silently — measured); `wm.open_mainfile` must pass `use_scripts=False` explicitly; the post-swap half runs with `bpy.context.window` at `None` but an inherited context still works. |
 | 7 | Addon linking handlers | Opus | Not started | — | |
 | 8 | Socket authentication — design deliverable | Opus | Not started | — | |
 | 9 | Server-side MCP tools, bundle placement, payload ceiling | Sonnet | Not started | — | Inherits `shot` at **203,079 B**, **15 B** below its unchanged ceiling (measured 2026-09-15; the earlier 203,087 was cycle 2's figure and missed repair R20's further 8 B). |
@@ -2074,7 +2074,9 @@ SPIKE: __spike_open advertised = True
 | 6 | Cycle 2's `bpy.data.is_dirty` probe. | Production path plus the same wrapper frame. |
 
 **Successful swaps and failing loads, per run** — cycle 1 reported a bare `7/7` that could not be reconstructed
-from the document and that `807ef52` then silently invalidated. The tally is published here instead:
+from the document and that `807ef52` then silently invalidated. For the record, **cycle 1's `7` was runs 1 and
+2 only** (4 + 3); it omitted run 3's successful load, so even on cycle 1's own evidence the figure should have
+been 8. The tally is published here instead, and it — not any inline figure — is authoritative:
 
 | Run | `use_scripts` | Successful swaps | Failing loads |
 |---|---|---|---|
@@ -2113,7 +2115,7 @@ to the load-bearing keys; paths shortened to `<work>`:
 |---|---|---|
 | a | Does Blender survive the call? | **Yes.** Exit 0, `RIG PASSED`, all three runs. |
 | b | Does `drain_command_queue` return normally? | **Yes — measured, not inferred** (run 2). `returned=0.05 raised=None` on every tick that carried a swap, 3/3. |
-| c | Does `client.sendall(...)` after the load reach the client? | **Yes.** Every `__spike_open` was answered and decoded **in the rig process**, on the same connection. 7/7 successful swaps. |
+| c | Does `client.sendall(...)` after the load reach the client? | **Yes.** Every `__spike_open` was answered and decoded **in the rig process**, on the same connection. **18/18** successful swaps across all six runs. |
 | d | Is the timer still registered? | **Yes.** `after_drain_timer_registered: true`, every swap. Checked against `server._drain_timer` — the held reference — not a fresh `server.drain_command_queue`, which `is_registered` can never match. An independent `@persistent` heartbeat also kept firing across the swap (`4 -> 5`). |
 | e | Does the next queued command execute against the new file? | **Yes**, and this is also the ordering finding — see Step 7. |
 | f | What does `bpy.context` look like right after the load? | **`bpy.context.window` is `None`.** `bpy.context.scene` still resolves (`"Scene"`), `bpy.data.filepath` is the new path, `bpy.data.objects` is the new file's. This is the real content of §4.5's "frees that callback's context": the **window** goes, the frame does not. |
@@ -2122,6 +2124,15 @@ to the load-bearing keys; paths shortened to `<work>`:
 **The `after_window: "None"` finding is the one with downstream teeth.** Any `bpy.ops` call made after the swap
 inside the same tick must supply its own context with `temp_override`; it cannot inherit one. That lands on
 Tasks 6 and 7 directly.
+
+> **Correction, cycle 2 (2026-09-15).** The second sentence above is **false** and was never tested — it was
+> reasoned from `bpy.context.window` being `None`. Measured in cycle 2: `bpy.ops.object.select_all` **succeeds
+> on the inherited context** with `bpy.context.window` at `None`, and the window is still present in
+> `bpy.data.window_managers[0].windows`, so `temp_override` also has something to override with. The window
+> also recovers by the next tick. What actually lands on Tasks 6 and 7 is the *scene*-side finding: the
+> scene-gated capability set follows the swapped file. See "Task 2 — critic cycles 1 and 2" for the transcript.
+> The original sentence is left standing above, struck by this block rather than edited away, because it was
+> published to the spec in `9608561` and the record of that is the point.
 
 ### Step 4 — the four failing loads, and Step 5's backstop
 
@@ -2191,7 +2202,7 @@ fitted neither branch.
 
 **Rejected alternative: the async job with polling** (`open_shot` returns a job id, `get_session_info` reports
 `queued`/`loading`/`ready`/`failed`). **Its disqualifying observation:** the callback demonstrably answers
-after the swap — `frame_resumed_after_operator: true` with the response decoded by the client process, 7/7 —
+after the swap — `frame_resumed_after_operator: true` with the response decoded by the client process, **18/18** —
 so the premise the async branch exists to work around does not hold. It is not wrong, it is unnecessary, and
 it would have added a job/polling surface and broken one request → one response, which
 `connection.py:195-231` depends on, in exchange for nothing measurable.
@@ -2239,7 +2250,9 @@ can be answered, truthfully-looking, from another. 3/3 rounds, no variation.
 
 **The one thing not to over-read.** Same-*tick* continuation is a consequence of the load fitting the drain
 budget, not a law: `_DRAIN_TIME_BUDGET_SECONDS` is 0.02 and the 494 KB fixture loads in **~3 ms** (measured,
-3 attempts: 4.1 / 3.0 / 2.9 ms). A larger `.blend` will blow the budget and push the siblings to the following
+3 attempts: 4.1 / 3.0 / 2.9 ms; re-measured in cycle 2, with the transcript pasted under "Task 2 — critic
+cycles 1 and 2", as 4.3 / 2.8 / 2.7 ms, mean 3.3 — two runs of the same measurement on the same host, neither
+adjusted to match the other). A larger `.blend` will blow the budget and push the siblings to the following
 tick. That changes **which tick answers them, not which database they see** — they are still drained after the
 swap and still see the new file. So Task 3's barrier cannot be a per-tick check; it has to be keyed to the
 swap itself. The session epoch is the right shape for exactly this reason.
@@ -2424,7 +2437,7 @@ cycle 2 closed by giving the second fixture a distinct scene name. After the swa
 
 > **This is the finding with the longest reach, and it is new.** `_build_command_handlers()` reads
 > `bpy.context.scene.blendermcp_use_polyhaven` / `_use_sketchfab` / `_use_nd` (`server_core.py:957, 967, 976`)
-> and `execute_command_internal` rebuilds it on **every** command (`:1069`). So the swap changes the **set of
+> and `execute_command_internal` rebuilds it on **every** command (`:1082`). So the swap changes the **set of
 > commands that exist**. A sibling queued against a file with Polyhaven enabled, drained after a swap to a file
 > without it, comes back `Unknown command type: import_polyhaven_asset` — an actively *wrong* error, worse than
 > the plausible-looking stale answer cycle 1 recorded. This is what makes the command table's "requires a
@@ -2571,3 +2584,63 @@ conditions. The defect was in the rule's framing, not in the fit, and it is reco
 - **The `use_scripts=False` re-run covered the decisive batch**, not Step 4's failure modes or Step 5's
   handler firing. Cycle 2's runs 5 and 6 are all `use_scripts=False`, which extends the coverage to the
   truncated-file failure and every cycle-2 swap, but runs 1-3's transcripts remain default-flag measurements.
+
+### Task 2 — scores by cycle, and the regression label
+
+| Cycle | Durability /30 | Concurrency /25 | Trust /20 | Evidence /15 | Code /10 | Total | Gate ≥90 |
+|---|---|---|---|---|---|---|---|
+| 1 (three critics) | 18 | 16 | 16 | 9 | 7 | **66** | fail |
+| 2 re-score (after R1-R18) | 26 | 22 | 17.5 | 10 | 8 | **83.5** | fail |
+| 3 re-score (after R19-R24) | — | — | — | — | — | *pending* | — |
+
+**Regression label for cycle 2: `improved`.** +17.5 overall; every dimension rose or held; three dimensions
+crossed their floor (durability 18→26, concurrency 16→22, code 7→8). Cycle 2 cleared four of five gates but
+missed the total and left **Evidence quality at 10/15 (67%)** — below its 12-point floor, and the one dimension
+the two cycles existed to fix.
+
+**Why Evidence stayed low despite eighteen repairs, stated plainly because it is the lesson.** Two of cycle 2's
+own repair rows were half-applied, and both halves that were missed sat in the primary evidence section:
+
+- **R1 corrected the falsified `temp_override` claim in the spec and missed the TASK_STATE copy** — which
+  states it *more* strongly and is addressed to Tasks 6 and 7, in the section the pickup contract sends a Task 3
+  implementer to read. Repaired as R19, with a correction block rather than an edit, so the published error
+  stays visible.
+- **R10 published the per-run tally and left `7/7` standing in four places**, including the spec. The tally
+  contradicted them. Repaired as R20; cycle 1's `7` is now explained as runs 1+2 only — on its own evidence it
+  should have been 8.
+
+The pattern in both: the repair fixed the instance that had been *quoted at me* and not the claim. That is a
+sharper failure than the original defects, because it happened while explicitly working through a findings list.
+
+### Cycle-3 repairs (after the 83.5 re-score)
+
+| # | Finding | Severity | Repair |
+|---|---|---|---|
+| R19 | Falsified `temp_override` claim still live in TASK_STATE | HIGH | Dated correction block in place; original left visible |
+| R20 | `7/7` in four places, contradicted by the tally | HIGH | All four corrected to **18/18**; cycle 1's miscount explained |
+| R21 | Task 2 commit cell said "the cycle-2 repair commit", no hash | LOW | `c54b8b6` named |
+| R22 | Two unreconciled timing triples | LOW | Both published side by side, neither adjusted |
+| R23 | `:1069` cited for the handler rebuild | LOW | Corrected to `:1082` |
+| R24 | `is_dirty` requirement never reached the spec or Task 6's row | MEDIUM | Added to spec §4.5's `open_shot` row and to the Task 6 table row |
+| R25 | Spec said "five distinct shapes" for `open_mainfile` | MEDIUM | Corrected: five failure **modes**, three distinct texts |
+| R26 | No cycle score or regression label on record | MEDIUM | This section |
+
+**One re-score finding rejected, with the check.** The re-score reported the citations `server_core.py:957 /
+:967 / :976` as "off by one (actual 956/966/975)". They are exact — `grep -n` puts
+`if bpy.context.scene.blendermcp_use_polyhaven:` on **957**, `_use_sketchfab` on **967**, `_use_nd` on **976**.
+Only `:1069` was wrong, and only that one was changed. Recorded because the handoff's own rule is not to take a
+critic's numbers on trust, and this is the second time in Task 2 that checking paid: cycle 1's critic
+misattributed the "disclosure the transport layer has no business making" docstring to `connection.py` when it
+is at `server_core.py:437-438`.
+
+### Still open after cycle 3, carried rather than closed
+
+The re-score's remaining items that are **not** repaired here, because they need Blender rather than editing:
+
+- Queue-full during a slow swap (`_MAX_QUEUED_COMMANDS = 256`) — reachable in run 5 and not exercised.
+- Client disconnect *during* a load — the one way rule condition 2 could fail in production.
+- A *mutating* sibling drained after the swap, holding a `mutation_transaction` snapshot of the pre-swap
+  database. Task 4 owns the fix; Task 2 did not characterise the interaction.
+- `drain_command_queue`'s `returned=0.05` was only ever measured on wrapper-frame runs, never the untouched path.
+
+All four are listed in "Still open, deliberately" above and none bears on which branch the rule selected.

@@ -313,7 +313,7 @@ sides of the swap and the next queued command is answered.)*
 
 | Command | `bpy` | Notes |
 |---|---|---|
-| `open_shot` | `wm.open_mainfile` | Invalidates every prior datablock reference; resets scene, so mode and the capability set must be re-read; clears undo; **requires a re-handshake** |
+| `open_shot` | `wm.open_mainfile` | Invalidates every prior datablock reference; resets scene, so mode and the capability set must be re-read; clears undo; **requires a re-handshake**. **Must refuse when `bpy.data.is_dirty` unless the caller passes an explicit discard flag** — there is no "Save changes?" path from a timer callback, so the swap otherwise destroys unsaved work in silence (measured) |
 | `save_shot` | `wm.save_mainfile` / `save_as_mainfile` | Canon publishes pass `compress=False`; needs an explicit `relative_remap` policy |
 | `reset_session` | `wm.read_factory_settings(use_empty=True)` | The pool load-or-reset step |
 | `link_canon_library` | `bpy.data.libraries.load(link=True)` | Path allowlist; `//`-relative path policy required |
@@ -328,7 +328,7 @@ sides of the swap and the next queued command is answered.)*
 - **Reentrancy — decided 2026-09-15 by experiment; no longer open.** The drain callback
   **survives** `wm.open_mainfile` called from inside its own frame and can still answer the
   client afterwards. Measured on Blender 5.2.2 under the live rig: the frame resumes after
-  the operator returns (7/7 successful swaps), `drain_command_queue` returns its normal
+  the operator returns (18/18 successful swaps over six runs), `drain_command_queue` returns its normal
   `0.05` and never raises (3/3 instrumented ticks), the response reaches the client process
   on the same connection, and the next queued command executes against the new file. So
   `open_shot` is **synchronous validate-then-swap, answering after the swap** — the only
@@ -336,8 +336,9 @@ sides of the swap and the next queued command is answered.)*
   response, which `connection.py:195-231` already depends on. The uncaught-failure path was
   measured too: a load that raises inside the handler reaches the client as a normal
   `{"status": "error"}` frame carrying Blender's own message, and the server keeps serving.
-  **That message embeds the full absolute path of the file that failed** — five distinct
-  shapes measured, including `Missing DNA block` for a truncated-but-valid-header file — so
+  **That message embeds the full absolute path of the file that failed** — five failure modes
+  measured, yielding three distinct texts (`Cannot read file`, `File format is not supported`,
+  and `Missing DNA block` for a truncated-but-valid-header file, which leaks the path twice) — so
   `open_shot` must route it through Task 5's error sanitizer before it leaves the process;
   passing Blender's text through verbatim is the automatic-critical path-leak item.
   **What the load does free is `bpy.context.window`, not the Python frame** — it reads `None`
