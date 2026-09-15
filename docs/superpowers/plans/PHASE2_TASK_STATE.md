@@ -27,7 +27,7 @@ that had already been lost once (see the closed item under "Known failures / blo
 |---|---|
 | Branch | `main`, **unpushed**. `origin/main` is still at `523f427`. |
 | Last commit | Task 1 closed at **94/100** after critic cycle 4. |
-| Next task | **Task 2** (reentrancy strategy by experiment). Not started - no decision rule recorded, no spike written. |
+| Next task | **Task 3** (drain-loop file-swap barrier, session epoch, failure handlers). Task 2 is **done**: `open_shot` is synchronous validate-then-swap, answering after the swap. Read "Task 2 — the reentrancy strategy" before starting; its Step 7 is Task 3's measured input. |
 | Working tree | Clean apart from `uv.lock`, which stays unstaged permanently (§03 incidental churn). |
 | Blender | **5.2.2 LTS** at `/opt/homebrew/bin/blender`. Every API fact re-verified against it; see "5.2.2 re-verification". |
 
@@ -64,7 +64,7 @@ Task 2 reads several of them. Measured at the last commit:
 
 `_READ_ONLY_COMMANDS` holding 54 commands is re-confirmed by AST count, so the handoff's figure stands.
 
-### Task 2's first action, and why the order matters
+### Task 2's first action, and why the order matters — DONE, kept for the record
 
 Step 1 is to copy §0.4's decision rule into this file **verbatim and dated, before running the spike**. The
 rule exists so an ambiguous result cannot be resolved by preference after the fact, and recording it afterwards
@@ -168,7 +168,7 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | # | Task | Tier | Status | Commit | Notes |
 |---|---|---|---|---|---|
 | 1 | Land the live-Blender acceptance rig on `main` | Opus | **Done — 94/100 after cycle-4 repairs** | `2852803` + repairs |  9 files ported, full `output_roots` wiring + 30 → 31 bump, ported lint debt cleaned to zero, `scripts/blender_rig.py` written, Step 5 re-verified live and **re-run end to end after each repair cycle**, README documented, `scripts/revert_matrix.py` landed so the revert evidence is reproducible. Repairs R1-R22 (cycle 2) and A1-A6/B1-B5/C1-C4/D1/F1-F10 (cycle 3); see both repair tables. **Acceptance criteria 2 and 3 now PASS** against a real container, after the decision-8 follow-up ported the HTTP transport (a tenth file) and fixed the two `entrypoint.sh` defects the first container run exposed. |
-| 2 | Decide the reentrancy strategy by experiment | Opus | Not started | — | Task 1's commit landed at `2852803`; no longer blocked. |
+| 2 | Decide the reentrancy strategy by experiment | Opus | **Done** | `969df10` (rule) + this commit | Decision rule committed **before** the spike existed, so the branch could not be picked after seeing the result. **Decided: synchronous validate-then-swap, answer after the swap** — the callback survives, all four pre-registered conditions met, 7/7 swaps, no intermittency. Async-job-with-polling rejected; its premise is false. Three rig runs on 5.2.2. Two findings with downstream teeth: `bpy.context.window` is `None` after the swap, and the ordering hazard is demonstrated (Step 7, Task 3's input). One leak flagged for Task 5. No production code changed; spike deleted. |
 | 3 | Drain-loop file-swap barrier, session epoch, failure handlers | Opus | Not started | — | **Inherits protocol 31; asserts, does not bump** (decision 2). |
 | 4 | Make rollback survive a file swap, track `libraries` | Opus | Not started | — | |
 | 5 | The filesystem trust boundary | Opus | Not started | — | Promotes `output_roots.py`, landed here. |
@@ -2034,3 +2034,216 @@ the escalation case, not a pass.
   (`server_core.py:1247`, wrap at `:1314`) routes it through `mutation_transaction` and the spike triggers the
   §0.3 finding 7 data-destruction bug that **Task 4 has not fixed yet**.
 - No spike code lands. The task's commit is docs-only, and `git status` must show no spike residue.
+
+### The spike, and why none of it is in the tree
+
+Three runs, all on **Blender 5.2.2 LTS**, GUI (not `--background`), driven by the committed
+`scripts/blender_rig.py`. The spike itself lived entirely in the session scratchpad and is gone; it needed no
+edit to `src/` at all, which is what makes "no spike code lands" true by construction rather than by
+remembering to revert something. `__spike_open` was grafted onto the **running instance** from a
+`--blender-script`: `_build_command_handlers` wrapped to add the key, and `_READ_ONLY_COMMANDS` shadowed by an
+instance attribute so `_run_handler` returns `handler(**params)` directly and never reaches
+`mutation_transaction` — the §0.3 finding 7 bug Task 4 has not fixed. Confirmed in the transcript:
+
+```
+SPIKE: __spike_open installed, read-only: True
+SPIKE: blender_version = 5.2.2 LTS
+SPIKE: protocol_version = 31
+SPIKE: __spike_open advertised = True
+```
+
+| Run | What it added | Path under test |
+|---|---|---|
+| 1 | The decision-rule evidence: 4 failure modes, 1 swap with siblings, 3 repeat swaps. | **Untouched production path.** |
+| 2 | Tick boundaries — `drain_command_queue`'s return value and same-tick vs next-tick. | Production path **plus one wrapper frame**; the drain timer had to be re-registered to instrument it, because `_register_drain_timer` captured a bound method that Blender holds and no later patch can reach. Stated rather than glossed: run 1 is the primary evidence, run 2 is detail. |
+| 3 | The **uncaught** failure path, which runs 1 and 2 could not see because the spike handler caught everything. | Untouched production path. |
+
+### Step 3 — the seven observations, with pasted output
+
+The swap, from inside `drain_command_queue`'s own frame, servicing a queued socket command. Abridged to the
+load-bearing keys; paths shortened to `<work>`:
+
+```json
+{
+  "before_filepath": "",            "after_filepath": "<work>/rig/blends/fixture.blend",
+  "before_objects": ["Camera", "Cube", "Light"],  "after_objects": ["RigFixtureCube"],
+  "before_scene": "Scene",          "after_scene": "Scene",
+  "before_window": "bpy.data.window_managers['WinMan']...Window",
+  "after_window": "None",
+  "before_queue_size": 2,           "after_queue_size": 2,
+  "before_drain_timer_registered": true, "after_drain_timer_registered": true,
+  "operator_result": ["FINISHED"],  "raised": null,
+  "frame_resumed_after_operator": true,
+  "after_server_running": true,
+  "handler_events": ["load_pre", "load_post"]
+}
+```
+
+| # | Step 3 asks | Measured |
+|---|---|---|
+| a | Does Blender survive the call? | **Yes.** Exit 0, `RIG PASSED`, all three runs. |
+| b | Does `drain_command_queue` return normally? | **Yes — measured, not inferred** (run 2). `returned=0.05 raised=None` on every tick that carried a swap, 3/3. |
+| c | Does `client.sendall(...)` after the load reach the client? | **Yes.** Every `__spike_open` was answered and decoded **in the rig process**, on the same connection. 7/7 successful swaps. |
+| d | Is the timer still registered? | **Yes.** `after_drain_timer_registered: true`, every swap. Checked against `server._drain_timer` — the held reference — not a fresh `server.drain_command_queue`, which `is_registered` can never match. An independent `@persistent` heartbeat also kept firing across the swap (`4 -> 5`). |
+| e | Does the next queued command execute against the new file? | **Yes**, and this is also the ordering finding — see Step 7. |
+| f | What does `bpy.context` look like right after the load? | **`bpy.context.window` is `None`.** `bpy.context.scene` still resolves (`"Scene"`), `bpy.data.filepath` is the new path, `bpy.data.objects` is the new file's. This is the real content of §4.5's "frees that callback's context": the **window** goes, the frame does not. |
+| g | What happens to the other commands queued in the same tick? | See Step 7. `before_queue_size: 2` proves the siblings were already queued when the swap began. |
+
+**The `after_window: "None"` finding is the one with downstream teeth.** Any `bpy.ops` call made after the swap
+inside the same tick must supply its own context with `temp_override`; it cannot inherit one. That lands on
+Tasks 6 and 7 directly.
+
+### Step 4 — the four failing loads, and Step 5's backstop
+
+All four measured twice: caught inside the handler (run 1, to preserve the observations) and uncaught (run 3,
+which is how `open_shot` will actually fail).
+
+| Failure mode | Operator outcome | Database after | `handler_events` |
+|---|---|---|---|
+| missing file | raises `RuntimeError`: `Error: Cannot read file "<path>": No such file or directory` | **untouched** — `["Camera", "Cube", "Light"]`, `filepath` still `""` | `["load_pre", "load_post_fail"]` |
+| a directory | raises `RuntimeError`: `Error: File format is not supported in file "<path>"` | untouched | `["load_pre", "load_post_fail"]` |
+| non-`.blend` with `.blend` extension | raises `RuntimeError`: `Error: File format is not supported in file "<path>"` | untouched | `["load_pre", "load_post_fail"]` |
+| corrupted magic bytes | raises `RuntimeError`: `Error: File format is not supported in file "<path>"` | untouched | `["load_pre", "load_post_fail"]` |
+
+**No divergence from the expected behaviour to report.** The plan predicted, from 2026-09-14's `--background`
+measurement: raises `RuntimeError` on all four, never returns `{'CANCELLED'}`, database left untouched. That is
+exactly what happened, now also from inside a timer callback. `frame_resumed_after_operator: true` and
+`after_drain_timer_registered: true` on all four — the callback survives a *raise* inside a timer as well as a
+successful swap.
+
+**Step 5 is satisfied beyond its criterion.** The acceptance criterion asks for `load_post_fail` firing on at
+least the missing-file and corrupt-file cases; it fired on **all four**, always paired with a preceding
+`load_pre`, and `load_post` never fired on a failure. So the pairing is unambiguous: `load_pre` then
+`load_post` is a completed swap, `load_pre` then `load_post_fail` is a failed one. That is a usable signal for
+Task 3's handlers, not merely a present one.
+
+**The uncaught path (run 3) is what makes the decision's truthfulness claim real:**
+
+```
+RAW: missing file     status='error' message='Error: Cannot read file "<path>": No such file or directory\n'
+RAW: missing file     server still answering ping = True
+RAW: missing file     objects = ["Camera", "Cube", "Light"]
+RAW: corrupt magic    status='error' message='Error: File format is not supported in file "<path>"'
+RAW: corrupt magic    server still answering ping = True
+RAW: good load status='success' result={"operator_result": ["FINISHED"], "objects": ["RigFixtureCube"]}
+```
+
+A load that raises inside the handler propagates to `execute_command_internal`, which turns it into
+`{"status": "error", "message": <Blender's own text>}`, and the drain loop sends **that** frame on the same
+connection. The client is told the truth, in one response, and the server keeps serving.
+
+> **Flagged for Task 5, not fixed here.** Both error strings embed the **full absolute path**, and they are
+> returned to the client verbatim. Under the plan's own rubric a leaked path is automatically critical, and
+> Task 5 owns the sanitizer. Recorded here because Task 2 is where it was observed, and because
+> `open_shot`'s error path is the most likely place for it to reach a client.
+
+### Step 6 — applying the rule
+
+The rule's four conditions for "the callback survives", fixed in advance, against what was measured:
+
+| Condition (recorded before the spike) | Result |
+|---|---|
+| 1. The frame resumes after the operator returns | **Met.** `frame_resumed_after_operator: true`, **7/7** successful swaps and **4/4** failures. |
+| 2. `sendall` returns without raising **and the bytes are received by the client process** | **Met.** Every swap was answered and decoded in the rig process. **7/7**. |
+| 3. The drain timer is still registered afterwards and fires again | **Met.** `after_drain_timer_registered: true` every time; subsequent commands answered, which is the firing. |
+| 4. The next queued command executes against the **new** file | **Met.** **4/4** across both batched runs. |
+| No intermittency across repeats | **Met.** 7 successful swaps, 3 batch rounds, 4 failure modes, 3 runs. No partial result, no unanswered command, no variation. |
+
+**Decision: synchronous validate-then-swap, answering after the swap.** First branch of the rule, taken on
+all four conditions met with no ambiguity. The escalation clause was not reached — there was no outcome that
+fitted neither branch.
+
+**Rejected alternative: the async job with polling** (`open_shot` returns a job id, `get_session_info` reports
+`queued`/`loading`/`ready`/`failed`). **Its disqualifying observation:** the callback demonstrably answers
+after the swap — `frame_resumed_after_operator: true` with the response decoded by the client process, 7/7 —
+so the premise the async branch exists to work around does not hold. It is not wrong, it is unnecessary, and
+it would have added a job/polling surface and broken one request → one response, which
+`connection.py:195-231` depends on, in exchange for nothing measurable.
+
+**Two-phase answer-before-swap** stays rejected on the spec's own reasoning, which the spike did not disturb:
+it commits a success response before the load can fail, and run 3 shows the load *does* fail in four distinct
+ways that only a post-swap answer can report.
+
+**What this decision does NOT license.** The answer is truthful only if the swap is what the response
+describes. `open_shot` must still validate before swapping (Task 5's boundary), and `bpy.context.window` being
+`None` afterwards means the post-swap half of the handler cannot use an inherited context.
+
+### Step 7 — the ordering observation, verbatim, as Task 3's input
+
+Four commands queued into **one** drain tick with the swap second. Run 2, all three rounds:
+
+```
+--- batch round 1, swapping to second.blend
+    r1-A-before      tick=4 status=success saw=["Camera", "Cube", "Light"]
+    r1-B-swap        tick=4 status=success
+    r1-C-after       tick=4 status=success saw=["SpikeSecondSphere"]
+    r1-D-ping        tick=4 status=success
+--- batch round 2, swapping to fixture.blend
+    r2-A-before      tick=5 status=success saw=["SpikeSecondSphere"]
+    r2-B-swap        tick=5 status=success
+    r2-C-after       tick=5 status=success saw=["RigFixtureCube"]
+    r2-D-ping        tick=5 status=success
+--- batch round 3, swapping to second.blend
+    r3-A-before      tick=6 status=success saw=["RigFixtureCube"]
+    r3-B-swap        tick=6 status=success
+    r3-C-after       tick=6 status=success saw=["SpikeSecondSphere"]
+    r3-D-ping        tick=6 status=success
+
+--- drain ticks that carried commands (tick, returned, raised, commands)
+    tick 4    returned=0.05 raised=None ['list_scene_objects#r1-A-before', '__spike_open#r1-B-swap', 'list_scene_objects#r1-C-after', 'ping#r1-D-ping']
+    tick 5    returned=0.05 raised=None ['list_scene_objects#r2-A-before', '__spike_open#r2-B-swap', 'list_scene_objects#r2-C-after', 'ping#r2-D-ping']
+    tick 6    returned=0.05 raised=None ['list_scene_objects#r3-A-before', '__spike_open#r3-B-swap', 'list_scene_objects#r3-C-after', 'ping#r3-D-ping']
+```
+
+**The hazard §4.5 predicted is real, and this is its exact shape.** The drain loop **keeps draining after the
+swap, inside the same tick**. `C` was queued before the swap ran — `before_queue_size: 2` proves it was
+already sitting in the queue — and was answered from the **new** file, with `status: success` and nothing in
+the response marking that the database had changed underneath it. A client that queued work against one shot
+can be answered, truthfully-looking, from another. 3/3 rounds, no variation.
+
+**The one thing not to over-read.** Same-*tick* continuation is a consequence of the load fitting the drain
+budget, not a law: `_DRAIN_TIME_BUDGET_SECONDS` is 0.02 and the 494 KB fixture loads in **~3 ms** (measured,
+3 attempts: 4.1 / 3.0 / 2.9 ms). A larger `.blend` will blow the budget and push the siblings to the following
+tick. That changes **which tick answers them, not which database they see** — they are still drained after the
+swap and still see the new file. So Task 3's barrier cannot be a per-tick check; it has to be keyed to the
+swap itself. The session epoch is the right shape for exactly this reason.
+
+Secondary, for Task 3: the command **queue survives the swap intact** (`before_queue_size: 2`,
+`after_queue_size: 2`) — it is a plain `queue.Queue` on module state, not file data — so a barrier can drain,
+inspect or reject its contents after a load rather than having to intercept before one.
+
+### Reproducing this without the spike, which deliberately did not land
+
+Plan Task 2 Step 8 requires the spike to be deleted and acceptance criterion 5 requires `git status` to show
+none of it in the tree, so — unlike Task 1's Step 5 harness, which **is** committed under
+`scripts/rig_scenarios/` — there is nothing here to re-run. That is the plan's call, not an oversight: the
+spike monkey-patches a running server instance and would rot against the first change to
+`_build_command_handlers`. The durable form is the transcripts above plus this recipe.
+
+To rebuild it, the whole of it is two throwaway files driven by the committed rig:
+
+1. A `--blender-script` that, after the rig's bootstrap has put a server on `bpy.types.blendermcp_server`,
+   wraps `server._build_command_handlers` to add a `__spike_open` key and sets
+   `server._READ_ONLY_COMMANDS = frozenset({*type(server)._READ_ONLY_COMMANDS, "__spike_open"})`. The
+   instance attribute shadows the class frozenset, which is what keeps `_run_handler` out of
+   `mutation_transaction`. The handler records state, calls `bpy.ops.wm.open_mainfile(filepath=...)`, records
+   state again, and returns both — the post-call statement executing **is** the measurement. Write the
+   observations to a file as well as returning them: if the post-swap `sendall` ever fails, the returned copy
+   is exactly the evidence that would be lost.
+2. A scenario that batches commands on **separate raw sockets, all sent before any reply is read** — that is
+   what puts them in one drain tick; `rig.send` is one connection per command and would serialize them.
+
+```
+.venv/bin/python scripts/blender_rig.py --work-dir <work>/rig \
+    --scenario <scratch>/spike_scenario.py --blender-script <scratch>/spike_in_blender.py \
+    --blend fixture=<work>/fixture.blend --blend second=<work>/second.blend
+```
+
+`fixture.blend` is `scripts/rig_scenarios/make_fixture.py`'s (one `RigFixtureCube`); the second fixture is the
+same generator with one `SpikeSecondSphere`, so a swap between them is observable in either direction.
+
+**To instrument tick boundaries you must re-register the drain timer.** `_register_drain_timer` captured
+`self.drain_command_queue` into `server._drain_timer` and Blender holds *that* object, so patching the class
+or the instance afterwards cannot reach it: `bpy.app.timers.unregister(server._drain_timer)`, register a
+wrapper that calls it, and reassign `server._drain_timer`. Any run that does this is no longer the untouched
+production path and must be reported as such.

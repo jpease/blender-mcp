@@ -305,8 +305,11 @@ None of this exists today: zero hits for library overrides, `bpy.app.handlers`,
 **Enabling fact:** the server survives a file load. `bpy.types.blendermcp_server` is module
 state, not file data, and `server_core.py:184` already registers the drain timer
 `persistent=True` — verified to survive where an otherwise identical `persistent=False`
-timer does not. *(Caveat: verified in `--background`, where §3 says the server would not
-have started. Re-verify under Xvfb in Phase 2.)*
+timer does not. *(The `--background` caveat this carried is **closed**: re-verified 2026-09-14
+and again 2026-09-15 on Blender 5.2.2 with the server actually running under the live rig,
+both as a scripted main-thread call (Phase 2 Task 1) and from inside the drain callback
+servicing a queued socket command (Task 2). `server._drain_timer` reads registered on both
+sides of the swap and the next queued command is answered.)*
 
 | Command | `bpy` | Notes |
 |---|---|---|
@@ -322,19 +325,66 @@ have started. Re-verify under Xvfb in Phase 2.)*
 
 **Open hazards, all Phase 2 work:**
 
-- **Reentrancy.** `wm.open_mainfile` from inside the drain-timer callback frees that
-  callback's context. Untestable headlessly (timers do not fire in `--background`), so it
-  needs the Xvfb rig. **The obvious mitigation — defer the load and answer first — is
-  wrong**: it commits a success response before the load can fail on a missing file, bad
-  permissions, a corrupt `.blend`, or an allowlist rejection, and the envelope has no way to
-  report that afterward. A correct design needs either a two-phase `open_shot`
-  (validate-then-load, answering after validation but before the swap) or an async job with
-  polling.
-- **Ordering.** The drain loop processes up to 8 commands per tick; a deferred load has no
-  defined ordering against queued commands, and multiple client processes may interleave
-  against a file mid-swap.
+- **Reentrancy — decided 2026-09-15 by experiment; no longer open.** The drain callback
+  **survives** `wm.open_mainfile` called from inside its own frame and can still answer the
+  client afterwards. Measured on Blender 5.2.2 under the live rig: the frame resumes after
+  the operator returns (7/7 successful swaps), `drain_command_queue` returns its normal
+  `0.05` and never raises (3/3 instrumented ticks), the response reaches the client process
+  on the same connection, and the next queued command executes against the new file. So
+  `open_shot` is **synchronous validate-then-swap, answering after the swap** — the only
+  option whose answer is truthful by construction, and the one that keeps one request → one
+  response, which `connection.py:195-231` already depends on. The uncaught-failure path was
+  measured too: a load that raises inside the handler reaches the client as a normal
+  `{"status": "error"}` frame carrying Blender's own message, and the server keeps serving.
+  **What the load does free is `bpy.context.window`, not the Python frame** — it reads `None`
+  immediately after a successful swap, on every swap measured, while `bpy.context.scene`
+  still resolves. Any `bpy.ops` call made after the swap in the same tick must therefore
+  supply its own context via `temp_override` rather than inherit one.
+- **Ordering — characterised 2026-09-15; the hazard is real and now demonstrated.** The drain
+  loop keeps draining *after* the swap within the same tick: with four commands queued into
+  one tick and the swap second, all four were answered from that one tick, and the
+  `list_scene_objects` queued **before** the swap but drained **after** it silently reported
+  the **new** file's contents (3/3 rounds). Commands are therefore not ordered against the
+  database they were issued against, and a client's queued work can be answered from a file
+  it never asked about. Tick placement depends on the load fitting the drain budget — a
+  494 KB fixture loads in ~3 ms against a 0.02 s budget, so a larger file pushes the
+  siblings to the following tick — but that changes only *which* tick, not which database
+  they see. This is what the Phase 2 barrier and session epoch are for.
 - **Rollback.** `transaction.py` backups reference datablocks that a load frees. `open_shot`
   must invalidate the transaction state, not merely clear undo.
+
+> **Correction, 2026-09-15.** The reentrancy and ordering bullets above previously read, in full:
+>
+> > **Reentrancy.** `wm.open_mainfile` from inside the drain-timer callback frees that
+> > callback's context. Untestable headlessly (timers do not fire in `--background`), so it
+> > needs the Xvfb rig. **The obvious mitigation — defer the load and answer first — is
+> > wrong**: it commits a success response before the load can fail on a missing file, bad
+> > permissions, a corrupt `.blend`, or an allowlist rejection, and the envelope has no way to
+> > report that afterward. A correct design needs either a two-phase `open_shot`
+> > (validate-then-load, answering after validation but before the swap) or an async job with
+> > polling.
+> >
+> > **Ordering.** The drain loop processes up to 8 commands per tick; a deferred load has no
+> > defined ordering against queued commands, and multiple client processes may interleave
+> > against a file mid-swap.
+>
+> Both offered options existed only because this section assumed the callback could not answer
+> *after* the swap. **That assumption was never tested, and it is false.** It is also imprecise
+> about what is freed: the callback's *window* context goes, the callback itself does not. The
+> frame holds `command`, `client` (a plain Python socket) and `response`, and `self` lives on
+> `bpy.types.blendermcp_server` — module state, not file data. Nothing in it is an RNA reference,
+> so nothing in it is invalidated by the load.
+>
+> The experiment and its decision rule are recorded in
+> `docs/superpowers/plans/PHASE2_TASK_STATE.md` under "Task 2 — the reentrancy strategy"; the rule
+> was committed (`969df10`) **before** the spike was written, so the branch could not be chosen
+> after seeing the result. The rejected alternative is the **async job with polling**: it is not
+> wrong, it is unnecessary, and its disqualifying observation is that the callback demonstrably
+> answers after the swap, which is the premise it exists to work around. Two-phase
+> answer-before-swap stays rejected for the reason this section already gave.
+>
+> The ordering bullet's "a deferred load" no longer describes anything: under the decided design
+> the load is not deferred. What replaces it is a measurement rather than a prediction.
 
 **Security.** `open_shot` and `save_shot` add arbitrary-path read and overwrite to a socket
 with **no authentication** (§10 Q8) — currently the dominant risk for a pooled deployment,
