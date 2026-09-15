@@ -1,6 +1,6 @@
 # Phase 2 Task State
 Updated: 2026-09-15 (session 2) — **Task 2 decided and closed by experiment: the reentrancy
-strategy is synchronous validate-then-swap, answering after the swap; **four** critic cycles run and their
+strategy is synchronous validate-then-swap, answering after the swap; four critic cycles run and their
 repairs landed.** Earlier this session: Task 1's commit recorded, host upgraded to Blender 5.2.2 and every
 API fact re-verified against it, then **critic cycle 4 run and its repairs landed: Task 1 moves 81 -> 94/100
 and passes its exit gate.** Earlier: transport follow-up (decision 8) applied 2026-09-15;
@@ -166,7 +166,7 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 
 | 10 | **The HTTP transport is loopback-only, and the docs are corrected to match rather than making remote hosting work.** A non-loopback bind is refused unless `BLENDERMCP_HTTP_ALLOW_REMOTE=1` is also set, which warns when granted; an empty `BLENDERMCP_HTTP_HOST` is refused outright even with the opt-in, because it is never a deliberate choice. The container is the one legitimate opt-in and declares it explicitly beside a comment explaining that compose's `127.0.0.1:8000:8000` publish is what contains it. | Measured: `BLENDERMCP_HTTP_HOST=""` produced `bind('') -> ('0.0.0.0', ...)`, and under `python -O` a stripped assert plus `host=None` gave `uvicorn` a bind on `0.0.0.0` **and** `::`. Verified against the installed `mcp` 1.30.0 that FastMCP's DNS-rebinding protection survives the `settings.host` mutation (the comment's mechanical claim was true) but is browser-only: a forged `Host: 127.0.0.1` is served from anywhere, while an honest remote client gets `421`. So the advertised "Blender on another machine" use case did not work as written. Container-verified: the bind is now granted explicitly and logs a warning naming the cost. | **The cheap direction to be wrong in, deliberately.** If remote hosting is in fact wanted, the cost is one env var and a docstring — Task 8 owns that decision and now inherits a written threat statement rather than a claim. The alternative was shipping a server whose own docstring said widening the bind "is always a deliberate act" while an empty environment variable did it silently, on an unauthenticated 53-tool Blender driver. |
 
-| 11 | **Task 2's reentrancy decision: `open_shot` is synchronous validate-then-swap, answering AFTER the swap.** The drain callback survives `wm.open_mainfile` called from inside its own frame and can still answer the client. The async-job-with-polling branch is **rejected**: not wrong, but unnecessary, because the premise it exists to work around does not hold. Two-phase answer-before-swap stays rejected on the spec's own reasoning — it commits a success response before the load can fail, and the load fails in five measured ways. | **The rule was committed at `969df10`, BEFORE the spike was written**, so the ordering is provable from `git log` rather than asserted by a date; `9608561` lands 13 minutes later. Four pre-registered conditions, all met on 18 successful swaps and 9 failing loads across six GUI rig runs on Blender 5.2.2, three orders of magnitude of file size (494 KB / 3 ms to 1.05 GB / 4.6 s), both `use_scripts` settings, and both sides of the 0.02 s drain budget. No intermittency. Transcripts under "Task 2 — the reentrancy strategy". | **The honest cost, which cycle 1 got wrong and cycle 2 corrected.** Cycle 1 wrote that the async branch bought "nothing measurable"; it buys a **bounded first response** and forecloses the give-up-then-reuse desync demonstrated in cycle 2 (a client that abandons a slow swap and reuses its connection reads the previous command's response, which `connection.py:222-231` raises on). If a `.blend` ever loads slowly enough to cross a client's timeout, the synchronous branch desyncs that connection after an **irreversible** swap. Measured magnitude is small — reaching the 180 s timeout by size alone would need roughly 40x the largest fixture tested — and the mitigations are Task 5's validate-before-swap, the `is_dirty` guard, and Task 3's epoch. **The rule itself was under-specified:** it asked only whether the callback can answer, never what a late or lost answer costs after an irreversible swap. It did not trigger the escalation clause (the outcome fit branch one cleanly on all four conditions), but a future rule of this kind should price the answer, not just its existence. |
+| 11 | **Task 2's reentrancy decision: `open_shot` is synchronous validate-then-swap, answering AFTER the swap.** The drain callback survives `wm.open_mainfile` called from inside its own frame and can still answer the client. The async-job-with-polling branch is **rejected**: not wrong, but unnecessary, because the premise it exists to work around does not hold. Two-phase answer-before-swap stays rejected on the spec's own reasoning — it commits a success response before the load can fail, and the load fails in five measured ways. | **The rule was committed at `969df10`, BEFORE the spike was written**, so the ordering is provable from `git log` rather than asserted by a date; `9608561` lands 13 minutes later. Four pre-registered conditions, all met on 18 successful swaps and 9 failing loads across six GUI rig runs on Blender 5.2.2, three orders of magnitude of file size (494 KB / 3 ms to 1.05 GB / 4.6 s), both `use_scripts` settings, and both sides of the 0.02 s drain budget. No intermittency. Transcripts under "Task 2 — the reentrancy strategy". | **The honest cost, which cycle 1 got wrong and cycle 2 corrected.** Cycle 1 wrote that the async branch bought "nothing measurable"; it buys a **bounded first response** and forecloses the give-up-then-reuse desync demonstrated in cycle 2 (a client that abandons a slow swap and reuses its connection reads the previous command's response, which `connection.py:223-231` raises on). If a `.blend` ever loads slowly enough to cross a client's timeout, the synchronous branch desyncs that connection after an **irreversible** swap. Measured magnitude is small — reaching the 180 s timeout by size alone would need roughly 40x the largest fixture tested — and the mitigations are Task 5's validate-before-swap, the `is_dirty` guard, and Task 3's epoch. **The rule itself was under-specified:** it asked only whether the callback can answer, never what a late or lost answer costs after an irreversible swap. It did not trigger the escalation clause (the outcome fit branch one cleanly on all four conditions), but a future rule of this kind should price the answer, not just its existence. |
 
 ## Tasks
 | # | Task | Tier | Status | Commit | Notes |
@@ -2072,7 +2072,7 @@ SPIKE: __spike_open advertised = True
 | 2 | Tick boundaries — `drain_command_queue`'s return value and same-tick vs next-tick. | Production path **plus one wrapper frame**; the drain timer had to be re-registered to instrument it, because `_register_drain_timer` captured a bound method that Blender holds and no later patch can reach. Stated rather than glossed: run 1 is the primary evidence, run 2 is detail. |
 | 3 | The **uncaught** failure path, which runs 1 and 2 could not see because the spike handler caught everything. | Untouched production path. |
 | 4 | The `use_scripts=False` re-run (see below). | **Untouched production path** — the drain timer was *not* re-instrumented. Cycle 1 failed to declare this row, which is the disclosure rule two rows up, applied to every run but this one. |
-| 5 | Cycle 2's seven experiments: scene identity, operator context, a 1.05 GB / 4.6 s load, a second client sending mid-load, connection reuse after a client gives up, a truncated `.blend`, two swaps in one tick. | Production path **plus one wrapper frame** (tick and re-entrancy accounting), same as run 2. |
+| 5 | **Five of cycle 2's six experiments**: scene identity and operator context (E1), a truncated `.blend` (E4), a 1.05 GB / 4.6 s load with a second client sending mid-load (E2/E6), connection reuse after a client gives up (E3), two swaps in one tick (E5). The sixth is run 6's. | Production path **plus one wrapper frame** (tick and re-entrancy accounting), same as run 2. |
 | 6 | Cycle 2's `bpy.data.is_dirty` probe. | Production path plus the same wrapper frame. |
 
 **Successful swaps and failing loads, per run** — cycle 1 reported a bare `7/7` that could not be reconstructed
@@ -2673,3 +2673,37 @@ last, deliberately, as part of closing the cycle rather than as part of its find
 queue-full during a slow swap; client disconnect *during* a load; a mutating sibling drained after a swap while
 holding a pre-swap `mutation_transaction` snapshot; and `drain_command_queue`'s return value on the untouched
 production path. None bears on which branch the rule selected.
+
+### Cycle-5: the fourth recurrence, and stopping
+
+Task 2 **passed its exit gate at `50c8a41`: 91/100**, every dimension above its floor, zero automatic-critical
+failures, all six acceptance criteria passing, every gate command green. Regression label for cycle 4:
+`improved` (+2, nothing fell).
+
+The verification pass then found that cycle 4's own R31 had **introduced a fourth recurrence of this task's
+signature defect**, and it is worth recording precisely because the task had just finished writing down the
+lesson:
+
+> R31 "fixed" run 5's row by counting the items in its own list and left the narrative 300 lines away untouched,
+> so `:2075` read "Cycle 2's seven experiments" against `:2398`'s "Cycle 2 ran six new experiments". **The
+> pre-repair number was the correct one.** Cycle 2 ran six experiments across runs 5 and 6; the row was
+> mis-*scoped*, not mis-counted, and the right repair was to the scope. Recounting produced a number wrong on
+> both readings and put the document in contradiction with itself.
+
+So the pattern's final form, after four occurrences: *fixing the instance you were shown, without re-deriving
+the claim it belongs to, can make a document worse than leaving the finding alone.* R31 would have been better
+skipped than applied as it was.
+
+| # | Finding | Severity | Repair |
+|---|---|---|---|
+| R32 | `:2075` "seven experiments" contradicted `:2398` "six" — introduced by R31 | MEDIUM | Row re-scoped to "five of cycle 2's six"; the narrative's six stands |
+| R33 | `connection.py:222-231` in decision 11, off by one against the rest of the document | LOW | `:223-231`; the `id` test is on 223, 222 is blank |
+| R34 | `**four**` nested inside an open `**…**` span rendered "four" as the only non-bold word | LOW | Un-nested |
+
+**Deliberately not repaired, on the reviewer's advice and mine.** Step 3 row a's "all six runs" is a broader
+claim than the "all three runs" it replaced and `RIG PASSED` is not pasted inside Task 2's section for any run
+— true, almost certainly, but unbacked; the Task 2 commit cell still cannot carry the hash of the commit that
+writes it; and decisions 9, 10 and 11 each sit after a blank line, so they render as paragraphs rather than
+table rows (a pre-existing pattern this task matched rather than created). None changes a measurement or
+misleads a later task, and **four cycles have now demonstrated that a findings list generates its own next
+findings list.** Task 2 is closed.
