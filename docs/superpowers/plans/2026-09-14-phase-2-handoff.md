@@ -547,8 +547,9 @@ The lint gate is **per-file plus a repo-wide before/after comparison**, exactly 
 
 **Blender**
 
-- Blender **5.2.1 LTS** at `/opt/homebrew/bin/blender` (build 2026-08-25). Host is macOS (Darwin 25.6.0), Apple
-  Silicon.
+- Blender **5.2.2 LTS** at `/opt/homebrew/bin/blender` (build 2026-09-15, hash `d13f752e3b9c`). Host is macOS
+  (Darwin 25.6.0 / 27.0.0), Apple Silicon. **Upgraded from 5.2.1 on 2026-09-15**; every API fact in this
+  section was re-run against 5.2.2 before Task 2 began — see `PHASE2_TASK_STATE.md`, "5.2.2 re-verification".
 - **The addon refuses to start in `--background`** (`server_core.py:152-158`), and **`bpy.app.timers` do not
   fire there** — re-verified 2026-09-14: a `persistent=True` timer registered in `--background` fires **0** times
   over 3 s while `is_registered` stays `True`. Anything needing a live server needs a real event loop: a GUI
@@ -593,6 +594,17 @@ The lint gate is **per-file plus a repo-wide before/after comparison**, exactly 
   Phase 2 plan's own first revision, both listed as corrected below. **Do not repeat it.**
 
 - **Blender 5.2.1 API facts already established** (do not re-derive; do verify if you depend on them). Four
+
+  > **Re-verified against 5.2.2 on 2026-09-15**, after the host upgrade, before Task 2 began. **Every fact in
+  > this list still holds**: the override methods and their signatures, `Library.reload`, `Library.users_id`
+  > (still absent from `bl_rna.properties`), the handler-firing table (`lib.reload()` churned 3 of 3
+  > `session_uid`s and fired `blend_import_*` only; `orphans_purge` fired nothing), all five error shapes
+  > including the twice-embedded path and the CWD leak on an empty path, `check_existing`'s inertness (a 27 B
+  > file silently overwritten with 95,912 B), the three magic signatures, the operator defaults, `abspath`'s
+  > two gaps, and 0 timer fires in `--background`. **One entry is refined, not overturned** — see
+  > `PHASE2_TASK_STATE.md`, "5.2.2 re-verification", finding 2: `override_create()` returns `None` on an
+  > *indirectly* linked datablock as well as on a local one, so "non-overridable" is a wider class than the
+  > "such as a local datablock" gloss below suggests. Transcripts are in TASK_STATE.
   entries here were **wrong in an earlier revision of this handoff and are corrected**; they are marked. One of
   the four (`override_create` returning `None`) survived **two** prior passes, so treat the corrected text as
   the only version and re-run anything you build on:

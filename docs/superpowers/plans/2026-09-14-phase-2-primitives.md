@@ -28,8 +28,13 @@ around the transaction entirely. So a change to the drain loop reaches everythin
 `mutation_transaction` reaches the mutating subset. A mistake in Tasks 3, 4 or 5 does not lose a tool — it
 corrupts a scene, deletes a file, or hangs every client.
 
-**Tech Stack:** Python 3.13, Blender 5.2.1 (target API: 5.1+), FastMCP, Pydantic v2, pytest, ruff,
+**Tech Stack:** Python 3.13, Blender 5.2.2 (target API: 5.1+), FastMCP, Pydantic v2, pytest, ruff,
 basedpyright, Docker + Xvfb for the live-Blender rig.
+
+> **Version note (2026-09-15).** The host moved 5.2.1 -> 5.2.2 after this plan was written. Measurements below
+> that cite 5.2.1 are left as the historical record of when they were taken; all of them were re-run against
+> 5.2.2 and **every one still holds**, with one refinement to `override_create`'s return value recorded in
+> `PHASE2_TASK_STATE.md`.
 
 **Spec:** `docs/superpowers/specs/2026-09-11-episode-consistency-architecture-design.md` — §4.5 (file lifecycle
 and linking, and the three open hazards), §4.7 (the local plugin's threading contract), §5 (delivery contract),
@@ -604,7 +609,7 @@ handshake field; `main` is at **30**.
 on Apple Silicon — slow but correct), and has a healthcheck that round-trips both Blender's socket and the MCP
 endpoint. `docker-blender` is 8 commits ahead of `main` and **39 behind**, and has **no `bundles.py`**.
 
-Locally, Blender 5.2.1 is at `/opt/homebrew/bin/blender` and the host is macOS (Darwin 25.6.0) — **there is no
+Locally, Blender 5.2.2 is at `/opt/homebrew/bin/blender` and the host is macOS (Darwin 25.6.0) — **there is no
 Xvfb on macOS**, but there is a real display, so a GUI Blender serves the same purpose for a local rig.
 
 ### Ruling: port the files to `main`, do not merge the branch

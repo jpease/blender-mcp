@@ -1,6 +1,7 @@
 # Phase 2 Task State
-Updated: 2026-09-15T06:25Z; transport follow-up (decision 8) applied 2026-09-15; repair cycle 3 applied
-2026-09-14 (cycles 1 and 2 recorded below)
+Updated: 2026-09-15 (session 2) — Task 1's commit recorded, host upgraded to Blender 5.2.2 and every
+API fact re-verified against it. Earlier: transport follow-up (decision 8) applied 2026-09-15;
+repair cycle 3 applied 2026-09-14 (cycles 1 and 2 recorded below)
 
 Plan: docs/superpowers/plans/2026-09-14-phase-2-primitives.md
 Handoff: docs/superpowers/plans/2026-09-14-phase-2-handoff.md
@@ -98,11 +99,13 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | 7 | **Task 1 kept at its plan-recommended Opus tier** (no downgrade to record). | Plan Task 1's re-tiering rationale, §05's honour-the-tier rule. | n/a — no deviation. |
 | 8 (defect E — **fifth plan defect**) | **The container rig depends on a tenth file the plan never listed: `ee25ffc`'s HTTP transport.** Task 1's Files list ports nine files plus the `output_roots` wiring; `docker/blender/entrypoint.sh` also requires `BLENDERMCP_TRANSPORT=http`, implemented on `docker-blender` in `src/blender_mcp/server/cli.py` (with `tests/server/test_cli_transport.py`). Plan §0.3 finding 2 never identified it. **Ruled: record it, do not port it in Task 1** — the user assigned the port and the two entrypoint fixes to a separate follow-up task, so two agents are not editing overlapping files. **Closed 2026-09-15**: that follow-up ported `cli.py` + `tests/server/test_cli_transport.py`, fixed both entrypoint defects, and criteria 2 and 3 now pass against a real container (see "The container half"). The port needed nothing else from the branch — `src/blender_mcp/server/app.py` is byte-identical on both branches and the installed `mcp` package already provides `settings.streamable_http_path` and `settings.transport_security`, so the stop-and-report condition never fired. | Measured 2026-09-15 05:27–05:38: `docker compose ... up --build --wait` built the image and the container came up **unhealthy**; `git grep -ln 'BLENDERMCP_TRANSPORT' main -- '*.py'` returns nothing; on `docker-blender` it is `ee25ffc`. With no HTTP transport the server runs stdio, takes EOF on a non-TTY stdin and exits, tripping `wait -n`. Full transcript summary under "The container half". | **This was discoverable only by running the container.** Cycle 2 took criteria 2 and 3 through their "if Docker is unavailable" escape hatch, which would have hidden a missing dependency permanently — the phase would have carried a container rig that has never once come up healthy. The cost of the ruling itself is that criteria 2 and 3 stay open across a task boundary; the cost of the alternative (porting it here) is an unplanned tenth file landing in the task whose whole point is a bounded port. |
 
+| 9 | **Move every Blender version pin 5.2.1 -> 5.2.2 and re-verify the API layer against it, rather than assuming the facts carry.** The host was upgraded between sessions. Historical measurement text keeps its 5.2.1 dates; only current-state claims and the container's build arg move. | Every load-bearing fact re-run on 5.2.2 before Task 2 began — override methods and signatures, `Library.reload`, `Library.users_id`, the full handler-firing table (3 of 3 `session_uid`s churned, `load_post` never fired, `orphans_purge` silent), all five error shapes, `check_existing`'s inertness (27 B -> 95,912 B silently), the three magic signatures, operator defaults, `abspath`'s two gaps, 0 timer fires in `--background`, and the live Step 5 rig green end to end. Transcripts under "5.2.2 re-verification". The container tarball was confirmed at HTTP 200 before the `ARG` moved. | **The whole plan's API layer is load-bearing for Tasks 4, 6 and 7, and a point release can change operator defaults and error strings** — precisely the two things the rubric makes automatically critical (a silent overwrite, a leaked path). Assuming the facts carried would have meant building the sanitizer and the overwrite guard against a version nobody had run. As measured the cost was zero: everything held. The one thing that *did* surface — `use_file_compression=True` beating `compress=False` at factory settings — is a live trap for Task 6 that no 5.2.1 measurement had recorded. |
+
 ## Tasks
 | # | Task | Tier | Status | Commit | Notes |
 |---|---|---|---|---|---|
-| 1 | Land the live-Blender acceptance rig on `main` | Opus | **Repair cycle 3 + transport follow-up applied, uncommitted — awaiting the third critic cycle** | — | 9 files ported, full `output_roots` wiring + 30 → 31 bump, ported lint debt cleaned to zero, `scripts/blender_rig.py` written, Step 5 re-verified live and **re-run end to end after each repair cycle**, README documented, `scripts/revert_matrix.py` landed so the revert evidence is reproducible. Repairs R1-R22 (cycle 2) and A1-A6/B1-B5/C1-C4/D1/F1-F10 (cycle 3); see both repair tables. **Acceptance criteria 2 and 3 now PASS** against a real container, after the decision-8 follow-up ported the HTTP transport (a tenth file) and fixed the two `entrypoint.sh` defects the first container run exposed. |
-| 2 | Decide the reentrancy strategy by experiment | Opus | Not started | — | Blocked on Task 1's commit. |
+| 1 | Land the live-Blender acceptance rig on `main` | Opus | **Committed** | `2852803` | 9 files ported, full `output_roots` wiring + 30 → 31 bump, ported lint debt cleaned to zero, `scripts/blender_rig.py` written, Step 5 re-verified live and **re-run end to end after each repair cycle**, README documented, `scripts/revert_matrix.py` landed so the revert evidence is reproducible. Repairs R1-R22 (cycle 2) and A1-A6/B1-B5/C1-C4/D1/F1-F10 (cycle 3); see both repair tables. **Acceptance criteria 2 and 3 now PASS** against a real container, after the decision-8 follow-up ported the HTTP transport (a tenth file) and fixed the two `entrypoint.sh` defects the first container run exposed. |
+| 2 | Decide the reentrancy strategy by experiment | Opus | Not started | — | Task 1's commit landed at `2852803`; no longer blocked. |
 | 3 | Drain-loop file-swap barrier, session epoch, failure handlers | Opus | Not started | — | **Inherits protocol 31; asserts, does not bump** (decision 2). |
 | 4 | Make rollback survive a file swap, track `libraries` | Opus | Not started | — | |
 | 5 | The filesystem trust boundary | Opus | Not started | — | Promotes `output_roots.py`, landed here. |
@@ -701,7 +704,226 @@ waits on and why a bare `wait` blocked on Xvfb, and the trap comment records tha
 `docker/blender/output/` exists on disk and stays invisible (`git check-ignore -v` → `.gitignore:232`),
 `uv.lock` is still untracked and unstaged, and nothing under `__pycache__` is staged.
 
+## 5.2.2 re-verification (2026-09-15, session 2, before Task 2)
+
+The host was upgraded **Blender 5.2.1 LTS -> 5.2.2 LTS** (`/opt/homebrew/bin/blender`, build 2026-09-15, hash
+`d13f752e3b9c`) between session 1 and session 2. Because the whole plan's API layer was measured against 5.2.1,
+every load-bearing fact was **re-run against 5.2.2 before Task 2 started**, rather than assumed to carry.
+Probe scripts are in this session's scratchpad (`api522/probe_{a,b,c,d,e,f,g}.py`); reproduce them, do not
+trust this table.
+
+**Result: every fact holds. One entry is refined, two apparent deviations were my own probe's artifacts.**
+
+| Fact (as stated for 5.2.1) | 5.2.2 | Evidence |
+|---|---|---|
+| `Collection`/`ID`/`Object`.`override_create` + `override_hierarchy_create` exist | holds | `bl_rna.functions` lists both on all three |
+| `override_hierarchy_create(scene, view_layer, reference=None, do_fully_editable=False)` | holds | `__doc__` verbatim |
+| `dir()` on a type object is blind | holds | `'copy' in dir(bpy.types.Collection)` -> `False`; on an instance -> `True` |
+| `Library.reload()` exists | holds | present in `bpy.types.Library.bl_rna.functions` |
+| `Library.users_id` works but is absent from `bl_rna.properties` | holds | `bl_rna` -> `False`; `dir(instance)` -> `True`; returns the 3 linked datablocks |
+| `bpy.app.handlers` has `load_post_fail` / `save_post_fail` | holds | all nine probed present |
+| `save_as_mainfile.relative_remap` default `True`, `save_mainfile`'s `False` | holds | RNA defaults |
+| `check_existing` defaults `True` on both and is **inert** | holds | a 27 B file silently overwritten with 95,912 B, `{'FINISHED'}` |
+| `open_mainfile.use_scripts` default `False`; `use_scripts_auto_execute` `False` | holds | RNA default + preference |
+| `bpy.path.abspath` normalises nothing and absolutizes nothing | holds | `'//../escape.blend'` -> `'../escape.blend'`; `'relative.blend'` unchanged |
+| `orphans_purge(do_local_ids, do_linked_ids, do_recursive) -> int` | holds | `__doc__` |
+| open/save operators **raise `RuntimeError`, never `{'CANCELLED'}`** | holds | all five failure modes raised |
+| Error shapes 1-5, including the twice-embedded path and the CWD leak | holds | transcripts below |
+| Three `.blend` magic signatures | holds | `BLENDER17-01`, `(\xb5/\xfd`, `\x1f\x8b`; all three opened `{'FINISHED'}` |
+| Handler-firing table + `session_uid` churn | holds | **3 of 3** churned; transcript below |
+| `bpy.app.timers` never fire in `--background` | holds | **0** fires over 3.0 s, `is_registered` stays `True` |
+
+### Finding 1 — two apparent deviations that were my probe's fault, not 5.2.2's
+
+Recorded because each would have been a plausible-looking false correction of the kind §01 warns about.
+
+- **"Error shape 3 has disappeared."** A `.blend` truncated to 64 bytes produced shape 2
+  (`File format is not supported`), not shape 3 (`Missing DNA block`). Cause: **5.2.2 writes a zstd-compressed
+  file from a bare `save_as_mainfile`**, so I had truncated a *compressed* file, whose corrupt zstd stream is
+  rejected before any DNA parsing. Saving with `compress=False` and truncating to 64 / 512 / 4096 bytes
+  reproduces shape 3 exactly, at all three lengths, still carrying the absolute path **twice** in two quoting
+  styles. **Shape 3 is alive; the sanitizer requirement is unchanged.**
+- **"The compress default changed."** The operator property default really is `compress=False` on both save
+  operators — but `preferences.filepaths.use_file_compression` is `True` at **factory settings**, and it wins.
+  So a bare `save_as_mainfile(filepath=...)` writes zstd, while `compress=False` writes `BLENDER17-01`.
+  **This is a real and previously unrecorded subtlety and it belongs to Task 6:** `save_shot` that does not pass
+  `compress` explicitly produces a file whose format depends on a user preference the caller cannot see. It is
+  the same class of trap as `relative_remap` inheriting `True` — an operator default that is not what you get.
+
+### Finding 2 — `override_create()`'s return value, refined (the claim that survived two passes)
+
+The handoff's `[CORRECTED TWICE]` entry says `override_create()` returns the new override ID on a linked,
+overridable ID and `None` only on a non-overridable one "such as a local datablock". **Measured on 5.2.2, that
+is correct, but "non-overridable" is a wider class than that gloss suggests** — and my first probe walked
+straight into it, getting `None` from *both* arms and therefore proving nothing:
+
+```
+local collection  .override_create() -> None            (objects 1 -> 1, no new uid: it did nothing)
+LINKED object     .override_create() -> None            (objects 1 -> 1, no new uid: it did nothing)
+  ... the linked object's state: is_library_indirect=True, in view layer=False
+LINKED collection .override_create() -> bpy.data.collections['CanonHero']   (collections 1 -> 2)
+override_hierarchy_create(..., do_fully_editable=True) -> bpy.data.collections['CanonHero']
+```
+
+The discriminator is **direct vs indirect linkage**, not local vs linked. An object pulled in as a member of a
+linked collection is `is_library_indirect=True` and is **not** directly overridable, so `override_create()`
+returns `None` *and does nothing*. Counting `bpy.data.objects` before and after is what separates "returned
+`None` because it failed" from "returned `None` on success" — the return value alone cannot.
+
+**Why this is worth a finding rather than a footnote:** an implementer verifying the handoff's claim on the
+nearest linked *object* would measure `None`, conclude the handoff's correction was itself wrong, and "correct"
+it back to the original false claim — the exact three-pass cycle §01 describes. The distinguishing test must be
+the side effect, not the return.
+
+Task 7's ruling is unaffected: it rules for `override_hierarchy_create(..., do_fully_editable=True)` on the
+grounds that `override_create` handles one ID at a time, which is orthogonal to this.
+
+### Finding 3 — Route C's name collision reproduces exactly
+
+```
+Route A (create_liboverrides=True): objects [('HeroBody', editable=False, linked=True)]; 2 collections named CanonHero
+Route B (override_hierarchy_create): objects [('HeroBody', True, sys_override=True), ('HeroBody', False, ...)]
+Route C (do_fully_editable=True):
+    object     'HeroBody'  uid=782  editable=True   linked=False  system_override=False
+    object     'HeroBody'  uid=779  editable=False  linked=True   system_override=None
+    collection 'CanonHero' uid=781  editable=True   linked=False
+    collection 'CanonHero' uid=778  editable=False  linked=True
+    >>> duplicate OBJECT names: True      >>> duplicate COLLECTION names: True
+```
+
+Two same-named collections **and** two same-named objects, exactly as the `[CORRECTED]` entry states. The
+`session_uid`-not-name signature ruling for Task 7 is confirmed on 5.2.2.
+
+### Finding 4 — the handler-firing table, reproduced
+
+```
+libraries.load(link=True)   -> handlers fired: ['blend_import_pre', 'blend_import_post']
+Library.users_id            -> [collections['CanonHero'], meshes['HeroMesh'], objects['HeroBody']]
+session_uids before reload  -> {'CanonHero': 386, 'HeroMesh': 388, 'HeroBody': 387}
+lib.reload()                -> handlers fired: ['blend_import_pre', 'blend_import_post']
+session_uids after reload   -> {'CanonHero': 389, 'HeroMesh': 391, 'HeroBody': 390}
+CHURNED: 3 of 3 datablocks got a fresh session_uid
+failed lib.reload()         -> RAISED RuntimeError; handlers fired: NONE
+orphans_purge(...)          -> 0; handlers fired: NONE
+```
+
+`load_post` fired for **none** of them. Task 4 item 2a's premise (`_DATABLOCK_REPLACING_COMMANDS`, not a
+`blend_import_post` handler) stands unchanged on 5.2.2.
+
+### Finding 5 — the five error shapes, re-captured on 5.2.2
+
+```
+1 open missing:     Error: Cannot read file "<abs>": No such file or directory
+2 open directory:   Error: File format is not supported in file "<abs>"
+2 open non-.blend:  Error: File format is not supported in file "<abs>"
+2 open EMPTY PATH:  Error: File format is not supported in file "/Users/jpease/Developer/github/jpease/blender-mcp"
+3 open truncated:   Error: Loading "<abs>" failed: Failed to read blend file '<abs>': Missing DNA block
+4 save unwritable:  Error: Cannot open file <abs>@ for writing: No such file or directory
+5 reload bad path:  Error: Trying to reload library 'LIcanon.blend' from invalid path '<abs>'
+```
+
+All four traps survive: shape 4's derived `@` name, shape 3's **two** embedded paths in two quoting styles,
+shape 2's absence of any tail after the path, and shape 2's empty-path variant leaking the **server's process
+CWD** (here the repo root) rather than any caller-supplied path.
+
+### Live rig transcript — Step 5 re-run by the reviewer on 5.2.2
+
+Task 1's Step 5 scenario files did not survive session 1 (they lived in that session's scratchpad, which is
+gone — see "Known failures / blocked"). They were **rebuilt from the documented behaviour** and re-run. Blender
+**5.2.2 LTS**, GUI (not `--background`), fresh work dir, exit code **0**.
+
+```
+RIG: server running = True
+RIG: readiness receipt written to <scratch>/step5/work/rig_ready.json
+RIG-BLENDER: watcher + probe timers registered, waiting for <scratch>/step5/work/open_now.json
+RIG: Blender (pid 71024) up on 127.0.0.1:52169, work dir <scratch>/step5/work
+--> {"id": "rig-1", "type": "ping", "params": {}}
+<-- {"status": "success", "result": {"pong": true}, "id": "rig-1"}
+--> {"id": "rig-2", "type": "get_addon_info", "params": {}}
+<-- {"status": "success", "result": {"name": "Blender MCP", "addon_version": [2, 0, 0],
+     "protocol_version": 31, "capabilities": [... 250 entries elided ...],
+     "blender_version": "5.2.2 LTS",
+     "writable_output_roots": ["<scratch>/step5/work",
+                               "<scratch>/step5/work/tmp/blender_8sT57u",
+                               "<scratch>/step5/work/tmp",
+                               "/Users/jpease"]}, "id": "rig-2"}
+RIG: protocol_version = 31
+RIG: blender_version = 5.2.2 LTS
+RIG: asked Blender to open <scratch>/step5/work/blends/fixture.blend
+RIG: in-Blender outcome = {
+  "before_filepath": "",
+  "before_objects": ["Camera", "Cube", "Light"],
+  "before_persistent_timer_registered": true,
+  "before_volatile_timer_registered": true,
+  "before_persistent_fires": 3,
+  "before_volatile_fires": 3,
+  "before_drain_is_registered_fresh_bound_method": false,
+  "open_mainfile_result": ["FINISHED"],
+  "after_filepath": "<scratch>/step5/work/blends/fixture.blend",
+  "after_objects": ["RigFixtureCube"],
+  "after_persistent_timer_registered": true,
+  "after_volatile_timer_registered": false,
+  "after_persistent_fires": 3,
+  "after_volatile_fires": 3,
+  "after_drain_is_registered_fresh_bound_method": false,
+  "callback_frame_survived_the_swap": true
+}
+RIG: persistent timer fires 3 -> 4 after the swap
+--> {"id": "rig-3", "type": "ping", "params": {}}
+<-- {"status": "success", "result": {"pong": true}, "id": "rig-3"}
+RIG: post-load ping answered -> {"status": "success", "result": {"pong": true}, "id": "rig-3"}
+--> {"id": "rig-4", "type": "get_addon_info", "params": {}}
+RIG: post-load get_addon_info protocol_version = 31
+RIG: post-load writable_output_roots = ['<scratch>/step5/work', '<scratch>/step5/work/blends',
+                                        '<scratch>/step5/work/tmp/blender_8sT57u',
+                                        '<scratch>/step5/work/tmp', '/Users/jpease']
+RIG PASSED
+```
+
+Only the scratch prefix and the capability list are elided. **All six items of Task 1 acceptance criterion 4
+reproduce on 5.2.2**, including the volatile-timer control reading `false` (so the probe can still tell the two
+apart) and the persistent timer's fire count moving 3 -> 4 *after* the swap. The caller's fixture was not
+mutated: MD5 `3d5f92b26ca2b634e673bfd967eb8cd8` before and after.
+
+The `before_drain_is_registered_fresh_bound_method: false` reading, taken while the server was demonstrably
+answering pings, reproduces the 5.2.1 identity-matching finding on 5.2.2 — so Task 3's obligation to fix
+`test_threading.py`'s stub before believing any `server_core.py` timer fix is unchanged.
+
+### Version pins moved with this re-verification
+
+| Pin | From | To | Note |
+|---|---|---|---|
+| `docker/blender/Dockerfile` `ARG BLENDER_VERSION` | 5.2.1 | 5.2.2 | `blender-5.2.2-linux-x64.tar.xz` confirmed present (HTTP 200) before the change |
+| handoff §08 environment line | 5.2.1 LTS | 5.2.2 LTS | plus a re-verification note over the API-facts list |
+| plan Tech Stack + "Locally, Blender ... is at" | 5.2.1 | 5.2.2 | plus a dated version note |
+
+**Deliberately not changed**, each for a stated reason:
+
+- **Historical measurement text** ("measured 2026-09-14 against 5.2.1") throughout both plan documents. Those
+  sentences are true statements about when a measurement was taken; rewriting them to 5.2.2 would forge the
+  provenance of evidence this session did not gather. The re-verification note above carries the current claim.
+- **`pyproject.toml`'s `blender-python-stubs = "^5.2.1.1"`** — a constraint range, not a pin, and it already
+  admits 5.2.2.x. There is no `pip` in `.venv` to confirm a 5.2.2 stub release exists, so tightening it would
+  be an unmeasured change.
+- **`scripts/revert_matrix.py`'s hardcoded `5.2.1` download URL** — it is the *deliberately broken* replacement
+  used to prove `test_dockerfile_installs_the_blender_version_it_declares` can fail. That test asserts the URL
+  interpolates `${BLENDER_VERSION}`, never a specific number, so any literal serves; the revert's `old` string
+  is the interpolated form, which this change did not touch.
+- **`tests/test_addon_manager.py`'s `"blender_version": "5.2.1"` fixtures** — opaque handshake payload strings
+  that no assertion compares to the host's version.
+
 ## Known failures / blocked
+
+- **Task 1's Step 5 scenario harness was never committed and did not survive session 1.**
+  `scenario_step5.py`, `in_blender_open.py` and `fixture.blend` lived in that session's scratchpad, which is
+  gone; only the transcripts remain. The three Step 5 transcripts in this file were therefore **not
+  reproducible from the repository** as committed at `2852803`. Session 2 rebuilt all three from the documented
+  behaviour and re-ran them green on 5.2.2 (see "5.2.2 re-verification"), but the rebuilt copies are likewise
+  in a scratchpad. **Consequence for the phase:** eight of ten tasks have a live transcript as a hard exit
+  gate, and `scripts/blender_rig.py` is useless without a scenario to hand it. **Task 10 should commit a
+  scenario harness** rather than leaving each session to reconstruct one — it already owns the gate scenario,
+  and `tests/test_blender_rig.py` gives it a home. Raised here rather than fixed, because committing a
+  scenario module is Task 10's scope, not a version bump's.
 
 - **Acceptance criteria 2 and 3 are CLOSED** (2026-09-15 06:15–06:22) — see "The container half, after the
   transport port". `up --wait --build` reaches healthy with rc 0, and the running server's `tools/list` count

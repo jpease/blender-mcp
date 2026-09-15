@@ -7,7 +7,7 @@
 FROM almalinux:9.8-minimal
 
 ARG BLENDER_MAJOR_MINOR=5.2
-ARG BLENDER_VERSION=5.2.1
+ARG BLENDER_VERSION=5.2.2
 
 RUN microdnf install -y epel-release \
     && microdnf install -y --enablerepo=epel \
