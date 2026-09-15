@@ -98,6 +98,17 @@ Blender's combined output is drained on a reader thread into
 `<work-dir>/blender.log`; its `RIG:` lines are echoed here, and the tail of it is
 quoted in any startup or shutdown failure. Leaving that pipe undrained is what
 deadlocks Blender in `write()` on the very thread the drain loop runs on.
+
+**One residual deadlock the design cannot rescue: give this process a stdout
+somebody reads.** The echo above is a `print()` to the *rig's own* stdout. If
+that is a pipe nobody drains, the reader thread blocks in `print`, stops reading
+Blender's pipe, and Blender then deadlocks in `write()` exactly as if the rig
+had never drained it at all - and because a blocked `print` raises nothing,
+`_OutputDrain`'s `except BaseException` fallback to `_drain_silently` never
+runs. Only `_ECHOED_PREFIXES` lines are echoed, which bounds the volume in
+practice, but the rig cannot bound a reader that never reads. Run it with stdout
+on a terminal, a file, or a pipe that is being consumed - `... | tee`, not a
+pipe opened and left unread.
 """
 
 import argparse
@@ -232,20 +243,32 @@ class _OutputDrain:
         self._log_path = log_path
         self._abandoned = abandoned
         self._thread = threading.Thread(target=self._run, name="rig-blender-log", daemon=True)
+        self._started = False
         self.failure: BaseException | None = None
 
     def start(self) -> None:
         """Begin draining. Must be called before anything waits on the process."""
         self._thread.start()
+        self._started = True
 
     def join(self, timeout: float) -> None:
         """
-        Wait for the reader to reach EOF.
+        Wait for the reader to reach EOF, if it ever got as far as running.
+
+        A reader that was never started is joined silently rather than by
+        raising. `start()` can fail - "can't start new thread" is the realistic
+        way - and `Thread.join` on an unstarted thread raises `RuntimeError`,
+        which `_shut_down` would raise out of its own `finally` after Blender had
+        been terminated and before any diagnosis was built. The run would then
+        report "cannot join thread before it is started" instead of the failure
+        to create the thread, which is the fact worth knowing.
 
         Args:
             timeout: Seconds to wait before giving up on it.
 
         """
+        if not self._started:
+            return
         self._thread.join(timeout)
 
     def is_alive(self) -> bool:
@@ -382,9 +405,11 @@ class BlenderRig:
             dict: The decoded response, including the echoed request id.
 
         Raises:
-            RigError: If the rig has already abandoned this scenario, if Blender
-                closed the connection without answering, or if it answered a
-                different request than the one just sent.
+            RigError: If the rig has already abandoned this scenario, if the
+                command was not answered within the command timeout - in which
+                case it may still be executing inside Blender - if Blender closed
+                the connection without answering, or if it answered a different
+                request than the one just sent.
 
         """
         self._refuse_if_abandoned(command_type)
@@ -427,11 +452,13 @@ class BlenderRig:
 
     def _round_trip(self, request: dict) -> dict:
         """
-        Exchange one newline-delimited JSON frame on a fresh connection.
+        Exchange one newline-delimited JSON frame, or explain what went wrong.
 
-        One connection per command deliberately: the addon serves each client on
-        its own thread, so a scenario that reconnects proves the listener is
-        still accepting, which a long-lived socket would hide.
+        Every socket failure is translated here, because `send`'s documented
+        contract is `RigError` and a bare `TimeoutError: timed out` from the
+        socket layer honoured neither the contract nor the reader: it named
+        neither the command nor the port, and it described an unknown outcome as
+        a failure.
 
         Args:
             request: The frame to send.
@@ -440,18 +467,89 @@ class BlenderRig:
             dict: The decoded response frame.
 
         Raises:
-            RigError: If the connection closed before a full frame arrived.
+            RigError: If the command was not answered in time, if the transport
+                failed, or if Blender closed the connection mid-frame. `RigError`
+                is a `RuntimeError`, so the one raised by `_exchange` for a short
+                frame passes through the `OSError` handler untouched.
 
         """
-        with socket.create_connection(("127.0.0.1", self._port), timeout=self._command_timeout) as sock:
-            sock.sendall(json.dumps(request).encode("utf-8") + b"\n")
-            buffer = _read_frame(sock)
+        try:
+            buffer = self._exchange(request)
+        except TimeoutError as expiry:
+            raise RigError(self._unanswered_message(request)) from expiry
+        except OSError as failure:
+            raise RigError(
+                f"the rig could not exchange {request['type']!r} with Blender on 127.0.0.1:{self._port}: "
+                f"{type(failure).__name__}: {failure}"
+            ) from failure
         if b"\n" not in buffer:
-            raise RigError(f"Blender closed the connection before answering {request['type']!r}")
+            raise RigError(
+                f"Blender closed the connection on 127.0.0.1:{self._port} before answering {request['type']!r}"
+            )
         return _decode_frame(buffer)
 
+    def _exchange(self, request: dict) -> bytes:
+        """
+        Send one frame on a fresh connection and read the reply frame back.
 
-def _read_frame(sock: socket.socket) -> bytes:
+        One connection per command deliberately: the addon serves each client on
+        its own thread, so a scenario that reconnects proves the listener is
+        still accepting, which a long-lived socket would hide.
+
+        The connect and the reply share one deadline, so `--command-timeout` is
+        the budget for the command rather than for each of its two waits; giving
+        the same figure to both would bound the exchange at twice the number the
+        flag's own help text promises.
+
+        Socket failures are left to propagate - a `TimeoutError` when the
+        exchange overran that budget, any other `OSError` when the transport
+        itself broke - because `_round_trip` is the one place that knows how to
+        describe them to a scenario author.
+
+        Args:
+            request: The frame to send.
+
+        Returns:
+            bytes: Everything received, lacking a newline if the peer hung up.
+
+        """
+        deadline = time.monotonic() + self._command_timeout
+        with socket.create_connection(("127.0.0.1", self._port), timeout=self._command_timeout) as sock:
+            sock.sendall(json.dumps(request).encode("utf-8") + b"\n")
+            return _read_frame(sock, max(0.0, deadline - time.monotonic()))
+
+    def _unanswered_message(self, request: dict) -> str:
+        """
+        Describe a command whose outcome is unknown, rather than calling it a failure.
+
+        Measured against the real addon with a 0.5s command timeout: the command
+        the rig had given up on ran on Blender's next main-thread tick and
+        mutated the scene. Nothing on the addon side cancels a queued command,
+        and its reply is lost in silence, because a `sendall` to a peer-closed
+        TCP socket succeeds at the kernel level until the RST arrives - so the
+        addon's own "client disconnected" branch is usually never reached and
+        nothing is logged. Reporting this as a plain failure invites the reader
+        to conclude the scene was untouched, which is the one conclusion the
+        evidence does not support.
+
+        Args:
+            request: The frame that went unanswered.
+
+        Returns:
+            str: The error text, naming the command, the port and the doubt.
+
+        """
+        return (
+            f"{request['type']!r} (request {request['id']}) was not answered by the Blender on "
+            f"127.0.0.1:{self._port} within {self._command_timeout:g}s. The rig has closed that connection, but "
+            "nothing cancels a command the addon has already queued, so it MAY STILL BE EXECUTING inside Blender "
+            "and may already have changed the scene: treat this as an unknown outcome, not as 'it did not run'. "
+            "Its reply goes nowhere and the addon will usually log nothing about it. Inspect the scene before "
+            "trusting it, and raise --command-timeout if this command is legitimately slower."
+        )
+
+
+def _read_frame(sock: socket.socket, timeout: float) -> bytes:
     """
     Read until the newline that terminates one protocol frame, or until EOF.
 
@@ -459,15 +557,33 @@ def _read_frame(sock: socket.socket) -> bytes:
     what "a reply arrived" means; the caller decides whether a short read is a
     failure or merely a not-yet-ready peer.
 
+    The timeout bounds the *frame*, not each `recv`. A socket timeout alone
+    bounds one call, so a peer that dribbles under the limit and never sends a
+    newline is read for as long as it keeps dribbling: measured at 3.2s against a
+    1.0s socket timeout, one byte every 0.4s. The rig's whole verdict is "Blender
+    did not hang", so it must not own a wait it cannot bound - hence a monotonic
+    deadline, with each `recv` given only what is left of it.
+
     Args:
         sock: The connected socket to read from.
+        timeout: Seconds the whole frame may take.
 
     Returns:
         bytes: Everything received, which lacks a newline if the peer hung up.
 
+    Raises:
+        TimeoutError: If no complete frame arrived before the deadline. It is an
+            `OSError`, so the readiness probe's own handler already treats it as
+            "not ready yet"; `BlenderRig._round_trip` turns it into a `RigError`.
+
     """
+    deadline = time.monotonic() + timeout
     buffer = b""
     while b"\n" not in buffer:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"no complete frame within {timeout:g}s ({len(buffer)} bytes received)")
+        sock.settimeout(remaining)
         chunk = sock.recv(8192)
         if not chunk:
             break
@@ -587,16 +703,31 @@ def _claim_work_dir(work_dir: Path) -> None:
       code into the Blender the rig is about to trust - a code-execution surface
       opened by the isolation mechanism itself.
 
+    A symlinked `--work-dir` is deliberately *not* refused. This function used to
+    open with an `is_symlink()` check, which could never fire: `main()` resolves
+    `--work-dir` before `_execute` passes it here, and `.resolve()` follows the
+    link. Unreachable code that reads as a safety control is worse than no code,
+    because the next reader trusts it - and it would have been redundant even if
+    reachable, since resolution and the rule above compose: the rule is applied
+    to the *real* directory. A link aimed at somebody's data is refused because
+    that directory has contents and no marker; a link aimed at an empty or
+    rig-created directory is claimed, which is what the caller asked for. So the
+    check protected nothing, while refusing a scratch directory reached through a
+    symlink - a volume elsewhere, a `$TMPDIR` alias - is a real cost.
+
+    The symlink checks in `_rig_owned_subdirectory` and `_stage_blends` are a
+    different matter and stay. Those paths are *built* underneath the resolved
+    work dir and never resolved again, so a link planted at one of them really
+    is written through, and both have a test to prove it.
+
     Args:
-        work_dir: The caller-supplied directory.
+        work_dir: The caller-supplied directory, already resolved by `main()`.
 
     Raises:
-        RigError: If the path is not a directory, is a symlink, or holds
-            contents the rig did not create.
+        RigError: If the path exists and is not a directory, or holds contents
+            the rig did not create.
 
     """
-    if work_dir.is_symlink():
-        raise RigError(f"--work-dir {work_dir} is a symlink; point it at a real directory the rig can own.")
     if work_dir.exists() and not work_dir.is_dir():
         raise RigError(f"--work-dir {work_dir} exists and is not a directory.")
     marker = work_dir / _OWNED_MARKER_NAME
@@ -927,7 +1058,7 @@ def _ping_answers(port: int) -> bool:
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=_READINESS_PROBE_TIMEOUT_SECONDS) as sock:
             sock.sendall(frame)
-            buffer = _read_frame(sock)
+            buffer = _read_frame(sock, _READINESS_PROBE_TIMEOUT_SECONDS)
     except OSError:
         return False
     try:
@@ -1033,7 +1164,39 @@ def _run_scenario_with_deadline(
         raise raised[0]
 
 
-def _shut_down(blender: subprocess.Popen[str], drain: _OutputDrain, log_path: Path) -> None:
+def _reader_problems(drain: _OutputDrain | None) -> list[str]:
+    """
+    Blame the rig's own reader when it was the reader, not Blender, that broke.
+
+    A reader that was never constructed contributes nothing on purpose. That can
+    only happen while another exception is already on its way out of `_execute` -
+    the one that stopped the reader being constructed - and a `RigError` raised
+    from teardown would replace that real diagnosis with a vaguer one.
+
+    Args:
+        drain: The reader, or None if the launch never got one.
+
+    Returns:
+        list[str]: Problems to name in the teardown failure, if any.
+
+    """
+    if drain is None:
+        return []
+    problems = []
+    if drain.failure is not None:
+        problems.append(
+            f"the rig's own log reader died with {type(drain.failure).__name__}: {drain.failure} "
+            "(the pipe was drained anyway, so this did not hang Blender, but the log may be short)"
+        )
+    if drain.is_alive():
+        problems.append(
+            f"the rig's own log reader is still running {_SHUTDOWN_GRACE_SECONDS:.0f}s after Blender stopped, "
+            "so something still holds the pipe's write end - most likely a Blender grandchild that inherited it"
+        )
+    return problems
+
+
+def _shut_down(blender: subprocess.Popen[str], drain: _OutputDrain | None, log_path: Path) -> None:
     """
     Stop Blender, escalating to a kill if it ignores the polite request.
 
@@ -1051,7 +1214,12 @@ def _shut_down(blender: subprocess.Popen[str], drain: _OutputDrain, log_path: Pa
 
     Args:
         blender: The process to stop.
-        drain: The reader draining its output.
+        drain: The reader draining its output, or None if the launch never got
+            one. `_launch_blender` hands back a process whose output is already
+            accumulating in a pipe, so teardown has to work for a Blender that
+            was started and then failed to acquire a reader - the one case where
+            stopping it promptly is the whole point, since an undrained pipe
+            deadlocks it in `write()`.
         log_path: Blender's log, quoted if anything went wrong.
 
     Raises:
@@ -1072,22 +1240,13 @@ def _shut_down(blender: subprocess.Popen[str], drain: _OutputDrain, log_path: Pa
                 except subprocess.TimeoutExpired:
                     survived_kill = True
     finally:
-        drain.join(_SHUTDOWN_GRACE_SECONDS)
+        if drain is not None:
+            drain.join(_SHUTDOWN_GRACE_SECONDS)
 
-    problems = []
+    problems = _reader_problems(drain)
     if survived_kill:
-        problems.append(f"Blender (pid {blender.pid}) survived SIGKILL")
-    if drain.failure is not None:
-        problems.append(
-            f"the rig's own log reader died with {type(drain.failure).__name__}: {drain.failure} "
-            "(the pipe was drained anyway, so this did not hang Blender, but the log may be short)"
-        )
-    if drain.is_alive():
-        problems.append(
-            f"the rig's own log reader is still running {_SHUTDOWN_GRACE_SECONDS:.0f}s after Blender stopped, "
-            "so something still holds the pipe's write end - most likely a Blender grandchild that inherited it"
-        )
-    else:
+        problems.insert(0, f"Blender (pid {blender.pid}) survived SIGKILL")
+    if drain is None or not drain.is_alive():
         _close_quietly(blender.stdout)
 
     if problems:
@@ -1243,6 +1402,12 @@ def _execute(arguments: argparse.Namespace, work_dir: Path) -> None:
     """
     Bring Blender up, run the scenario against it, and always tear Blender down.
 
+    Both the launch and the reader that drains it live inside the `try`, and
+    teardown is keyed on whether a process was started rather than on reaching
+    the end of setup. `_launch_blender` returns a Blender whose output is already
+    accumulating in a pipe, so every statement after it is a statement that can
+    orphan a process which will deadlock in `write()` once ~64 KiB has piled up.
+
     Args:
         arguments: The parsed command line.
         work_dir: The resolved caller-supplied working directory.
@@ -1259,16 +1424,19 @@ def _execute(arguments: argparse.Namespace, work_dir: Path) -> None:
     nonce = secrets.token_hex(8)
     log_path = work_dir / _LOG_FILE_NAME
     abandoned = threading.Event()
-    blender = _launch_blender(work_dir, port, nonce, blender_scripts)
-    drain = _OutputDrain(blender, log_path, abandoned)
+    blender: subprocess.Popen[str] | None = None
+    drain: _OutputDrain | None = None
     try:
+        blender = _launch_blender(work_dir, port, nonce, blender_scripts)
+        drain = _OutputDrain(blender, log_path, abandoned)
         drain.start()
         _wait_until_ready(_Launch(blender, port, work_dir, nonce, log_path, drain), arguments.timeout)
         print(f"RIG: Blender (pid {blender.pid}) up on 127.0.0.1:{port}, work dir {work_dir}", flush=True)
         rig = BlenderRig(work_dir, blends, port, arguments.command_timeout, abandoned)
         _run_scenario_with_deadline(scenario.run, rig, arguments.scenario_timeout, abandoned)
     finally:
-        _shut_down(blender, drain, log_path)
+        if blender is not None:
+            _shut_down(blender, drain, log_path)
 
 
 def main(argv: list[str] | None = None) -> int:

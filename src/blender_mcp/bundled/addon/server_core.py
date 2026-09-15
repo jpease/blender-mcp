@@ -1,3 +1,4 @@
+import functools
 import itertools
 import json
 import os
@@ -35,6 +36,39 @@ from .handlers.viewport import ViewportHandlersMixin
 from .helpers import get_blendermcp_addon_preferences, get_mesh_object, paginate, sync_from_editmode
 from .output_roots import configured_roots, writable_roots
 from .transaction import mutation_transaction
+
+
+@functools.lru_cache(maxsize=1)
+def _probe_writable_roots(candidates: tuple[str | None, ...]) -> tuple[str, ...]:
+    """
+    Probe a candidate root list for writability, once per distinct list.
+
+    `writable_roots` runs an `os.path.isdir` plus an `os.access` per candidate,
+    and it is reached from the `get_addon_info` handshake - which every MCP
+    connection performs, on Blender's main thread, inside
+    `drain_command_queue`. On a hung network mount (the operator-supplied
+    `BLENDERMCP_OUTPUT_ROOTS` entries come first, and those are exactly the
+    ones likely to be mounts) those stat calls block uninterruptibly, freezing
+    the UI and every queued command. `_DRAIN_TIME_BUDGET_SECONDS` cannot bound
+    that, because the budget is only checked *between* commands.
+
+    Keyed on the candidate list rather than cached outright: building that list
+    is pure string work, while `bpy.data.filepath` changes whenever the user
+    opens or saves a .blend. Keying re-probes exactly when the answer could
+    have changed and never alters which roots are advertised or their order.
+    A single entry is enough - the candidate list is near-static - and keeps
+    the cache bounded.
+
+    Args:
+        candidates: Paths to consider, most preferred first. A tuple because an
+            lru_cache key must be hashable.
+
+    Returns:
+        tuple[str, ...]: Absolute writable directories, preference order kept.
+        Immutable so a caller cannot mutate the cached answer in place.
+
+    """
+    return tuple(writable_roots(candidates))
 
 
 class HandlerReportedError(Exception):
@@ -111,9 +145,14 @@ class BlenderMCPServer(
         # approach) could silently drop the callback - on Windows especially -
         # leaving the client blocked in recv() until its socket timeout.
         self.command_queue = queue.Queue(maxsize=self._MAX_QUEUED_COMMANDS)
-        # Live client sockets, so stop() can unblock threads parked in recv().
-        self._clients = set()
+        # Live client sockets mapped to the lock that serializes writes to each
+        # one, so stop() can unblock threads parked in recv() and two writers
+        # cannot splice their frames together. See _send_frame.
+        self._clients = {}
         self._clients_lock = threading.Lock()
+        # The one bound-method object registered with bpy.app.timers, held for
+        # the timer's whole lifetime - see _register_drain_timer.
+        self._drain_timer = None
 
     def _get_config_value(self, scene_attr, pref_attr=None, env_var=None):
         """
@@ -182,22 +221,66 @@ class BlenderMCPServer(
 
             # start() is called from the operator, i.e. the main thread, so
             # this is the only safe place to touch bpy.app.timers.
-            if not bpy.app.timers.is_registered(self.drain_command_queue):
-                bpy.app.timers.register(self.drain_command_queue, persistent=True)
+            self._register_drain_timer()
 
             print(f"BlenderMCP server started on {self.host}:{self.port}")
         except Exception as e:
             print(f"Failed to start server: {e!s}")
             self.stop()
 
+    def _register_drain_timer(self) -> None:
+        """
+        Register the drain callback, holding the exact object Blender is given.
+
+        `bpy.app.timers` matches registrations by **identity**, and
+        `self.drain_command_queue` builds a *new* bound method on every
+        attribute access. Measured against Blender 5.2.2::
+
+            PROBE bound-method identity: False
+            PROBE is_registered(fresh access): False
+            PROBE is_registered(held ref):     True
+            PROBE unregister(fresh access) raised: ValueError function is not registered
+
+        So a fresh access can neither be found by `is_registered()` nor removed
+        by `unregister()`. Capturing one reference here is what makes both the
+        guard below and `_unregister_drain_timer` mean what they read as
+        meaning.
+
+        Must only be called from Blender's main thread: `bpy.app.timers` is not
+        thread-safe and a registration made elsewhere can be silently dropped.
+        """
+        if self._drain_timer is not None and bpy.app.timers.is_registered(self._drain_timer):
+            return
+        self._drain_timer = self.drain_command_queue
+        bpy.app.timers.register(self._drain_timer, persistent=True)
+
+    def _unregister_drain_timer(self) -> None:
+        """
+        Remove the drain callback, so restarts cannot accumulate timers.
+
+        Passing the held reference is mandatory for the identity reasons in
+        `_register_drain_timer`; a fresh `self.drain_command_queue` removed
+        nothing, which left one extra live timer per start/stop cycle. Each
+        duplicate carries its own `_MAX_COMMANDS_PER_TICK` /
+        `_DRAIN_TIME_BUDGET_SECONDS` allowance, so accumulation multiplies
+        exactly the budget that protects Blender's main thread.
+
+        A timer that Blender has already dropped is an expected outcome, not an
+        error: `drain_command_queue` returns None once `running` is false and
+        Blender discards a timer that returns None. That self-heal is kept as a
+        belt-and-braces path, but it is not the mechanism this code relies on.
+        """
+        timer = self._drain_timer
+        self._drain_timer = None
+        if timer is None:
+            return
+        with suppress(Exception):
+            if bpy.app.timers.is_registered(timer):
+                bpy.app.timers.unregister(timer)
+
     def stop(self) -> None:
         self.running = False
-
-        try:
-            if bpy.app.timers.is_registered(self.drain_command_queue):
-                bpy.app.timers.unregister(self.drain_command_queue)
-        except Exception:
-            pass
+        self._unregister_drain_timer()
 
         # Close socket
         if self.socket:
@@ -300,22 +383,11 @@ class BlenderMCPServer(
             # stream ordering.
             response["id"] = command.get("id")
 
+            # Encoded *before* the try that guards the send, so a failure to
+            # serialize can never be mistaken for a disconnect.
+            payload = self._encode_response(response, command.get("id"))
             try:
-                # Newline-terminated - see handle_client for why this
-                # protocol needs explicit framing.
-                payload = json.dumps(response).encode("utf-8") + b"\n"
-                if len(payload) > self._MAX_MESSAGE_BYTES:
-                    payload = (
-                        json.dumps(
-                            {
-                                "id": command.get("id"),
-                                "status": "error",
-                                "message": "Response exceeded the configured message-size limit",
-                            }
-                        ).encode("utf-8")
-                        + b"\n"
-                    )
-                client.sendall(payload)
+                self._send_frame(client, payload)
             except Exception:
                 print("Failed to send response - client disconnected")
             processed += 1
@@ -334,12 +406,119 @@ class BlenderMCPServer(
     _DRAIN_TIME_BUDGET_SECONDS = 0.02
 
     @staticmethod
-    def _send_protocol_error(client, request_id, message):
-        """Return a bounded transport-level validation error without touching bpy data."""
+    def _encode_frame(response: dict) -> bytes:
+        """
+        Serialize one response as a newline-terminated frame.
+
+        Args:
+            response: The JSON-serializable response body.
+
+        Returns:
+            bytes: The encoded frame, terminator included - see handle_client
+            for why this protocol needs explicit framing.
+
+        """
+        return json.dumps(response).encode("utf-8") + b"\n"
+
+    def _encode_response(self, response: dict, request_id: str | None) -> bytes:
+        """
+        Turn a handler's response into a frame that is always sendable.
+
+        `json.dumps` used to run inside the `try` that guards `sendall`, whose
+        `except` only printed "client disconnected". A handler returning a
+        non-serializable value - a `mathutils.Vector`, say, and `handlers/`
+        constructs those in ~95 places - therefore wrote no frame of any kind
+        and was indistinguishable from a dropped socket, leaving the client to
+        wait out its own 180s timeout. Failing over to a well-formed error
+        frame, the same shape the oversize branch produces, turns a hang into
+        an actionable reply.
+
+        The client is told only *that* the response was unsendable: a repr of
+        scene data, an absolute path, or a traceback in a client-facing message
+        is a disclosure the transport layer has no business making. The detail
+        goes to Blender's console instead, where the operator can see it.
+
+        Args:
+            response: The response body to encode.
+            request_id: The request's id, echoed back so a fallback frame stays
+                matchable to the command that produced it.
+
+        Returns:
+            bytes: The encoded frame, or an error frame if `response` could not
+            be serialized or exceeds `_MAX_MESSAGE_BYTES`.
+
+        """
+        try:
+            payload = self._encode_frame(response)
+        except (TypeError, ValueError):
+            print("Failed to serialize response - sending an error frame instead")
+            traceback.print_exc()
+            return self._error_frame(request_id, "Response could not be serialized to JSON")
+
+        if len(payload) > self._MAX_MESSAGE_BYTES:
+            return self._error_frame(request_id, "Response exceeded the configured message-size limit")
+        return payload
+
+    def _error_frame(self, request_id: str | None, message: str) -> bytes:
+        """
+        Build the one error frame shape every failure path returns.
+
+        Args:
+            request_id: The request's id, or None when it could not be read.
+            message: Client-safe explanation; never a path or a traceback.
+
+        Returns:
+            bytes: The encoded error frame.
+
+        """
+        return self._encode_frame({"id": request_id, "status": "error", "message": message})
+
+    def _send_frame(self, client, payload: bytes) -> None:
+        """
+        Write one frame to a client, excluding any other writer to that socket.
+
+        Two threads write to a single client socket: this server's client
+        handler sends transport-validation errors while `drain_command_queue`
+        sends responses from Blender's main thread. `sendall` is not atomic, so
+        for a large response (the cap is 64 MiB) an error frame could splice
+        into the middle of it and desync a stream both sides parse by newline
+        framing.
+
+        Lock ordering is deliberately trivial: `_clients_lock` guards only the
+        registry and is released before the per-client lock is taken, and
+        nothing else - no queue operation, no bpy access - happens while that
+        lock is held. Every client socket also carries a finite timeout (set in
+        handle_client), so a stalled peer releases the lock rather than pinning
+        Blender's main thread on it.
+
+        Args:
+            client: The socket to write to.
+            payload: The framed bytes to write.
+
+        """
+        with self._clients_lock:
+            send_lock = self._clients.get(client)
+        if send_lock is None:
+            # Untracked, or already torn down by stop(): there is no concurrent
+            # writer left to exclude, and the send will simply fail if the
+            # socket is gone.
+            client.sendall(payload)
+            return
+        with send_lock:
+            client.sendall(payload)
+
+    def _send_protocol_error(self, client, request_id, message) -> None:
+        """
+        Return a bounded transport-level validation error without touching bpy data.
+
+        Args:
+            client: The socket the offending frame arrived on.
+            request_id: The request's id, or None when it could not be read.
+            message: Client-safe explanation of the protocol violation.
+
+        """
         with suppress(Exception):
-            client.sendall(
-                json.dumps({"id": request_id, "status": "error", "message": message}).encode("utf-8") + b"\n"
-            )
+            self._send_frame(client, self._error_frame(request_id, message))
 
     def _decode_and_queue_frame(self, line: bytes, client) -> bool:
         r"""
@@ -405,7 +584,9 @@ class BlenderMCPServer(
         # of parking in recv() forever.
         client.settimeout(1.0)
         with self._clients_lock:
-            self._clients.add(client)
+            # One write lock per client, created here so both this thread and
+            # the main-thread drain find the same one. See _send_frame.
+            self._clients[client] = threading.Lock()
         buffer = b""
 
         try:
@@ -456,7 +637,7 @@ class BlenderMCPServer(
             print(f"Error in client handler: {e!s}")
         finally:
             with self._clients_lock:
-                self._clients.discard(client)
+                self._clients.pop(client, None)
             with suppress(Exception):
                 client.close()
             print("Client handler stopped")
@@ -1185,19 +1366,25 @@ class BlenderMCPServer(
           these defaults on an unconfigured desktop install makes the whole home
           directory the boundary.
 
+        Building the candidate list touches no filesystem; the probing of it is
+        memoized by `_probe_writable_roots`, which is what keeps a handshake
+        off Blender's main thread I/O path.
+
         Returns:
             list[str]: Absolute, writable directories, most preferred first.
+            A fresh list each call, so a caller editing the handshake response
+            cannot corrupt the memoized answer.
 
         """
         blend_file = bpy.data.filepath
-        candidates = [
+        candidates = (
             *configured_roots(),
             os.path.dirname(blend_file) if blend_file else None,
             getattr(bpy.app, "tempdir", None),
             tempfile.gettempdir(),
             os.path.expanduser("~"),
-        ]
-        return writable_roots(candidates)
+        )
+        return list(_probe_writable_roots(candidates))
 
     _SCENE_INFO_MAX_LIMIT = 200
 

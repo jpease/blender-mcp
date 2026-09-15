@@ -21,11 +21,16 @@ BLENDER_SOCKET_PORT=9876
 # emulation on arm64 hosts, where Blender's start-up is an order of magnitude
 # slower. Settable from compose so a slow host needs no image rebuild.
 BLENDER_READY_TIMEOUT_SECONDS="${BLENDER_READY_TIMEOUT_SECONDS:-600}"
+# How long a child may take to honour SIGTERM before teardown stops being
+# polite. Only ever spent when something is already wedged, so it is a cap on
+# how long the container takes to die, not a delay on the normal path.
+SHUTDOWN_GRACE_SECONDS="${SHUTDOWN_GRACE_SECONDS:-10}"
 MCP_PYTHON=/opt/blender-mcp/venv/bin/python
 
 blender_pid=
 mcp_pid=
 xvfb_pid=
+readiness_pid=
 
 # Forward `docker stop` to every child; bash as PID 1 would otherwise ignore it.
 # Xvfb is included, which teardown previously left out: measured 2026-09-15, an
@@ -37,9 +42,47 @@ xvfb_pid=
 # must never be a literal 0, which would signal the whole process group.
 terminate_children() {
     # shellcheck disable=SC2086
-    kill -TERM $blender_pid $mcp_pid $xvfb_pid 2>/dev/null || true
+    kill -TERM $blender_pid $mcp_pid $xvfb_pid $readiness_pid 2>/dev/null || true
 }
 trap terminate_children TERM INT
+
+# Reap what terminate_children asked to leave, and never wait on it forever.
+#
+# SIGTERM is a request, not a guarantee: a Blender wedged in a C call, or one
+# that installed its own handler, keeps running. `wait "$pid"` has no bound, so
+# teardown used to park on exactly the process that had just proved it would not
+# leave. Measured 2026-09-15 in this base image (bash 5.1.8), with a child that
+# traps SIGTERM and stays up and an MCP server that exits 7: `wait -n` returned
+# at 2s and the script was still alive 14s later, i.e. the container stays "Up
+# (unhealthy)" with the MCP server dead - the very state the unsignalled-Xvfb
+# fix above claimed to close. Nothing external rescues it, because the container
+# is exiting on its own: `docker stop`'s grace period never applies.
+#
+# The bound is a background watchdog rather than `timeout`, which this minimal
+# image does not ship, and rather than polling `kill -0`, which cannot tell a
+# still-running child from one bash has not reaped yet. It is killed as soon as
+# the reaping finishes, so the grace period costs nothing when children behave.
+# Same escalation, and same reason for it, as scripts/blender_rig.py's _shut_down.
+reap_children() {
+    local watchdog_pid
+    (
+        sleep "$SHUTDOWN_GRACE_SECONDS"
+        echo "entrypoint: a child ignored SIGTERM for ${SHUTDOWN_GRACE_SECONDS}s; sending SIGKILL" >&2
+        # shellcheck disable=SC2086
+        kill -KILL $blender_pid $mcp_pid $xvfb_pid $readiness_pid 2>/dev/null || true
+    ) &
+    watchdog_pid=$!
+    # Wait only on the pids this script started, one at a time. A bare `wait`
+    # waits for *every* child, and Xvfb never exits on its own: that is what used
+    # to keep the container alive and merely unhealthy with Blender and the
+    # server both dead. The watchdog is excluded here on purpose - waiting on it
+    # would reintroduce the very delay it exists to impose on wedged children.
+    for pid in "$blender_pid" "$mcp_pid" "$xvfb_pid" "$readiness_pid"; do
+        wait "$pid" 2>/dev/null || true
+    done
+    kill -TERM "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+}
 
 mkdir -p "$ADDONS_DIR"
 rm -rf "$ADDONS_DIR/blender_mcp"
@@ -72,7 +115,7 @@ export PYTHONUNBUFFERED=1
 # fails the container instead of hanging it, and the liveness check means a
 # Blender that has already died is reported immediately rather than at the
 # deadline, so its own error is what shows in the logs.
-wait_for_blender() {
+blender_readiness_probe() {
     "$MCP_PYTHON" - "$BLENDER_SOCKET_PORT" "$BLENDER_READY_TIMEOUT_SECONDS" "$blender_pid" <<'PY'
 import os
 import socket
@@ -99,6 +142,28 @@ raise SystemExit(f"entrypoint: Blender did not answer a ping on port {port} with
 PY
 }
 
+# Run that probe in the background and block in `wait`, which is interruptible.
+#
+# Bash defers a trap until the current *foreground* command finishes, and the
+# probe is a foreground process lasting up to BLENDER_READY_TIMEOUT_SECONDS (600
+# by default), so `docker stop` during Blender's start-up reached nothing at all.
+# Measured 2026-09-15 in this base image: with the handler installed, a SIGTERM
+# sent 3s into a 20s foreground command ran the handler at 20s, not 3s. Scaled to
+# the real deadline, Docker's 10s grace expires first and SIGKILL takes Blender,
+# Xvfb and the server down with no cleanup - defeating the forwarding above.
+#
+# The readiness contract is unchanged: the same probe, round-tripping the same
+# `ping`, with the same deadline and the same liveness check, still has to
+# succeed before the MCP server is launched. Only who waits for it moves.
+wait_for_blender() {
+    local status=0
+    blender_readiness_probe &
+    readiness_pid=$!
+    wait "$readiness_pid" || status=$?
+    readiness_pid=
+    return "$status"
+}
+
 blender --python /opt/start_server.py &
 blender_pid=$!
 
@@ -109,7 +174,24 @@ fi
 
 # Binds 0.0.0.0 only because Docker's port forward arrives on the container's
 # external interface; compose publishes it on the host's loopback alone.
+#
+# That loopback publish is the *whole* reason this is safe, and it lives in a
+# different file. docker-compose.yml maps `127.0.0.1:8000:8000`; run this image
+# any other way - `docker run -p 8000:8000`, or `-P`, or a compose override that
+# drops the host part - and 0.0.0.0 here becomes an unauthenticated Blender
+# driver (53 tools under BLENDER_MCP_TOOLSETS=shot, including file read/write)
+# reachable by anyone who can route to the host. There is no credential to stop
+# them. Keep the publish on 127.0.0.1, or put a proxy that authenticates in front.
+#
+# BLENDERMCP_HTTP_ALLOW_REMOTE=1 is what makes the server accept that bind at all.
+# The server refuses any non-loopback address unless this is set, precisely so a
+# wildcard bind cannot happen by accident - an empty BLENDERMCP_HTTP_HOST used to
+# be enough to get one. This is the one deployment where it is the right answer,
+# because the container's own interface is the only address Docker's forward can
+# arrive on, and the comment above is the argument for why that is contained. Do
+# not copy this line to a host that is not behind a loopback publish.
 BLENDERMCP_TRANSPORT=http BLENDERMCP_HTTP_HOST=0.0.0.0 BLENDERMCP_HTTP_PORT=8000 \
+    BLENDERMCP_HTTP_ALLOW_REMOTE=1 \
     PYTHONPATH=/repo/src PYTHONDONTWRITEBYTECODE=1 \
     "$MCP_PYTHON" -c "from blender_mcp.server import main; main()" &
 mcp_pid=$!
@@ -119,10 +201,5 @@ mcp_pid=$!
 status=0
 wait -n "$blender_pid" "$mcp_pid" || status=$?
 terminate_children
-# Wait only on the pids this script started, one at a time. A bare `wait` waits
-# for *every* child, and Xvfb never exits on its own: that is what used to keep
-# the container alive and merely unhealthy with both Blender and the server dead.
-for pid in "$blender_pid" "$mcp_pid" "$xvfb_pid"; do
-    wait "$pid" 2>/dev/null || true
-done
+reap_children
 exit "$status"

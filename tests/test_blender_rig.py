@@ -16,12 +16,14 @@ unnoticed until a phase gate.
 
 import argparse
 import ast
+import contextlib
 import json
 import re
 import socket
 import subprocess
 import sys
 import threading
+import time
 import tomllib
 
 from importlib import util as importlib_util
@@ -463,6 +465,73 @@ def test_an_empty_or_rig_created_work_dir_is_claimed(tmp_path: Path) -> None:
     assert (work_dir / "config").is_dir(), "the rig must re-adopt a work dir it created, leftovers and all"
 
 
+def test_a_symlinked_work_dir_is_resolved_before_anything_is_claimed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Resolution at the boundary is what makes the marker check the only guard needed.
+
+    `_claim_work_dir` used to carry an `is_symlink()` refusal that could never
+    fire, because `main()` resolves `--work-dir` first. The refusal is gone; the
+    resolution it was shadowing is load-bearing and is pinned here instead, since
+    without it the rig would report, log and advertise a path that is not the one
+    it is writing to.
+    """
+    target = tmp_path / "real"
+    target.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(target, target_is_directory=True)
+    handed: list[Path] = []
+    monkeypatch.setattr(rig, "_execute", lambda _arguments, work_dir: handed.append(work_dir))
+
+    assert rig.main(["--work-dir", str(link), "--scenario", str(tmp_path / "scenario.py")]) == 0
+
+    assert handed == [target.resolve()], f"--work-dir reached the run unresolved: {handed}"
+
+
+def test_a_symlinked_work_dir_is_claimed_through_to_the_directory_it_points_at(tmp_path: Path) -> None:
+    """
+    A link to a directory the rig may own is claimed, not refused.
+
+    Deliberate: an `is_symlink()` refusal here was unreachable in production and
+    read as a safety control while protecting nothing, and refusing links
+    outright would break the ordinary case of a scratch directory living on
+    another volume. The marker lands in the real directory, which is where every
+    subsequent write goes.
+    """
+    target = tmp_path / "real"
+    target.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(target, target_is_directory=True)
+
+    rig._claim_work_dir(link)
+
+    assert (target / rig._OWNED_MARKER_NAME).is_file(), "the claim did not reach the directory the link points at"
+
+
+def test_foreign_data_behind_a_symlinked_work_dir_is_still_refused(tmp_path: Path) -> None:
+    """
+    The marker check reads through the link, so it protects the real directory.
+
+    This is the whole reason a blanket symlink refusal was not needed: a link
+    aimed at somebody's data is refused *because that data is there*, with the
+    same message and the same reasoning as if the path had been given directly.
+    """
+    target = tmp_path / "real"
+    target.mkdir()
+    (target / "IRREPLACEABLE.blend").write_bytes(b"BLENDER-somebody-elses-work")
+    link = tmp_path / "link"
+    link.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(rig.RigError) as failure:
+        rig._claim_work_dir(link)
+
+    assert f"carries no {rig._OWNED_MARKER_NAME}" in str(failure.value), (
+        "the refusal must come from the marker check reading through the link, not from refusing links as such"
+    )
+    assert (target / "IRREPLACEABLE.blend").read_bytes() == b"BLENDER-somebody-elses-work"
+
+
 def test_staging_refuses_to_delete_an_addons_directory_it_does_not_own(tmp_path: Path) -> None:
     """
     `--work-dir` is exactly the shape of a real `BLENDER_USER_SCRIPTS` directory.
@@ -710,6 +779,71 @@ def test_an_abandoned_scenario_cannot_send_another_command(tmp_path: Path) -> No
     assert "abandoned" in str(failure.value)
 
 
+def test_a_command_that_never_came_back_is_reported_as_possibly_still_running(tmp_path: Path) -> None:
+    """
+    A timed-out command is an unknown outcome, not a failure, and must read as one.
+
+    Measured against the real addon with a 0.5s command timeout: the rig raised
+    `TimeoutError: timed out`, and the command it had given up on then ran on
+    Blender's next main-thread tick and mutated the scene. Nothing cancels a
+    queued command, and its reply is lost in silence - a `sendall` to a
+    peer-closed TCP socket succeeds at the kernel level until the RST arrives, so
+    the addon's own "client disconnected" branch is usually never reached. An
+    operator told "failure" about a command that changed the scene draws exactly
+    the wrong conclusion, so the error has to name the command, the port and the
+    doubt, and it has to be a `RigError` as both docstrings promise.
+    """
+    with _listener() as silent:
+        port = silent.getsockname()[1]
+        under_test = rig.BlenderRig(tmp_path, {}, port, 0.25)
+
+        with pytest.raises(rig.RigError) as failure:
+            under_test.send("delete_object", {"name": "Cube"})
+
+    message = str(failure.value)
+    assert "delete_object" in message, "the error must name the command whose outcome is unknown"
+    assert str(port) in message, "the error must name the port, so the operator can find the Blender in question"
+    assert "may still be executing" in message.lower(), "a timed-out command must not be reported as a failure"
+    assert "--command-timeout" in message, "the error must name the flag that raises the budget"
+    assert isinstance(failure.value.__cause__, TimeoutError), "the original expiry must be chained, not discarded"
+
+
+def test_one_frame_is_bounded_as_a_whole_not_one_recv_at_a_time() -> None:
+    """
+    A socket timeout bounds one `recv`, so a dribbling peer reads for ever.
+
+    Measured: a peer sending one byte every 0.4s kept `_read_frame` reading for
+    3.2s against a 1.0s socket timeout, because every individual `recv` came
+    back inside the limit. A harness whose verdict is "Blender did not hang"
+    must not own a wait it cannot bound, so the frame carries a deadline of its
+    own and every `recv` gets only what is left of it.
+    """
+    dribbles, interval, budget = 20, 0.1, 0.3
+    with _listener() as listener:
+        port = listener.getsockname()[1]
+
+        def _dribble_without_a_newline() -> None:
+            peer, _address = listener.accept()
+            with peer, contextlib.suppress(OSError):
+                for _index in range(dribbles):
+                    time.sleep(interval)
+                    peer.sendall(b"x")
+
+        writer = threading.Thread(target=_dribble_without_a_newline, name="dribbling-peer", daemon=True)
+        writer.start()
+        client = socket.create_connection(("127.0.0.1", port), timeout=dribbles * interval)
+        started = time.monotonic()
+        try:
+            with pytest.raises(TimeoutError):
+                rig._read_frame(client, budget)
+        finally:
+            elapsed = time.monotonic() - started
+            client.close()
+            writer.join(dribbles * interval + 5.0)
+
+    assert elapsed < dribbles * interval * 0.75, f"_read_frame waited {elapsed:.1f}s for a {budget}s frame budget"
+
+
 def test_the_deadline_silences_the_scenario_it_could_not_stop(capsys: pytest.CaptureFixture[str]) -> None:
     """
     Stdout *is* the evidence artefact, so nothing may land in it after the verdict.
@@ -912,6 +1046,66 @@ def test_teardown_reports_a_log_reader_that_outlived_blender(tmp_path: Path, mon
     finally:
         if child.poll() is None:
             child.kill()
+
+
+def test_a_launched_blender_is_stopped_even_if_its_reader_cannot_be_constructed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A Blender with nobody on its pipe is the one process the rig must never orphan.
+
+    `_launch_blender` hands back a process whose output is already accumulating
+    in a pipe, so the statement that gives it a reader has to be inside the
+    `try` that guarantees teardown. Constructed outside it, a failure there -
+    "can't start new thread" is the realistic one - left a GUI Blender running
+    with an undrained pipe, which deadlocks it in `write()` at ~64 KiB: the
+    exact hazard the reader exists to prevent, caused by the reader's absence.
+    """
+    work_dir = tmp_path / "work"
+    scenario = tmp_path / "scenario.py"
+    scenario.write_text("def run(rig):\n    return None\n", encoding="utf-8")
+    stand_in = _noisy_child("import time\ntime.sleep(60)\n")
+
+    def _cannot_be_constructed(*_arguments: object) -> None:
+        raise MemoryError("no room for a reader")
+
+    monkeypatch.setattr(rig, "_require_local_blender", lambda: None)
+    monkeypatch.setattr(rig, "_launch_blender", lambda *_arguments: stand_in)
+    monkeypatch.setattr(rig, "_OutputDrain", _cannot_be_constructed)
+    arguments = rig._parse_arguments(["--work-dir", str(work_dir), "--scenario", str(scenario)])
+
+    try:
+        with pytest.raises(MemoryError):
+            rig._execute(arguments, work_dir)
+
+        assert stand_in.wait(timeout=30) != 0, "the launched process was left running with an undrained pipe"
+    finally:
+        if stand_in.poll() is None:
+            stand_in.kill()
+
+
+def test_teardown_tolerates_a_reader_that_never_started(tmp_path: Path) -> None:
+    """
+    `Thread.join` on a thread that was never started raises `RuntimeError`.
+
+    It would be raised from teardown's own `finally`, after Blender had already
+    been terminated and before any diagnosis was built - so the run's reported
+    cause would be "cannot join thread before it is started" rather than the
+    "can't start new thread" that actually happened.
+    """
+    log_path = tmp_path / "blender.log"
+    child = _noisy_child("print('RIG: nobody ever read this')")
+    try:
+        drain = rig._OutputDrain(child, log_path, threading.Event())
+        assert child.wait(timeout=30) == 0
+
+        rig._shut_down(child, drain, log_path)
+    finally:
+        if child.poll() is None:
+            child.kill()
+
+    assert drain.failure is None, "a reader that never ran cannot have failed"
+    assert not drain.is_alive()
 
 
 def test_failures_quote_the_tail_of_that_log(tmp_path: Path) -> None:

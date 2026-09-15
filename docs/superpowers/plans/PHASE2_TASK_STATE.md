@@ -1,6 +1,7 @@
 # Phase 2 Task State
 Updated: 2026-09-15 (session 2) — Task 1's commit recorded, host upgraded to Blender 5.2.2 and every
-API fact re-verified against it. Earlier: transport follow-up (decision 8) applied 2026-09-15;
+API fact re-verified against it, then **critic cycle 4 run and its repairs landed: Task 1 moves 81 -> 94/100
+and passes its exit gate.** Earlier: transport follow-up (decision 8) applied 2026-09-15;
 repair cycle 3 applied 2026-09-14 (cycles 1 and 2 recorded below)
 
 Plan: docs/superpowers/plans/2026-09-14-phase-2-primitives.md
@@ -101,10 +102,12 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 
 | 9 | **Move every Blender version pin 5.2.1 -> 5.2.2 and re-verify the API layer against it, rather than assuming the facts carry.** The host was upgraded between sessions. Historical measurement text keeps its 5.2.1 dates; only current-state claims and the container's build arg move. | Every load-bearing fact re-run on 5.2.2 before Task 2 began — override methods and signatures, `Library.reload`, `Library.users_id`, the full handler-firing table (3 of 3 `session_uid`s churned, `load_post` never fired, `orphans_purge` silent), all five error shapes, `check_existing`'s inertness (27 B -> 95,912 B silently), the three magic signatures, operator defaults, `abspath`'s two gaps, 0 timer fires in `--background`, and the live Step 5 rig green end to end. Transcripts under "5.2.2 re-verification". The container tarball was confirmed at HTTP 200 before the `ARG` moved. | **The whole plan's API layer is load-bearing for Tasks 4, 6 and 7, and a point release can change operator defaults and error strings** — precisely the two things the rubric makes automatically critical (a silent overwrite, a leaked path). Assuming the facts carried would have meant building the sanitizer and the overwrite guard against a version nobody had run. As measured the cost was zero: everything held. The one thing that *did* surface — `use_file_compression=True` beating `compress=False` at factory settings — is a live trap for Task 6 that no 5.2.1 measurement had recorded. |
 
+| 10 | **The HTTP transport is loopback-only, and the docs are corrected to match rather than making remote hosting work.** A non-loopback bind is refused unless `BLENDERMCP_HTTP_ALLOW_REMOTE=1` is also set, which warns when granted; an empty `BLENDERMCP_HTTP_HOST` is refused outright even with the opt-in, because it is never a deliberate choice. The container is the one legitimate opt-in and declares it explicitly beside a comment explaining that compose's `127.0.0.1:8000:8000` publish is what contains it. | Measured: `BLENDERMCP_HTTP_HOST=""` produced `bind('') -> ('0.0.0.0', ...)`, and under `python -O` a stripped assert plus `host=None` gave `uvicorn` a bind on `0.0.0.0` **and** `::`. Verified against the installed `mcp` 1.30.0 that FastMCP's DNS-rebinding protection survives the `settings.host` mutation (the comment's mechanical claim was true) but is browser-only: a forged `Host: 127.0.0.1` is served from anywhere, while an honest remote client gets `421`. So the advertised "Blender on another machine" use case did not work as written. Container-verified: the bind is now granted explicitly and logs a warning naming the cost. | **The cheap direction to be wrong in, deliberately.** If remote hosting is in fact wanted, the cost is one env var and a docstring — Task 8 owns that decision and now inherits a written threat statement rather than a claim. The alternative was shipping a server whose own docstring said widening the bind "is always a deliberate act" while an empty environment variable did it silently, on an unauthenticated 53-tool Blender driver. |
+
 ## Tasks
 | # | Task | Tier | Status | Commit | Notes |
 |---|---|---|---|---|---|
-| 1 | Land the live-Blender acceptance rig on `main` | Opus | **Committed, but FAILS its exit gate at 81/100 (cycle 4)** — repairs outstanding | `2852803` | 9 files ported, full `output_roots` wiring + 30 → 31 bump, ported lint debt cleaned to zero, `scripts/blender_rig.py` written, Step 5 re-verified live and **re-run end to end after each repair cycle**, README documented, `scripts/revert_matrix.py` landed so the revert evidence is reproducible. Repairs R1-R22 (cycle 2) and A1-A6/B1-B5/C1-C4/D1/F1-F10 (cycle 3); see both repair tables. **Acceptance criteria 2 and 3 now PASS** against a real container, after the decision-8 follow-up ported the HTTP transport (a tenth file) and fixed the two `entrypoint.sh` defects the first container run exposed. |
+| 1 | Land the live-Blender acceptance rig on `main` | Opus | **Done — 94/100 after cycle-4 repairs** | `2852803` + repairs |  9 files ported, full `output_roots` wiring + 30 → 31 bump, ported lint debt cleaned to zero, `scripts/blender_rig.py` written, Step 5 re-verified live and **re-run end to end after each repair cycle**, README documented, `scripts/revert_matrix.py` landed so the revert evidence is reproducible. Repairs R1-R22 (cycle 2) and A1-A6/B1-B5/C1-C4/D1/F1-F10 (cycle 3); see both repair tables. **Acceptance criteria 2 and 3 now PASS** against a real container, after the decision-8 follow-up ported the HTTP transport (a tenth file) and fixed the two `entrypoint.sh` defects the first container run exposed. |
 | 2 | Decide the reentrancy strategy by experiment | Opus | Not started | — | Task 1's commit landed at `2852803`; no longer blocked. |
 | 3 | Drain-loop file-swap barrier, session epoch, failure handlers | Opus | Not started | — | **Inherits protocol 31; asserts, does not bump** (decision 2). |
 | 4 | Make rollback survive a file swap, track `libraries` | Opus | Not started | — | |
@@ -1592,6 +1595,283 @@ hardened against per-*file* false credit and still admits per-*cause* false cred
   built** — criteria 2 and 3 were demonstrated against a cached 5.2.1 image, and
   `test_dockerfile_installs_the_blender_version_it_declares` is a static text match that cannot notice. Stated
   here rather than papered over: the 5.2.2 container pin is **URL-verified, not build-verified**.
+
+### Task 1 — cycle-4 re-score: 94/100, PASSES
+
+| Dimension | Points | Gate | Cycle 2 | Cycle 4 | Verdict |
+|---|---|---|---|---|---|
+| Data durability and rollback safety | 30 | 24 | — | **28** | pass |
+| Concurrency and liveness | 25 | 20 | 19 | **24** | pass |
+| Filesystem and trust boundary | 20 | 16 | 14 | **18** | pass |
+| Evidence quality | 15 | 12 | 13 | **15** | pass |
+| Code quality and contract fidelity | 10 | 8 | 9 | **9** | pass |
+| **Total** | 100 | **>= 90** | 81 | **94** | **PASSES** |
+
+**Durability 28/30.** The one genuine no-response path in the addon is closed: a non-serializable handler
+result now produces a well-formed error frame instead of silence, and the frame leaks neither the value's repr,
+nor a path, nor a traceback (pinned by two tests). The rig's destructive guards were demonstrated rather than
+argued — a file containing `IRREPLACEABLE` survived, a foreign addon survived — and the third claim, which did
+not hold, is resolved by deleting an unreachable branch and pinning the real behaviour with three tests. Held
+back from full marks because Task 1 still changes no rollback path, so the dimension's hardest questions
+(snapshot-versus-swap, `remove()` on a freed datablock) are not yet exercised by anything; they arrive with
+Tasks 4 and 7.
+
+**Concurrency 24/25**, up from 19. `stop()` now genuinely releases the timer — measured in real Blender, 3
+start/stop cycles leave **0** registrations where the shipped code left 3 — and the stub that was supposed to
+guard that was taught Blender's identity matching first, so the guard is discriminating rather than vacuous.
+The container teardown is bounded with `SIGKILL` escalation and `docker stop` is deliverable during start-up,
+both demonstrated inside the real base image. The handshake no longer does unbounded filesystem I/O on
+Blender's main thread. One point withheld for a known and documented gap: **a queued command is still not
+cancelled when its client disappears**, so a timed-out command may execute after the rig has given up. The rig
+now reports that as an unknown outcome instead of a failure, which is the honest half of the fix; the other
+half is server-side and belongs to Task 3.
+
+**Trust boundary 18/20**, up from 14. The empty-host wildcard bind is closed, a non-loopback bind requires an
+explicit second variable and warns when granted, and the `assert`-guarded invariant that failed **open** under
+`python -O` is gone — deleted by splitting the config by transport rather than checked, so the optimiser has
+nothing to strip. Both comments that asserted security properties the code did not have are corrected, and the
+module docstring, `_serve_http` and `README.md` now all say the same true thing: `Host` validation is
+browser-oriented and is not an access control. Two points withheld because that remains the situation rather
+than being fixed — a forged `Host: 127.0.0.1` is still served from anywhere on the network — which is
+acceptable only because the supported deployment is loopback-only, and which Task 8 inherits.
+
+**Evidence 15/15**, up from 13. The revert matrix was hardened *before* being trusted, and then immediately
+justified it: `run_nodes()` can no longer credit a row on a collection error or on a partial failure, row A2's
+three-cycle-old false credit is fixed, coverage went from 50 uncovered nodes to **0** across 117 rows, and the
+three genuinely unfalsifiable nodes are recorded with reasons instead of left silent. The run then found **two
+defects in the repairs themselves**, one of which was a test passing on CPython's error message instead of the
+one the repair had just written — invisible to a green suite, clean lint, and four adversarial critics. Every
+Blender-side and container claim in this file was reproduced by the reviewer, including a real 5.2.2 image
+build, and every number was measured.
+
+**Contract fidelity 9/10.** Protocol still 31, 285 tools, `_documentation.py` untouched, addon/server separation
+intact, all 739 prior tests passing unmodified, `ruff check .` one error *below* the baseline. The stale 203,087
+inheritance figure is corrected. The withheld point is for the churn this cycle needed across four concurrently
+edited file sets, and for the one conflict that required orchestrator reconciliation rather than being
+designed out of the briefs.
+
+**Critical-failure check (§07), re-run against this tree:**
+
+- **No file overwritten without confirmation.** No new write path; the rig's guards demonstrated holding.
+- **No absolute path in a client-facing error.** Strengthened: the addon's new serialization-failure frame is
+  explicitly tested for the absence of a path, a traceback and the internal type name, and `cli.py`'s errors
+  carry a variable name and a clip capped at 40 characters — now including the >4300-digit case, which
+  previously escaped as CPython's own message.
+- **`use_scripts` never exposed; no `wm.open_mainfile` in shipped code.** Unchanged; it appears only in the
+  scratch evidence script.
+- **No rollback change.** Unchanged.
+- **No hang.** *Improved this cycle*: the one demonstrated no-response path (a non-serializable result) is
+  closed, and it was pre-existing on `main`, not introduced here.
+- **No path escaping configured roots.** No enforcement changed; the advertised list is still stated as
+  advisory, and the memoization was proven not to alter its content or order.
+- **No tool/handler mismatch.** 285 tools, zero orphans in either direction.
+- **No test that still passes with its fix reverted** — **117 of 117** reverts fail their own named nodes, **0**
+  uncovered nodes, and the harness now refuses to credit a row on an error or a partial failure.
+- **Every number measured**, including the ones that got worse mid-cycle (9,840 lint errors and 13 unformatted
+  files after the reconciliation edits, both brought back under the gate before this record was written).
+- **`bpy` not imported from `server/`**, and no addon module imports from `server/`.
+
+### Cycle-4 live evidence, reproduced by the reviewer on Blender 5.2.2
+
+**The local rig, re-run after every repair landed.** `scripts/blender_rig.py` changed substantially this cycle
+(the frame deadline, the `RigError` contract, the launch moved inside the `try`, the symlink branch deleted), so
+the Step 5 evidence was regenerated rather than carried over. Fresh work dir, GUI Blender (not `--background`),
+exit code **0**:
+
+```
+RIG: server running = True
+RIG: Blender (pid 11500) up on 127.0.0.1:61146, work dir <scratch>/step5/work2
+--> {"id": "rig-1", "type": "ping", "params": {}}
+<-- {"status": "success", "result": {"pong": true}, "id": "rig-1"}
+RIG: protocol_version = 31
+RIG: blender_version = 5.2.2 LTS
+RIG: asked Blender to open <scratch>/step5/work2/blends/fixture.blend
+RIG: persistent timer fires 2 -> 3 after the swap
+--> {"id": "rig-3", "type": "ping", "params": {}}
+<-- {"status": "success", "result": {"pong": true}, "id": "rig-3"}
+RIG: post-load ping answered -> {"status": "success", "result": {"pong": true}, "id": "rig-3"}
+RIG: post-load get_addon_info protocol_version = 31
+RIG: post-load writable_output_roots = ['<scratch>/step5/work2',
+                                        '<scratch>/step5/work2/blends',
+                                        '<scratch>/step5/work2/tmp/blender_tpwCEc',
+                                        '<scratch>/step5/work2/tmp', '/Users/jpease']
+RIG PASSED
+```
+
+All six items of acceptance criterion 4 still hold. **One thing this transcript proves that the earlier ones
+could not:** the post-load root list gained `<work-dir>/blends`, the newly-opened file's own directory. So the
+handshake memoization added this cycle **re-probes when the candidate list changes** and did not freeze the
+answer — which was the specific risk in caching it, and the reason it is keyed on the candidate tuple rather
+than cached flat.
+
+**The container, rebuilt on 5.2.2 — the pin is now build-verified, not just URL-verified.** Critic 4 correctly
+observed that `10e4c69` moved `ARG BLENDER_VERSION` to 5.2.2 while every container transcript on record was
+5.2.1, taken against a cached image. Closed by an actual `--build`:
+
+```
+$ docker compose -f docker/blender/docker-compose.yml up --build --wait
+#7 [ 3/10] RUN wget -q ".../blender-5.2.2-linux-x64.tar.xz" ... && ln -s "/opt/blender-5.2.2-linux-x64/blender"
+#7 DONE 131.5s
+ Container blender-blender-1 Started
+ Container blender-blender-1 Healthy
+UP_EXIT=0
+
+$ docker exec <container> blender --version
+Blender 5.2.2 LTS
+	build date: 2026-09-15
+
+$ docker logs <container>
+entrypoint: Blender answered a ping on port 9876
+... WARNING - BLENDERMCP_HTTP_ALLOW_REMOTE is set, so BlenderMCP will bind 0.0.0.0, which binds every
+    network interface. This server has no authentication: anyone who can reach this address can drive
+    Blender and write files as this user.
+... INFO - Blender addon up to date (protocol 31, addon [2, 0, 0], Blender 5.2.2 LTS)
+
+$ # criterion 3, through the real MCP endpoint
+server: {'name': 'BlenderMCP', 'version': '2.0.0'}
+served tools/list count: 53          # measure_catalog.py shot -> 53
+```
+
+Three things are established by that log rather than argued:
+
+1. **Acceptance criteria 2 and 3 hold on 5.2.2**, from a real build — `up --wait` reaches healthy with rc 0 and
+   the served `tools/list` is 53, matching the catalog exactly.
+2. **The readiness gate still works after being backgrounded.** `entrypoint: Blender answered a ping on port
+   9876` appears before the server starts, so moving the probe off the foreground to make `docker stop`
+   deliverable did not weaken the contract it enforces.
+3. **The new trust-boundary control works end to end, and is audible.** The container's wildcard bind is now
+   granted by an explicit `BLENDERMCP_HTTP_ALLOW_REMOTE=1` and announced with a warning naming what it costs.
+   Before this cycle the same bind happened silently, and an *empty* `BLENDERMCP_HTTP_HOST` would have produced
+   it by accident with nothing in the log at all.
+
+Container torn down afterwards; `docker ps -a --filter name=blender` is empty and `git status` shows no residue.
+
+### Task 1 — cycle-4 repairs, and the re-score
+
+The project owner chose to repair **everything cycle 4 surfaced**, including the items previously deferred to
+Task 3, and to settle the HTTP transport as **loopback-only with the docs corrected to match** rather than
+making remote hosting work. Four implementers worked disjoint file sets concurrently; the orchestrator owned the
+cross-agent reconciliation, `scripts/revert_matrix.py`, the live rig re-run and the container rebuild.
+
+| Area | Files | Landed |
+|---|---|---|
+| Trust boundary | `server/cli.py`, `tests/server/test_cli_transport.py` | host validated and classified, remote bind gated behind an explicit opt-in, illegal state deleted by a type split, two false security comments corrected, port parsing tightened, stdio warning added |
+| Addon concurrency | `bundled/addon/server_core.py`, `tests/server/test_threading.py`, `tests/test_output_roots_cache.py` (new) | drain timer held by identity so `stop()` really unregisters, the stub taught Blender's identity semantics, the serialization hang closed, the handshake's main-thread I/O memoized, per-client write lock |
+| Container supervision | `docker/blender/entrypoint.sh`, `tests/test_docker_rig.py` | teardown bounded with `SIGKILL` escalation, readiness probe backgrounded so a trap can fire, the 0.0.0.0 bind's containment written where the bind is |
+| Rig liveness | `scripts/blender_rig.py`, `tests/test_blender_rig.py` | dead symlink branch removed with its behaviour pinned instead, timed-out command reported as an unknown outcome, frame-level deadline, launch inside the `try`, tolerant `join` |
+
+**Gate after the repairs, measured on this tree:**
+
+| Check | Value | vs `3f071ba` | Gate |
+|---|---|---|---|
+| pytest | **798 passed** | +59 new; all 739 prior pass unmodified | pass |
+| `ruff check .` | **9,833** | **-1** | `<= 9,834` pass |
+| `ruff format --check .` | 12 unformatted, 338 formatted | unformatted unchanged | pass |
+| `basedpyright` | 71 errors, 4 warnings | ±0 | pass |
+| `all` | 285 tools / 1,181,023 B | ±0 | count matches `bundles.py` |
+| `shot` | 53 tools / 203,079 B | ±0 | 15 B under its unchanged ceiling |
+| revert matrix | **117 rows, 0 survivors, 0 uncovered** | +22 rows | pass |
+
+739 + 59 = 798 exactly: 39 transport nodes, 9 addon nodes, 7 rig nodes, 4 container nodes.
+
+#### The cross-agent conflict, and why the resolution is the right one
+
+Three of the four implementers independently reported the same failure:
+`test_entrypoint_serves_the_mcp_server_over_http_on_the_published_port` went red because the new refusal of
+non-loopback binds correctly rejected the container's own `BLENDERMCP_HTTP_HOST=0.0.0.0`. Each declined to fix
+it, because the fix straddled two agents' file sets — which is the outcome the disjoint-ownership brief was
+meant to produce.
+
+Resolved by the orchestrator in the direction that keeps the control honest: **the container opts in
+explicitly**, with `BLENDERMCP_HTTP_ALLOW_REMOTE=1` on the same line as the bind and a comment saying the
+`0.0.0.0` is safe only because compose publishes `127.0.0.1:8000:8000`. The alternative — exempting the
+container path inside the parser — is the hole. The entrypoint is exactly where a human had already written
+"Binds 0.0.0.0 only because Docker's port forward arrives on the container's external interface"; that comment
+now has to be backed by a declaration the code reads.
+`tests/test_docker_rig.py`'s env scrape was widened from a hand-listed three variables to `HTTP_ONLY_ENVS`, so
+a variable the server learns to read cannot be silently dropped from what the test feeds it again.
+
+#### The revert matrix was the most productive instrument of this cycle
+
+It was hardened first, then run three times, and it found defects in the repairs themselves — including two in
+tests written by the same agents that wrote the fixes.
+
+**Hardened (critic 4's findings 1 and 2).** `run_nodes()` returned `result.returncode != 0`, which cannot
+distinguish a collection error from an assertion failure, and credited a multi-node row when only one node
+failed. It now refuses any summary containing `error`, refuses any summary containing `passed`, and requires
+the failure count to equal the number of nodes the row names. Row **A2** — whose substitution left an
+`IndentationError`, so its node failed at parse time and proved nothing across three prior cycles — was
+rewritten to a parsable revert that trips the assertion it is actually about.
+
+**Coverage closed.** `--list` reported **50 new nodes with no row**. That is the same gap that let the
+unreachable `--work-dir` symlink guard survive three critic cycles: the matrix pins test *nodes*, so a branch
+with no test has no node to pin, and a fix whose test nobody pinned is a fix nobody proved. 22 rows were added
+and the count is now **117 rows / 0 uncovered**, with three nodes recorded in
+`NOT_INDIVIDUALLY_FALSIFIABLE` with reasons rather than left as silent gaps — two characterise FastMCP's
+middleware (they are what make `_serve_http`'s security claims falsifiable at all) and one guards its sibling's
+`python -O` method.
+
+**Two survivors on the second run, both real, neither a bad row:**
+
+1. `test_a_rejected_value_is_not_echoed_whole_into_the_log` survived the removal of the value clip. Cause: with
+   a 5,000-digit port, `int()` raises **CPython's own** `ValueError` — "Exceeds the limit (4300 digits) for
+   integer string conversion" — which `_parse_port` did not catch. That message is ~140 characters, under the
+   test's 200-character limit, so the test passed on an error that **named neither the variable nor a clip of
+   its value**, bypassing the entire contract the repair had just written. Fixed in *both* places: a
+   `MAX_PORT_DIGITS` bound rejects an over-long value before `int()` sees it, and the test now asserts the
+   message **names the variable**, not merely that it is short. A length-only assertion could not tell this
+   function's error from the interpreter's.
+2. The row for the 0.0.0.0 containment note deleted a comment line the test does not read. Retargeted at the
+   line carrying the compose mapping the test actually checks.
+
+Both were invisible to every other instrument: the suite was green, the lint was clean, and four adversarial
+critics had already passed over the area. **The harness that was hardened in order to be trusted immediately
+justified the hardening**, which is the argument for doing it before the run rather than after.
+
+#### Where the implementers pushed back, and were right
+
+Recorded because in each case the brief was wrong and the agent said so rather than complying:
+
+- **`kill -0` cannot bound a teardown.** The brief offered it as an acceptable way to wait for a child.
+  Rejected: `kill -0` succeeds on a child that has exited but not yet been reaped, and bash reaps
+  asynchronously — the very property the *other* entrypoint fix depends on — so a poll loop cannot tell
+  "wedged" from "dead, not yet reaped" and would spend the full grace period on every healthy shutdown. A
+  background watchdog was used instead, and a test pins that a normal teardown costs nothing.
+- **`.isdecimal()` does not reject full-width digits.** The brief's suggested port fix would have let five of
+  the six measured bad inputs through: `'０００８０００'.isdecimal()` is `True`, which is exactly why `int()`
+  accepts it. `digits.isascii() and digits.isdecimal()` is the correct pair.
+- **A per-process cache of the writable roots would have changed observable content.** The candidate list
+  includes the open `.blend`'s directory, so a flat cache would advertise a stale directory for the life of the
+  process. Memoizing on the candidate tuple re-probes exactly when the answer can differ, and building that
+  tuple touches no filesystem. The brief's other suggestion — compute once in `start()` — was also rejected,
+  correctly: `get_addon_info` is reachable without `start()` having run.
+- **A tolerant `join()` should be silent, not diagnostic.** The brief wanted teardown to report a reader that
+  never started. Rejected: that can only happen while the real exception is already propagating, so raising
+  from the `finally` would replace the true cause with a vaguer one.
+- **The symlink guard should be deleted, not made reachable.** Resolution and the ownership-marker check
+  compose rather than overlap — a link aimed at data is refused *because the data is there*, demonstrated — so
+  making the branch reachable would only refuse legitimate configurations (a scratch dir on another volume, a
+  `$TMPDIR` alias) while protecting nothing. Three tests now pin the real behaviour.
+
+#### Still open, deliberately, with owners
+
+- **A queued command is not cancelled when its client goes away.** The rig can only describe this; the fix is
+  server-side — record the originating connection with each queued command and drop it undequeued if that
+  connection is gone, logging the drop. Until then a timed-out command may still execute, and the rig now says
+  so in as many words instead of reporting a plain failure. **Recommended for Task 3**, which owns the drain
+  loop. This also corrects this file's earlier account of the limitation, which called it a "duplicate or
+  misrouted *second* response ... swallowed by the client-disconnected branch": measured, it is the **first and
+  only** response, and it usually hits no branch and emits no log line, because `sendall` to a peer-closed TCP
+  socket succeeds at the kernel level until the RST arrives.
+- **`_server_loop` calls `settimeout` before entering its guarded loop**, so a `stop()` landing in that window
+  closes the socket under the thread and it dies with an unhandled `EBADF`. Cosmetic today (a traceback in
+  Blender's console on a fast addon toggle), surfaced by an implementer and deliberately left. **Task 3.**
+- **`Host` validation is browser-oriented and is not an access control.** Now documented as such in
+  `_serve_http`, the module docstring and `README.md` rather than fixed, because the owner's decision is that
+  remote hosting is unsupported. **Task 8** inherits the question if that changes.
+- **A malformed reply frame still lets `json.JSONDecodeError` out of `BlenderRig.send`**, contradicting its
+  documented `RigError` contract exactly as the bare `TimeoutError` did. Not one of the cycle-4 findings and
+  not reachable from any measured failure. Worth a follow-up.
 
 ### Task 1 — after cycle 3
 

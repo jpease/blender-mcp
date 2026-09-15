@@ -31,6 +31,7 @@ listed in `NOT_INDIVIDUALLY_FALSIFIABLE`, with a reason, is reported as a gap.
 
 import argparse
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -71,7 +72,28 @@ NEW_NODES_IN_EXISTING_FILES = (
 # Nodes no single revert can break on their own, with the reason. Keeping these
 # named is the point: an omission reads as coverage, which is the defect this
 # harness was extended to stop.
-NOT_INDIVIDUALLY_FALSIFIABLE: dict[str, str] = {}
+NOT_INDIVIDUALLY_FALSIFIABLE: dict[str, str] = {
+    # These three characterise code this repository does not own, which is the
+    # point of them: they are what make the security claims in `cli.py`'s
+    # docstrings falsifiable instead of asserted. No edit to `cli.py` can move
+    # them, so a revert row would be theatre. Recorded here with a reason
+    # rather than left as a silent gap.
+    "tests/server/test_cli_transport.py::test_a_remote_host_header_is_refused_by_the_running_app": (
+        "characterises FastMCP's TransportSecurityMiddleware, not this repo's code: it pins the 421 that "
+        "_serve_http's docstring cites. It fails if `mcp` changes or `app.py` stops configuring transport "
+        "security, which is the regression worth catching, and neither is reachable from cli.py."
+    ),
+    "tests/server/test_cli_transport.py::test_a_forged_loopback_host_header_is_served_so_it_is_no_access_control": (
+        "same subject, opposite direction: it pins that a forged `Host: 127.0.0.1` IS served, which is the "
+        "evidence for the docstring's claim that Host validation is browser-oriented and not an access "
+        "control. Falsified only by a change in `mcp`, never by one in cli.py."
+    ),
+    "tests/server/test_cli_transport.py::test_the_o_flag_really_is_in_effect_for_that_check": (
+        "a guard on its sibling's method, not on production code: it asserts the subprocess really did run "
+        "under `python -O`, so that the -O test cannot pass because the flag silently stopped applying. "
+        "Nothing in cli.py can make it fail."
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -411,12 +433,10 @@ REVERTS: list[Revert] = [
     Revert(
         "A2: Popen used as a context manager, reintroducing an unbounded wait()",
         RIG,
-        "    blender = _launch_blender(work_dir, port, nonce, blender_scripts)\n"
-        "    drain = _OutputDrain(blender, log_path, abandoned)\n"
-        "    try:",
-        "    with _launch_blender(work_dir, port, nonce, blender_scripts) as blender:\n"
-        "        drain = _OutputDrain(blender, log_path, abandoned)\n"
-        "        try:",
+        "        blender = _launch_blender(work_dir, port, nonce, blender_scripts)\n"
+        "        drain = _OutputDrain(blender, log_path, abandoned)\n",
+        "        with _launch_blender(work_dir, port, nonce, blender_scripts) as blender:\n"
+        "            drain = _OutputDrain(blender, log_path, abandoned)\n",
         (f"{RIGT}::test_the_process_is_never_waited_on_without_a_timeout",),
     ),
     Revert(
@@ -587,7 +607,9 @@ REVERTS: list[Revert] = [
     Revert(
         "entrypoint: a bare wait is back, so Xvfb keeps a dead container alive",
         ENTRYPOINT,
-        'for pid in "$blender_pid" "$mcp_pid" "$xvfb_pid"; do\n    wait "$pid" 2>/dev/null || true\ndone',
+        '    for pid in "$blender_pid" "$mcp_pid" "$xvfb_pid" "$readiness_pid"; do\n'
+        '        wait "$pid" 2>/dev/null || true\n'
+        "    done",
         "wait || true",
         (f"{DOCKT}::test_entrypoint_waits_only_on_the_processes_it_started",),
     ),
@@ -797,9 +819,8 @@ REVERTS: list[Revert] = [
     Revert(
         "transport: the configured host and port are ignored",
         SERVER_CLI,
-        "            host=env.get(HTTP_HOST_ENV, DEFAULT_HTTP_HOST),\n"
-        "            port=_parse_port(env.get(HTTP_PORT_ENV, str(DEFAULT_HTTP_PORT))),",
-        "            host=DEFAULT_HTTP_HOST,\n            port=DEFAULT_HTTP_PORT,",
+        "        return HttpConfig(host=_resolve_http_host(env), port=_parse_port(env))",
+        "        return HttpConfig(host=DEFAULT_HTTP_HOST, port=DEFAULT_HTTP_PORT)",
         (f"{CLIT}::test_http_host_and_port_are_configurable",),
     ),
     Revert(
@@ -813,7 +834,7 @@ REVERTS: list[Revert] = [
         "transport: a misspelt transport silently serves stdio nobody reads",
         SERVER_CLI,
         "    raise ValueError(f\"{TRANSPORT_ENV} must be 'stdio' or 'http', got {name!r}\")",
-        '    return TransportConfig(transport="stdio")',
+        "    return StdioConfig()",
         (
             f"{CLIT}::test_unknown_transport_is_rejected",
             f"{CLIT}::test_main_reports_a_bad_transport_without_serving",
@@ -851,6 +872,217 @@ REVERTS: list[Revert] = [
         "    mcp.settings.host = host\n    mcp.settings.port = port\n",
         "    mcp.settings.host = host\n    mcp.settings.port = port\n    mcp.settings.transport_security = None\n",
         (f"{CLIT}::test_binding_all_interfaces_keeps_dns_rebinding_protection",),
+    ),
+    # ---------------------------------------------------------------------
+    # Cycle-4 repairs. Added because `--list` reported 50 new nodes with no
+    # row: the matrix pins test nodes, so a fix whose test nobody pinned is a
+    # fix nobody proved. That gap is exactly how an unreachable `--work-dir`
+    # symlink guard survived three critic cycles and a 95-row matrix.
+    # ---------------------------------------------------------------------
+    Revert(
+        "transport: an empty BLENDERMCP_HTTP_HOST falls through to a wildcard bind again",
+        SERVER_CLI,
+        "    host = raw.strip()\n    if not host:",
+        "    host = raw.strip() or DEFAULT_HTTP_HOST\n    if False:",
+        (
+            f"{CLIT}::test_empty_http_host_is_rejected[]",
+            f"{CLIT}::test_empty_http_host_is_rejected[ ]",
+            f"{CLIT}::test_empty_http_host_is_rejected[\\t\\n]",
+            f"{CLIT}::test_an_empty_host_is_rejected_even_with_remote_binds_allowed",
+        ),
+    ),
+    Revert(
+        "transport: a non-loopback bind needs no opt-in, as it did before the repair",
+        SERVER_CLI,
+        "    if not _allows_remote(env):",
+        "    if False:",
+        (
+            f"{CLIT}::test_a_non_loopback_bind_is_refused_without_the_opt_in[0]",
+            f"{CLIT}::test_a_non_loopback_bind_is_refused_without_the_opt_in[0.0.0.0]",
+            f"{CLIT}::test_a_non_loopback_bind_is_refused_without_the_opt_in[::]",
+            f"{CLIT}::test_a_non_loopback_bind_is_refused_without_the_opt_in[192.168.1.5]",
+            f"{CLIT}::test_a_non_loopback_bind_is_refused_without_the_opt_in[example.internal]",
+            f"{CLIT}::test_main_refuses_a_wildcard_bind_without_serving",
+        ),
+    ),
+    Revert(
+        "transport: loopback is not recognised, so even 127.0.0.1 demands consent",
+        SERVER_CLI,
+        'LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})',
+        "LOOPBACK_HOSTS = frozenset()",
+        (
+            f"{CLIT}::test_loopback_hosts_need_no_opt_in[127.0.0.1]",
+            f"{CLIT}::test_loopback_hosts_need_no_opt_in[localhost]",
+            f"{CLIT}::test_loopback_hosts_need_no_opt_in[LOCALHOST]",
+            f"{CLIT}::test_loopback_hosts_need_no_opt_in[::1]",
+            f"{CLIT}::test_a_loopback_bind_is_not_warned_about",
+        ),
+    ),
+    Revert(
+        "transport: the opt-in is tested for presence, so ALLOW_REMOTE=false reads as consent",
+        SERVER_CLI,
+        '    return env.get(HTTP_ALLOW_REMOTE_ENV, "").strip().lower() in TRUTHY_VALUES',
+        "    return HTTP_ALLOW_REMOTE_ENV in env",
+        (
+            f"{CLIT}::test_a_falsy_opt_in_does_not_open_the_bind[0]",
+            f"{CLIT}::test_a_falsy_opt_in_does_not_open_the_bind[false]",
+            f"{CLIT}::test_a_falsy_opt_in_does_not_open_the_bind[no]",
+            f"{CLIT}::test_a_falsy_opt_in_does_not_open_the_bind[off]",
+            f"{CLIT}::test_a_falsy_opt_in_does_not_open_the_bind[]",
+            f"{CLIT}::test_a_falsy_opt_in_does_not_open_the_bind[ ]",
+            f"{CLIT}::test_a_falsy_opt_in_does_not_open_the_bind[maybe]",
+        ),
+    ),
+    Revert(
+        "transport: no value opts in at all, so every spelling of yes is refused",
+        SERVER_CLI,
+        'TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})',
+        "TRUTHY_VALUES = frozenset()",
+        (
+            f"{CLIT}::test_the_opt_in_honours_the_usual_spellings_of_yes[1]",
+            f"{CLIT}::test_the_opt_in_honours_the_usual_spellings_of_yes[true]",
+            f"{CLIT}::test_the_opt_in_honours_the_usual_spellings_of_yes[TRUE]",
+            f"{CLIT}::test_the_opt_in_honours_the_usual_spellings_of_yes[on]",
+            f"{CLIT}::test_the_opt_in_honours_the_usual_spellings_of_yes[ yes ]",
+        ),
+    ),
+    Revert(
+        "transport: an authorised wide bind is made silently, with nothing in the log",
+        SERVER_CLI,
+        "    logger.warning(\n"
+        '        f"{HTTP_ALLOW_REMOTE_ENV} is set, so BlenderMCP will bind {host}, which {widening}. "',
+        "    logger.debug(\n"
+        '        f"{HTTP_ALLOW_REMOTE_ENV} is set, so BlenderMCP will bind {host}, which {widening}. "',
+        (f"{CLIT}::test_an_allowed_non_loopback_bind_says_what_it_costs",),
+    ),
+    Revert(
+        "transport: the port is parsed by int() alone, so underscores and full-width digits pass",
+        SERVER_CLI,
+        "    port = int(digits) if len(digits) <= MAX_PORT_DIGITS and digits.isascii() and digits.isdecimal() else 0",
+        "    port = int(digits) if digits else 0",
+        (
+            f"{CLIT}::test_port_syntax_no_port_includes_is_rejected[8_000]",
+            f"{CLIT}::test_port_syntax_no_port_includes_is_rejected[+8000]",
+            f"{CLIT}::test_port_syntax_no_port_includes_is_rejected[\\uff11\\uff12\\uff13]",
+            f"{CLIT}::test_port_syntax_no_port_includes_is_rejected[\\uff10\\uff10\\uff10\\uff18\\uff10\\uff10\\uff10]",
+        ),
+    ),
+    Revert(
+        "transport: the port length is unbounded, so CPython's own int() error escapes instead of ours",
+        SERVER_CLI,
+        "    port = int(digits) if len(digits) <= MAX_PORT_DIGITS and digits.isascii() and digits.isdecimal() else 0",
+        "    port = int(digits) if digits.isascii() and digits.isdecimal() else 0",
+        (f"{CLIT}::test_a_rejected_value_is_not_echoed_whole_into_the_log",),
+    ),
+    Revert(
+        "transport: the port is not stripped, so a padded compose value is rejected",
+        SERVER_CLI,
+        "    digits = raw.strip()",
+        "    digits = raw",
+        (f"{CLIT}::test_padded_http_port_is_accepted",),
+    ),
+    Revert(
+        "transport: a rejected value is echoed into the log whole, however long it is",
+        SERVER_CLI,
+        "    clipped = raw[:MAX_ECHOED_CHARS]",
+        "    clipped = raw",
+        (f"{CLIT}::test_a_rejected_value_is_not_echoed_whole_into_the_log",),
+    ),
+    Revert(
+        "transport: stdio warns about ignored HTTP settings that were never set",
+        SERVER_CLI,
+        "    ignored = [name for name in HTTP_ONLY_ENVS if name in env]",
+        "    ignored = list(HTTP_ONLY_ENVS)",
+        (f"{CLIT}::test_stdio_without_http_settings_warns_about_nothing",),
+    ),
+    Revert(
+        "transport: HttpConfig defaults its address again, so the illegal state is constructible",
+        SERVER_CLI,
+        "    host: str\n    port: int\n",
+        "    host: str | None = None\n    port: int | None = None\n",
+        (f"{CLIT}::test_an_http_config_without_an_address_cannot_be_built_even_under_o",),
+    ),
+    Revert(
+        "rig: --work-dir is no longer resolved, so the rig reports a path it is not writing to",
+        RIG,
+        "        _execute(arguments, arguments.work_dir.expanduser().resolve())",
+        "        _execute(arguments, arguments.work_dir.expanduser())",
+        (f"{RIGT}::test_a_symlinked_work_dir_is_resolved_before_anything_is_claimed",),
+    ),
+    Revert(
+        "rig: the unreachable symlink refusal is restored, now reachable and refusing valid dirs",
+        RIG,
+        "    if work_dir.exists() and not work_dir.is_dir():",
+        "    if work_dir.is_symlink():\n"
+        '        raise RigError(f"--work-dir {work_dir} is a symlink; point it at a real directory.")\n'
+        "    if work_dir.exists() and not work_dir.is_dir():",
+        (
+            f"{RIGT}::test_a_symlinked_work_dir_is_claimed_through_to_the_directory_it_points_at",
+            f"{RIGT}::test_foreign_data_behind_a_symlinked_work_dir_is_still_refused",
+        ),
+    ),
+    Revert(
+        "rig: a timed-out command escapes as a bare TimeoutError naming neither command nor port",
+        RIG,
+        "        except TimeoutError as expiry:\n"
+        "            raise RigError(self._unanswered_message(request)) from expiry\n",
+        "",
+        (f"{RIGT}::test_a_command_that_never_came_back_is_reported_as_possibly_still_running",),
+    ),
+    Revert(
+        "rig: the frame timeout bounds each recv() again, so a dribbling peer is read for ever",
+        RIG,
+        "        remaining = deadline - time.monotonic()\n"
+        "        if remaining <= 0:\n"
+        '            raise TimeoutError(f"no complete frame within {timeout:g}s ({len(buffer)} bytes received)")\n'
+        "        sock.settimeout(remaining)",
+        "        sock.settimeout(timeout)",
+        (f"{RIGT}::test_one_frame_is_bounded_as_a_whole_not_one_recv_at_a_time",),
+    ),
+    Revert(
+        "rig: the launch and its reader move back outside the try, orphaning Blender on a reader failure",
+        RIG,
+        "        blender = _launch_blender(work_dir, port, nonce, blender_scripts)\n"
+        "        drain = _OutputDrain(blender, log_path, abandoned)\n"
+        "        drain.start()",
+        "        drain.start()",
+        (f"{RIGT}::test_a_launched_blender_is_stopped_even_if_its_reader_cannot_be_constructed",),
+        also="",
+    ),
+    Revert(
+        "rig: join() is intolerant of a reader that never started, masking the real cause",
+        RIG,
+        "        if not self._started:\n            return\n",
+        "",
+        (f"{RIGT}::test_teardown_tolerates_a_reader_that_never_started",),
+    ),
+    Revert(
+        "entrypoint: teardown has no SIGKILL escalation, so a wedged child blocks it for ever",
+        ENTRYPOINT,
+        "        kill -KILL $blender_pid $mcp_pid $xvfb_pid $readiness_pid 2>/dev/null || true",
+        "        : no escalation",
+        (f"{DOCKT}::test_teardown_finishes_even_when_a_child_ignores_sigterm",),
+    ),
+    Revert(
+        "entrypoint: the grace period is always spent, even when every child has already gone",
+        ENTRYPOINT,
+        '    kill -TERM "$watchdog_pid" 2>/dev/null || true',
+        "    : leave the watchdog running",
+        (f"{DOCKT}::test_teardown_costs_nothing_when_every_child_has_already_gone",),
+    ),
+    Revert(
+        "entrypoint: the readiness probe runs in the foreground again, deferring docker stop",
+        ENTRYPOINT,
+        "    blender_readiness_probe &",
+        "    blender_readiness_probe",
+        (f"{DOCKT}::test_a_stop_signal_during_the_readiness_wait_is_handled_at_once",),
+    ),
+    Revert(
+        "entrypoint: the note explaining why a 0.0.0.0 bind is contained is deleted",
+        ENTRYPOINT,
+        "# different file. docker-compose.yml maps `127.0.0.1:8000:8000`; run this image",
+        "# different file, and this note used to name the mapping it depends on.",
+        (f"{DOCKT}::test_binding_all_interfaces_records_the_publish_that_makes_it_safe",),
     ),
 ]
 
@@ -934,13 +1166,28 @@ def restore(revert: Revert, original: str | None) -> None:
 
 def run_nodes(nodes: tuple[str, ...]) -> tuple[bool, str]:
     """
-    Run exactly the named nodes and report whether they failed.
+    Run exactly the named nodes and report whether *every* one of them failed.
+
+    A non-zero exit code is not the question, and using it as the answer is how
+    this harness credited a row that proved nothing. Two ways that goes wrong,
+    both found by a critic reviewing the matrix rather than the code it guards:
+
+    - A revert that leaves the file unparseable makes pytest exit 4 with a
+      **collection error**. The node "fails", but for an `IndentationError`
+      rather than for the behaviour the row names - so the row demonstrates
+      nothing about the code under test. Row A2 did exactly this, undetected
+      across three critic cycles. Any `error` in the summary is now a refusal.
+    - A row naming several nodes was credited when **one** of them failed,
+      which is the per-file false credit this harness was built to eliminate,
+      surviving at row granularity. The failure count must now equal the number
+      of nodes named.
 
     Args:
         nodes: Node ids to run.
 
     Returns:
-        tuple[bool, str]: Whether pytest failed, and its summary line.
+        tuple[bool, str]: Whether all the named nodes failed for a reason that
+            counts, and pytest's summary line.
 
     """
     result = subprocess.run(
@@ -952,7 +1199,29 @@ def run_nodes(nodes: tuple[str, ...]) -> tuple[bool, str]:
     )
     summary = [line for line in result.stdout.splitlines() if " passed" in line or " failed" in line]
     tail = summary[-1] if summary else (result.stdout.strip().splitlines() or ["no output"])[-1]
-    return result.returncode != 0, tail
+    return _every_node_failed(tail, len(nodes)), tail
+
+
+def _every_node_failed(tail: str, expected: int) -> bool:
+    """
+    Read pytest's summary line and decide whether the revert was really caught.
+
+    Args:
+        tail: pytest's last summary line, e.g. "2 failed, 1 passed in 0.10s".
+        expected: How many nodes the row named.
+
+    Returns:
+        bool: True only when the line reports `expected` failures, no errors and
+            nothing passed. A row whose nodes partly passed has not been proven,
+            and one that errored has been proven only to be broken.
+
+    """
+    if re.search(r"\d+ error", tail):
+        return False
+    if re.search(r"\d+ passed", tail):
+        return False
+    failed = re.search(r"(\d+) failed", tail)
+    return failed is not None and int(failed.group(1)) == expected
 
 
 @dataclass

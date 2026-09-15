@@ -360,7 +360,13 @@ Configure host and port with `BLENDER_HOST` and `BLENDER_PORT` environment varia
 
 **Transport**
 
-The server speaks **stdio** by default, which is what every MCP client config above launches. Set `BLENDERMCP_TRANSPORT=http` to serve streamable HTTP instead, for hosting the server beside a Blender on another machine (the container rig below does exactly this). `BLENDERMCP_HTTP_HOST` and `BLENDERMCP_HTTP_PORT` default to `127.0.0.1` and `8000`. A bad transport name or port is reported by its variable name and the server exits rather than falling back. **The HTTP endpoint has no authentication of its own**, so anything that can reach it can drive Blender, including reading and writing files — widen the bind address only behind a boundary you control.
+The server speaks **stdio** by default, which is what every MCP client config above launches. Set `BLENDERMCP_TRANSPORT=http` to serve streamable HTTP instead. `BLENDERMCP_HTTP_HOST` and `BLENDERMCP_HTTP_PORT` default to `127.0.0.1` and `8000`. A bad transport name, host or port is reported by its variable name and the server exits rather than falling back.
+
+**The HTTP endpoint has no authentication of any kind**, so its bind address is the whole of its access control, and the only supported deployment binds loopback. Reach it from another machine through an SSH tunnel, so that somebody else's authentication sits in front of it. The container rig below is the loopback case too: it binds `0.0.0.0` inside the container because that is where Docker's port forward arrives, and compose publishes it on the host's `127.0.0.1` alone.
+
+A non-loopback bind is therefore refused unless you also set `BLENDERMCP_HTTP_ALLOW_REMOTE=1`, which logs a warning saying what it costs. An empty `BLENDERMCP_HTTP_HOST` is refused outright rather than treated as the default, because an empty value binds every interface — a compose key with nothing after the colon used to be enough to do that silently.
+
+One thing not to mistake for access control: a client that reaches the port from off-box and asks for it by its real address gets `421 Misdirected Request`. That is FastMCP's DNS-rebinding protection, it is aimed at browsers, and `Host` is a header the client chooses — so a non-browser client sending `Host: 127.0.0.1` is served normally from anywhere on the network. Loopback binding, not that check, is what keeps the server unreachable.
 
 **Tool bundles**
 
