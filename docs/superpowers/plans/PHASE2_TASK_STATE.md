@@ -2247,3 +2247,35 @@ same generator with one `SpikeSecondSphere`, so a swap between them is observabl
 or the instance afterwards cannot reach it: `bpy.app.timers.unregister(server._drain_timer)`, register a
 wrapper that calls it, and reassign `server._drain_timer`. Any run that does this is no longer the untouched
 production path and must be reported as such.
+
+### The `use_scripts=False` gap, found after the first commit and closed
+
+Runs 1-3 called `bpy.ops.wm.open_mainfile(filepath=...)` with `use_scripts` left at its default. **Task 6 will
+not**: §07's automatic-critical list makes "a `wm.open_mainfile` call that does not pass `use_scripts=False`"
+critical on its own, and `scripts/rig_scenarios/in_blender_open_mainfile.py` already passes it. So the
+decision had been taken on a measurement of a call shape the production code is forbidden to use — a narrow
+gap, but the wrong kind of narrow, because the flag controls whether the loaded file's scripts auto-run and
+that is exactly the sort of thing that could change what a callback survives.
+
+Closed by re-running the decisive batch with `use_scripts=False`, a fourth rig run on 5.2.2. **Identical on
+every observation that the decision depends on**, 3/3 rounds:
+
+```
+SAFE: s1-A   status=success saw=["Camera", "Cube", "Light"]
+SAFE: s1-B   status=success op=['FINISHED'] raised=None frame_resumed=True after_window='None' drain_registered=True queue_before=2
+SAFE: s1-C   status=success saw=["SpikeSecondSphere"]
+SAFE: s1-D   status=success
+SAFE: s2-A   status=success saw=["SpikeSecondSphere"]
+SAFE: s2-B   status=success op=['FINISHED'] raised=None frame_resumed=True after_window='None' drain_registered=True queue_before=2
+SAFE: s2-C   status=success saw=["RigFixtureCube"]
+SAFE: s2-D   status=success
+SAFE: s3-A   status=success saw=["RigFixtureCube"]
+SAFE: s3-B   status=success op=['FINISHED'] raised=None frame_resumed=True after_window='None' drain_registered=True queue_before=2
+SAFE: s3-C   status=success saw=["SpikeSecondSphere"]
+SAFE: s3-D   status=success
+```
+
+Frame resumed, response delivered, drain timer registered, `bpy.context.window` still `None`, siblings still
+drained after the swap against the new file, queue still carrying 2 at swap entry. **The decision does not
+rest on the flag.** Recorded rather than quietly re-run: the first three runs' transcripts above are still
+`use_scripts`-default measurements and should be read as such.
