@@ -1,5 +1,7 @@
 # Phase 2 Task State
-Updated: 2026-09-15 (session 2) — Task 1's commit recorded, host upgraded to Blender 5.2.2 and every
+Updated: 2026-09-15 (session 2) — **Task 2 decided and closed by experiment: the reentrancy
+strategy is synchronous validate-then-swap, answering after the swap; two critic cycles run and their
+repairs landed.** Earlier this session: Task 1's commit recorded, host upgraded to Blender 5.2.2 and every
 API fact re-verified against it, then **critic cycle 4 run and its repairs landed: Task 1 moves 81 -> 94/100
 and passes its exit gate.** Earlier: transport follow-up (decision 8) applied 2026-09-15;
 repair cycle 3 applied 2026-09-14 (cycles 1 and 2 recorded below)
@@ -26,7 +28,7 @@ that had already been lost once (see the closed item under "Known failures / blo
 | | |
 |---|---|
 | Branch | `main`, **unpushed**. `origin/main` is still at `523f427`. |
-| Last commit | Task 1 closed at **94/100** after critic cycle 4. |
+| Last commit | **Task 2 closed** after two critic cycles and their repairs. Task 1 closed at 94/100 in critic cycle 4. |
 | Next task | **Task 3** (drain-loop file-swap barrier, session epoch, failure handlers). Task 2 is **done**: `open_shot` is synchronous validate-then-swap, answering after the swap. Read "Task 2 — the reentrancy strategy" before starting; its Step 7 is Task 3's measured input. |
 | Working tree | Clean apart from `uv.lock`, which stays unstaged permanently (§03 incidental churn). |
 | Blender | **5.2.2 LTS** at `/opt/homebrew/bin/blender`. Every API fact re-verified against it; see "5.2.2 re-verification". |
@@ -168,7 +170,7 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | # | Task | Tier | Status | Commit | Notes |
 |---|---|---|---|---|---|
 | 1 | Land the live-Blender acceptance rig on `main` | Opus | **Done — 94/100 after cycle-4 repairs** | `2852803` + repairs |  9 files ported, full `output_roots` wiring + 30 → 31 bump, ported lint debt cleaned to zero, `scripts/blender_rig.py` written, Step 5 re-verified live and **re-run end to end after each repair cycle**, README documented, `scripts/revert_matrix.py` landed so the revert evidence is reproducible. Repairs R1-R22 (cycle 2) and A1-A6/B1-B5/C1-C4/D1/F1-F10 (cycle 3); see both repair tables. **Acceptance criteria 2 and 3 now PASS** against a real container, after the decision-8 follow-up ported the HTTP transport (a tenth file) and fixed the two `entrypoint.sh` defects the first container run exposed. |
-| 2 | Decide the reentrancy strategy by experiment | Opus | **Done** | `969df10` (rule) + this commit | Decision rule committed **before** the spike existed, so the branch could not be picked after seeing the result. **Decided: synchronous validate-then-swap, answer after the swap** — the callback survives, all four pre-registered conditions met, 7/7 swaps, no intermittency. Async-job-with-polling rejected; its premise is false. Three rig runs on 5.2.2. Two findings with downstream teeth: `bpy.context.window` is `None` after the swap, and the ordering hazard is demonstrated (Step 7, Task 3's input). One leak flagged for Task 5. No production code changed; spike deleted. |
+| 2 | Decide the reentrancy strategy by experiment | Opus | **Done** | `969df10` (rule), `9608561` (evidence + spec), `807ef52` (`use_scripts` gap), + the cycle-2 repair commit | Decision rule committed **before** the spike existed, so the branch could not be picked after seeing the result. **Decided: synchronous validate-then-swap, answer after the swap** — the callback survives, all four pre-registered conditions met, 7/7 swaps, no intermittency. Async-job-with-polling rejected; its premise is false. **Six rig runs** on 5.2.2 (see the per-run tally). Findings with downstream teeth: the scene-gated capability set follows the swapped file; `bpy.context.window` is `None` for the rest of the swapping tick but operators still run and it recovers by the next tick; the ordering hazard is demonstrated on both sides of the drain budget; `bpy.data.is_dirty` is a usable pre-swap guard and unsaved work is otherwise destroyed silently; five path-leaking error shapes flagged for Task 5. No production code changed; spike deleted. |
 | 3 | Drain-loop file-swap barrier, session epoch, failure handlers | Opus | Not started | — | **Inherits protocol 31; asserts, does not bump** (decision 2). |
 | 4 | Make rollback survive a file swap, track `libraries` | Opus | Not started | — | |
 | 5 | The filesystem trust boundary | Opus | Not started | — | Promotes `output_roots.py`, landed here. |
@@ -1045,6 +1047,16 @@ The docstring now states plainly that the list is an **advisory preference ranki
   substituted. If Task 5 derives the *enforced* roots from these defaults on an unconfigured desktop install,
   the containment boundary becomes the whole home directory. Repair B1 corrected every place that claimed
   otherwise; it did not change this behaviour, which is Task 5's to decide.
+- **`wm.open_mainfile`'s error text embeds the full absolute path, and the drain loop returns it to the client
+  verbatim** (found by Task 2, measured on 5.2.2). This is the rubric's automatic-critical path-leak item, live
+  today on the path `open_shot` will take. **Five shapes measured**, all leaking:
+  `Error: Cannot read file "<abs>": No such file or directory` (missing file);
+  `Error: File format is not supported in file "<abs>"` (a directory, a non-`.blend`, corrupted magic bytes —
+  three modes, one shape); and
+  `Error: Loading "<abs>" failed: Failed to read blend file '<abs>': Missing DNA block` (truncated file with a
+  valid header — **leaks the path twice**). Plan Task 5 Step 6's `sanitize_blender_error` is the fix; the
+  truncated-file shape is the one most likely to be missed, because it is the only one that does not come from
+  the format check. Full transcripts under "Task 2 — critic cycles 1 and 2".
 
 ## Flagged for Task 10 — criterion 4 is not verifiable with this rig as built
 
@@ -2037,8 +2049,8 @@ the escalation case, not a pass.
 
 ### The spike, and why none of it is in the tree
 
-Three runs, all on **Blender 5.2.2 LTS**, GUI (not `--background`), driven by the committed
-`scripts/blender_rig.py`. The spike itself lived entirely in the session scratchpad and is gone; it needed no
+**Six runs**, all on **Blender 5.2.2 LTS**, GUI (not `--background`), driven by the committed
+`scripts/blender_rig.py` — three in cycle 1, one closing the `use_scripts` gap, two in cycle 2. The spike itself lived entirely in the session scratchpad and is gone; it needed no
 edit to `src/` at all, which is what makes "no spike code lands" true by construction rather than by
 remembering to revert something. `__spike_open` was grafted onto the **running instance** from a
 `--blender-script`: `_build_command_handlers` wrapped to add the key, and `_READ_ONLY_COMMANDS` shadowed by an
@@ -2057,11 +2069,29 @@ SPIKE: __spike_open advertised = True
 | 1 | The decision-rule evidence: 4 failure modes, 1 swap with siblings, 3 repeat swaps. | **Untouched production path.** |
 | 2 | Tick boundaries — `drain_command_queue`'s return value and same-tick vs next-tick. | Production path **plus one wrapper frame**; the drain timer had to be re-registered to instrument it, because `_register_drain_timer` captured a bound method that Blender holds and no later patch can reach. Stated rather than glossed: run 1 is the primary evidence, run 2 is detail. |
 | 3 | The **uncaught** failure path, which runs 1 and 2 could not see because the spike handler caught everything. | Untouched production path. |
+| 4 | The `use_scripts=False` re-run (see below). | **Untouched production path** — the drain timer was *not* re-instrumented. Cycle 1 failed to declare this row, which is the disclosure rule two rows up, applied to every run but this one. |
+| 5 | Cycle 2's six experiments: scene identity, operator context, a 1.05 GB / 4.6 s load, a second client sending mid-load, connection reuse after a client gives up, a truncated `.blend`, two swaps in one tick. | Production path **plus one wrapper frame** (tick and re-entrancy accounting), same as run 2. |
+| 6 | Cycle 2's `bpy.data.is_dirty` probe. | Production path plus the same wrapper frame. |
+
+**Successful swaps and failing loads, per run** — cycle 1 reported a bare `7/7` that could not be reconstructed
+from the document and that `807ef52` then silently invalidated. The tally is published here instead:
+
+| Run | `use_scripts` | Successful swaps | Failing loads |
+|---|---|---|---|
+| 1 | default | 4 | 4 (caught in-handler) |
+| 2 | default | 3 | 0 |
+| 3 | default | 1 | 4 (uncaught, propagated) |
+| 4 | **False** | 3 | 0 |
+| 5 | **False** | 5 | 1 (truncated, valid header) |
+| 6 | **False** | 2 | 0 |
+| **Total** | | **18** | **9** |
 
 ### Step 3 — the seven observations, with pasted output
 
-The swap, from inside `drain_command_queue`'s own frame, servicing a queued socket command. Abridged to the
-load-bearing keys; paths shortened to `<work>`:
+The swap, from inside `drain_command_queue`'s own frame, servicing a queued socket command. **This is the
+response the rig process decoded off the socket**, not the copy the handler wrote to disk — which matters,
+because rule condition 2 asks for the client's own read and the spike deliberately kept both copies. Abridged
+to the load-bearing keys; paths shortened to `<work>`:
 
 ```json
 {
@@ -2107,9 +2137,15 @@ which is how `open_shot` will actually fail).
 
 **No divergence from the expected behaviour to report.** The plan predicted, from 2026-09-14's `--background`
 measurement: raises `RuntimeError` on all four, never returns `{'CANCELLED'}`, database left untouched. That is
-exactly what happened, now also from inside a timer callback. `frame_resumed_after_operator: true` and
-`after_drain_timer_registered: true` on all four — the callback survives a *raise* inside a timer as well as a
-successful swap.
+exactly what happened, now also from inside a timer callback.
+
+**Two different survival claims, which cycle 1 ran together and cycle 2 separates.**
+`frame_resumed_after_operator: true` and `after_drain_timer_registered: true` on all four are **run 1's**, where
+the spike's own `try` caught the `RuntimeError` — so they show the handler frame resumes after a *caught*
+raise, 4/4. They do **not** show what happens when a raise propagates. That is run 3's job, and run 3 has no
+`frame_resumed_after_operator` field at all: what it shows is that an uncaught raise reaches the client as a
+`{"status": "error"}` frame and the server keeps answering. Both are true; only the second is evidence about
+an *uncaught* raise.
 
 **Step 5 is satisfied beyond its criterion.** The acceptance criterion asks for `load_post_fail` firing on at
 least the missing-file and corrupt-file cases; it fired on **all four**, always paired with a preceding
@@ -2143,11 +2179,11 @@ The rule's four conditions for "the callback survives", fixed in advance, agains
 
 | Condition (recorded before the spike) | Result |
 |---|---|
-| 1. The frame resumes after the operator returns | **Met.** `frame_resumed_after_operator: true`, **7/7** successful swaps and **4/4** failures. |
-| 2. `sendall` returns without raising **and the bytes are received by the client process** | **Met.** Every swap was answered and decoded in the rig process. **7/7**. |
+| 1. The frame resumes after the operator returns | **Met.** `frame_resumed_after_operator: true` on **18/18** successful swaps, and on **5/5** failing loads where the handler caught the raise. (For an *uncaught* raise the evidence is different in kind — see the Step 4 correction.) |
+| 2. `sendall` returns without raising **and the bytes are received by the client process** | **Met.** Every swap was answered and decoded **in the rig process**, off the socket: **18/18**. |
 | 3. The drain timer is still registered afterwards and fires again | **Met.** `after_drain_timer_registered: true` every time; subsequent commands answered, which is the firing. |
-| 4. The next queued command executes against the **new** file | **Met.** **4/4** across both batched runs. |
-| No intermittency across repeats | **Met.** 7 successful swaps, 3 batch rounds, 4 failure modes, 3 runs. No partial result, no unanswered command, no variation. |
+| 4. The next queued command executes against the **new** file | **Met.** **8/8** batched rounds across runs 1, 2, 4 and 5 — and cycle 2 extends it past the drain budget, where the siblings land in *later* ticks and still see the new database. |
+| No intermittency across repeats | **Met.** 18 successful swaps and 9 failing loads across six runs, two `use_scripts` settings, three orders of magnitude of file size, and both sides of the drain budget. No partial result, no unanswered command, no variation. |
 
 **Decision: synchronous validate-then-swap, answering after the swap.** First branch of the rule, taken on
 all four conditions met with no ambiguity. The escalation clause was not reached — there was no outcome that
@@ -2208,9 +2244,19 @@ tick. That changes **which tick answers them, not which database they see** — 
 swap and still see the new file. So Task 3's barrier cannot be a per-tick check; it has to be keyed to the
 swap itself. The session epoch is the right shape for exactly this reason.
 
-Secondary, for Task 3: the command **queue survives the swap intact** (`before_queue_size: 2`,
-`after_queue_size: 2`) — it is a plain `queue.Queue` on module state, not file data — so a barrier can drain,
-inspect or reject its contents after a load rather than having to intercept before one.
+Secondary, for Task 3: the command **queue survives the swap** as an object (`before_queue_size: 2`,
+`after_queue_size: 2`) — it is a plain `queue.Queue` on module state, not file data, so nothing in it is
+invalidated by the load.
+
+> **Correction, cycle 2.** This paragraph originally continued: *"so a barrier can drain, inspect or reject its
+> contents after a load rather than having to intercept before one."* **That advice was wrong and would have
+> misaimed Task 3's barrier.** The equal queue sizes held only because the 494 KB load took 3 ms with nobody
+> sending. `handle_client` threads keep running through a load and `_decode_and_queue_frame`
+> (`server_core.py:523`) enqueues from those threads with no coordination with the drain — measured directly in
+> cycle 2: a second client's `ping`, sent ~1 s into a 4.6 s load, was queued during the swap and answered
+> afterwards. Post-load inspection therefore **cannot** distinguish "queued before the swap", "arrived during
+> the swap" and "sent after the client saw the swap response": all three sit in one FIFO with no marker. The
+> epoch has to be stamped **at enqueue time, on the client thread**, and compared at dequeue.
 
 ### Reproducing this without the spike, which deliberately did not land
 
@@ -2220,7 +2266,9 @@ none of it in the tree, so — unlike Task 1's Step 5 harness, which **is** comm
 spike monkey-patches a running server instance and would rot against the first change to
 `_build_command_handlers`. The durable form is the transcripts above plus this recipe.
 
-To rebuild it, the whole of it is two throwaway files driven by the committed rig:
+To rebuild it, four throwaway files plus three generated fixtures, driven by the committed rig. Cycle 1 said
+"two files" here and that was wrong — a critic checked and it does not reconstruct the experiment. What is
+actually needed:
 
 1. A `--blender-script` that, after the rig's bootstrap has put a server on `bpy.types.blendermcp_server`,
    wraps `server._build_command_handlers` to add a `__spike_open` key and sets
@@ -2239,8 +2287,32 @@ To rebuild it, the whole of it is two throwaway files driven by the committed ri
     --blend fixture=<work>/fixture.blend --blend second=<work>/second.blend
 ```
 
-`fixture.blend` is `scripts/rig_scenarios/make_fixture.py`'s (one `RigFixtureCube`); the second fixture is the
-same generator with one `SpikeSecondSphere`, so a swap between them is observable in either direction.
+**Fixtures.** `fixture.blend` is `scripts/rig_scenarios/make_fixture.py`'s (one `RigFixtureCube`). The second
+is a *modified copy* of that generator — it hard-codes the object name and takes only an output path, so it
+cannot be parameterised — producing one `SpikeSecondSphere` **and a scene renamed `SecondScene`**. The rename
+is not cosmetic: with both scenes called `Scene`, `bpy.context.scene.name` cannot tell a fresh scene from a
+stale handle, which is the hole cycle 1 fell into. For the slow-load experiment, a third generator makes
+40,000 objects each with its own mesh and material (~1.05 GB, ~4.6 s to load); note that **datablock count,
+not byte size, is what makes a load slow** — 83 MB of dense mesh loads in 13 ms.
+
+**The four invalid inputs for Step 4** are built by the scenario, in the rig work dir: a path that does not
+exist; a *directory* named `*.blend`; a text file named `*.blend`; and a copy of a good fixture with its first
+seven bytes overwritten. Cycle 2 adds a fifth: a good fixture truncated to 60% of its length, which keeps the
+`BLENDER` magic and therefore gets **past** the format check — the only one of the five that does.
+
+**Step 5's handler evidence** comes from three `@persistent` handlers appended to `bpy.app.handlers.load_pre`,
+`load_post` and `load_post_fail`, each appending its own name to a module list that `__spike_open` clears on
+entry and copies into its result. Without these there is no `handler_events` field.
+
+**Run 3's uncaught variant is a second, different handler** — identical but with no `try`, so the
+`RuntimeError` propagates to `execute_command_internal`. Runs 1 and 2 cannot show what it shows.
+
+**Pass `use_scripts=False`.** Runs 1-3 did not, and §07 makes a bare `wm.open_mainfile` automatically critical.
+Reproducing the default-flag measurement reproduces the thing Task 6 is forbidden to rely on.
+
+**It must be a GUI Blender** at `/opt/homebrew/bin/blender`, 5.2.2 LTS — the addon refuses to start under
+`--background` and `bpy.app.timers` never fire there, so the drain loop that answers commands does not run.
+That is the whole reason the rig exists.
 
 **To instrument tick boundaries you must re-register the drain timer.** `_register_drain_timer` captured
 `self.drain_command_queue` into `server._drain_timer` and Blender holds *that* object, so patching the class
@@ -2279,3 +2351,223 @@ Frame resumed, response delivered, drain timer registered, `bpy.context.window` 
 drained after the swap against the new file, queue still carrying 2 at swap entry. **The decision does not
 rest on the flag.** Recorded rather than quietly re-run: the first three runs' transcripts above are still
 `use_scripts`-default measurements and should be read as such.
+
+## Task 2 — critic cycles 1 and 2, and what they changed
+
+§06 requires at least two critic cycles per task before its commit. **Cycle 1 was run after Task 2's commits,
+not before — that is a process breach and it is recorded as one.** Three critics ran against §07's rubric.
+
+### Cycle 1 scores
+
+| Dimension | Score | Gate | |
+|---|---|---|---|
+| Data durability and rollback safety | 18/30 | ≥24 | **fail** |
+| Concurrency and liveness | 16/25 | ≥20 | **fail** |
+| Filesystem and trust boundary | 16/20 | ≥16 | pass (by one point) |
+| Evidence quality | 9/15 | ≥12 | **fail** |
+| Code quality and contract fidelity | 7/10 | ≥8 | **fail** |
+| **Total** | **66/100** | ≥90 | **fail** |
+
+No critic overturned the empirical finding. Every one of them said the callback-survives result is carried
+independently by the transcripts. What they attacked was the **inference** from it and the **bookkeeping**
+around it, and on both they were largely right.
+
+**One ruling rejected, with reasons.** The evidence critic ruled the `~3 ms` / `494 KB` timing an
+automatic-critical "number asserted rather than measured". The rubric item is *asserted rather than measured*;
+those figures **were** measured, by a timing script run against both fixtures. What was missing is the pasted
+transcript that lets a reader check it — a real Evidence-quality deduction, not a critical. The transcript is
+now below, which moots the disagreement.
+
+### The findings that changed a claim, not just its presentation
+
+Cycle 2 ran six new experiments. Three of them contradicted something cycle 1 had written down, and one of
+those had already been promoted into the spec.
+
+**1. The `temp_override` claim was FALSE, and it was in the spec.** Cycle 1 wrote, and `9608561` published:
+*"Any `bpy.ops` call made after the swap in the same tick must therefore supply its own context via
+`temp_override` rather than inherit one."* That was reasoned from `bpy.context.window` being `None`; it was
+never tested. Measured:
+
+```
+C2 E1 after:  {
+  "window": "None",
+  "window_managers": 1,
+  "windows_in_data": 1,
+  "scene_name": "SecondScene",
+  "scene_is_data_scenes_0": true,
+  "data_scene_names": ["SecondScene"],
+  "operator_inherited_context": "FINISHED",
+  "operator_with_temp_override": "FINISHED"
+}
+```
+
+`bpy.ops.object.select_all(action="DESELECT")` **succeeds on the inherited context** with
+`bpy.context.window` at `None`, and the window is still present in `bpy.data.window_managers[0].windows`, so
+`temp_override` also has something to override with. The spec sentence has been corrected.
+
+**2. The window loss does not outlive the tick.** Cycle 1 scoped it to "the same tick" on no evidence. Probed
+from three later ticks:
+
+```
+C2 E1 context probed from LATER ticks: [
+  { "tick": 23, "window": "bpy.data.window_managers['WinMan']...Window", "scene_name": "SecondScene", ... },
+  { "tick": 29, "window": "bpy.data.window_managers['WinMan']...Window", "scene_name": "SecondScene", ... },
+  { "tick": 34, "window": "bpy.data.window_managers['WinMan']...Window", "scene_name": "SecondScene", ... } ]
+```
+
+The scoping was right; it is now measured.
+
+**3. `bpy.context.scene` is FRESH, and cycle 1 could not have known.** Both cycle-1 fixtures named their scene
+`"Scene"`, so `after_scene: "Scene"` could not tell a new scene from a stale handle — a hole a critic found and
+cycle 2 closed by giving the second fixture a distinct scene name. After the swap, `scene_name` is
+`"SecondScene"` and `data_scene_names` is `["SecondScene"]`: the context follows the new file.
+
+> **This is the finding with the longest reach, and it is new.** `_build_command_handlers()` reads
+> `bpy.context.scene.blendermcp_use_polyhaven` / `_use_sketchfab` / `_use_nd` (`server_core.py:957, 967, 976`)
+> and `execute_command_internal` rebuilds it on **every** command (`:1069`). So the swap changes the **set of
+> commands that exist**. A sibling queued against a file with Polyhaven enabled, drained after a swap to a file
+> without it, comes back `Unknown command type: import_polyhaven_asset` — an actively *wrong* error, worse than
+> the plausible-looking stale answer cycle 1 recorded. This is what makes the command table's "requires a
+> re-handshake" a correctness requirement rather than a convenience, and it is Task 3's input.
+
+### Cycle 2's other measurements
+
+**A 1.05 GB load, 4.6 s — 230x the drain budget.** This is the case cycle 1's evidence base (494 KB, 3 ms)
+could not speak to, and on which a critic staked a critical finding about unbounded latency.
+
+```
+C2 slow-A-before    0.050s tick=50 status=success objects=1 scene='SecondScene'
+C2   intruder: ping sent mid-load
+C2 slow-B-swap      4.641s tick=50 status=success load_ms=4588.2 frame_resumed=True depth_max=1 objects->40000 queue_before=2
+C2 slow-C-after     6.480s tick=51 status=success objects=40000 scene='Scene'
+C2 slow-D-ping      6.587s tick=52 status=success
+C2 intruder ping: 5.584s tick=52 status=success
+```
+
+Four things settled at once. The callback survives a 4.6 s load exactly as it survives a 3 ms one. **Cross-tick
+ordering is now measured, not deduced**: the swap ends its tick on the budget and the siblings are answered
+from ticks 51 and 52 — still against the new database (`objects=40000`), which is what cycle 1 predicted from
+the FIFO and labelled as measured when it was not. `depth_max=1` means **`drain_command_queue` was never
+re-entered** during a 4.6 s operator call, which closes the "does a long load pump the event loop" question.
+And the second client's `ping`, sent ~1 s into the load, was **queued during the swap and answered at 5.584 s**
+— late, but answered. No hang, no dropped socket.
+
+**The desync is real, and cycle 2 demonstrated it rather than arguing about it.** A client that gives up
+mid-swap and then reuses its connection reads the *previous* command's response:
+
+```
+C2 E3 after 1.0s the impatient client has: b'' (empty = it would raise Socket timeout)
+C2 E3 next read on the SAME connection returned id='impatient-1' (desync if it is not 'impatient-2')
+```
+
+`connection.py:223-231` turns that into `the connection to Blender is desynced`. **This is not new to the
+synchronous branch** — `scripts/blender_rig.py`'s own `_unanswered_message` already documents it for any
+command the client abandons — but a slow swap is the easiest way to reach it, and the async branch would not,
+because it answers with a job id immediately. Recorded as a real cost of the decision.
+
+**What the load-duration curve actually looks like**, since the latency argument turns on it:
+
+```
+TIMING: Blender 5.2.2 LTS
+TIMING: fixture.blend     493,671 B  open_mainfile ms: 4.3 / 2.8 / 2.7  mean 3.3  max 4.3
+TIMING: second.blend      540,583 B  open_mainfile ms: 3.6 / 2.8 / 2.8  mean 3.1  max 3.6
+TIMING: big.blend      86,833,713 B  open_mainfile ms: 13.9 / 13.7 / 10.0  mean 12.5  max 13.9
+TIMING: many.blend  1,100,527,593 B  open_mainfile ms: 4184.8 / 5215.5 / 4642.5  mean 4681.0  max 5215.5
+```
+
+Bytes barely matter; **datablock count dominates** — 83 MB of dense mesh loads in 13 ms, while 1.05 GB spread
+over 40,000 objects takes 4.6 s. Reaching `connection.py`'s 180 s timeout by file size alone would need
+something on the order of 40x the largest fixture here, which is not a `.blend` anyone will produce by
+accident. The latency hazard is therefore **real in mechanism and small in magnitude** — which is the honest
+version of both cycle 1's "nothing measurable" (wrong) and the critic's "unbounded" (overstated).
+
+**Two swaps queued into one tick are safe.** Both answered, both from tick 54, no re-entrancy:
+
+```
+C2 twin-1 0.032s tick=54 status=success depth_max=1 scene='Scene'
+C2 twin-2 0.048s tick=54 status=success depth_max=1 scene='SecondScene'
+```
+
+**A truncated `.blend` with a valid `BLENDER` header — a fifth error shape, and no partial swap.** Cycle 1's
+four failure modes all failed at the format check, before any datablock was freed; this one gets past it:
+
+```
+C2 E4 status=success raised={"type": "RuntimeError", "message": "Error: Loading \"<path>\" failed:
+  Failed to read blend file '<path>': Missing DNA block\n"}
+C2 E4 objects 1 -> 1, filepath='<path>/second.blend', handlers=['load_pre', 'load_post_fail']
+C2 E4 scene after = 'SecondScene'
+```
+
+The database is **untouched** — same object count, `bpy.data.filepath` still the *previous* file, scene still
+the previous scene — and `load_post_fail` fires. So "database untouched on failure" survives the one failure
+mode that could plausibly have broken it. Note the error text embeds the absolute path **twice**.
+
+**`bpy.data.is_dirty` is a usable pre-swap guard, and unsaved work is otherwise destroyed in silence.**
+
+```
+C3 baseline: is_dirty before=False after=False
+C3 created UnsavedWork: status=success
+C3 objects now: ['RigFixtureCube', 'UnsavedWork']
+C3 AT SWAP ENTRY is_dirty=True  <-- is this a usable guard?
+C3 objects 2 -> 1
+C3 objects after the swap: ['SpikeSecondSphere']
+C3 UnsavedWork survived: False  (False = the unsaved cube is gone for good)
+```
+
+`is_dirty` is `False` on a freshly-loaded database and `True` after one mutating command, so it distinguishes
+exactly the case that matters. There is no "Save changes?" path from a timer callback, so without a guard
+`open_shot` silently discards whatever the user had not saved. **Carried to Tasks 5 and 6 as a requirement:
+`open_shot` must refuse when `bpy.data.is_dirty` is true unless the caller passes an explicit discard flag.**
+
+### Does the decision survive cycle 2? Yes — and here is what would have overturned it
+
+The rule's four conditions are met on a far wider envelope than cycle 1 tested: three orders of magnitude of
+file size, both sides of the drain budget, both `use_scripts` settings, a second client sending mid-load, two
+swaps in one tick, and a partial-read failure. Nothing intermittent appeared in 18 swaps.
+
+**The rule was under-specified, and that is worth stating plainly.** It asked only whether the callback can
+answer. It never asked what a *late* or *lost* answer costs after an irreversible swap — which is the question
+the async branch actually exists to answer. Cycle 1 applied the rule faithfully and reached the right branch,
+but justified it with *"in exchange for nothing measurable"*, which was wrong: the async branch buys a bounded
+first response and forecloses the E3 desync. The decision stands because that cost is small and mitigable
+(validate before swapping; `is_dirty` guard; Task 3's epoch), **not** because the alternative bought nothing.
+
+This did **not** trigger the rule's escalation clause: the outcome fit branch one cleanly on all four
+conditions. The defect was in the rule's framing, not in the fit, and it is recorded rather than smoothed over.
+
+### Repairs applied in cycle 2
+
+| # | Finding | Repair |
+|---|---|---|
+| R1 | Spec carried a falsified `temp_override` requirement | Spec §4.5 rewritten against measurement; operators run on the inherited context |
+| R2 | Window-loss scope asserted | Measured across three later ticks; does not outlive the swap |
+| R3 | `after_scene` could not distinguish fresh from stale | Re-measured with distinct scene names; scene is fresh, and the scene-gated capability set follows the file |
+| R4 | Ordering generalisation labelled measured, was deduced | Measured with a 4.6 s load; siblings land in later ticks, still new database |
+| R5 | "A barrier can inspect the queue after a load" | **Struck as wrong**; enqueue-time epoch stamping required. Correction block in Step 7 |
+| R6 | Unsaved work never considered | Measured; `is_dirty` guard carried to Tasks 5 and 6 |
+| R7 | Only format-check failures tested | Truncated valid-header file added; no partial swap; fifth error shape |
+| R8 | Drain re-entrancy and two-swaps-per-tick untested | Both measured safe (`depth_max=1`) |
+| R9 | Latency cost dismissed as "nothing measurable" | Curve measured; desync demonstrated; claim corrected |
+| R10 | `7/7` unreconstructible and stale after `807ef52` | Per-run tally table published |
+| R11 | Run 4 never declared its path under test | Run table extended to six rows with the same disclosure |
+| R12 | Timing figures unpasted | Transcript pasted above |
+| R13 | Step 3 blob's provenance unstated | Marked as the client-decoded response |
+| R14 | Caught and uncaught raises conflated | Separated in Step 4 |
+| R15 | Bookkeeping: header, last-commit row, "this commit", run count | All corrected |
+| R16 | Plan §0.4 still presented Q1 as open | Dated closure marker added |
+| R17 | Spec never mentioned path sanitization | §4.5 and its Security paragraph now name the disclosure channel |
+| R18 | Spec misattributed a 5.2.1 measurement to 5.2.2 | Corrected |
+
+### Still open, deliberately, and named rather than left silent
+
+- **A load exceeding `connection.py`'s 180 s timeout** was not produced — it would need a `.blend` far larger
+  than anything generated here. The desync *mechanism* is demonstrated (E3); only the file-size route to it is
+  untested.
+- **Concurrent swaps from two client processes** were not tested. Two swaps in one tick from one process were.
+  §07 ties the ordering contract to Task 3's two-socket test, which is where this belongs.
+- **Queue-full during a slow swap** (`_MAX_QUEUED_COMMANDS = 256`) was not exercised.
+- **Client disconnect during a load** was not tested; E3 covers give-up-and-reuse, which is adjacent but not
+  the same.
+- **The `use_scripts=False` re-run covered the decisive batch**, not Step 4's failure modes or Step 5's
+  handler firing. Cycle 2's runs 5 and 6 are all `use_scripts=False`, which extends the coverage to the
+  truncated-file failure and every cycle-2 swap, but runs 1-3's transcripts remain default-flag measurements.

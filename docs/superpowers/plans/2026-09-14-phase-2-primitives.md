@@ -402,7 +402,15 @@ part. See also the "Introspect, never guess" global constraint below, which now 
 
 ### 0.4 Two open design questions, and how this plan closes them
 
-Spec §4.5 leaves the reentrancy strategy explicitly undecided, and §10 Q8 names socket authentication as "the
+> **Q1 was closed on 2026-09-15 by Task 2**, whose experiment is recorded in
+> `PHASE2_TASK_STATE.md` under "Task 2 — the reentrancy strategy". **Decided: synchronous
+> validate-then-swap, answering after the swap.** The async-job-with-polling branch described below
+> is **rejected** — the callback demonstrably survives and answers — and is kept here only because
+> the rule that selected against it has to stay readable. Nothing below should be implemented as
+> written; read the TASK_STATE section for what Tasks 3, 5, 6 and 7 actually inherit. Q2 remains
+> open and is still Task 8's deliverable.
+
+Spec §4.5 left the reentrancy strategy explicitly undecided, and §10 Q8 names socket authentication as "the
 dominant risk for a pooled deployment" without proposing anything. Carrying both forward as prose would repeat
 the spec's own failure. This plan closes them as follows.
 

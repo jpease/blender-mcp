@@ -306,7 +306,7 @@ None of this exists today: zero hits for library overrides, `bpy.app.handlers`,
 state, not file data, and `server_core.py:184` already registers the drain timer
 `persistent=True` — verified to survive where an otherwise identical `persistent=False`
 timer does not. *(The `--background` caveat this carried is **closed**: re-verified 2026-09-14
-and again 2026-09-15 on Blender 5.2.2 with the server actually running under the live rig,
+on Blender 5.2.1 and again 2026-09-15 on 5.2.2, with the server actually running under the live rig,
 both as a scripted main-thread call (Phase 2 Task 1) and from inside the drain callback
 servicing a queued socket command (Task 2). `server._drain_timer` reads registered on both
 sides of the swap and the next queued command is answered.)*
@@ -336,20 +336,36 @@ sides of the swap and the next queued command is answered.)*
   response, which `connection.py:195-231` already depends on. The uncaught-failure path was
   measured too: a load that raises inside the handler reaches the client as a normal
   `{"status": "error"}` frame carrying Blender's own message, and the server keeps serving.
+  **That message embeds the full absolute path of the file that failed** — five distinct
+  shapes measured, including `Missing DNA block` for a truncated-but-valid-header file — so
+  `open_shot` must route it through Task 5's error sanitizer before it leaves the process;
+  passing Blender's text through verbatim is the automatic-critical path-leak item.
   **What the load does free is `bpy.context.window`, not the Python frame** — it reads `None`
-  immediately after a successful swap, on every swap measured, while `bpy.context.scene`
-  still resolves. Any `bpy.ops` call made after the swap in the same tick must therefore
-  supply its own context via `temp_override` rather than inherit one.
+  for the remainder of the swapping tick, on every swap measured, while `bpy.context.scene`
+  resolves and is the **new** file's scene (measured against fixtures with deliberately
+  different scene names). Three things follow, all measured rather than reasoned: the window
+  is still present in `bpy.data.window_managers[0].windows`, so `temp_override` has something
+  to override with; a context-light operator (`object.select_all`) **still succeeds on the
+  inherited context** despite `bpy.context.window` being `None`; and `bpy.context.window` is
+  non-`None` again by the next tick, so the loss does not outlive the swap. **Because
+  `bpy.context.scene` follows the new file, the scene-gated capability set does too** —
+  `_build_command_handlers()` reads `scene.blendermcp_use_polyhaven` / `_use_sketchfab` /
+  `_use_nd` and is rebuilt on every command, which is what makes the re-handshake in the
+  command table above a correctness requirement and not a convenience.
 - **Ordering — characterised 2026-09-15; the hazard is real and now demonstrated.** The drain
   loop keeps draining *after* the swap within the same tick: with four commands queued into
   one tick and the swap second, all four were answered from that one tick, and the
   `list_scene_objects` queued **before** the swap but drained **after** it silently reported
   the **new** file's contents (3/3 rounds). Commands are therefore not ordered against the
   database they were issued against, and a client's queued work can be answered from a file
-  it never asked about. Tick placement depends on the load fitting the drain budget — a
-  494 KB fixture loads in ~3 ms against a 0.02 s budget, so a larger file pushes the
-  siblings to the following tick — but that changes only *which* tick, not which database
-  they see. This is what the Phase 2 barrier and session epoch are for.
+  it never asked about. Measured on both sides of the drain budget: a 494 KB fixture loads in
+  ~3 ms and its siblings are answered from the **same** tick (3/3 rounds), while a 1.05 GB
+  fixture loads in ~4.6 s, ends the tick on the budget, and its siblings are answered from the
+  **following** ticks — still against the new database. Commands that *arrive during* a slow
+  load are queued by the client threads and drained after it, so a barrier cannot classify the
+  queue by inspecting it after the swap: the epoch has to be stamped at enqueue time, on the
+  client thread, and compared at dequeue. This is what the Phase 2 barrier and session epoch
+  are for.
 - **Rollback.** `transaction.py` backups reference datablocks that a load frees. `open_shot`
   must invalidate the transaction state, not merely clear undo.
 
@@ -388,7 +404,10 @@ sides of the swap and the next queued command is answered.)*
 
 **Security.** `open_shot` and `save_shot` add arbitrary-path read and overwrite to a socket
 with **no authentication** (§10 Q8) — currently the dominant risk for a pooled deployment,
-and not addressed by the link/append allowlist, which does not cover them.
+and not addressed by the link/append allowlist, which does not cover them. They also add a
+**disclosure channel**: every `wm.open_mainfile` failure shape measured embeds the full
+absolute path in its `RuntimeError` text, and the drain loop returns that text to the client
+verbatim unless something strips it.
 
 ### 4.6 The context surface
 
