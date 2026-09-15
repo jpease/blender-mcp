@@ -15,6 +15,66 @@ No push until the end-of-phase gate.
 > (`uv.lock` plus the two plan documents); at `3460316` only `uv.lock` is untracked, so Task 1 does **not**
 > commit the plan documents. `uv.lock` stays unstaged, permanently (§03 incidental churn).
 
+## Pickup contract — read this first if you are resuming
+
+Everything a fresh session needs is committed. Nothing load-bearing lives in a session scratchpad any more,
+which was **not** true before this section existed: Task 1's Step 5 transcripts were recorded from a harness
+that had already been lost once (see the closed item under "Known failures / blocked").
+
+### State
+
+| | |
+|---|---|
+| Branch | `main`, **unpushed**. `origin/main` is still at `523f427`. |
+| Last commit | Task 1 closed at **94/100** after critic cycle 4. |
+| Next task | **Task 2** (reentrancy strategy by experiment). Not started - no decision rule recorded, no spike written. |
+| Working tree | Clean apart from `uv.lock`, which stays unstaged permanently (§03 incidental churn). |
+| Blender | **5.2.2 LTS** at `/opt/homebrew/bin/blender`. Every API fact re-verified against it; see "5.2.2 re-verification". |
+
+### Committed tooling, and what each is for
+
+| Path | Use |
+|---|---|
+| `scripts/blender_rig.py` | The live rig. Addon socket only, no MCP server. |
+| `scripts/rig_scenarios/scenario_timer_survives_file_swap.py` | Task 1 Step 5's scenario. Its module docstring carries the exact invocation. |
+| `scripts/rig_scenarios/in_blender_open_mainfile.py` | The in-Blender half: probe timers plus the main-thread swap. |
+| `scripts/rig_scenarios/make_fixture.py` | Regenerates `fixture.blend`. The binary is deliberately **not** committed - its bytes differ per Blender build, so a generator is the durable form. |
+| `scripts/blender_probes/*.py` | Seven `--background` probes that reproduce the 5.2.2 API table, one concern each. Run them rather than trusting the table. |
+| `scripts/check_revert_anchors.py` | Reports which `revert_matrix.py` rows no longer anchor, and which would revert to unparseable code. **Run it after any task edits a file the matrix reverts** - three anchors broke in cycle 4 alone. |
+| `scripts/revert_matrix.py` | 117 rows, 0 survivors, 0 uncovered. `--list` for the coverage map, `--only <label>` for a subset. |
+
+Verified end to end from a clean directory after being committed: fixture generated, rig run, `RIG PASSED`,
+exit 0, on Blender 5.2.2. The committed copies are the ones that were run, not the scratchpad originals.
+
+### The plan's line numbers are stale by ~229 lines — re-derive, do not trust
+
+`server_core.py` is **1,880 lines**; plan §0.2 describes it at 1,651. Every citation in §0.2 has moved, and
+Task 2 reads several of them. Measured at the last commit:
+
+| Symbol | Plan §0.2 | Actual |
+|---|---|---|
+| `drain_command_queue` | `:267-321` | **`:352`** |
+| `_MAX_COMMANDS_PER_TICK` etc. | `:329-332` | **`:264`** (`_DRAIN_TIME_BUDGET_SECONDS` at `:52`) |
+| `_decode_and_queue_frame` | `:342-391` | **`:523`** |
+| `_build_command_handlers` | `:480-808` | **`:663`** |
+| `_READ_ONLY_COMMANDS` | `:813-870` | **`:996`** (still **54** entries) |
+| `execute_command_internal` | `:872-913` | **`:1055`** |
+| `_run_handler` | `:1064-1142` | **`:1247`**; the `mutation_transaction` wrap is at **`:1314`**, not `:1131` |
+| `get_addon_info` | `:1144-1158` | **`:1327`** |
+
+`_READ_ONLY_COMMANDS` holding 54 commands is re-confirmed by AST count, so the handoff's figure stands.
+
+### Task 2's first action, and why the order matters
+
+Step 1 is to copy §0.4's decision rule into this file **verbatim and dated, before running the spike**. The
+rule exists so an ambiguous result cannot be resolved by preference after the fact, and recording it afterwards
+forfeits that. The rule's two branches and its escalation clause are in plan §0.4; §09 says an outcome fitting
+neither branch is an escalation, not a third branch.
+
+Two constraints on the spike that are easy to miss: the temporary `__spike_open` command must be added to
+**`_READ_ONLY_COMMANDS`** for its lifetime, or `_run_handler` wraps it in `mutation_transaction` and triggers
+the data-destruction bug Task 4 has not fixed yet; and no spike code may land in the commit.
+
 ## Baseline (measured, never estimated)
 | Check | Value at 3460316 | How measured |
 |---|---|---|
@@ -917,7 +977,12 @@ answering pings, reproduces the 5.2.1 identity-matching finding on 5.2.2 — so 
 
 ## Known failures / blocked
 
-- **Task 1's Step 5 scenario harness was never committed and did not survive session 1.**
+- **[CLOSED 2026-09-15] Task 1's Step 5 scenario harness was never committed and did not survive session 1.**
+  Closed by committing it under `scripts/rig_scenarios/` (scenario, in-Blender half, and a fixture *generator*
+  rather than the binary), plus the seven 5.2.2 probes under `scripts/blender_probes/` and the anchor checker
+  as `scripts/check_revert_anchors.py`. The committed copies were then run from a clean directory end to end -
+  `RIG PASSED`, exit 0 - so the transcripts in this file are reproducible from the repository for the first
+  time. Task 10 still owns committing a *gate* scenario; this closes only the Step 5 one. Original entry:
   `scenario_step5.py`, `in_blender_open.py` and `fixture.blend` lived in that session's scratchpad, which is
   gone; only the transcripts remain. The three Step 5 transcripts in this file were therefore **not
   reproducible from the repository** as committed at `2852803`. Session 2 rebuilt all three from the documented
