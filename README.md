@@ -358,6 +358,10 @@ Store Sketchfab API keys in **Edit → Preferences → Add-ons → Blender MCP**
 
 Configure host and port with `BLENDER_HOST` and `BLENDER_PORT` environment variables (defaults: `localhost`, `9876`).
 
+**Transport**
+
+The server speaks **stdio** by default, which is what every MCP client config above launches. Set `BLENDERMCP_TRANSPORT=http` to serve streamable HTTP instead, for hosting the server beside a Blender on another machine (the container rig below does exactly this). `BLENDERMCP_HTTP_HOST` and `BLENDERMCP_HTTP_PORT` default to `127.0.0.1` and `8000`. A bad transport name or port is reported by its variable name and the server exits rather than falling back. **The HTTP endpoint has no authentication of its own**, so anything that can reach it can drive Blender, including reading and writing files — widen the bind address only behind a boundary you control.
+
 **Tool bundles**
 
 Configure which tool domains a server process registers with `BLENDER_MCP_TOOLSETS` — see [Tool Bundles](#tool-bundles).
@@ -414,6 +418,46 @@ This uses the `setuptools` backend declared in `pyproject.toml`'s `[build-system
 ### Installing the addon from a local checkout
 
 See [Installing the Blender Addon](#installing-the-blender-addon) above — point **Preferences → Add-ons → Install…** at `src/blender_mcp/bundled/addon/` in your checkout instead of a downloaded release.
+
+### Live Blender rig
+
+Some behaviour cannot be tested without a running Blender: the addon **refuses to start under `blender --background`**, and `bpy.app.timers` never fire there, so the drain loop that answers socket commands does not run. Anything that depends on a command actually being dequeued needs a real event loop. There are two rigs, and they do **not** reach the same layers.
+
+**Local (macOS) — `scripts/blender_rig.py`.** Launches a GUI Blender, stages *this checkout's* addon into a directory you supply, waits until that Blender answers a `ping`, and runs a scenario against it:
+
+```bash
+python scripts/blender_rig.py \
+    --work-dir /tmp/rig --scenario my_scenario.py \
+    --blend fixture=/path/to/fixture.blend
+```
+
+A scenario defines `run(rig)` and drives the socket with `rig.send("ping")`; it fails by raising. The scenario runs outside Blender, so when it needs Blender to do something of its own accord, pass that work as `--blender-script`. It gets `--scenario-timeout` seconds (default 300) before the rig abandons it and tears Blender down, and each command waits `--command-timeout` seconds (default 180, matching the real client) for its reply.
+
+What the isolation actually is, since the details matter:
+
+- The rig sets **both** `BLENDER_USER_RESOURCES` and `BLENDER_USER_SCRIPTS` to `--work-dir`, so config, datafiles and extensions land there too, and points `TMPDIR` at `<work-dir>/tmp` so Blender's session temp directory — autosaves, `quit.blend`, render previews — lands there as well. `BLENDER_USER_SCRIPTS` alone redirects only scripts — your own `recent-files.txt` is still rewritten the moment a scenario opens or saves a `.blend`. What keeps `userpref.blend` out of the run is `--factory-startup`, not an environment variable.
+- The launched Blender **leads with** `--work-dir` in the roots it advertises, through `BLENDERMCP_OUTPUT_ROOTS`. It does *not* advertise only that: the addon appends the open blend's directory, `bpy.app.tempdir`, `tempfile.gettempdir()` and `~` after it, so `$HOME` is still in the list. That list is an advisory preference ranking, not an enforced root set; narrowing the addon's own defaults is a separate decision. `--blend` fixtures are **copied** into the work dir — a scenario that saves cannot write through to your original.
+- Every inherited `BLENDER*` variable is dropped (`BLENDER_SYSTEM_SCRIPTS` redirects Blender's *system* scripts tree), along with `PYTHONPATH`, `PYTHONHOME` and `PYTHONSTARTUP`, so neither the checkout's `src/` nor a stray Python environment can shadow the staged addon.
+- Blender's output is teed to `<work-dir>/blender.log` by a reader thread that keeps draining even if it cannot decode a byte or cannot open the log, because an undrained pipe deadlocks Blender in `write()` on its main thread.
+- `--work-dir` must be empty, absent, or already carry the rig's own `.blender-rig-owned` marker; anything else is refused, which is what stops a real Blender resources root (`config/`, `datafiles/`, `extensions/`, `scripts/`, `userpref.blend`) or an auto-executing `startup/`/`modules/` tree from being adopted. Inside a marked work dir the rig replaces only `addons/blender_mcp` and its own `blends/` copies, so add-ons you installed alongside it survive.
+- `--port` defaults to a free ephemeral port rather than the addon's 9876, and the rig **aborts** if something is already listening on the port it picked, instead of driving your running Blender and reporting its answers as the rig's.
+
+Every file the rig's own process writes, and every Blender-side path the rig controls — user resources, scripts, the session temp dir, staged fixtures and the log — lives under `--work-dir`. What the rig cannot promise is a *scenario* that asks Blender to write somewhere else: the advertised roots are advisory, and a scenario may name any path.
+
+This mode speaks the **addon's socket protocol only and stands up no MCP server**, so a scenario can call addon commands but not MCP tools — `get_addon_status`, for instance, is server-side and unreachable here. The MCP wrapper layer is covered by ordinary `pytest`.
+
+**Container — `docker/blender/`.** Xvfb + Blender + the real MCP server, the only mode that runs both layers:
+
+```bash
+docker compose -f docker/blender/docker-compose.yml up --wait
+```
+
+Four things to know about it:
+
+- **It runs emulated on Apple Silicon.** Blender ships x86_64 Linux builds only, so compose forces `platform: linux/amd64` — correct, but slow. There is no Xvfb on macOS, which is why the local rig is a GUI Blender instead.
+- **Blender's socket has no authentication and must stay on loopback.** Compose publishes `127.0.0.1:8000` (the MCP server) and nothing else; Blender's own port never leaves the container. Publishing either on `0.0.0.0` would hand scene control plus file read/write to anyone who can reach the host.
+- `BLENDER_MCP_TOOLSETS` is pinned to `shot` so the rig exercises the shot pipeline's surface rather than the smaller `core` default. See [Tool Bundles](#tool-bundles).
+- **The entrypoint waits for Blender before starting the MCP server**, by round-tripping a `ping` on Blender's socket with a deadline (`BLENDER_READY_TIMEOUT_SECONDS`, default 600). The server makes a single connection attempt at startup and does not retry, and under emulation Blender takes far longer to open its socket than the server takes to give up. Either process then exiting takes the container down, so a dead Blender is never hidden behind an MCP port that still answers.
 
 ---
 

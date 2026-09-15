@@ -12,11 +12,45 @@ import sys
 
 from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ROOT_ADDON = REPO_ROOT / "src" / "blender_mcp" / "bundled" / "addon" / "__init__.py"
+
+
+def load_addon_source_module(file_name: str, alias: str) -> ModuleType:
+    """
+    Load one `bpy`-free module out of the bundled addon, straight from its file.
+
+    The addon package cannot be imported outside Blender - `__init__.py` and
+    `server_core.py` both import `bpy` - but individual leaf modules such as
+    `output_roots.py` are deliberately free of it. Loading by path is what lets
+    a test read the addon's own constants instead of retyping them. Nothing is
+    cached: each call re-executes the source, so a test that mutates module
+    state cannot leak into the next one.
+
+    Args:
+        file_name: The module's file name inside the addon package.
+        alias: `sys.modules`-style name to execute it under. Distinct aliases
+            keep two suites' copies from being mistaken for one another.
+
+    Returns:
+        ModuleType: The freshly executed module.
+
+    Raises:
+        AssertionError: If the addon no longer carries that module, which would
+            make every guard written against it compare against nothing.
+
+    """
+    path = ROOT_ADDON.parent / file_name
+    spec = importlib.util.spec_from_file_location(alias, path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"{path} is not an importable module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def load_addon_package(monkeypatch, name):

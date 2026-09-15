@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 
 from blender_mcp.addon_manager import (
     EXPECTED_ADDON_PROTOCOL_VERSION,
@@ -197,4 +197,51 @@ def test_repeat_install_preserves_original_backup(tmp_path: Path) -> None:
     assert am.install_addon(addons).success
     assert "USER LOCAL EDIT" in backup.read_text(encoding="utf-8"), (
         "repeat install clobbered the backup of the user's previous addon"
+    )
+
+
+def test_handshake_surfaces_writable_output_roots() -> None:
+    """The roots Blender reports have to reach the handshake the server caches."""
+    blender = Mock()
+    blender.send_command.return_value = {
+        "protocol_version": EXPECTED_ADDON_PROTOCOL_VERSION,
+        "addon_version": [1, 2, 0],
+        "capabilities": ["get_addon_info"],
+        "blender_version": "5.2.1",
+        "writable_output_roots": ["/output", "/tmp"],
+    }
+
+    handshake = handshake_addon(blender)
+
+    assert handshake.writable_output_roots == ["/output", "/tmp"]
+
+
+def test_handshake_defaults_writable_output_roots_when_the_addon_omits_them() -> None:
+    """
+    An addon one protocol behind sends no roots, and must not break the handshake.
+
+    The `== []` assertion alone cannot tell "the parse fell back correctly" from
+    "no parse exists at all", because `AddonHandshake.writable_output_roots` is
+    itself a `field(default_factory=list)`. The populated payload below is the
+    control that makes the first assertion mean something: both answers come out
+    of the same parse, so deleting that parse fails this test rather than
+    leaving it quietly passing on the dataclass default.
+    """
+    blender = Mock()
+    blender.send_command.return_value = {
+        "protocol_version": EXPECTED_ADDON_PROTOCOL_VERSION - 1,
+        "addon_version": [1, 2, 0],
+        "capabilities": ["get_addon_info"],
+        "blender_version": "5.2.1",
+    }
+
+    assert handshake_addon(blender).writable_output_roots == []
+
+    blender.send_command.return_value = {
+        **blender.send_command.return_value,
+        "writable_output_roots": ["/output"],
+    }
+
+    assert handshake_addon(blender).writable_output_roots == ["/output"], (
+        "the empty list above came from the dataclass default, not from parsing the payload"
     )

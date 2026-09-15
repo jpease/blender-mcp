@@ -488,6 +488,13 @@ What Phase 2 *does* own is the half that cannot wait, because Phase 2 is what cr
   at 31 rather than bumping again; it bumps to 32 only if Task 1 did not land. An earlier revision had both
   tasks claiming the 30→31 bump independently, which would have produced either a double bump or a silent
   collision.
+
+  > **Correction (2026-09-14, Task 1).** The parenthetical reason above is false. `git log -S` shows
+  > `docker-blender` bumped to 31 in `75a7abf` for the **inline image transport**, not for
+  > `writable_output_roots`, which was added later on that branch and rode the existing 31. The ruling is
+  > unaffected - 31 is simply the next number - but a future port of the inline image transport needs **32**.
+  > See `docs/superpowers/plans/PHASE2_TASK_STATE.md` decision 5.
+
 - **No capability may be lost.** `all` must keep advertising every pre-existing tool. The count moves *up* as
   Phase 2 adds tools; `bundles.py:8`'s docstring figure and the test that parses it move with it.
 - **Destructive operations require explicit confirmation** (CLAUDE.md). `save_shot` over an existing file,

@@ -3,6 +3,7 @@ import json
 import os
 import queue
 import socket
+import tempfile
 import threading
 import time
 import traceback
@@ -32,6 +33,7 @@ from .handlers.scene_physics import ScenePhysicsHandlersMixin
 from .handlers.sketchfab import SketchfabHandlersMixin
 from .handlers.viewport import ViewportHandlersMixin
 from .helpers import get_blendermcp_addon_preferences, get_mesh_object, paginate, sync_from_editmode
+from .output_roots import configured_roots, writable_roots
 from .transaction import mutation_transaction
 
 
@@ -1155,7 +1157,47 @@ class BlenderMCPServer(
             "protocol_version": ADDON_PROTOCOL_VERSION,
             "capabilities": sorted({"ping", "get_polyhaven_status", "get_nd_status", *self._build_command_handlers()}),
             "blender_version": bpy.app.version_string,
+            "writable_output_roots": self._writable_output_roots(),
         }
+
+    @staticmethod
+    def _writable_output_roots() -> list[str]:
+        """
+        List directories this Blender process can write renders and exports to.
+
+        The MCP server cannot work this out for itself once the two no longer
+        share a filesystem, so it is reported here. Deployment-specific roots
+        come first (see BLENDERMCP_OUTPUT_ROOTS), then this process's own
+        defaults.
+
+        This list is an **advisory preference ranking, not an enforced root
+        set**. Nothing here validates a later write against it. Three caveats a
+        containment boundary must not be built on without deciding them first:
+
+        - `bpy.app.tempdir` is session-scoped and Blender deletes it on exit,
+          yet it ranks *first* whenever no .blend is open and no roots are
+          configured. An agent that writes a render to the first offered root
+          loses it silently when Blender quits.
+        - `writable_roots` normalizes with `abspath`, not `realpath`, so a
+          symlinked root is reported under one name and would be enforced under
+          another.
+        - The default candidate set ends at `~`, so deriving enforced roots from
+          these defaults on an unconfigured desktop install makes the whole home
+          directory the boundary.
+
+        Returns:
+            list[str]: Absolute, writable directories, most preferred first.
+
+        """
+        blend_file = bpy.data.filepath
+        candidates = [
+            *configured_roots(),
+            os.path.dirname(blend_file) if blend_file else None,
+            getattr(bpy.app, "tempdir", None),
+            tempfile.gettempdir(),
+            os.path.expanduser("~"),
+        ]
+        return writable_roots(candidates)
 
     _SCENE_INFO_MAX_LIMIT = 200
 

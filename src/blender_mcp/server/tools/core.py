@@ -59,17 +59,15 @@ async def get_addon_status(ctx: Context) -> dict:
     """
     Check whether the connected Blender addon matches this MCP server version.
 
-    If outdated, tells the user how to update via `blender-mcp install-addon`
-    (then restart or re-enable the addon in Blender).
-
     Args:
         ctx: MCP request context.
 
     Returns:
         "up_to_date" (bool), "protocol_version"/"expected_protocol_version" (ints to compare), "addon_version",
-        "capabilities" (feature flags reported by the addon), "blender_version", "source" (how the handshake was
-        obtained), "warning" (non-None if something looks off), "update_command", and "after_install"
-        (what to do in Blender after running update_command).
+        "capabilities" (feature flags reported by the addon), "blender_version", "writable_output_roots"
+        (directories Blender can write to; empty when the addon reports none), "source" (how the
+        handshake was obtained), "warning" (non-None if something looks off), "update_command" (run it when
+        up_to_date is false), and "after_install" (what to do in Blender afterwards).
 
     Raises:
         ToolError: If the operation cannot be completed.
@@ -87,6 +85,7 @@ async def get_addon_status(ctx: Context) -> dict:
             "addon_version": result.addon_version,
             "capabilities": result.capabilities,
             "blender_version": result.blender_version,
+            "writable_output_roots": result.writable_output_roots,
             "source": result.source,
             "warning": result.warning,
             "update_command": "blender-mcp install-addon",

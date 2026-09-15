@@ -1,0 +1,9 @@
+# The build context is the whole repository (for pyproject.toml and poetry.lock), which is
+# hundreds of MB with .venv and .git. Allowlist only what the Dockerfile COPYs;
+# everything else reaches the container through the /repo bind mount instead.
+*
+!pyproject.toml
+!poetry.lock
+!docker/blender/start_server.py
+!docker/blender/healthcheck.py
+!docker/blender/entrypoint.sh

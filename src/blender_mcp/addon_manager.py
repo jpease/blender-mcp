@@ -20,13 +20,13 @@ import re
 import shutil
 import sys
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger("BlenderMCPServer")
 
 # Must match ADDON_PROTOCOL_VERSION in bundled/addon/__init__.py
-EXPECTED_ADDON_PROTOCOL_VERSION = 30
+EXPECTED_ADDON_PROTOCOL_VERSION = 31
 
 _ADDON_MARKER = 'bl_info = {\n    "name": "Blender MCP"'
 _INSTALLED_DIRNAME = "blender_mcp"
@@ -211,6 +211,10 @@ class AddonHandshake:
     blender_version: str | None
     source: str  # native | missing | error
     warning: str | None = None
+    # Directories Blender reported as writable. An addon at protocol 30 omits
+    # the field entirely, so the parse below defaults it to an empty list; no
+    # version check decides this.
+    writable_output_roots: list[str] = field(default_factory=list)
 
 
 def get_bundled_addon_path() -> Path:
@@ -533,6 +537,7 @@ def handshake_addon(blender_connection) -> AddonHandshake:
             blender_version=info.get("blender_version"),
             source="native",
             warning=warning,
+            writable_output_roots=list(info.get("writable_output_roots") or []),
         )
     except Exception as e:
         msg = str(e).lower()

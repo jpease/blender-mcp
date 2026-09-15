@@ -514,6 +514,13 @@ every existing tool already uses. These dimensions measure what can actually go 
   owns the phase's only protocol bump**; Task 3 asserts the pair is at 31 rather than bumping again. See Task
   1's two rulings for why.
 
+  > **Correction (2026-09-14, Task 1).** "bumped for the `writable_output_roots` handshake field" is false.
+  > `git log -S` shows `docker-blender` bumped to 31 in `75a7abf` for the **inline image transport**;
+  > `writable_output_roots` was added later on that branch and rode the existing 31. The ruling is unaffected -
+  > 31 is simply the next number - but a future port of the inline image transport needs **32**. See
+  > `docs/superpowers/plans/PHASE2_TASK_STATE.md` decision 5.
+
+
 **Tooling** — `.venv/bin/python`, `.venv/bin/pytest`, `.venv/bin/ruff`, `.venv/bin/basedpyright`.
 
 **The shell is fish.** Pass file paths as separate arguments, never through a variable. `--include=*.py` is

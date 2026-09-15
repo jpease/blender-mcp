@@ -1,0 +1,47 @@
+services:
+  blender:
+    build:
+      # The repository root, so the image can install the server's dependencies
+      # from poetry.lock - the exact versions CI tests, not whatever resolving
+      # pyproject.toml picks at build time (Dockerfile.dockerignore trims the
+      # context to the handful of files the build reads).
+      context: ../..
+      dockerfile: docker/blender/Dockerfile
+    # Blender only ships x86_64 Linux builds; force amd64 even on arm64 hosts
+    # (e.g. Apple Silicon), which run it correctly under emulation.
+    platform: linux/amd64
+    volumes:
+      - ../..:/repo:ro
+      - ./output:/output
+    environment:
+      # Reported to the MCP server through get_addon_info, so the agent knows
+      # which container path actually reaches the host. Nothing in the codebase
+      # hardcodes /output - a local (non-container) Blender simply leaves this
+      # unset and reports its own defaults instead.
+      BLENDERMCP_OUTPUT_ROOTS: /output
+      # Which tool bundles the MCP server advertises. Pinned rather than left at
+      # the default because the rig exists to exercise the shot pipeline the
+      # phase gate is about (open/save/link/override), and the `shot` mode is
+      # the surface that carries it. Leaving this unset would advertise the
+      # small `core` default instead, so the rig would silently prove a
+      # different catalog from the one under test. See server/bundles.py.
+      # Note the other half of that trade: it also widens what the loopback MCP
+      # endpoint exposes, from `core`'s 21 tools to `shot`'s 53. That is the
+      # surface anyone who can reach 127.0.0.1:8000 can drive, so raise it only
+      # for a rig, never for a deployment.
+      BLENDER_MCP_TOOLSETS: shot
+    # Only the MCP server is published: this container stands in for a remote
+    # host, and Blender's own socket never leaves it. Bound to loopback
+    # deliberately - there is no authentication, so publishing on 0.0.0.0 would
+    # let anyone who can reach this host drive Blender, including reading and
+    # writing files. Change this only for a host you trust the whole network of.
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      # Round-trips both Blender's socket and the MCP endpoint (see the script),
+      # so `docker compose up --wait` blocks until an agent could use it.
+      test: ["CMD", "/opt/blender-mcp/venv/bin/python", "/opt/healthcheck.py"]
+      interval: 2s
+      timeout: 8s
+      retries: 30
+      start_period: 3s
