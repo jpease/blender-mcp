@@ -385,6 +385,41 @@ data durability and security tasks, where a defect is silent and expensive.
 > revert-matrix coverage of every new node, TDD with both failure counts, and "all existing tests pass
 > unmodified". Those are the product, not process overhead, and nothing here relaxes them.
 
+> ### Amendment, 2026-09-16 — findings are triaged by kind, and the score is no longer a gate (user decision)
+>
+> **Applies to Tasks 4–10 and supersedes points 1–3 of the 2026-09-15 amendment above.** Its point 4 (the
+> three standing pre-checks) and its "unchanged and non-negotiable" list still apply.
+>
+> **Why.** A comparison of Task 3's cycle-1 tree (stash `5e9d482`) with its commit (`2c1d678`) found that
+> cycle 2 fixed real defects — a second process answered `success` out of the wrong file (T3-1), and File →
+> Save Copy poisoning `current_filepath` (T3-5) — and that cycles 3–6 were driven mainly by the rubric's
+> trust-boundary floor, not by defect risk. Of the 42.75 points gained, roughly 13–18 came from real bugs
+> (~2 of ~15¾ hours), 20–25 from hardening against a hostile socket peer, and ~5 from record-keeping.
+> Three defects were **introduced by hardening repairs** (T3-12's `settimeout(0.0)`, verified absent from
+> `5e9d482` and present in `2983041`; T3-16; T3-24's `elif`), each costing a cycle. The socket is
+> unauthenticated and loopback-only; the realistic threat model is one local user.
+>
+> **1. Classify every critic finding as exactly one of:**
+>
+> - **Bug / automatically critical** — wrong result, data loss, hang, dropped healthy connection, or any item
+>   on §07's automatically-critical list (including a test that still passes with its fix reverted).
+>   **Fixed before commit.**
+> - **Hardening** — matters only if the socket peer is hostile, or after a future auth/remote-exposure change.
+>   **Not fixed in the task.** Recorded with its cost in TASK_STATE's hardening backlog, which **Task 8**
+>   prioritises in its design deliverable. Implementation is a follow-up after Phase 2 unless the user pulls an
+>   item in.
+> - **Record-keeping** — false or unbounded docstring claims, stale numbers, record structure. **Fixed once, at
+>   commit time, in the same task**, after the code is frozen and re-measured. Not re-reviewed.
+>
+> **2. At most two cycles.** Cycle 1 runs all four critic lenses. **Cycle 2 runs only if cycle 1 produced
+> blocking repairs**, and only the lenses that had blocking findings; each re-run critic also checks the
+> repairs for newly introduced defects. If cycle 1 finds nothing blocking, the task closes after one cycle.
+> **If a blocking finding is still open after cycle 2, stop and ask the user — there is no cycle 3.**
+>
+> **3. The score is recorded, not gated.** The stop condition is **zero open bugs and zero
+> automatically-critical items**. §07's 100-point scores are still recorded per cycle for comparison, but
+> ≥90 overall and ≥80% per dimension no longer block a commit.
+
 **Task 1 is Opus-tier but stays at two cycles**, and the distinction is worth stating rather than leaving as an
 apparent inconsistency: its consequence is high because every other task's *evidence* runs through it (see
 §05), but its defects are of a kind two cycles find — a missing wiring site makes a ported test fail, a missed
