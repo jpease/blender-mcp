@@ -819,6 +819,23 @@ has no `bundles.py` and registers all 285 tools, so **it must merge or cherry-pi
 `bundles.py` before it is used for anything beyond local testing** — currently scheduled in
 no phase.
 
+> **Correction, 2026-09-16 (Phase 2 Task 10).** The paragraph above is stale on every clause.
+> Task 1's rig work ported the container forward **onto `main`**, which already has
+> `bundles.py` — there was no branch left to merge or cherry-pick from. `BLENDER_MCP_TOOLSETS`
+> is set explicitly in `docker/blender/docker-compose.yml` (pinned to `shot`, not left at the
+> `core` default), so the container does not register all 285 tools; a live `tools/list`
+> against it reports **53**. And "currently scheduled in no phase" is false as of this task:
+> the container work landed in **Phase 2 Task 1**. What is still true: the image build needs
+> outbound network access to install dependencies (measured 2026-09-16: this task's
+> environment could reach the Docker daemon and pull registry images, but the build step's
+> `pip`/`poetry` install could not resolve `pypi.org` from inside the build container — a
+> sandbox-network limitation of that run, not a property of the compose file or the image
+> itself, and not evidence against `docs/superpowers/plans/PHASE2_TASK_STATE.md`'s 2026-09-15
+> "The container half" measurement, which built and health-checked the same image with a real
+> network). The container runs headless under Xvfb (`docker/blender/Dockerfile` installs
+> `xorg-x11-server-Xvfb`), not "Xvfb-free" — an earlier revision of this correction said the
+> opposite.
+
 ### 7.1 The task-success bar
 
 §4.6 says "as small as still works well." That is unbounded without a definition of *works
@@ -914,6 +931,54 @@ top, which is why the gate is restated per-phase below rather than claimed once.
 | **3 — Consistency** | Canon registry + `LocalMirrorResolver`; `content_digest`; extractor + hasher for `asset`, `material`, `color`, `format`, `artifact`; the round-trip check; `blend` presets — seeded from `create_studio_lighting`, which is already a preset in all but name. Artist-facing plugin (agent loop, UI, credentials). One canon character and location, hand-built. | Two shots; a deliberate drift caught and a legitimate change not; a `.blend` that reproduces its own frames |
 | **4 — Enforcement** | Addon mode guard including `obj.data`. Baselines, exceptions, `assert_consistency`, `publish_shot`, manifest. `load_post` opt-in digest re-check. `shot_recipe` recording. Socket authentication. `StudioAssetResolver`, `recipe` presets, `audit_episode`. | A shot cannot publish inconsistent from any client configuration |
 | **5 — Hosted** | Session model, router, pooling, concurrency, multi-provider evaluation. | Media Center drives a shot end to end |
+
+> **Phase 2 gate: met, 2026-09-16, revision: the Phase 2 Task 10 commit, on top of `285280a`.** "Open a shot, link canon,
+> create an override, save, reopen with the link intact; no hang" was run end to end over a
+> live GUI Blender (`scripts/blender_rig.py`,
+> `scripts/rig_scenarios/scenario_phase2_gate.py`): `reset_session` → `open_shot` → the
+> handshake (`get_addon_info` / `get_session_info`, in agreement) → `link_canon_library` →
+> `create_override` (an object inside it `is_editable=True`, `is_system_override=False`,
+> resolved and asserted by `session_uid` **at creation**) → `save_shot`, asserting its own
+> reported `compress=False` and `relative_remap=False` plus a direct on-disk check that the
+> canon library's absolute path was written verbatim (the two published-field checks alone do
+> not catch a `relative_remap` regression: a `True` value still leaves an absolute link's
+> `Library.filepath` absolute, and the client-facing name is reduced to the same leaf either
+> way) → `open_shot` on the saved file → `list_libraries` (the library's published filepath
+> byte-identical to the one recorded before the save, `is_missing=False`) → `create_override`
+> retried on the collection's fresh post-reopen `session_uid`, refused as already-overridden,
+> which is uid-based proof the override **persisted** the round trip. **The gate does not
+> re-observe `is_editable`/`is_system_override` after the reopen**: no addon command exposes
+> either field by `session_uid` post-reopen, so that pair is asserted once, live, at creation,
+> and the claim that it still holds after a save/reopen is evidenced separately by
+> `scripts/blender_probes/linking_handlers_real_blender.py` sections A/B against real Blender
+> data structures directly, not by this socket-only gate. Five negative cases followed, each
+> pipelined behind (or ahead of, for the swap case) a `ping` **on its own single connection**,
+> so the same connection that received the refusal is the one proven still to answer
+> afterward: a missing file, a path outside the configured roots, an unconfirmed overwrite
+> (target bytes unchanged on disk), a **compressed** `.blend` accepted by `open_shot` (the
+> magic-byte case, which must succeed), and a command queued behind an `open_shot` cleanly
+> discarded rather than run against the new file — no absolute path in any error message, no
+> epoch movement on any of the three genuine failures. **"Still to answer" is not always a
+> pong**: `open_shot`/`reset_session` are classified as a session swap by command *type*, before
+> the outcome is known (`server_core._run_session_swap`'s own docstring: "a refused swap
+> discards the queue too" — a documented Task 6 backlog item, not a bug this task introduced),
+> so the pinged `ping` behind the *missing-file* and *outside-roots* cases is itself
+> barrier-discarded, not answered normally; only the `save_shot`-based unconfirmed-overwrite
+> case gets a plain successful pong behind it. Either shape is a real frame back on the same
+> socket, which is what the "still works" claim needs. Measured 2026-09-16: 22 requests, 22
+> responses, 1.09s wall clock (well under the client's 180s per-command timeout). Every
+> request/response pair is per-connection first-frame evidence, not an independent tally:
+> `rig.send` and the pipelined helper each raise before returning if the frame read back is
+> missing, malformed or answers the wrong request id, so a response is only counted because the
+> matching request's own reply already passed that check. This is single-client evidence over
+> the **addon socket only**; the
+> MCP-tool-wrapper layer (`server/tools/*`) is proven separately by `pytest` against a stubbed
+> connection (Task 10's ruling (b)), and the multi-process ordering clause of §07's concurrency
+> dimension is carried by
+> `tests/server/test_threading.py::test_every_command_spanning_a_swap_is_answered_on_both_sockets`
+> (Task 3), not re-demonstrated here. Full transcript and command-by-command mapping reported
+> alongside this task's handoff, for recording in `docs/superpowers/plans/PHASE2_TASK_STATE.md`
+> (not edited by this change; a concurrent task was editing adjacent sections of that file).
 
 ## 9. Decisions
 

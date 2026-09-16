@@ -28,8 +28,8 @@ that had already been lost once (see the closed item under "Known failures / blo
 | | |
 |---|---|
 | Branch | `main`, **unpushed**. `origin/main` is still at `523f427`. |
-| Last commit | **Task 9**, after Task 8 (`5c0bccf`), Task 7 (`d8fef56`), Task 6 (`f24e01e`), Task 5 (`fcad04f`), Task 4 (`76f782d`) and the decision-13 amendment (`1f3619f`). Before it, **`2c1d678` — Task 3**, committed at **88.75/100 against a 90 gate** (below it; see the closing note at the end of this file). Task 2 closed after four cycles; Task 1 at 94/100. |
-| Next task | **Task 10** (phase gate), then the end-of-phase gate. Tasks 4-7 are done; read their sections at the end of this file. Historical note for Task 4, kept: Task 3 is **done and committed**. Read its closing note first — it says why it took six cycles and what §06's gate-driven amendment changes. **Task 4 must not assume "the epoch moved ⇒ a `load_post` fired"**: three sites move it (see T3-18/19). `_SESSION_SWAP_COMMANDS` is landed and single-sourced; Task 4 adds `_DATABLOCK_REPLACING_COMMANDS` as a **separate** constant and must not merge them. |
+| Last commit | **Task 10**, after Task 9 (`285280a`), Task 8 (`5c0bccf`), Task 7 (`d8fef56`), Task 6 (`f24e01e`), Task 5 (`fcad04f`), Task 4 (`76f782d`) and the decision-13 amendment (`1f3619f`). Before it, **`2c1d678` — Task 3**, committed at **88.75/100 against a 90 gate** (below it; see the closing note at the end of this file). Task 2 closed after four cycles; Task 1 at 94/100. |
+| Next task | **End-of-phase gate** from a clean tree, then stop and report. **No push** without the user's go-ahead. Tasks 4-7 are done; read their sections at the end of this file. Historical note for Task 4, kept: Task 3 is **done and committed**. Read its closing note first — it says why it took six cycles and what §06's gate-driven amendment changes. **Task 4 must not assume "the epoch moved ⇒ a `load_post` fired"**: three sites move it (see T3-18/19). `_SESSION_SWAP_COMMANDS` is landed and single-sourced; Task 4 adds `_DATABLOCK_REPLACING_COMMANDS` as a **separate** constant and must not merge them. |
 | Working tree | Clean apart from `uv.lock`, which stays unstaged permanently (§03 incidental churn). |
 | Blender | **5.2.2 LTS** at `/opt/homebrew/bin/blender`. Every API fact re-verified against it; see "5.2.2 re-verification". |
 | Review loop | **Changed again 2026-09-16 for Tasks 4-10** (decision 13, handoff §06's 2026-09-16 amendment): findings triaged as bug / hardening / record-keeping; only bugs and automatically-critical items block; at most two cycles, then ask the user; scores recorded, not gated. Hardening goes to the backlog under decision 13. Tasks 1-3 ran under earlier rules. |
@@ -237,7 +237,7 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | 7 | Addon linking handlers | Opus | **Done — three cycles plus a reviewer-verified final repair** (user decisions 2026-09-16) | this commit | Six commands in `handlers/linking.py`; decisions 25-30; see "Task 7" at the end of this file. |
 | 8 | Socket authentication — design deliverable | Opus | **Done — two review cycles** | this commit | Spec §4.8, §10 Q8, Appendix A R2; `docs/superpowers/plans/phase-4-socket-authentication-work-item.md`; decisions 23-24. |
 | 9 | Server-side MCP tools, bundle placement, payload ceiling | Sonnet | **Done — two cycles** | this commit | Ten tools in core module `file_lifecycle`; `_BLEND_FILE_TOOLS`; ceilings raised once to measured values (decision 31); see "Task 9" at the end of this file. |
-| 10 | The phase gate scenario | Sonnet | Not started | — | Written against the addon socket only (decision 3). |
+| 10 | The phase gate scenario | Sonnet | **Done — gate met live; one repair round** | this commit | `scripts/rig_scenarios/scenario_phase2_gate.py` + `tests/test_phase2_gate.py`; see "Task 10" at the end of this file. |
 
 ## Live-Blender evidence
 
@@ -3694,3 +3694,88 @@ symbol; reverting the placement fails 21 nodes).
 | basedpyright | 71 / 4 |
 
 **Wall time:** implementer ~24 min + repair ~18 min; critics ~12 + ~5 min (C1), ~6 min (C2); reviewer ~10 min.
+
+---
+
+## Task 10 — the phase gate scenario
+
+Spec §8's Phase 2 gate: **"Open a shot, link canon, create an override, save, reopen with the link intact; no
+hang."** Driven over the **addon socket** (ruling (b)); the MCP-tool mapping is Task 9's `pytest` evidence.
+
+- `scripts/rig_scenarios/make_phase2_gate_fixtures.py` builds `canon.blend` (collection `CanonHero`, object
+  `HeroBody`) and `shot.blend` (empty), both `compress=False`, in background Blender. The compressed fixture is
+  Task 5's committed `tests/fixtures/blend/empty_zstd.blend`; the save target is created by the scenario.
+- `scripts/rig_scenarios/scenario_phase2_gate.py`: steps 1-10 and the Step 4 / 4b negatives.
+- `tests/test_phase2_gate.py`: collected, no `bpy` at module scope, **skipped** unless `BLENDERMCP_LIVE_RIG=1`
+  (marker `phase2_gate` in `pyproject.toml`); when enabled it builds the fixtures, runs the rig, asserts exit 0 and
+  `RIG PASSED`.
+- Spec §8 Phase 2 row marked met with the disclosures below; §7's stale `docker-blender` / `bundles.py` claim
+  corrected in a dated block.
+
+### Live gate, reproduced by the reviewer (quiet box, Blender 5.2.2)
+
+```
+/opt/homebrew/bin/blender --background --factory-startup --python scripts/rig_scenarios/make_phase2_gate_fixtures.py -- <W>/canon.blend <W>/shot.blend
+.venv/bin/python scripts/blender_rig.py --work-dir <W>/rig --scenario scripts/rig_scenarios/scenario_phase2_gate.py \
+    --blend canon=<W>/canon.blend --blend shot=<W>/shot.blend --blend compressed=tests/fixtures/blend/empty_zstd.blend
+```
+
+```
+QUIET BOX [before]: 0.27 load per core (threshold 1.00) - quiet-box verified
+RIG: reset_session + open_shot(shot) -> epoch 2, ping after it still works (no hang)
+RIG: get_addon_info and get_session_info agree: epoch 2
+RIG: link_canon_library -> library uid=307 filepath='canon.blend', collection uid=308
+RIG: create_override -> hierarchy_root_uid=314, object uid=315 is_editable=True is_system_override=False
+RIG: save_shot -> phase2_gate_saved.blend, header=b'BLENDER', relative_remap=False, compress=False (canon's absolute path verified present on disk), epoch unchanged at 2
+RIG: open_shot(saved) -> epoch 3
+RIG: list_libraries after reopen -> filepath byte-identical ('canon.blend'), is_missing=False; override persistence confirmed: "collection session_uid 350 is already overridden by 'CanonHero' (session_uid 344)"
+RIG: phase-2 gate scenario (steps 1-10) passed
+RIG: negative/missing-file refused: 'file does not exist'; connection still works
+RIG: negative/outside-roots refused: 'path is outside the allowed file roots (BLENDERMCP_FILE_ROOTS); see file_roots in get_addon_status'; connection still works
+RIG: negative/unconfirmed-overwrite refused: 'the target .blend already exists; pass confirm_overwrite=true to replace it'; target bytes unchanged; connection still works
+RIG: negative/compressed-.blend open_shot SUCCEEDED as required -> epoch 4
+RIG: negative/queued-behind-open_shot -> swap succeeded (epoch 5), behind command cleanly discarded: 'Discarded without running: a session file swap was attempted while this command was queued, ...'
+RIG: totals -> requests=22 responses=22 wall_clock_seconds=1.02
+QUIET BOX [after]: 0.27 load per core (threshold 1.00) - quiet-box verified
+RIG PASSED
+```
+
+The same scenario passed three times (implementer twice, reviewer twice, 0.96-1.09 s).
+
+### What this evidences, and what it does not — stated, not implied
+
+- **Criterion 2 (link intact).** The library is resolved by uid after reopen with `is_missing=False`; Step 7
+  asserts `relative_remap=False` and `compress=False` in the save result **and** that the canon's absolute path
+  bytes are present in the saved uncompressed file. The published `filepath` is the leaf, so Step 9's comparison
+  alone could not detect a `relative_remap` regression — measured by the critic: for an absolute link
+  `relative_remap=True` leaves `Library.filepath` absolute anyway.
+- **Override editability after reopen is not re-read by the live gate.** No addon command exposes an override
+  object's `is_editable` / `is_system_override` by uid after a reopen (`list_libraries` datablocks are the
+  library's `users_id`; `get_object_info` resolves by name, which is ambiguous after Route C). The live gate
+  asserts editability at creation (Step 6) and **persistence** after reopen (a uid-resolved second
+  `create_override` is refused). Post-reopen `is_editable=True, is_system_override=False` is evidenced by
+  `scripts/blender_probes/linking_handlers_real_blender.py` sections A/B on real Blender (reviewer run, Task 7)
+  and by the critic's mirror of the exact gate sequence. A future addon command reading override state by uid
+  would close this.
+- **Request/response parity (criterion 4)** is per-connection first-frame evidence: `rig.send` opens a
+  connection per command and raises on a missing or mismatched frame, so a response is counted only once
+  received and matched. **Single-client.** The multi-process clause of §07's concurrency dimension is carried by
+  Task 3's two-socket tests in `tests/server/test_threading.py` (`test_every_command_spanning_a_swap_is_answered_on_both_sockets`,
+  `tests/server/test_threading.py:1035`), not by this scenario.
+- **"Connection still works" after a refused `open_shot`** is proven by a trailing pipelined `ping` coming back
+  as a clean barrier discard frame, not as a pong — a refused swap still discards its queue (Task 6 backlog row);
+  after the refused `save_shot` the trailing `ping` succeeds.
+- **Docker supplement not run.** `docker compose ... up --build` failed at image build: the build container could
+  not resolve `pypi.org` (`NameResolutionError`; `nslookup pypi.org` from a plain `alpine` container also failed)
+  — a network-egress restriction in this session's sandbox. No container parity is claimed; the 2026-09-15
+  container measurements under "The container half" remain the latest.
+
+### Review
+
+One combined critic (Opus): one bug — Step 7 did not assert the save kwargs and Step 9 could not stand in —
+plus disclosure corrections (§8 implied post-reopen editability was read live; §7 claimed "Xvfb-free", false;
+"same connection set"; fixture provenance) and two hardenings (assert the barrier's discard text; prove the same
+socket survives a refusal). One repair round, verified by the reviewer's live re-run above.
+Scores (cycle 1): Durability 23/30, Concurrency 21/25, Trust 18/20, Evidence 11/15, Code quality 9/10.
+
+**Wall time:** implementer ~20 + ~9 min; critic ~5 min; reviewer ~10 min.

@@ -23,6 +23,9 @@ blender-mcp = "blender_mcp.server:main"
 [tool.pytest.ini_options]
 python_files = ["test_*.py"]
 testpaths = ["tests"]
+markers = [
+    "phase2_gate: shells out to a live GUI Blender via scripts/blender_rig.py (plan Task 10); skipped unless BLENDERMCP_LIVE_RIG=1 is set and /opt/homebrew/bin/blender exists",
+]
 
 [tool.pyright]
 include = ["src", "tests", "scripts"]
