@@ -5,15 +5,18 @@ Every MCP client connection receives the full `tools/list` response for whatever
 registered on the process's `FastMCP` app, and the client then carries those definitions in
 the model's context on every turn -- so an advertised tool is permanent context occupancy,
 not a one-time startup cost. This module is the single statement of that cost model; other
-modules point here rather than restate it. With every bundle registered (285 tools, per
+modules point here rather than restate it. With every bundle registered (295 tools, per
 `scripts/measure_catalog.py all`), that response alone can blow out a client's context
 before any real work starts. `BLENDER_MCP_TOOLSETS` lets a client config select a subset of
 domains per process instead.
 
 A module belongs in `CORE_MODULES` only if essentially every workflow needs it, or if a
-client cannot discover the scene without it. Everything else is a bundle. `CORE_MODULES` is
-pre-split residue and has not been re-derived against that test: the seven animation tools
-still in core are its single heaviest block and the obvious next candidates. Byte figures
+client cannot discover the scene without it. Everything else is a bundle. `file_lifecycle`
+(Phase 2 Task 9) joins core on that test: `shot` and `asset` both need to open and save a
+file, and the disjointness test forbids a bundle shared by both modes (see that module's
+docstring). `CORE_MODULES` is otherwise pre-split residue and has not been re-derived
+against that test: the seven animation tools still in core are its single heaviest block
+and the obvious next candidates. Byte figures
 belong in `scripts/measure_catalog.py`'s output, not in this prose - one quoted here drifts
 the moment a tool's description is edited, and only the tool count above is pinned by a test.
 
@@ -32,6 +35,7 @@ CORE_MODULES: tuple[str, ...] = (
     "object_animation",
     "viewport",
     "animation",
+    "file_lifecycle",
 )
 
 # Bundle name -> tool submodules under `blender_mcp.server.tools` it registers. A dotted entry

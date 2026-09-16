@@ -241,9 +241,9 @@ command = "blender-mcp"
 blender-mcp registers close to 300 tools in total. Sending all of them to a client on every
 connection can be large enough to eat into the context available for the actual task, so by
 default a server process only registers its **core** bundle — scene inspection, object editing,
-viewport, and animation (~21 tools). Everything else is opt-in, selected with the
-`BLENDER_MCP_TOOLSETS` environment variable (a comma-separated list of names, or `all` for the
-previous everything-registered behavior).
+viewport, animation, and file lifecycle/linking (~31 tools). Everything else is opt-in, selected
+with the `BLENDER_MCP_TOOLSETS` environment variable (a comma-separated list of names, or `all`
+for the previous everything-registered behavior).
 
 A name is either a **mode** — one word for the surface an artist is working in — or a **bundle**,
 for fine-grained control. Modes are curated presets over bundles and compose with them, e.g.
@@ -256,7 +256,7 @@ for fine-grained control. Modes are curated presets over bundles and compose wit
 
 | Bundle | Adds |
 |---|---|
-| *(default, always on)* | scene inspection, object editing, viewport, animation |
+| *(default, always on)* | scene inspection, object editing, viewport, animation, file lifecycle (open/save/reset a shot, link/override/list/reload/relocate/unlink canon libraries) |
 | `core-authoring` | mesh and model creation/editing |
 | `camera` | camera placement, framing, shots (rig construction is separate, see `camera-rigs`) |
 | `camera-rigs` | orbit/dolly/crane/path rig construction |

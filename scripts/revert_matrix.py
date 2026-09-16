@@ -78,6 +78,11 @@ ADDON_TEXT_HYGIENE = ROOT / "src/blender_mcp/bundled/addon/text_hygiene.py"
 SERVER_TEXT_HYGIENE = ROOT / "src/blender_mcp/text_hygiene.py"
 ADDON_FILE_LIFECYCLE = ROOT / "src/blender_mcp/bundled/addon/handlers/file_lifecycle.py"
 ADDON_LINKING = ROOT / "src/blender_mcp/bundled/addon/handlers/linking.py"
+# Task 9: server-side tool wrappers and their registration/documentation surface.
+SERVER_FILE_LIFECYCLE_TOOL = ROOT / "src/blender_mcp/server/tools/file_lifecycle.py"
+SERVER_DOCUMENTATION = ROOT / "src/blender_mcp/server/tools/_documentation.py"
+SERVER_BUNDLES = ROOT / "src/blender_mcp/server/bundles.py"
+TEST_BUNDLES_FILE = ROOT / "tests/server/test_bundles.py"
 ADDON_INIT = ROOT / "src/blender_mcp/bundled/addon/__init__.py"
 TEST_THREADING_FILE = ROOT / "tests/server/test_threading.py"
 SERVER_CLI = ROOT / "src/blender_mcp/server/cli.py"
@@ -104,6 +109,10 @@ FLT = "tests/test_file_lifecycle_handlers.py"
 LKT = "tests/test_linking_handlers.py"
 CORET = "tests/server/tools/test_core.py"
 CLIT = "tests/server/test_cli_transport.py"
+# Task 9's server-side tool wrapper tests. Named distinctly from FLT (the addon/bpy-level
+# handler tests Task 6 added) -- same subject, different layer.
+SFLT = "tests/server/tools/test_file_lifecycle.py"
+BUNT = "tests/server/test_bundles.py"
 AMT = "tests/test_addon_manager.py"
 # Named because the node id plus its parameter is one character past the line
 # limit inline, and splitting the f-string is what `ruff format` joins back.
@@ -146,7 +155,7 @@ NFKC_BACKSLASH_LIB = (
 # The files added outright by a Phase 2 task; every node they collect must be
 # accounted for. Task 1 added the first five; Task 3 added `test_session_state.py`;
 # Task 5 added the next two; Task 6 added `FLT`; Task 7 added the last.
-NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, PHT, FLT, LKT)
+NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, PHT, FLT, LKT, SFLT)
 # Nodes added to files that already existed. **Not optional bookkeeping:**
 # `coverage_gaps()` subtracts the rows below from *this* universe, so a task that
 # adds nodes here without listing them gets a "0 uncovered" that is true of the
@@ -280,6 +289,11 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[file_roots]",
     f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[file_roots_enforced]",
     f"{AMT}::test_a_hostile_element_inside_a_list_field_is_dropped_not_published[file_roots]",
+    # --- Task 9: file_lifecycle joins core, and the ten tools' hints/prose ---
+    f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",
+    f"{BUNT}::test_file_lifecycle_tools_are_exactly_ten_and_reachable_from_shot_and_asset",
+    f"{BUNT}::test_file_lifecycle_tools_advertise_correct_hints",
+    f"{BUNT}::test_file_lifecycle_tools_blend_file_prose_is_correct",
 )
 
 # Nodes no single revert can break on their own, with the reason. Keeping these
@@ -4345,6 +4359,232 @@ REVERTS: list[Revert] = [
         "        return client_safe_leaf(name)\n",
         (f"{LKT}::test_library_names_are_reduced_without_touching_the_filesystem",),
         also="\nfrom ..text_hygiene import client_safe_leaf\n",
+    ),
+    # --- Task 9: the ten server-side file-lifecycle/linking tools ---
+    Revert(
+        "task 9: get_session_info is not registered as an MCP tool",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        "@mcp.tool()\nasync def get_session_info(ctx: Context) -> dict:",
+        "async def get_session_info(ctx: Context) -> dict:",
+        (f"{SFLT}::test_file_lifecycle_tools_are_registered_and_dispatched",),
+    ),
+    Revert(
+        "task 9: get_session_info sends an extra param the addon command takes none of",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        '    return await _call("get_session_info", {})',
+        '    return await _call("get_session_info", {"extra": True})',
+        (f"{SFLT}::test_get_session_info_forwards_no_params",),
+    ),
+    Revert(
+        "task 9: open_shot's discard_unsaved default is unpinned to True",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        "    discard_unsaved: bool = False,\n",
+        "    discard_unsaved: bool = True,\n",
+        (f"{SFLT}::test_open_shot_defaults",),
+    ),
+    Revert(
+        "task 9: open_shot does not forward discard_unsaved",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        '{"filepath": filepath, "load_ui": load_ui, "discard_unsaved": discard_unsaved}',
+        '{"filepath": filepath, "load_ui": load_ui, "discard_unsaved": False}',
+        (f"{SFLT}::test_open_shot_forwards_every_parameter",),
+    ),
+    Revert(
+        "task 9: save_shot does not forward compress",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        '"compress": compress,',
+        '"compress": False,',
+        (f"{SFLT}::test_save_shot_forwards_every_parameter",),
+    ),
+    Revert(
+        "task 9: save_shot's filepath=None default is unpinned",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        "    filepath: str | None = None,\n    compress: bool = False,",
+        '    filepath: str | None = "",\n    compress: bool = False,',
+        (f"{SFLT}::test_save_shot_default_filepath_is_none",),
+    ),
+    Revert(
+        "task 9: save_shot removed from _DESTRUCTIVE_TOOLS, so the hint depends on the schema alone",
+        SERVER_DOCUMENTATION,
+        '    "reload_library",\n    "save_shot",\n}',
+        '    "reload_library",\n}',
+        (f"{SFLT}::test_save_shot_destructive_hint_is_explicit_not_schema_derived",),
+    ),
+    Revert(
+        "task 9: reset_session's confirm default is unpinned to True",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        "async def reset_session(ctx: Context, confirm: bool = False) -> dict:",
+        "async def reset_session(ctx: Context, confirm: bool = True) -> dict:",
+        (f"{SFLT}::test_reset_session_defaults",),
+    ),
+    Revert(
+        "task 9: reset_session does not forward confirm",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        '    return await _call("reset_session", {"confirm": confirm})',
+        '    return await _call("reset_session", {"confirm": False})',
+        (f"{SFLT}::test_reset_session_forwards_confirm",),
+    ),
+    Revert(
+        "task 9: link_canon_library does not forward as_override",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        '"as_override": as_override,\n            "relative": relative,',
+        '"as_override": False,\n            "relative": relative,',
+        (f"{SFLT}::test_link_canon_library_forwards_every_parameter",),
+    ),
+    Revert(
+        "task 9: link_canon_library's relative=False default is unpinned to True",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        "    relative: bool = False,\n    scene_uid: int | None = None,\n) -> dict:",
+        "    relative: bool = True,\n    scene_uid: int | None = None,\n) -> dict:",
+        (f"{SFLT}::test_link_canon_library_defaults",),
+    ),
+    Revert(
+        "task 9: create_override drops scene_uid before forwarding it",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        '    return await _call("create_override", {"collection_uid": collection_uid, "scene_uid": scene_uid})',
+        '    return await _call("create_override", {"collection_uid": collection_uid, "scene_uid": None})',
+        (f"{SFLT}::test_create_override_forwards_every_parameter",),
+    ),
+    Revert(
+        "task 9: create_override's scene_uid=None default is unpinned",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        "async def create_override(ctx: Context, collection_uid: int, scene_uid: int | None = None) -> dict:",
+        "async def create_override(ctx: Context, collection_uid: int, scene_uid: int | None = 999) -> dict:",
+        (f"{SFLT}::test_create_override_defaults",),
+    ),
+    Revert(
+        "task 9: list_libraries forces offset to 0 before forwarding it",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        '    return await _call("list_libraries", {"limit": limit, "offset": offset})',
+        '    return await _call("list_libraries", {"limit": limit, "offset": 0})',
+        (f"{SFLT}::test_list_libraries_forwards_pagination",),
+    ),
+    Revert(
+        "task 9: list_libraries' limit=25 default is unpinned",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        "async def list_libraries(ctx: Context, limit: int = 25, offset: int = 0) -> dict:",
+        "async def list_libraries(ctx: Context, limit: int = 10, offset: int = 0) -> dict:",
+        (f"{SFLT}::test_list_libraries_defaults",),
+    ),
+    Revert(
+        "task 9: reload_library does not forward library_uid",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        '    return await _call("reload_library", {"library_uid": library_uid})',
+        '    return await _call("reload_library", {"library_uid": 0})',
+        (f"{SFLT}::test_reload_library_forwards_uid",),
+    ),
+    Revert(
+        "task 9: relocate_library does not forward filepath",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        '    return await _call("relocate_library", {"library_uid": library_uid, "filepath": filepath})',
+        '    return await _call("relocate_library", {"library_uid": library_uid, "filepath": None})',
+        (f"{SFLT}::test_relocate_library_forwards_uid_and_filepath",),
+    ),
+    Revert(
+        "task 9: reload_library removed from _DESTRUCTIVE_TOOLS",
+        SERVER_DOCUMENTATION,
+        '    "relocate_library",\n    "reload_library",\n    "save_shot",\n}',
+        '    "relocate_library",\n    "save_shot",\n}',
+        (f"{BUNT}::test_file_lifecycle_tools_advertise_correct_hints",),
+    ),
+    Revert(
+        "task 9: open_shot removed from _BLEND_FILE_TOOLS",
+        SERVER_DOCUMENTATION,
+        '_BLEND_FILE_TOOLS = {\n    "open_shot",\n    "save_shot",',
+        '_BLEND_FILE_TOOLS = {\n    "save_shot",',
+        (f"{BUNT}::test_file_lifecycle_tools_advertise_correct_hints",),
+    ),
+    Revert(
+        "task 9: openWorldHint drops the _BLEND_FILE_TOOLS clause",
+        SERVER_DOCUMENTATION,
+        "openWorldHint=(tool.name in _EXTERNAL_TOOLS or tool.name in _FILE_TOOLS or tool.name in _BLEND_FILE_TOOLS),",
+        "openWorldHint=(tool.name in _EXTERNAL_TOOLS or tool.name in _FILE_TOOLS),",
+        (f"{BUNT}::test_file_lifecycle_tools_advertise_correct_hints",),
+    ),
+    Revert(
+        "task 9: unlink_libraries does not forward purge_orphans",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        '{"library_uids": library_uids, "confirm": confirm, "purge_orphans": purge_orphans},',
+        '{"library_uids": library_uids, "confirm": confirm, "purge_orphans": False},',
+        (f"{SFLT}::test_unlink_libraries_forwards_every_parameter",),
+    ),
+    Revert(
+        "task 9: unlink_libraries' confirm=False default is unpinned to True",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        "    confirm: bool = False,\n    purge_orphans: bool = False,\n) -> dict:",
+        "    confirm: bool = True,\n    purge_orphans: bool = False,\n) -> dict:",
+        (f"{SFLT}::test_unlink_libraries_defaults",),
+    ),
+    Revert(
+        "task 9: _call swallows an addon failure instead of propagating it",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        "    result = await asyncio.to_thread(get_blender_connection().send_command, command, params)\n"
+        "    return ok(result)",
+        "    try:\n"
+        "        result = await asyncio.to_thread(get_blender_connection().send_command, command, params)\n"
+        "    except Exception:\n"
+        "        result = {}\n"
+        "    return ok(result)",
+        tuple(
+            f"{SFLT}::test_addon_failure_reaches_the_client_as_a_tool_error_unchanged[{name}]"
+            for name in sorted(
+                (
+                    "get_session_info",
+                    "open_shot",
+                    "save_shot",
+                    "reset_session",
+                    "link_canon_library",
+                    "create_override",
+                    "list_libraries",
+                    "reload_library",
+                    "relocate_library",
+                    "unlink_libraries",
+                )
+            )
+        ),
+    ),
+    Revert(
+        "task 9: file_lifecycle removed from CORE_MODULES",
+        SERVER_BUNDLES,
+        '    "animation",\n    "file_lifecycle",\n)',
+        '    "animation",\n)',
+        (f"{BUNT}::test_file_lifecycle_tools_are_exactly_ten_and_reachable_from_shot_and_asset",),
+    ),
+    Revert(
+        "task 9: the shot ceiling constant reverted to its pre-Task-9 value",
+        TEST_BUNDLES_FILE,
+        "SHOT_MODE_BYTE_CEILING = 217_718",
+        "SHOT_MODE_BYTE_CEILING = 203_094",
+        (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
+    ),
+    Revert(
+        "task 9: the default ceiling constant reverted to a value the new tools already exceed",
+        TEST_BUNDLES_FILE,
+        "DEFAULT_MODE_BYTE_CEILING = 78_019",
+        "DEFAULT_MODE_BYTE_CEILING = 63_394",
+        (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
+    ),
+    Revert(
+        "task 9: the five open-world tools are folded into _FILE_TOOLS instead of _BLEND_FILE_TOOLS",
+        SERVER_DOCUMENTATION,
+        '_FILE_TOOLS = {\n    "bake_retopology_maps",',
+        "_FILE_TOOLS = {\n"
+        '    "open_shot",\n'
+        '    "save_shot",\n'
+        '    "link_canon_library",\n'
+        '    "reload_library",\n'
+        '    "relocate_library",\n'
+        '    "bake_retopology_maps",',
+        (f"{BUNT}::test_file_lifecycle_tools_blend_file_prose_is_correct",),
+    ),
+    Revert(
+        "task 9: the _BLEND_FILE_TOOLS effects-prose branch is deleted",
+        SERVER_DOCUMENTATION,
+        "    elif name in _BLEND_FILE_TOOLS:\n"
+        '        effects = "Side effects: reads or writes a .blend file on disk."\n'
+        "    elif name in _EXTERNAL_TOOLS:",
+        "    elif name in _EXTERNAL_TOOLS:",
+        (f"{BUNT}::test_file_lifecycle_tools_blend_file_prose_is_correct",),
     ),
 ]
 

@@ -28,8 +28,8 @@ that had already been lost once (see the closed item under "Known failures / blo
 | | |
 |---|---|
 | Branch | `main`, **unpushed**. `origin/main` is still at `523f427`. |
-| Last commit | **Task 8** (docs), after Task 7 (`d8fef56`), Task 6 (`f24e01e`), Task 5 (`fcad04f`), Task 4 (`76f782d`) and the decision-13 amendment (`1f3619f`). Before it, **`2c1d678` — Task 3**, committed at **88.75/100 against a 90 gate** (below it; see the closing note at the end of this file). Task 2 closed after four cycles; Task 1 at 94/100. |
-| Next task | **Task 9** (MCP tools, bundles, ceilings), then **Task 10** (phase gate). Tasks 4-7 are done; read their sections at the end of this file. Historical note for Task 4, kept: Task 3 is **done and committed**. Read its closing note first — it says why it took six cycles and what §06's gate-driven amendment changes. **Task 4 must not assume "the epoch moved ⇒ a `load_post` fired"**: three sites move it (see T3-18/19). `_SESSION_SWAP_COMMANDS` is landed and single-sourced; Task 4 adds `_DATABLOCK_REPLACING_COMMANDS` as a **separate** constant and must not merge them. |
+| Last commit | **Task 9**, after Task 8 (`5c0bccf`), Task 7 (`d8fef56`), Task 6 (`f24e01e`), Task 5 (`fcad04f`), Task 4 (`76f782d`) and the decision-13 amendment (`1f3619f`). Before it, **`2c1d678` — Task 3**, committed at **88.75/100 against a 90 gate** (below it; see the closing note at the end of this file). Task 2 closed after four cycles; Task 1 at 94/100. |
+| Next task | **Task 10** (phase gate), then the end-of-phase gate. Tasks 4-7 are done; read their sections at the end of this file. Historical note for Task 4, kept: Task 3 is **done and committed**. Read its closing note first — it says why it took six cycles and what §06's gate-driven amendment changes. **Task 4 must not assume "the epoch moved ⇒ a `load_post` fired"**: three sites move it (see T3-18/19). `_SESSION_SWAP_COMMANDS` is landed and single-sourced; Task 4 adds `_DATABLOCK_REPLACING_COMMANDS` as a **separate** constant and must not merge them. |
 | Working tree | Clean apart from `uv.lock`, which stays unstaged permanently (§03 incidental churn). |
 | Blender | **5.2.2 LTS** at `/opt/homebrew/bin/blender`. Every API fact re-verified against it; see "5.2.2 re-verification". |
 | Review loop | **Changed again 2026-09-16 for Tasks 4-10** (decision 13, handoff §06's 2026-09-16 amendment): findings triaged as bug / hardening / record-keeping; only bugs and automatically-critical items block; at most two cycles, then ask the user; scores recorded, not gated. Hardening goes to the backlog under decision 13. Tasks 1-3 ran under earlier rules. |
@@ -190,6 +190,7 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | 28 | **Task 7: `link_canon_library` places what it links in the scene root.** | Lifecycle probe A: a link nothing uses is dropped on save (`REOPENED : []`). | An unrequested scene edit. |
 | 29 | **Task 7: overrides are refused when the collection is already overridden, when any collection inside it is, and when a request names a collection inside another requested one; all collections are validated before the first override and re-checked immediately before each, with every unlinked instance re-linked on failure.** | Three successive critic findings, all real-Blender: a refused multi-collection request destroyed an existing placement (cycle 1, automatically critical); up-front-only validation let `[Parent, Child]` duplicate the child (cycle 2, a regression of the cycle-1 repair); child-then-parent via two commands duplicated the child (cycle 3). Sections G, K, M of the probe. | A legitimate "override parent and child" request must be expressed as "parent only". |
 | 30 | **Task 7: relocate refuses an indirect library and a target another library already links; results carry per-datablock `is_missing` and a count warning; author-chosen `Library.name` is reduced without touching the filesystem (`text_hygiene.client_safe_name_leaf`) and absolute names are passed as known paths.** | Critic 1: relocating an indirect library broke the parent's link; relocating to a file lacking the data reported it present. Critic 3: `Library.name="/Users/victim/shots/canon.blend"` (and a newline variant) leaked in `reload_library`'s error; the leaf reduction added a CWD / UNC directory-existence probe. | A hostile absolute name renders as `the requested file`. |
+| 31 | **Task 9: the ten Phase 2 tools live in a new core module `file_lifecycle`; `SHOT_MODE_BYTE_CEILING` is raised once, 203,094 → 217,718 B (measured), and a new `DEFAULT_MODE_BYTE_CEILING` pins core at 78,019 B (measured).** Phase 2 adds 14,625 B to every surface, under ruling 3's 15,000 B budget. | Ruling 1: both `shot` and `asset` need open/save and the modes' disjointness test forbids a shared non-core bundle. Ruling 2: Phase 2 is additive by design; core is where the growth lands and was pinned by nothing. Per-tool bytes: `get_session_info` 1,003, `open_shot` 1,641, `save_shot` 1,794, `reset_session` 1,298, `link_canon_library` 2,143, `create_override` 1,427, `list_libraries` 1,167, `reload_library` 1,092, `relocate_library` 1,397, `unlink_libraries` 1,663. | Every mode now carries ~14.6 KB of file tools, including sessions that never touch files. Two tools exceed the ~1.5 KB target (`link_canon_library`, `save_shot`), paid for by the other eight. |
 | 13 | **Tasks 4-10: findings are triaged by kind, at most two cycles, and the score is recorded but no longer gates** (user decision, 2026-09-16; supersedes decision 12's stop condition and cycle rules, keeps its three pre-checks). Bugs and automatically-critical items are fixed before commit; hardening goes to the hardening backlog below for Task 8 to prioritise, implemented after Phase 2 unless pulled in; record-keeping is fixed once at commit after a code freeze. Cycle 2 only if cycle 1 had blocking repairs, re-running only those lenses plus a regression check on the repairs; anything still blocking after cycle 2 stops and asks the user. Full text in handoff §06's 2026-09-16 amendment. | Task 3 cycle-1 tree (stash `5e9d482`) compared with `2c1d678`: real bugs (T3-1 wrong-file `success`, T3-5 Save Copy path) were fixed in cycle 2, ~2 of ~15¾ hours; hardening against a hostile peer earned ~20-25 of the 42.75 points gained and most of the hours; record-keeping ~5. Three defects were introduced by hardening repairs (T3-12 verified: no `settimeout(0` in `5e9d482`, present at `2983041` `server_core.py:819`; T3-16; T3-24). The trust-boundary 16/20 floor, not defect risk, drove cycles 3-6. | **A hardening finding misclassified as hardening when it is a real bug ships that bug.** Mitigated by the definition: anything producing a wrong result, data loss, hang or dropped healthy connection for a single local user is a bug, and §07's automatically-critical list is unchanged. The other cost is accepted deliberately: until Task 8's backlog is implemented, the addon is not hardened against a hostile local socket peer - the same posture the loopback-only, unauthenticated socket already has. |
 
 ### Hardening backlog (decision 13) — owner: Task 8 to prioritise
@@ -235,7 +236,7 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | 6 | Addon file-lifecycle handlers | Opus | **Done — three cycles** (user approved a third, 2026-09-16) | this commit | `open_shot`, `save_shot`, `reset_session` in the existing mixin; decisions 17-22; see "Task 6" at the end of this file. Original note: **Inherits from Task 2:** `open_shot` must refuse when `bpy.data.is_dirty` unless the caller passes an explicit discard flag (unsaved work is otherwise destroyed silently — measured); `wm.open_mainfile` must pass `use_scripts=False` explicitly; the post-swap half runs with `bpy.context.window` at `None` but an inherited context still works. |
 | 7 | Addon linking handlers | Opus | **Done — three cycles plus a reviewer-verified final repair** (user decisions 2026-09-16) | this commit | Six commands in `handlers/linking.py`; decisions 25-30; see "Task 7" at the end of this file. |
 | 8 | Socket authentication — design deliverable | Opus | **Done — two review cycles** | this commit | Spec §4.8, §10 Q8, Appendix A R2; `docs/superpowers/plans/phase-4-socket-authentication-work-item.md`; decisions 23-24. |
-| 9 | Server-side MCP tools, bundle placement, payload ceiling | Sonnet | Not started | — | Inherits `shot` at **203,079 B**, **15 B** below its unchanged ceiling (measured 2026-09-15; the earlier 203,087 was cycle 2's figure and missed repair R20's further 8 B). |
+| 9 | Server-side MCP tools, bundle placement, payload ceiling | Sonnet | **Done — two cycles** | this commit | Ten tools in core module `file_lifecycle`; `_BLEND_FILE_TOOLS`; ceilings raised once to measured values (decision 31); see "Task 9" at the end of this file. |
 | 10 | The phase gate scenario | Sonnet | Not started | — | Written against the addon socket only (decision 3). |
 
 ## Live-Blender evidence
@@ -3627,3 +3628,69 @@ path-taking commands never pass `enforce_roots` (`render_scene`, `save_texture_i
 opened `.blend` widen the command set and supply a Sketchfab key; the MCP HTTP endpoint is not covered by §4.8.
 
 **Wall time:** author ~13 min + two repair rounds ~4 min; critics ~5 + ~3 min.
+
+---
+
+## Task 9 — MCP tools, bundle placement, payload ceilings
+
+`src/blender_mcp/server/tools/file_lifecycle.py`: ten tools, one per addon command, parameters identical to the
+handlers (AST-compared by both critics), a single `_call` that forwards and lets addon errors surface as
+`ToolError` with the message intact. `bundles.py`: `file_lifecycle` added to `CORE_MODULES`; docstring count 295.
+`_documentation.py`: `_DESTRUCTIVE_TOOLS` += `open_shot`, `reset_session`, `unlink_libraries`, `relocate_library`,
+`reload_library`, `save_shot` (the last belt-and-braces, asserted independently of the `confirm_overwrite` schema
+flag); new `_BLEND_FILE_TOOLS` = `{open_shot, save_shot, link_canon_library, reload_library, relocate_library}`
+with its own effects sentence ("reads or writes a .blend file on disk"), OR'd into `openWorldHint`. Decision 31.
+
+### Hints, read from the real `mcp.list_tools()` (Critic 4)
+
+| tool | destructive | read_only | open_world |
+|---|---|---|---|
+| get_session_info | False | True | False |
+| open_shot | True | False | True |
+| save_shot | True | False | True |
+| reset_session | True | False | False |
+| link_canon_library | False | False | True |
+| create_override | False | False | False |
+| list_libraries | False | True | False |
+| reload_library | True | False | True |
+| relocate_library | True | False | True |
+| unlink_libraries | True | False | False |
+
+All 285 pre-existing tools are byte-identical in description, schema and annotations (HEAD vs working tree,
+cycle-2 critic).
+
+### Measured catalog (reviewer, `scripts/measure_catalog.py`)
+
+| Surface | Before (`5c0bccf`) | After | Δ |
+|---|---|---|---|
+| `all` | 285 tools / 1,181,037 B | 295 / 1,195,662 B | +14,625 |
+| `shot` | 53 / 203,093 B | 63 / 217,718 B | +14,625 |
+| `asset` | 126 / 406,918 B | 136 / 421,543 B | +14,625 |
+| default (core) | 21 / 63,394 B | 31 / 78,019 B | +14,625 |
+
+### Review
+
+Cycle 1 (Critic 4 Opus; combined durability/liveness/trust Sonnet — 29/30, 25/25, 20/20, no findings beyond
+docstring gaps). Critic 4 found three blocking evidence gaps: **no revert-matrix rows** (the implementer's claim
+that `NEW_TEST_FILES` scoped to addon tests was false — it already lists server tests); the `_FILE_TOOLS` prose
+ruling untested (folding the five into `_FILE_TOOLS` survived); the safe defaults of `open_shot` /
+`reset_session` unpinned (flipping them survived). Plus false or incomplete description claims (reload enforcing
+roots; unlink not freeing overrides; missing refusals; `save_shot` "moves the session"). One repair round.
+Cycle 2 (Sonnet): all closed; `revert_matrix.py --only "task 9"` from a fresh copy with absolute `PYTHONPATH`:
+**28 rows, all FAIL as required, 0 survivors, 0 uncovered**; `check_revert_anchors.py` 471/471.
+
+Existing test lines edited: `SHOT_MODE_BYTE_CEILING` (the sanctioned raise) and `_CORE_TODAY` +`file_lifecycle`
+(a deliberate mirror of `CORE_MODULES`, "a change to CORE_MODULES must fail a test here" — following the moved
+symbol; reverting the placement fails 21 nodes).
+
+**Recorded, not fixed:** `_call` repeats `object_animation.py`'s propagate-errors pattern; tool results reach
+`ok()` without `text_hygiene` (the recorded tool-layer residual).
+
+| Check | Value |
+|---|---|
+| pytest | **1287 passed**, 1 skipped (Task 10's live-gate wrapper) |
+| `ruff check .` | 9,832 |
+| `ruff format --check .` | 12 unformatted |
+| basedpyright | 71 / 4 |
+
+**Wall time:** implementer ~24 min + repair ~18 min; critics ~12 + ~5 min (C1), ~6 min (C2); reviewer ~10 min.

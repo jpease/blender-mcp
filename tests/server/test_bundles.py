@@ -37,10 +37,45 @@ _CORE_TODAY = (
     "object_animation",
     "viewport",
     "animation",
+    "file_lifecycle",
 )
 
 # Tools deliberately absent from the core surface and reachable only via `scene-authoring`.
 _SCENE_AUTHORING_TOOLS = ("create_geometry_object", "reset_scene", "remove_scene_objects")
+
+# Phase 2 Task 9's ten tools, one per addon file-lifecycle/linking command. `file_lifecycle`
+# lives in CORE_MODULES (bundles.py ruling 1), so these are reachable from every mode/bundle
+# selection, not just `shot`/`asset` -- but `shot` and `asset` are the two modes the ruling
+# is about, so reachability is asserted against them specifically.
+_FILE_LIFECYCLE_TOOLS = (
+    "get_session_info",
+    "open_shot",
+    "save_shot",
+    "reset_session",
+    "link_canon_library",
+    "create_override",
+    "list_libraries",
+    "reload_library",
+    "relocate_library",
+    "unlink_libraries",
+)
+
+# name -> (destructive, read_only, open_world), each checked by name in both directions
+# (plan Task 9 Step 4b / acceptance criteria 3 and 3a). `_is_destructive`/`_is_read_only`/
+# `openWorldHint=` in `_documentation.py` are the source of truth this table is checked
+# against; re-derive it from there rather than from this table if the two ever disagree.
+_FILE_LIFECYCLE_HINTS: dict[str, tuple[bool, bool, bool]] = {
+    "get_session_info": (False, True, False),
+    "open_shot": (True, False, True),
+    "save_shot": (True, False, True),
+    "reset_session": (True, False, False),
+    "link_canon_library": (False, False, True),
+    "create_override": (False, False, False),
+    "list_libraries": (False, True, False),
+    "reload_library": (True, False, True),
+    "relocate_library": (True, False, True),
+    "unlink_libraries": (True, False, False),
+}
 
 
 def _assert_resolves_exactly_to(resolved: tuple[str, ...], expected_modules: set[str]) -> None:
@@ -502,11 +537,21 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 
 
 # Measured 2026-09-14 at 547ba0a (dirty; Phase 1 Tasks 1-5 uncommitted), after Task 5's camera/
-# lighting splits. This is a ceiling, not a target -- the policy is to minimize, so this number
-# should only ever move down. Raising it requires a deliberate decision recorded in the commit
+# lighting splits, then raised once, deliberately, at Phase 2 Task 9: `file_lifecycle` (ten
+# tools, one per addon file-lifecycle/linking command) joined CORE_MODULES per bundles.py
+# ruling 1, adding 14,625 B to `shot` (measured before: 203,093 B; after: 217,718 B, after the
+# cycle-1 repair round's prose trims) -- under ruling 3's 15,000 B budget for the ten tools.
+# This is a ceiling, not a target -- the policy is to minimize, so this number should only ever
+# move down from here. Raising it again requires a deliberate decision recorded in the commit
 # message. See docs/superpowers/plans/PHASE1_TASK_STATE.md's "Task 6" section for how it was
-# measured and why it supersedes the plan's own predicted 129,961 B.
-SHOT_MODE_BYTE_CEILING = 203_094
+# first measured, and PHASE2_TASK_STATE.md for this raise.
+SHOT_MODE_BYTE_CEILING = 217_718
+
+# Added at Phase 2 Task 9 alongside the `shot` raise above: core is now where the file-lifecycle
+# growth lands, and it was previously pinned by nothing. Measured the same way, same commit:
+# default/core was 63,394 B before Task 9, 78,019 B after -- the same 14,625 B delta, since the
+# ten tools are core-only and add nothing to `shot` beyond what core already carries there.
+DEFAULT_MODE_BYTE_CEILING = 78_019
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:
@@ -518,6 +563,11 @@ def test_shot_mode_payload_stays_under_its_ceiling() -> None:
     `shot` actually resolves to, not a stale copy of today's tuple.
     """
     assert _payload_bytes_for_toolsets("shot") <= SHOT_MODE_BYTE_CEILING
+
+
+def test_default_mode_payload_stays_under_its_ceiling() -> None:
+    """The always-on core surface must not grow back either. Lower is always acceptable."""
+    assert _payload_bytes_for_toolsets(None) <= DEFAULT_MODE_BYTE_CEILING
 
 
 def test_selecting_a_bundle_adds_exactly_that_bundle_on_top_of_core() -> None:
@@ -627,7 +677,7 @@ def _tool_annotations_for_toolsets(raw_value: str | None) -> dict[str, dict[str,
         raw_value: The BLENDER_MCP_TOOLSETS value to set, or None to leave it unset.
 
     Returns:
-        Tool name mapped to its `destructive` and `read_only` hints.
+        Tool name mapped to its `destructive`, `read_only` and `open_world` hints.
 
     """
     script = (
@@ -637,6 +687,7 @@ def _tool_annotations_for_toolsets(raw_value: str | None) -> dict[str, dict[str,
         "    t.name: {\n"
         '        "destructive": bool(t.annotations and t.annotations.destructiveHint),\n'
         '        "read_only": bool(t.annotations and t.annotations.readOnlyHint),\n'
+        '        "open_world": bool(t.annotations and t.annotations.openWorldHint),\n'
         "    }\n"
         "    for t in asyncio.run(mcp.list_tools())\n"
         "}))\n"
@@ -660,3 +711,94 @@ def test_scene_authoring_tools_advertise_their_destructiveness() -> None:
     assert not annotations["create_geometry_object"]["destructive"], (
         "create_geometry_object adds an object; marking it destructive would devalue the hint"
     )
+
+
+def test_file_lifecycle_tools_are_exactly_ten_and_reachable_from_shot_and_asset() -> None:
+    """
+    Phase 2 Task 9's ten tools exist once each and are reachable from both modes.
+
+    `file_lifecycle` lives in CORE_MODULES (bundles.py ruling 1) precisely so `shot` and
+    `asset` both reach it without a bundle shared by both modes, which
+    `test_shot_and_asset_modes_share_only_the_core_surface` forbids. Checked against
+    `_tool_names_for_toolsets`, not by reading bundles.py, per acceptance criterion 1.
+    """
+    assert len(_FILE_LIFECYCLE_TOOLS) == 10  # ruff: ignore[magic-value-comparison] - the count IS the assertion
+    assert set(_FILE_LIFECYCLE_TOOLS) == set(_FILE_LIFECYCLE_HINTS)
+    shot = _tool_names_for_toolsets("shot")
+    asset = _tool_names_for_toolsets("asset")
+    for name in _FILE_LIFECYCLE_TOOLS:
+        assert name in shot, f"{name} is not reachable from the shot mode"
+        assert name in asset, f"{name} is not reachable from the asset mode"
+
+
+def test_file_lifecycle_tools_advertise_correct_hints() -> None:
+    """
+    All ten tools advertise the right destructive/read-only/open-world hints, by name, both ways.
+
+    `finalize_tool_documentation` emits all three hints unconditionally on every tool
+    (`_documentation.py:finalize_tool_documentation`), so a tool omitted from the right set
+    does not ship "no hint" -- it ships an affirmatively wrong one. Thirty assertions: five
+    tools must be destructive-and-open-world (`open_shot`, `save_shot`, `reload_library`,
+    `relocate_library` -- plus `unlink_libraries`, destructive but NOT open-world), two must
+    be read-only (`get_session_info`, `list_libraries`), `link_canon_library` must be
+    open-world but NOT destructive, `create_override` must be neither, and `reset_session`
+    must be destructive but NOT open-world (it reads nothing from disk).
+    """
+    annotations = _tool_annotations_for_toolsets("shot")
+    for name, (destructive, read_only, open_world) in _FILE_LIFECYCLE_HINTS.items():
+        actual = annotations[name]
+        assert actual["destructive"] == destructive, f"{name}: expected destructive={destructive}"
+        assert actual["read_only"] == read_only, f"{name}: expected read_only={read_only}"
+        assert actual["open_world"] == open_world, f"{name}: expected open_world={open_world}"
+
+
+# The exact sentence `_documentation.py`'s `_BLEND_FILE_TOOLS` branch emits (Task 9 repair
+# round): reads or writes a .blend file on disk, with no per-tool detail folded in.
+_BLEND_FILE_EFFECTS_SENTENCE = "reads or writes a .blend file on disk"
+
+# The five tools that must carry that sentence and openWorldHint=True.
+_BLEND_FILE_TOOLS_UNDER_TEST = ("open_shot", "save_shot", "link_canon_library", "reload_library", "relocate_library")
+
+
+def _tool_descriptions_for_toolsets(raw_value: str | None) -> dict[str, str]:
+    """
+    Full tool descriptions a server process advertises for a given selection.
+
+    Measured in a subprocess for the same reason `_tool_annotations_for_toolsets` is: only a
+    process that imported the modules through `tools/__init__` has run
+    `finalize_tool_documentation`, so a tool imported late into the test process carries the
+    bare docstring, not the `_tool_contract` suffix this test checks.
+
+    Args:
+        raw_value: The BLENDER_MCP_TOOLSETS value to set, or None to leave it unset.
+
+    Returns:
+        Tool name mapped to its full advertised description.
+
+    """
+    script = (
+        "import asyncio, json\n"
+        "from blender_mcp.server import mcp\n"
+        "print(json.dumps({t.name: t.description for t in asyncio.run(mcp.list_tools())}))\n"
+    )
+    return json.loads(_run_server_script(raw_value, script))
+
+
+def test_file_lifecycle_tools_blend_file_prose_is_correct() -> None:
+    """
+    None of the ten claims it skips saving the .blend file; the five that touch one say so correctly.
+
+    `_FILE_TOOLS`'s effects sentence ends "it does not save the .blend file" -- true of that
+    set's own members, false for `save_shot` and misleading for `open_shot` and the three
+    library commands. Folding the five `_BLEND_FILE_TOOLS` into `_FILE_TOOLS`, or deleting the
+    `_BLEND_FILE_TOOLS` prose branch in `_tool_contract` (falling through to the generic
+    "mutates connected Blender state but never saves the .blend file" branch), both pass every
+    other Task 9 test and both are caught here.
+    """
+    descriptions = _tool_descriptions_for_toolsets("shot")
+    for name in _FILE_LIFECYCLE_TOOLS:
+        assert "does not save the .blend file" not in descriptions[name], (
+            f"{name} carries the _FILE_TOOLS prose, which is false or misleading for it"
+        )
+    for name in _BLEND_FILE_TOOLS_UNDER_TEST:
+        assert _BLEND_FILE_EFFECTS_SENTENCE in descriptions[name], f"{name} is missing the .blend-file effects sentence"
