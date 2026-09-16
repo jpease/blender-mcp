@@ -28,8 +28,8 @@ that had already been lost once (see the closed item under "Known failures / blo
 | | |
 |---|---|
 | Branch | `main`, **unpushed**. `origin/main` is still at `523f427`. |
-| Last commit | **Task 10**, after Task 9 (`285280a`), Task 8 (`5c0bccf`), Task 7 (`d8fef56`), Task 6 (`f24e01e`), Task 5 (`fcad04f`), Task 4 (`76f782d`) and the decision-13 amendment (`1f3619f`). Before it, **`2c1d678` — Task 3**, committed at **88.75/100 against a 90 gate** (below it; see the closing note at the end of this file). Task 2 closed after four cycles; Task 1 at 94/100. |
-| Next task | **End-of-phase gate** from a clean tree, then stop and report. **No push** without the user's go-ahead. Tasks 4-7 are done; read their sections at the end of this file. Historical note for Task 4, kept: Task 3 is **done and committed**. Read its closing note first — it says why it took six cycles and what §06's gate-driven amendment changes. **Task 4 must not assume "the epoch moved ⇒ a `load_post` fired"**: three sites move it (see T3-18/19). `_SESSION_SWAP_COMMANDS` is landed and single-sourced; Task 4 adds `_DATABLOCK_REPLACING_COMMANDS` as a **separate** constant and must not merge them. |
+| Last commit | **End-of-phase gate record**, after Task 10 (`bed8c3e`), Task 9 (`285280a`), Task 8 (`5c0bccf`), Task 7 (`d8fef56`), Task 6 (`f24e01e`), Task 5 (`fcad04f`), Task 4 (`76f782d`) and the decision-13 amendment (`1f3619f`). Before it, **`2c1d678` — Task 3**, committed at **88.75/100 against a 90 gate** (below it; see the closing note at the end of this file). Task 2 closed after four cycles; Task 1 at 94/100. |
+| Next task | **None — Phase 2 complete; end-of-phase gate green** (see the last section). **Not pushed**: the push is the user's decision. Tasks 4-7 are done; read their sections at the end of this file. Historical note for Task 4, kept: Task 3 is **done and committed**. Read its closing note first — it says why it took six cycles and what §06's gate-driven amendment changes. **Task 4 must not assume "the epoch moved ⇒ a `load_post` fired"**: three sites move it (see T3-18/19). `_SESSION_SWAP_COMMANDS` is landed and single-sourced; Task 4 adds `_DATABLOCK_REPLACING_COMMANDS` as a **separate** constant and must not merge them. |
 | Working tree | Clean apart from `uv.lock`, which stays unstaged permanently (§03 incidental churn). |
 | Blender | **5.2.2 LTS** at `/opt/homebrew/bin/blender`. Every API fact re-verified against it; see "5.2.2 re-verification". |
 | Review loop | **Changed again 2026-09-16 for Tasks 4-10** (decision 13, handoff §06's 2026-09-16 amendment): findings triaged as bug / hardening / record-keeping; only bugs and automatically-critical items block; at most two cycles, then ask the user; scores recorded, not gated. Hardening goes to the backlog under decision 13. Tasks 1-3 ran under earlier rules. |
@@ -3779,3 +3779,59 @@ socket survives a refusal). One repair round, verified by the reviewer's live re
 Scores (cycle 1): Durability 23/30, Concurrency 21/25, Trust 18/20, Evidence 11/15, Code quality 9/10.
 
 **Wall time:** implementer ~20 + ~9 min; critic ~5 min; reviewer ~10 min.
+
+---
+
+## End-of-phase gate — 2026-09-16, green
+
+Run from a **clean detached worktree at `bed8c3e`** (0 modified files), `.venv` linked, `PYTHONPATH=<worktree>/src`
+(verified `blender_mcp.__file__` resolved to the worktree).
+
+| Check | Result | Phase 2 base (`3460316`) |
+|---|---|---|
+| `pytest -q -rs` | **1287 passed, 1 skipped** (`tests/test_phase2_gate.py`: "set BLENDERMCP_LIVE_RIG=1 to opt in" — collected, skipped) | 647 passed |
+| `ruff check .` | **9,832** | 9,834 (gate `<=`) |
+| `ruff format --check .` | **12 unformatted** | 12 |
+| basedpyright | **71 errors / 4 warnings** | 71 / 4 |
+| `measure_catalog.py all` | **295 tools / 1,195,662 B** — matches `bundles.py`'s docstring (295) | 285 / 1,181,038 B |
+| `shot` | 63 / 217,718 B (`SHOT_MODE_BYTE_CEILING` 217,718) | 53 / 203,094 B |
+| `asset` | 136 / 421,543 B | — |
+| default (core) | 31 / 78,019 B (`DEFAULT_MODE_BYTE_CEILING` 78,019) | 21 / 63,395 B |
+| `check_revert_anchors.py` | 471 rows, 471 intact, 0 unparseable | — |
+| `revert_matrix.py` (all rows) | **471 reverts run, 0 failed to break their own nodes, 0 new nodes uncovered**; quiet box 0.29 load/core | — |
+| Live gate (`BLENDERMCP_LIVE_RIG=1 pytest tests/test_phase2_gate.py -v -s`) | **1 passed in 3.90 s**; `RIG PASSED`; steps 1-10 and all negatives; requests=22 responses=22; wall 1.04 s | — |
+
+Protocol pair 31/31 throughout (one bump, Task 1).
+
+**Not run: the Docker supplement** (image build could not resolve `pypi.org` from this session's sandbox —
+Task 10 section). No container parity is claimed for Tasks 2-10.
+
+### Phase summary
+
+| Task | Commit | Cycles | Bugs found by review |
+|---|---|---|---|
+| 1 | `2852803` + repairs | 4 | (pre-decision-13) |
+| 2 | `969df10`…`70dbe51` | 4 | (pre-decision-13) |
+| 3 | `2c1d678` | 6 | (pre-decision-13; 88.75/100) |
+| 4 | `76f782d` | 1 | 0 |
+| 5 | `fcad04f` | 2 | 3 |
+| 6 | `f24e01e` | 3 | 6 (4 automatically critical) |
+| 7 | `d8fef56` | 3 + verified repair | 7 (2 automatically critical) |
+| 8 | `5c0bccf` | 2 | 3 (documentation errors) |
+| 9 | `285280a` | 2 | 3 (evidence gaps) |
+| 10 | `bed8c3e` | 1 + verified repair | 1 |
+
+Tasks 4-10 took roughly 11 hours of session time in total, against ~15¾ hours for Task 3 alone, under
+decision 13's triage.
+
+### Open for the user
+
+1. **Push** — not done; the user's decision.
+2. **Hardening backlog** (decision 13 table) — prioritised in
+   `docs/superpowers/plans/phase-4-socket-authentication-work-item.md`. The P1 items for any pooled or untrusted
+   deployment: socket authentication (§4.8), session auto-exec flag detection (decision 26), `enforce_roots` on
+   the seven pre-existing path-taking commands, scene flags widening the command set, the MCP HTTP endpoint.
+3. **Docker parity** for Phase 2 — re-run `docker compose -f docker/blender/docker-compose.yml up --build --wait`
+   on a host with network access, then `tools/list` (expect 63 in `shot` mode) and one round-tripped tool call.
+4. **Override editability after reopen over the socket** — no addon command reads it by uid; a small read
+   command would let the live gate assert it directly (Task 10 disclosure).
