@@ -28,8 +28,8 @@ that had already been lost once (see the closed item under "Known failures / blo
 | | |
 |---|---|
 | Branch | `main`, **unpushed**. `origin/main` is still at `523f427`. |
-| Last commit | **Task 2 closed** after four critic cycles and their repairs. Task 1 closed at 94/100 in critic cycle 4. |
-| Next task | **Task 3** (drain-loop file-swap barrier, session epoch, failure handlers). Task 2 is **done**: `open_shot` is synchronous validate-then-swap, answering after the swap. Read "Task 2 — the reentrancy strategy" before starting; its Step 7 is Task 3's measured input. |
+| Last commit | **`2c1d678` — Task 3**, committed at **88.75/100 against a 90 gate** (below it; see the closing note at the end of this file). Task 2 closed after four cycles; Task 1 at 94/100. |
+| Next task | **Task 4** (make rollback survive a file swap, track `libraries`). Task 3 is **done and committed**. Read its closing note first — it says why it took six cycles and what §06's gate-driven amendment changes. **Task 4 must not assume "the epoch moved ⇒ a `load_post` fired"**: three sites move it (see T3-18/19). `_SESSION_SWAP_COMMANDS` is landed and single-sourced; Task 4 adds `_DATABLOCK_REPLACING_COMMANDS` as a **separate** constant and must not merge them. |
 | Working tree | Clean apart from `uv.lock`, which stays unstaged permanently (§03 incidental churn). |
 | Blender | **5.2.2 LTS** at `/opt/homebrew/bin/blender`. Every API fact re-verified against it; see "5.2.2 re-verification". |
 | Review loop | **Changed 2026-09-15 for Tasks 4-10**: cycles are gate-driven, not a fixed four. See decision 12 and the dated amendment in handoff §06. Tasks 1-3 ran under the original rule. |
@@ -49,23 +49,25 @@ that had already been lost once (see the closed item under "Known failures / blo
 Verified end to end from a clean directory after being committed: fixture generated, rig run, `RIG PASSED`,
 exit 0, on Blender 5.2.2. The committed copies are the ones that were run, not the scratchpad originals.
 
-### The plan's line numbers are stale by ~229 lines — re-derive, do not trust
+### The plan's line numbers are stale by ~1,200 lines — re-derive, do not trust
 
-`server_core.py` is **1,880 lines**; plan §0.2 describes it at 1,651. Every citation in §0.2 has moved, and
-Task 2 reads several of them. Measured at the last commit:
+`server_core.py` is **2,858 lines**; plan §0.2 describes it at 1,651 and the pre-Task-3 tree was 1,880. Every
+citation in §0.2 has moved twice. Measured at `2c1d678`:
 
-| Symbol | Plan §0.2 | Actual |
-|---|---|---|
-| `drain_command_queue` | `:267-321` | **`:352`** |
-| `_MAX_COMMANDS_PER_TICK` etc. | `:329-332` | **`:264`** (`_DRAIN_TIME_BUDGET_SECONDS` at `:52`) |
-| `_decode_and_queue_frame` | `:342-391` | **`:523`** |
-| `_build_command_handlers` | `:480-808` | **`:663`** |
-| `_READ_ONLY_COMMANDS` | `:813-870` | **`:996`** (still **54** entries) |
-| `execute_command_internal` | `:872-913` | **`:1055`** |
-| `_run_handler` | `:1064-1142` | **`:1247`**; the `mutation_transaction` wrap is at **`:1314`**, not `:1131` |
-| `get_addon_info` | `:1144-1158` | **`:1327`** |
+| Symbol | Plan §0.2 | Pre-Task-3 | **At `2c1d678`** |
+|---|---|---|---|
+| `drain_command_queue` | `:267-321` | `:352` | **`:355`** |
+| `_decode_and_queue_frame` | `:342-391` | `:523` | **`:1421`** |
+| `_build_command_handlers` | `:480-808` | `:663` | **`:1579`** |
+| `_READ_ONLY_COMMANDS` | `:813-870` | `:996` (54 entries) | **`:1913`** (**55** entries — `get_session_info`) |
+| `execute_command_internal` | `:872-913` | `:1055` | **`:1996`** |
+| `_run_handler` | `:1064-1142` | `:1247` | **`:2188`** |
+| `get_addon_info` | `:1144-1158` | `:1327` | **`:2282`** |
 
-`_READ_ONLY_COMMANDS` holding 54 commands is re-confirmed by AST count, so the handoff's figure stands.
+New in Task 3 and worth knowing before Task 4 edits this file: `_run_session_swap`, `_drain_queue_into`,
+`_discard_superseded`, `_execute_and_answer`, `_answer` (takes a `receipt`), `_send_bounded`,
+`_abandon_unreachable_client`, `_replace_this_dying_timer`, and the constants `_SESSION_SWAP_COMMANDS`,
+`_INDETERMINATE_SAFE_COMMANDS`, `_PAST_BUDGET_SEND_TIMEOUT_SECONDS`.
 
 ### Task 2's first action, and why the order matters — DONE, kept for the record
 
