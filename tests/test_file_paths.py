@@ -50,6 +50,17 @@ HOSTILE_SHAPE_4 = (
     f"Error: Cannot open file {_HOSTILE_WORK}/no/such/dir/x.blend@ for writing: No such file or directory\n"
 )
 HOSTILE_SHAPE_5 = f"Error: Trying to reload library 'LIgood.blend' from invalid path '{_HOSTILE_WORK}/gone.blend'\n"
+# --- captured by scripts/blender_probes/linking_handlers_real_blender.py section J, Blender 5.2.2 LTS ---
+# A `.blend` author (or a script) can set `Library.name` to an absolute path; Blender quotes it with its `LI` code.
+_NAME_WORK = "/private/var/folders/87/ykdcq2j525x7kkhl13f1lrm80000gn/T/t7_handlers_d4j7t6wp"
+_NAME_TAIL = f"from invalid path '{_NAME_WORK}/moved_canon.blend'\n"
+HOSTILE_LIBRARY_NAME_SHAPE_5 = f"Error: Trying to reload library 'LI/Users/victim/shots/canon.blend' {_NAME_TAIL}"
+# --- captured by the same probe, section L: a newline inside the hostile name ---
+_NEWLINE_WORK = "/private/var/folders/87/ykdcq2j525x7kkhl13f1lrm80000gn/T/t7_handlers_aeqmk5c4"
+NEWLINE_LIBRARY_NAME_SHAPE_5 = (
+    "Error: Trying to reload library 'LI/Users/victim/a\n/b.blend' "
+    f"from invalid path '{_NEWLINE_WORK}/moved_canon_l.blend'\n"
+)
 
 # An oracle independent of the implementation's own detection: any separator or
 # home marker that starts a token, and any drive-letter root. The placeholder
@@ -519,6 +530,59 @@ def test_sanitizer_does_not_present_the_id_code_as_part_of_the_library_name() ->
     sanitized = _file_paths().sanitize_blender_error(RuntimeError(SHAPE_5_RELOAD))
 
     assert sanitized == "Error: Trying to reload library 'good.blend' from invalid path '<path>'"
+
+
+def test_sanitizer_reduces_a_library_name_containing_a_newline() -> None:
+    """Without DOTALL the name match stopped at the newline and `a` plus a relative tail went out (cycle 2)."""
+    sanitized = _file_paths().sanitize_blender_error(RuntimeError(NEWLINE_LIBRARY_NAME_SHAPE_5))
+
+    _assert_no_absolute_path(sanitized, "victim")
+    assert sanitized == "Error: Trying to reload library 'b.blend' from invalid path '<path>'"
+
+
+def test_sanitizer_reduces_a_library_name_without_touching_the_filesystem(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A library name is chosen by a `.blend` author; stat-ing it probes the CWD, or a network share on Windows."""
+    module = _file_paths()
+
+    def refuse(_path: object) -> bool:
+        raise AssertionError("the library name was stat-ed")
+
+    monkeypatch.setattr(os.path, "isdir", refuse)
+
+    assert module.sanitize_blender_error(RuntimeError(HOSTILE_LIBRARY_NAME_SHAPE_5)) == (
+        "Error: Trying to reload library 'canon.blend' from invalid path '<path>'"
+    )
+
+
+def test_sanitizer_reduces_a_library_name_holding_an_absolute_path_to_its_leaf() -> None:
+    """The `LI` code kept the quoted name from reading as a path, so the name went out whole (Task 7 cycle 1)."""
+    sanitized = _file_paths().sanitize_blender_error(RuntimeError(HOSTILE_LIBRARY_NAME_SHAPE_5))
+
+    _assert_no_absolute_path(sanitized, "victim", "shots")
+    assert sanitized == "Error: Trying to reload library 'canon.blend' from invalid path '<path>'"
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "Cannot relocate indirectly linked library '{name}'",
+        "Cannot delete indirectly linked library '{name}'",
+        "Path 'location' not found, from linked data-block 'OBHero' (from library '{name}')",
+    ],
+    ids=["relocate-indirect", "delete-indirect", "from-library"],
+)
+def test_sanitizer_reduces_every_quoted_library_name_shape_to_its_leaf(template: str) -> None:
+    """
+    Not captured: format strings read from the 5.2.2 binary (`strings Blender | grep "library '%s'"`).
+
+    Each quotes a library name with nothing after the quote that the reload shape relies on.
+    """
+    raw = template.format(name="LI/Users/victim/shots/canon.blend")
+
+    sanitized = _file_paths().sanitize_blender_error(RuntimeError(raw))
+
+    _assert_no_absolute_path(sanitized, "victim", "shots")
+    assert "library 'canon.blend'" in sanitized, sanitized
 
 
 def test_sanitizer_removes_quoted_paths_containing_a_space_and_an_apostrophe() -> None:

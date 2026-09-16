@@ -39,6 +39,8 @@ import re
 
 from collections.abc import Iterable
 
+from .text_hygiene import client_safe_name_leaf
+
 # Each constant is a *prefix*, and the lengths are load-bearing: pinning more
 # bytes false-rejects valid files. `BLENDER` is what every header version
 # shares (5.x writes `BLENDER17-01v050`, older ones `BLENDER-v293`); gzip's FLG
@@ -76,6 +78,16 @@ _PATH_IN_TEXT = re.compile(
 )
 # `Library.reload()` names the library by its raw ID name, type code included.
 _LIBRARY_ID_NAME = re.compile(r"(library ')LI")
+# Any quoted library name. Blender quotes one in at least a dozen messages
+# (`strings` on the 5.2.2 binary: reload, relocate, delete, "from library '%s'",
+# ...). A `.blend` author can set `Library.name` to an absolute path, and the
+# `LI` code in front of it stops the quoted-path detection from seeing a path, so
+# the name is reduced to its leaf before that detection runs. The quote closes
+# where a quoted path's does.
+# DOTALL: a name may hold a newline (measured, cycle 2), which would otherwise end the match early.
+_QUOTED_LIBRARY_NAME = re.compile(
+    r"(?P<lead>[Ll]ibrary ')(?P<code>LI)?(?P<name>.*?)(?='(?:$|[\s:;,.?!)\]>]))", re.DOTALL
+)
 
 
 def canonical_path(path: str) -> str:
@@ -307,8 +319,27 @@ def sanitize_blender_error(exc: BaseException, known_paths: Iterable[str] = ()) 
     text = raw
     for known in sorted(_with_temp_names(known_paths), key=len, reverse=True):
         text = text.replace(known, PATH_PLACEHOLDER)
+    text = _QUOTED_LIBRARY_NAME.sub(_leaf_library_name, text)
     text = _PATH_IN_TEXT.sub(_placeholder_for, text)
     return _LIBRARY_ID_NAME.sub(r"\1", text)
+
+
+def _leaf_library_name(match: re.Match[str]) -> str:
+    """
+    Reduce one quoted library name to an admissible leaf, without a filesystem call.
+
+    The leaf rule `_library_summary` publishes `Library.name` under (TASK_STATE
+    T3-15), through `text_hygiene.client_safe_name_leaf`, which does not stat
+    the attacker-chosen name. The `LI` code is kept for the final strip.
+
+    Args:
+        match: A `_QUOTED_LIBRARY_NAME` match.
+
+    Returns:
+        str: The quote lead, the code if present, and the leaf.
+
+    """
+    return f"{match['lead']}{match['code'] or ''}{client_safe_name_leaf(match['name'])}"
 
 
 def _with_temp_names(paths: Iterable[str]) -> set[str]:

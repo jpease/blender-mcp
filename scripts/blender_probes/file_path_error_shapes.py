@@ -20,7 +20,9 @@ Run from the repository root (the empty-path shape reports the process CWD)::
 import importlib.util
 import os
 import pathlib
+import sys
 import tempfile
+import types
 
 from collections.abc import Callable
 from typing import Any
@@ -30,7 +32,11 @@ import bpy
 ADDON = pathlib.Path.cwd() / "src/blender_mcp/bundled/addon"
 FIXTURES = pathlib.Path.cwd() / "tests/fixtures/blend"
 
-_spec = importlib.util.spec_from_file_location("probe_file_paths", ADDON / "file_paths.py")
+# A bare parent package: `file_paths` imports `text_hygiene` relatively.
+_PACKAGE = types.ModuleType("probe_file_paths_pkg")
+_PACKAGE.__path__ = [str(ADDON)]  # type: ignore[attr-defined]
+sys.modules["probe_file_paths_pkg"] = _PACKAGE
+_spec = importlib.util.spec_from_file_location("probe_file_paths_pkg.file_paths", ADDON / "file_paths.py")
 if _spec is None or _spec.loader is None:
     raise SystemExit("run this from the repository root")
 file_paths = importlib.util.module_from_spec(_spec)

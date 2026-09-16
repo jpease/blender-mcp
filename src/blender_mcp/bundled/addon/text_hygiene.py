@@ -332,7 +332,26 @@ def client_safe_leaf(file_path: object) -> str:
     with suppress(OSError, ValueError):
         if os.path.isdir(raw):
             return UNNAMEABLE
+    return client_safe_name_leaf(raw)
 
+
+def client_safe_name_leaf(name: object) -> str:
+    """
+    Reduce a name to one admissible leaf without touching the filesystem.
+
+    `client_safe_leaf` minus its `isdir` check, which it runs first. For text
+    that names nothing on this machine - a `Library.name` a `.blend` author
+    chose (Task 7 cycle 2) - stat-ing it would probe the process CWD for a
+    relative name, and a network share for a UNC one on Windows.
+
+    Args:
+        name: The text to reduce.
+
+    Returns:
+        str: A leaf, or `the requested file` when no admissible leaf exists.
+
+    """
+    raw = str(name or "")
     leaf = strip_unsafe(raw)
     for separator in _LEAF_SEPARATORS:
         leaf = leaf.rsplit(separator, 1)[-1]

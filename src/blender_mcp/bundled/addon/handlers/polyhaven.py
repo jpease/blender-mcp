@@ -8,6 +8,7 @@ import bpy
 from ..constants import REQ_HEADERS
 from ..file_paths import enforce_roots, resolve_blend_path, sanitize_blender_error
 from ..network import download_file, get_json
+from .file_lifecycle import _refuse_scripts_auto_execute
 
 _MAX_IMAGE_BYTES = 512 * 1024 * 1024
 _MAX_MODEL_FILE_BYTES = 2 * 1024 * 1024 * 1024
@@ -388,6 +389,9 @@ class PolyhavenHandlersMixin:
                             operator_result = bpy.ops.wm.obj_import(filepath=main_file_path)
                         elif file_format == "blend":
                             validated = _validated_download(main_file_path, temp_dir)
+                            # An appended object's Python driver ran with this preference on
+                            # (scripts/blender_probes/linking_scripts_auto_execute.py, step 4).
+                            _refuse_scripts_auto_execute("import_polyhaven_asset")
                             with bpy.data.libraries.load(validated, link=False) as (data_from, data_to):
                                 data_to.objects = data_from.objects
 

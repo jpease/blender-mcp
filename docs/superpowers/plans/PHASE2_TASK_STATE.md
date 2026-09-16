@@ -28,8 +28,8 @@ that had already been lost once (see the closed item under "Known failures / blo
 | | |
 |---|---|
 | Branch | `main`, **unpushed**. `origin/main` is still at `523f427`. |
-| Last commit | **Task 6**, after Task 5 (`fcad04f`), Task 4 (`76f782d`) and the decision-13 amendment (`1f3619f`). Before it, **`2c1d678` — Task 3**, committed at **88.75/100 against a 90 gate** (below it; see the closing note at the end of this file). Task 2 closed after four cycles; Task 1 at 94/100. |
-| Next task | **Task 7** (linking handlers). Tasks 4-6 are done and committed; read their sections at the end of this file (Task 5's obligations apply to Task 7's `lib.reload()` / `libraries.load` error paths too). Historical note for Task 4, kept: Task 3 is **done and committed**. Read its closing note first — it says why it took six cycles and what §06's gate-driven amendment changes. **Task 4 must not assume "the epoch moved ⇒ a `load_post` fired"**: three sites move it (see T3-18/19). `_SESSION_SWAP_COMMANDS` is landed and single-sourced; Task 4 adds `_DATABLOCK_REPLACING_COMMANDS` as a **separate** constant and must not merge them. |
+| Last commit | **Task 7**, after Task 6 (`f24e01e`), Task 5 (`fcad04f`), Task 4 (`76f782d`) and the decision-13 amendment (`1f3619f`). Before it, **`2c1d678` — Task 3**, committed at **88.75/100 against a 90 gate** (below it; see the closing note at the end of this file). Task 2 closed after four cycles; Task 1 at 94/100. |
+| Next task | **Task 8** commit (design written and reviewed, uncommitted docs), then **Task 9** (MCP tools, bundles, ceilings). Tasks 4-7 are done; read their sections at the end of this file. Historical note for Task 4, kept: Task 3 is **done and committed**. Read its closing note first — it says why it took six cycles and what §06's gate-driven amendment changes. **Task 4 must not assume "the epoch moved ⇒ a `load_post` fired"**: three sites move it (see T3-18/19). `_SESSION_SWAP_COMMANDS` is landed and single-sourced; Task 4 adds `_DATABLOCK_REPLACING_COMMANDS` as a **separate** constant and must not merge them. |
 | Working tree | Clean apart from `uv.lock`, which stays unstaged permanently (§03 incidental churn). |
 | Blender | **5.2.2 LTS** at `/opt/homebrew/bin/blender`. Every API fact re-verified against it; see "5.2.2 re-verification". |
 | Review loop | **Changed again 2026-09-16 for Tasks 4-10** (decision 13, handoff §06's 2026-09-16 amendment): findings triaged as bug / hardening / record-keeping; only bugs and automatically-critical items block; at most two cycles, then ask the user; scores recorded, not gated. Hardening goes to the backlog under decision 13. Tasks 1-3 ran under earlier rules. |
@@ -182,6 +182,12 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | 20 | **Task 6: an in-place `save_shot()` also requires `confirm_overwrite=True`**, and a confirmed overwrite also rotates Blender's `.blend1` backup (documented). Roots are checked before file checks, for open, save-as and in-place save. | One uniform `os.path.exists` guard; an in-place save replaces the copy on disk, which may hold someone else's later save. Roots-first stops existence probing outside roots. | One extra flag per checkpoint save. |
 | 21 | **Task 6: `save_shot` ends the drain tick** (`server_core._TICK_ENDING_COMMANDS`, separate from `_SESSION_SWAP_COMMANDS`, which it must not join — T3-3). | Critic 1, live GUI rig: Blender clears `is_dirty` *after* the tick, so `[save_shot, set_object_transform]` pipelined in one tick left the edit reported clean and a later `open_shot` without `discard_unsaved` destroyed it (automatically critical). With the tick ending, the edit runs next tick and stays dirty; reproduced fixed by the reviewer and by the cycle-2 critic three times. A transaction-count fallback was rejected: `save_shot`'s own transaction commits after `save_post`, so it would false-refuse a clean session. `save_shot`'s result no longer carries `is_dirty` (it was stale for the same reason). | Throughput (backlog row). |
 | 22 | **Task 6: `relative_remap=False` stays the explicit default, and a save to a different directory warns with a count of Blender-relative external file paths that will not resolve** (`bpy.utils.blend_paths(absolute=False, packed=False, local=True)`, minus libraries whose every user is indirect). Refuses when `<target>@` already exists or cannot be checked. | Critic 1 measured `//` library links, and the cycle-2 critic `//` image paths, silently missing after save-to-another-directory. Critic 3 measured a planted `<target>@` symlink redirecting the save outside the roots (automatically critical). The cycle-3 critic verified counts for images, sounds, clips, volumes, direct/indirect/override/instanced libraries, packed images excluded. | A spurious warning in two edge cases (backlog); a legitimate save refused after a crashed save left `x.blend@` (message says so). |
+| 25 | **Task 7: `create_override` and `link_canon_library(as_override=True)` use Route C** (`override_hierarchy_create(scene, view_layer, do_fully_editable=True)`, scene/view layer from `bpy.data`), and the handler unlinks the linked instance Route C leaves beside the override. | Step 2 re-measured the plan's A/B/C table exactly on 5.2.2 (`scripts/blender_probes/linking_override_routes.py`); Route C leaves both the linked instance and the override drawn. Reopen after save: override objects `is_editable=True, is_system_override=False` (`linking_handlers_real_blender.py` A/B). | The replaced instance disappears from its parent; placement order changes on a restored refusal. |
+| 26 | **Task 7: the `use_scripts_auto_execute` refusal is added to every library load (link, override, reload, relocate, Poly Haven append), and is recorded as a partial control.** User decision 2026-09-16: in the intended deployments (fully local; or fronted by an authenticating gateway over a private network) MCP loads follow Blender's own session trust; flag detection is a Phase 4 P1 requirement for pooled/untrusted deployments. | `linking_scripts_auto_execute.py`: with the preference on, a linked library's Python driver ran after link, reload, override and append; with it off, nothing ran. Critic 3 measured that `-y`, Reload Trusted and a surviving `reset_session` set the session flag while the preference reads False, and the driver ran through all three commands. `bpy.app` has no flag reader. | Code execution from a hostile library in a session the artist marked trusted — accepted for the stated deployments only. |
+| 27 | **Task 7: `unlink_libraries(purge_orphans=True)` removes only local datablocks this unlink left with zero users (`batch_remove`), never `orphans_purge`.** | `linking_datablock_lifecycle.py` D2: `orphans_purge(do_local_ids=True)` deleted an unrelated zero-user material the user had made. Critic 1: user zero-user, fake-user and other-scene datablocks all survive. | Some orphans remain until Blender drops them on save (backlog). |
+| 28 | **Task 7: `link_canon_library` places what it links in the scene root.** | Lifecycle probe A: a link nothing uses is dropped on save (`REOPENED : []`). | An unrequested scene edit. |
+| 29 | **Task 7: overrides are refused when the collection is already overridden, when any collection inside it is, and when a request names a collection inside another requested one; all collections are validated before the first override and re-checked immediately before each, with every unlinked instance re-linked on failure.** | Three successive critic findings, all real-Blender: a refused multi-collection request destroyed an existing placement (cycle 1, automatically critical); up-front-only validation let `[Parent, Child]` duplicate the child (cycle 2, a regression of the cycle-1 repair); child-then-parent via two commands duplicated the child (cycle 3). Sections G, K, M of the probe. | A legitimate "override parent and child" request must be expressed as "parent only". |
+| 30 | **Task 7: relocate refuses an indirect library and a target another library already links; results carry per-datablock `is_missing` and a count warning; author-chosen `Library.name` is reduced without touching the filesystem (`text_hygiene.client_safe_name_leaf`) and absolute names are passed as known paths.** | Critic 1: relocating an indirect library broke the parent's link; relocating to a file lacking the data reported it present. Critic 3: `Library.name="/Users/victim/shots/canon.blend"` (and a newline variant) leaked in `reload_library`'s error; the leaf reduction added a CWD / UNC directory-existence probe. | A hostile absolute name renders as `the requested file`. |
 | 13 | **Tasks 4-10: findings are triaged by kind, at most two cycles, and the score is recorded but no longer gates** (user decision, 2026-09-16; supersedes decision 12's stop condition and cycle rules, keeps its three pre-checks). Bugs and automatically-critical items are fixed before commit; hardening goes to the hardening backlog below for Task 8 to prioritise, implemented after Phase 2 unless pulled in; record-keeping is fixed once at commit after a code freeze. Cycle 2 only if cycle 1 had blocking repairs, re-running only those lenses plus a regression check on the repairs; anything still blocking after cycle 2 stops and asks the user. Full text in handoff §06's 2026-09-16 amendment. | Task 3 cycle-1 tree (stash `5e9d482`) compared with `2c1d678`: real bugs (T3-1 wrong-file `success`, T3-5 Save Copy path) were fixed in cycle 2, ~2 of ~15¾ hours; hardening against a hostile peer earned ~20-25 of the 42.75 points gained and most of the hours; record-keeping ~5. Three defects were introduced by hardening repairs (T3-12 verified: no `settimeout(0` in `5e9d482`, present at `2983041` `server_core.py:819`; T3-16; T3-24). The trust-boundary 16/20 floor, not defect risk, drove cycles 3-6. | **A hardening finding misclassified as hardening when it is a real bug ships that bug.** Mitigated by the definition: anything producing a wrong result, data loss, hang or dropped healthy connection for a single local user is a bug, and §07's automatically-critical list is unchanged. The other cost is accepted deliberately: until Task 8's backlog is implemented, the addon is not hardened against a hostile local socket peer - the same posture the loopback-only, unauthenticated socket already has. |
 
 ### Hardening backlog (decision 13) — owner: Task 8 to prioritise
@@ -208,6 +214,12 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | 6 | **`scene_name` goes through `client_safe_text`, not the leaf allowlist.** File-author text, not machine layout. | Low. | Critic 3 |
 | 6 | **No headless test drives the real Task 6 handlers through `_drain_batch`** — only the GUI rig does. | Coverage gap for CI without a GUI Blender. | Critic 2 |
 | 6 | **T3-7 (same-path re-open during the handler gap) classified**: a real but narrow stale-capabilities result for a single local user; no data loss or hang. Not fixed: the cheap fix breaks `test_re_enabling_on_the_same_file_does_not_move_the_marker`, and handlers are detached during the gap, so a proper fix needs a marker stored in the database. | Stale capability gate until the next swap. | Implementer |
+| 7 | **Session auto-exec flag, not the preference, gates library drivers** (user decision 26: accepted for the intended trusted deployments). Under `-y`, Reload Trusted, or surviving `reset_session`, a hostile library's Python driver runs after link / override / reload while the preference reads False. | Code execution from a hostile `.blend` in an untrusted deployment. Phase 4 P1: canary detection + refusal (spec §4.8, work item Task 9). | Critic 3 |
+| 7 | **`create_override` replacement not fully disclosed** (which parents were replaced; instances left on the linked copy in other scenes / instancers); `_link_into` checks only the scene root, so re-linking a collection the user moved adds a second root instance; `purge_orphans` goes one level deep (an image under a purged material stays at 0 users, unreported). | Double drawing or unreported leftovers; no data loss. | Critic 1 |
+| 7 | **`is_missing` reflects the last load, not the disk** (a library deleted mid-session still reads False until reopen). | A client trusts a stale flag; `reload_library` then fails cleanly. | Cycle-2 critic |
+| 7 | **Census walks every `bpy.data` collection on the main thread, unbounded**, twice per unlink (three with purge). | Drain loop stall on a very large scene. | Critic 2 |
+| 7 | **`reload_library` does not check roots** (by design: only a `.blend` author can set a library path, and `open_mainfile` already read it). `configured_roots` splits on `os.pathsep`, so a root containing `:` cannot be configured (fails closed). | Reads outside roots via an author-planted library; an unconfigurable root. | Critic 3 |
+| 7 | **Path spelling duplicates a library** (`/var/...` vs `/private/var/...` creates `base.blend.001`); a crafted `Library.name` equal to a target's canonical path causes a false "already linked" relocate refusal; a spoofed name can make a message read misleadingly; a restored placement returns at the end of its parent's children. | Duplicate loads / cosmetic. | Critics |
 | 6 | **`client_safe_leaf`'s `isdir` oracle**: with roots enforced, `open_shot` now checks roots first so probing stops there; with roots unset, `resolve_blend_path`'s "does not exist" / "is a directory" remain an existence oracle. | One bit per probe on an unconfigured desktop install. | Implementer |
 
 ## Tasks
@@ -219,7 +231,7 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | 4 | Make rollback survive a file swap, track `libraries` | Opus | **Done — one cycle, no blocking findings** (decision 13) | this commit | `_DATABLOCK_REPLACING_COMMANDS` bypass, `Transaction.invalidate()` via `load_post` and a flagged `blend_import_post`, `ObjectState.invalidate()`, `libraries` tracked and removed last. See "Task 4" at the end of this file. |
 | 5 | The filesystem trust boundary | Opus | **Done — two cycles; blocking findings repaired** (decision 13) | this commit | `file_paths.py` (`resolve_blend_path`, `enforce_roots`, `sanitize_blender_error`), `BLENDERMCP_FILE_ROOTS`, policy in the handshake, Poly Haven guarded. See "Task 5" at the end of this file. |
 | 6 | Addon file-lifecycle handlers | Opus | **Done — three cycles** (user approved a third, 2026-09-16) | this commit | `open_shot`, `save_shot`, `reset_session` in the existing mixin; decisions 17-22; see "Task 6" at the end of this file. Original note: **Inherits from Task 2:** `open_shot` must refuse when `bpy.data.is_dirty` unless the caller passes an explicit discard flag (unsaved work is otherwise destroyed silently — measured); `wm.open_mainfile` must pass `use_scripts=False` explicitly; the post-swap half runs with `bpy.context.window` at `None` but an inherited context still works. |
-| 7 | Addon linking handlers | Opus | Not started | — | |
+| 7 | Addon linking handlers | Opus | **Done — three cycles plus a reviewer-verified final repair** (user decisions 2026-09-16) | this commit | Six commands in `handlers/linking.py`; decisions 25-30; see "Task 7" at the end of this file. |
 | 8 | Socket authentication — design deliverable | Opus | Not started | — | |
 | 9 | Server-side MCP tools, bundle placement, payload ceiling | Sonnet | Not started | — | Inherits `shot` at **203,079 B**, **15 B** below its unchanged ceiling (measured 2026-09-15; the earlier 203,087 was cycle 2's figure and missed repair R20's further 8 B). |
 | 10 | The phase gate scenario | Sonnet | Not started | — | Written against the addon socket only (decision 3). |
@@ -3475,3 +3487,111 @@ an instance must be checked against its class.
 
 **Wall time:** implementer ~25 min + two repair rounds ~13 min; critics ~8 min (C1, parallel), ~7 min (C2), ~5
 min (C3); reviewer ~25 min. About 1 h 40 min end to end.
+
+---
+
+## Task 7 — linking handlers
+
+`handlers/linking.py` (`LinkingHandlersMixin`): `link_canon_library`, `create_override`, `list_libraries`
+(in `_READ_ONLY_COMMANDS`), `reload_library`, `relocate_library`, `unlink_libraries` (the last three in Task 4's
+`_DATABLOCK_REPLACING_COMMANDS`). Handles are `session_uid`s except `link_canon_library`'s `collections` /
+`objects`, which name contents of the library file (asserted by a signature test). `resolve_unique_name` exists
+as the plan-required name→uid resolver and has no command caller yet. Shared helpers are imported from
+`file_lifecycle.py`; `file_paths.sanitize_blender_error` gained library-name reduction; `text_hygiene` gained
+`client_safe_name_leaf`. Protocol 31/31; catalog unchanged (no MCP tool — Task 9). Decisions 25-30.
+
+**Review:** three critic cycles plus a final repair verified by the reviewer (user decisions, 2026-09-16).
+Blocking bugs found: cycle 1 — an automatically-critical placement loss, relocate misreporting missing data,
+relocate of an indirect library, a library-name path leak, and the auto-exec gap (decision 26); cycle 2 —
+nested-request duplication (introduced by the cycle-1 repair) and a newline name leak; cycle 3 — child-then-
+parent duplication. **Process note:** the duplication class took three rounds because each repair guarded the
+case the finding named; the final repair covers all three directions (decision 29).
+
+### Real Blender, reproduced by the reviewer on the final tree
+
+`/opt/homebrew/bin/blender --background --factory-startup --python scripts/blender_probes/linking_handlers_real_blender.py`, exit 0:
+
+```
+=== A. link (instanced) -> create_override -> save_shot -> open_shot ===
+  REOPENED objects (name, uid, linked, is_editable, is_system_override): [('HeroBody', 548, False, True, False), ('HeroBody', 554, True, False, None)]
+=== B. link_canon_library(as_override=True) -> save_shot -> open_shot ===
+  REOPENED objects: [('HeroBody', 765, False, True, False), ('HeroBody', 771, True, False, None)]
+=== C. criterion 8: failures that carry a path ===
+  [reload_library, absolute link] RuntimeError -> "reload_library failed: Error: Trying to reload library 'gone_canon.blend' from invalid path '<path>'"
+  [reload_library, // link in 'Smith, John'] RuntimeError -> "reload_library failed: Error: Trying to reload library 'canon.blend' from invalid path '<path>'"
+=== E. unlink one of two libraries, with purge_orphans ===
+  unnamed library and its datablocks all alive: True
+  user's zero-user material alive: True UserScratchMaterial
+=== G. failed multi-collection as_override link over a pre-existing placement ===
+  root before: [('CanonHero', 'L', 1), ('CanonProp', 'O', 1)]
+  root after : [('CanonHero', 'L', 1), ('CanonProp', 'O', 1)]
+=== H. relocate to a file lacking the linked datablocks ===
+  datablocks: [{'session_uid': 1959, 'name': 'CanonHero', 'id_type': 'COLLECTION', 'is_library_indirect': False, 'is_missing': True}]
+  warnings: ['1 datablock linked from this library is missing from its file; it is a placeholder until relinked']
+=== I. relocate of an indirect library ===
+  [relocate_library of the indirect library] ValueError -> "that library is indirect - reached only through another library, ..."
+=== J / L. a hostile Library.name (absolute; with a newline) in a failed reload ===
+  [reload_library] RuntimeError -> "reload_library failed: Error: Trying to reload library 'the requested file' from invalid path '<path>'"
+=== K. nested request: Parent contains Child ===
+  [['Parent', 'Child'] as_override, placed first=True] ValueError -> "'Child' (session_uid 2874) is inside 'Parent', also requested; request only the outermost collection"
+    collections: [('Child', 'L'), ('Parent', 'L')]  ChildBody overrides: 0
+    root before: [('Parent', 'L'), ('Child', 'L')]  after: [('Parent', 'L'), ('Child', 'L')]
+  (same for placed first=False and for ['Child', 'Parent'])
+=== M. Child overridden first, then Parent ===
+  [create_override(Parent)] ValueError -> "collection session_uid 3487 contains a collection that is already overridden, by 'Child' (session_uid 3485); remove that override first, or override only the inner collection"
+    REOPENED collections: [('Child', 'O'), ('Child', 'L'), ('Parent', 'L')]  ChildBody overrides: 1
+  [link_canon_library(['Parent'], as_override=True)] ValueError -> (same)   REOPENED ... ChildBody overrides: 1
+```
+
+`scripts/blender_probes/linking_scripts_auto_execute.py`, reviewer run:
+
+```
+=== use_scripts_auto_execute = False ===      every step: payloads that RAN: none
+=== use_scripts_auto_execute = True ===
+    0. positive control (local driver)           payloads that RAN: ['local_driver']
+    1b. libraries.load(link=True), after update  payloads that RAN: ['driver']
+    2b. lib.reload(), after update               payloads that RAN: ['driver']
+    3b. Route C override, after update           payloads that RAN: ['driver']
+    4b. append, objects in scene, after update   payloads that RAN: ['driver']
+```
+
+Steps 1, 2, 2b (`linking_gate_smoke.py`, `linking_override_routes.py`, `linking_reload_ruling.py`) were
+reproduced by Critic 4: Route A objects locked; B editable but system overrides; C editable, not system;
+`Library.reload` in `bl_rna.functions` but absent from `dir()`; `wm.lib_reload(library=name)` →
+`RuntimeError: Not a library`, bogus name → `{'CANCELLED'}`; `wm.lib_relocate` renames the library, the data API
+does not.
+
+### Falsifiability and gates (reviewer, final tree)
+
+Step 3: **52 failed, 11 passed** before implementation (the 11 are refusals "Unknown command type" also
+satisfied; each has a revert row). Repair rounds: 12 failed / 4 failed / 5 failed first. One cycle-0 revert row
+("reload passes no known paths") was deleted because it could not fail — the structural sanitizer removes the
+quoted path without known paths — and the test docstring says known paths are defence in depth there.
+
+`revert_matrix.py --only "task 7"` from an isolated copy (`PYTHONPATH=<copy>/src`): **78 rows FAIL as required,
+0 survivors, 0 uncovered**; Task 3 and Task 5 subsets 0 survivors (implementer, after the shared-helper changes).
+`check_revert_anchors.py` **443/443**.
+
+| Check | Value | Before |
+|---|---|---|
+| pytest | **1254 passed** | 1164 |
+| `ruff check .` | 9,832 | 9,832 |
+| `ruff format --check .` | 12 unformatted | 12 |
+| basedpyright | 71 / 4 | 71 / 4 |
+| `all` / `shot` | 1,181,037 B / 203,093 B | unchanged |
+| existing test lines removed | 0 | — |
+
+Existing test files touched: `tests/server/test_threading.py` (+1 stand-in mixin name); `tests/test_polyhaven_blend_guard.py` (Task 5's file: fixture sets the preference False, plus 3 tests); `tests/test_file_paths.py` (new nodes).
+
+### Scores (recorded, not gated)
+
+| Dimension | C1 | C2 | C3 |
+|---|---|---|---|
+| Data durability | 21/30 | 22/30 | 25/30 |
+| Concurrency and liveness | 23/25 | — | — |
+| Filesystem and trust boundary | 9/20 | 16/20 | 19/20 |
+| Evidence | 14/15 | — | — |
+| Code quality | 9/10 | — | — |
+
+**Wall time:** implementer ~31 min + four repair rounds ~31 min; critics ~10 min (C1), ~6 min (C2), ~6 min
+(C3); reviewer ~30 min. About 2 h.

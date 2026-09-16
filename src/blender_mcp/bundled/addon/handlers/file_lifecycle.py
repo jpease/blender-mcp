@@ -42,6 +42,7 @@ from ..output_roots import configured_file_roots
 from ..session import session_snapshot
 from ..text_hygiene import (
     client_safe_leaf,
+    client_safe_name_leaf,
     client_safe_text,
     relative_link_body,
     safe_relative_link,
@@ -107,8 +108,12 @@ def _library_summary(library: object) -> dict[str, object]:
     display label rather than a path. It is not: measured on Blender 5.2.2, a
     `Library.name` accepts `/Users/victim/shots/canon.blend`, `../../etc/passwd`
     and `C:\\studio\\vault` verbatim, and this socket is unauthenticated. In the
-    benign case the name Blender mints *is* the basename, so `client_safe_leaf`
-    returns it unchanged and the cost of the allowlist is zero;
+    benign case the name Blender mints *is* the basename, so the leaf rule
+    returns it unchanged and the cost of the allowlist is zero. It goes through
+    `client_safe_name_leaf`, the leaf rule without `client_safe_leaf`'s `isdir`
+    call, because the name is author-chosen text, not a path on this machine
+    (Task 7 cycle 3); `filepath` keeps `client_safe_leaf`, whose directory check
+    exists for a path Blender reports.
     `tests/test_session_state.py::test_a_hostile_library_name_is_reduced_to_a_leaf_like_the_filepath_is`
     runs the whole hostile table through it.
 
@@ -147,7 +152,7 @@ def _library_summary(library: object) -> dict[str, object]:
     whole = safe_relative_link(filepath, _MAX_REPORTED_LINK_CHARS)
     return {
         "session_uid": getattr(library, "session_uid", None),
-        "name": client_safe_leaf(getattr(library, "name", "")),
+        "name": client_safe_name_leaf(getattr(library, "name", "")),
         "filepath": whole if whole is not None else client_safe_leaf(filepath),
         "is_relative": relative_link_body(strip_unsafe(filepath)) is not None,
         "is_missing": bool(getattr(library, "is_missing", False)),
@@ -237,9 +242,21 @@ def _checked_blend_path(raw: object, *, must_exist: bool) -> str:
     return resolve_blend_path(expanded, must_exist=must_exist)
 
 
-def _refuse_scripts_auto_execute() -> None:
+def _refuse_scripts_auto_execute(command: str = "open_shot") -> None:
     """
     Refuse a load while Blender is set to run scripts embedded in a `.blend`.
+
+    Task 7's linking commands and the Poly Haven `.blend` import call it too.
+    **It is not the control for script execution** (user decision, 2026-09-16):
+    Blender gates drivers on the session flag (`-y` / `--enable-autoexec`, or
+    `open_mainfile` / `revert_mainfile` with `use_scripts=True`, "Reload
+    Trusted"), which this preference does not reflect - under `-y` it reads
+    False and a linked library's Python driver still ran after a link, an
+    override and a reload (Task 7 cycle-1 critic, 5.2.2). With the flag off
+    nothing ran (`scripts/blender_probes/linking_scripts_auto_execute.py`). In
+    the intended trusted deployments MCP loads follow Blender's own trust, as a
+    manual link does; detecting the session flag is a Phase 4 requirement for
+    pooled or untrusted deployments.
 
     `open_mainfile(use_scripts=False)` is always passed, but this preference is
     the same code-execution surface on an unauthenticated socket, and a user
@@ -250,6 +267,9 @@ def _refuse_scripts_auto_execute() -> None:
     default is *unconfigured*; here the default is *safe* (False, measured) and
     someone changed it. A preference that cannot be read is treated as on.
 
+    Args:
+        command: The refusing command, named in the message.
+
     Raises:
         ValueError: When the preference is on or unreadable.
 
@@ -257,7 +277,7 @@ def _refuse_scripts_auto_execute() -> None:
     filepaths = getattr(getattr(bpy.context, "preferences", None), "filepaths", None)
     if getattr(filepaths, "use_scripts_auto_execute", True) is not False:
         raise ValueError(
-            "open_shot refuses to load while Blender's preferences.filepaths.use_scripts_auto_execute "
+            f"{command} refuses to load while Blender's preferences.filepaths.use_scripts_auto_execute "
             "is on (or unreadable), because a .blend could run embedded scripts; turn it off in "
             "Preferences > Save & Load, then retry"
         )

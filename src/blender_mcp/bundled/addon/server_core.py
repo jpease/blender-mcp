@@ -22,6 +22,7 @@ from .handlers.character_rigging import CharacterRiggingHandlersMixin
 from .handlers.cloth import ClothHandlersMixin
 from .handlers.file_lifecycle import FileLifecycleHandlersMixin
 from .handlers.lighting import LightingHandlers
+from .handlers.linking import LinkingHandlersMixin
 from .handlers.liquid import LiquidHandlersMixin
 from .handlers.mesh import MeshHandlersMixin
 from .handlers.model import ModelHandlersMixin
@@ -147,6 +148,7 @@ class BlenderMCPServer(
     ClothHandlersMixin,
     LiquidHandlersMixin,
     FileLifecycleHandlersMixin,
+    LinkingHandlersMixin,
     SceneHandlersMixin,
     ScenePhysicsHandlersMixin,
     ObjectAnimationHandlersMixin,
@@ -1623,6 +1625,12 @@ class BlenderMCPServer(
             "open_shot": self.open_shot,
             "save_shot": self.save_shot,
             "reset_session": self.reset_session,
+            "link_canon_library": self.link_canon_library,
+            "create_override": self.create_override,
+            "list_libraries": self.list_libraries,
+            "reload_library": self.reload_library,
+            "relocate_library": self.relocate_library,
+            "unlink_libraries": self.unlink_libraries,
             "get_object_info": self.get_object_info,
             "get_mesh_data": self.get_mesh_data,
             "inspect_animation": self.inspect_animation,
@@ -1946,6 +1954,7 @@ class BlenderMCPServer(
             "list_scene_objects",
             "get_addon_info",
             "get_session_info",
+            "list_libraries",
             "get_object_info",
             "get_mesh_data",
             "inspect_animation",

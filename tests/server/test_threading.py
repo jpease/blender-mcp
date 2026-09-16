@@ -244,6 +244,7 @@ def _load_server_class():
         "PolyhavenHandlersMixin",
         "SketchfabHandlersMixin",
         "FileLifecycleHandlersMixin",
+        "LinkingHandlersMixin",
     )
 
     namespace = {

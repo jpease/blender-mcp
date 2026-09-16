@@ -77,6 +77,7 @@ ADDON_OBJECT_STATE = ROOT / "src/blender_mcp/bundled/addon/object_state.py"
 ADDON_TEXT_HYGIENE = ROOT / "src/blender_mcp/bundled/addon/text_hygiene.py"
 SERVER_TEXT_HYGIENE = ROOT / "src/blender_mcp/text_hygiene.py"
 ADDON_FILE_LIFECYCLE = ROOT / "src/blender_mcp/bundled/addon/handlers/file_lifecycle.py"
+ADDON_LINKING = ROOT / "src/blender_mcp/bundled/addon/handlers/linking.py"
 ADDON_INIT = ROOT / "src/blender_mcp/bundled/addon/__init__.py"
 TEST_THREADING_FILE = ROOT / "tests/server/test_threading.py"
 SERVER_CLI = ROOT / "src/blender_mcp/server/cli.py"
@@ -100,6 +101,7 @@ ROOTST = "tests/test_output_roots.py"
 FPT = "tests/test_file_paths.py"
 PHT = "tests/test_polyhaven_blend_guard.py"
 FLT = "tests/test_file_lifecycle_handlers.py"
+LKT = "tests/test_linking_handlers.py"
 CORET = "tests/server/tools/test_core.py"
 CLIT = "tests/server/test_cli_transport.py"
 AMT = "tests/test_addon_manager.py"
@@ -143,8 +145,8 @@ NFKC_BACKSLASH_LIB = (
 
 # The files added outright by a Phase 2 task; every node they collect must be
 # accounted for. Task 1 added the first five; Task 3 added `test_session_state.py`;
-# Task 5 added the next two; Task 6 added the last.
-NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, PHT, FLT)
+# Task 5 added the next two; Task 6 added `FLT`; Task 7 added the last.
+NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, PHT, FLT, LKT)
 # Nodes added to files that already existed. **Not optional bookkeeping:**
 # `coverage_gaps()` subtracts the rows below from *this* universe, so a task that
 # adds nodes here without listing them gets a "0 uncovered" that is true of the
@@ -2324,7 +2326,7 @@ REVERTS: list[Revert] = [
     Revert(
         "task 3: the library name goes back through client_safe_text, which allowlists nothing",
         ADDON_FILE_LIFECYCLE,
-        '        "name": client_safe_leaf(getattr(library, "name", "")),',
+        '        "name": client_safe_name_leaf(getattr(library, "name", "")),',
         '        "name": _reverted_unallowlisted_name(getattr(library, "name", "")),',
         tuple(f"{HOSTILE_LIB_NAME}[{case}]" for case in HOSTILE_LIB_NAME_IDS),
         REVERTED_LIBRARY_NAME,
@@ -3659,6 +3661,690 @@ REVERTS: list[Revert] = [
         "for library in bpy.data.libraries if _is_indirect_library(library)",
         "for library in bpy.data.libraries if False",
         (f"{FLT}::test_an_indirect_library_is_not_counted_because_blender_rederives_it_from_its_parent",),
+    ),
+    # --- Task 7: link_canon_library, create_override, list/reload/relocate/unlink ---
+    Revert(
+        "task 7: link hands the raw path to Blender without roots or file checks",
+        ADDON_LINKING,
+        "        canonical = _checked_blend_path(filepath, must_exist=True)\n"
+        '        _refuse_scripts_auto_execute("link_canon_library")\n',
+        '        canonical = str(filepath)\n        _refuse_scripts_auto_execute("link_canon_library")\n',
+        (f"{LKT}::test_link_validates_its_path_before_blender_reads_it", f"{LKT}::test_link_enforces_the_file_roots"),
+    ),
+    Revert(
+        "task 7: absent names are not refused inside the load block",
+        ADDON_LINKING,
+        "                _refuse_absent_names(data_from, collection_names, object_names)\n",
+        "",
+        (f"{LKT}::test_link_refuses_a_name_absent_from_the_file_and_leaves_no_library",),
+    ),
+    Revert(
+        "task 7: link_canon_library joins the replacing set, so a failed link keeps its Library",
+        ADDON_SERVER_CORE,
+        '_DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries"})',
+        '_DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries", '
+        '"link_canon_library"})',
+        (
+            f"{LKT}::test_a_link_that_fails_after_linking_rolls_its_library_back",
+            f"{LKT}::test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_does",
+        ),
+    ),
+    Revert(
+        "task 7: reload_library leaves the replacing set and is transacted",
+        ADDON_SERVER_CORE,
+        '_DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries"})',
+        '_DATABLOCK_REPLACING_COMMANDS = frozenset({"relocate_library", "unlink_libraries"})',
+        (f"{LKT}::test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_does",),
+    ),
+    Revert(
+        "task 7: a linked collection is not instanced, so the next save drops it",
+        ADDON_LINKING,
+        "            _link_into(scene.collection.children, linked_collections)  # type: ignore[attr-defined]\n",
+        "",
+        (f"{LKT}::test_link_instances_what_it_linked_so_a_save_keeps_it",),
+    ),
+    Revert(
+        "task 7: collections defaults to a mutable list",
+        ADDON_LINKING,
+        "        collections: object = None,\n",
+        "        collections: object = [],  # noqa: B006\n",
+        (f"{LKT}::test_link_names_default_to_none_and_are_not_shared_across_calls",),
+    ),
+    Revert(
+        "task 7: the link passes create_liboverrides (Route A) when as_override is set",
+        ADDON_LINKING,
+        "bpy.data.libraries.load(canonical, link=True, relative=relative)",
+        "bpy.data.libraries.load(canonical, link=True, relative=relative, create_liboverrides=as_override)",
+        (f"{LKT}::test_link_as_override_uses_route_c_not_create_liboverrides",),
+    ),
+    Revert(
+        "task 7: as_override with objects is not refused",
+        ADDON_LINKING,
+        "        if as_override and object_names:\n",
+        "        if False:\n",
+        (f"{LKT}::test_link_refuses_as_override_with_objects",),
+    ),
+    Revert(
+        "task 7: relative is accepted in a never-saved session",
+        ADDON_LINKING,
+        "        if relative and not bpy.data.filepath:\n",
+        "        if False:\n",
+        (f"{LKT}::test_link_refuses_relative_in_a_never_saved_session",),
+    ),
+    Revert(
+        "task 7: link flags are coerced with bool()",
+        ADDON_LINKING,
+        '        as_override = _require_bool("as_override", as_override)\n'
+        '        relative = _require_bool("relative", relative)\n',
+        "        as_override = bool(as_override)\n        relative = bool(relative)\n",
+        (
+            f"{LKT}::test_link_flags_must_be_real_bools[as_override]",
+            f"{LKT}::test_link_flags_must_be_real_bools[relative]",
+        ),
+    ),
+    Revert(
+        "task 7: a libraries.load failure goes out raw",
+        ADDON_LINKING,
+        'raise RuntimeError(_operator_failure_message("link_canon_library", exc, (filepath, canonical))) from exc',
+        "raise RuntimeError(str(exc)) from exc",
+        (f"{LKT}::test_a_blender_link_failure_reaches_the_client_without_its_path",),
+    ),
+    Revert(
+        "task 7: do_fully_editable is inherited (Route B, system overrides)",
+        ADDON_LINKING,
+        "            do_fully_editable=True,\n",
+        "",
+        (
+            f"{LKT}::test_create_override_passes_do_fully_editable_true_explicitly",
+            f"{LKT}::test_link_as_override_uses_route_c_not_create_liboverrides",
+            f"{LKT}::test_create_override_reports_same_named_linked_and_override_objects_distinguishably",
+        ),
+    ),
+    Revert(
+        "task 7: create_override takes the scene from bpy.context",
+        ADDON_LINKING,
+        "        return _override_all([collection], _scene(scene_uid))[0]\n",
+        "        return _override_all([collection], bpy.context.scene)[0]\n",
+        (f"{LKT}::test_create_override_takes_the_scene_from_bpy_data_not_bpy_context",),
+    ),
+    Revert(
+        "task 7: create_override takes the view layer from bpy.context",
+        ADDON_LINKING,
+        "            scene.view_layers[0],  # type: ignore[attr-defined]\n",
+        "            bpy.context.view_layer,\n",
+        (f"{LKT}::test_create_override_takes_the_scene_from_bpy_data_not_bpy_context",),
+    ),
+    Revert(
+        "task 7: with several scenes the first is used silently",
+        ADDON_LINKING,
+        "    if len(scenes) != 1:\n",
+        "    if False:\n",
+        (f"{LKT}::test_create_override_refuses_to_guess_between_scenes",),
+    ),
+    Revert(
+        "task 7: a local or override collection is not refused before Blender is asked",
+        ADDON_LINKING,
+        '    if getattr(collection, "library", None) is None:\n',
+        "    if False:\n",
+        (f"{LKT}::test_create_override_resolves_by_session_uid_among_same_named_collections",),
+    ),
+    Revert(
+        "task 7: an already-overridden collection is overridden again",
+        ADDON_LINKING,
+        "    if existing:\n",
+        "    if False:\n",
+        (f"{LKT}::test_create_override_resolves_by_session_uid_among_same_named_collections",),
+    ),
+    Revert(
+        "task 7: a bool or float resolves the datablock whose uid equals it",
+        ADDON_LINKING,
+        "    if isinstance(value, bool) or not isinstance(value, int):\n",
+        "    if not isinstance(value, (int, float)):\n",
+        (
+            f"{LKT}::test_create_override_refuses_a_uid_that_is_not_an_integer[True]",
+            f"{LKT}::test_create_override_refuses_a_uid_that_is_not_an_integer[1.0]",
+            f"{LKT}::test_unlink_requires_an_explicit_bounded_uid_list[bool]",
+        ),
+    ),
+    Revert(
+        "task 7: an override's reference is not reported",
+        ADDON_LINKING,
+        '        "reference_uid": _uid_of(getattr(override, "reference", None)),\n',
+        '        "reference_uid": None,\n',
+        (f"{LKT}::test_create_override_reports_same_named_linked_and_override_objects_distinguishably",),
+    ),
+    Revert(
+        "task 7: the linked instance stays beside its override",
+        ADDON_LINKING,
+        "            parent.children.unlink(collection)  # type: ignore[attr-defined]\n",
+        "            pass\n",
+        (f"{LKT}::test_create_override_replaces_the_linked_instance_it_overrides",),
+    ),
+    Revert(
+        "task 7: a None override is not checked",
+        ADDON_LINKING,
+        "    if override is None:\n",
+        "    if False:\n",
+        (f"{LKT}::test_create_override_that_blender_declines_is_an_error_and_rolls_back",),
+    ),
+    Revert(
+        "task 7: an override failure goes out raw",
+        ADDON_LINKING,
+        'raise RuntimeError(_operator_failure_message("create_override", exc, known)) from exc',
+        "raise RuntimeError(str(exc)) from exc",
+        (f"{LKT}::test_an_override_failure_reaches_the_client_sanitized",),
+    ),
+    Revert(
+        "task 7: list_libraries is not read-only, so it pays for a transaction",
+        ADDON_SERVER_CORE,
+        '            "get_session_info",\n            "list_libraries",\n',
+        '            "get_session_info",\n',
+        (
+            f"{LKT}::test_list_libraries_is_a_read_only_command_and_never_enters_a_transaction",
+            f"{LKT}::test_the_linking_commands_are_dispatchable_and_advertised",
+            f"{LKT}::test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_does",
+        ),
+    ),
+    Revert(
+        "task 7: list_libraries ignores offset",
+        ADDON_LINKING,
+        "        page = libraries[offset : offset + limit]\n",
+        "        page = libraries[:limit]\n",
+        (f"{LKT}::test_list_libraries_paginates_and_reports_what_a_reload_decision_needs",),
+    ),
+    Revert(
+        "task 7: list_libraries page bounds are coerced, not checked",
+        ADDON_LINKING,
+        '        limit = _bounded_int("limit", limit, 1, MAX_PAGE_SIZE)\n'
+        '        offset = _bounded_int("offset", offset, 0, None)\n',
+        "        limit, offset = int(limit), int(offset)  # type: ignore[arg-type]\n",
+        tuple(
+            f"{LKT}::test_list_libraries_bounds_its_page[{case}]"
+            for case in ("zero", "over-bound", "bool-limit", "string-limit", "negative-offset", "bool-offset")
+        ),
+    ),
+    Revert(
+        "task 7: needs_liboverride_resync is not reported",
+        ADDON_LINKING,
+        '        "needs_liboverride_resync": bool(getattr(library, "needs_liboverride_resync", False)),\n',
+        '        "needs_liboverride_resync": False,\n',
+        (f"{LKT}::test_list_libraries_paginates_and_reports_what_a_reload_decision_needs",),
+    ),
+    Revert(
+        "task 7: linked datablocks are listed without their uids",
+        ADDON_LINKING,
+        '        "session_uid": _uid_of(datablock),\n        "name": _display_name(datablock),\n        "id_type"',
+        '        "session_uid": None,\n        "name": _display_name(datablock),\n        "id_type"',
+        (
+            f"{LKT}::test_list_libraries_paginates_and_reports_what_a_reload_decision_needs",
+            f"{LKT}::test_reload_library_uses_the_data_api_inside_the_replace_flag",
+        ),
+    ),
+    Revert(
+        "task 7: the per-library datablock list is uncapped",
+        ADDON_LINKING,
+        "        key: [describe(item) for item in items[:MAX_LISTED_DATABLOCKS]],",
+        "        key: [describe(item) for item in items],",
+        (f"{LKT}::test_list_libraries_bounds_the_datablocks_it_lists_per_library",),
+    ),
+    Revert(
+        "task 7: the reload is not wrapped in replacing_library_contents",
+        ADDON_LINKING,
+        "        with replacing_library_contents():\n",
+        "        if True:\n",
+        (f"{LKT}::test_reload_library_uses_the_data_api_inside_the_replace_flag",),
+    ),
+    Revert(
+        "task 7: the reload goes through wm.lib_reload",
+        ADDON_LINKING,
+        "            library.reload()  # type: ignore[attr-defined]\n",
+        "            bpy.ops.wm.lib_reload(library=library.name)  # type: ignore[attr-defined]\n",
+        (
+            f"{LKT}::test_no_wm_lib_operator_exists_in_the_linking_module",
+            f"{LKT}::test_reload_library_uses_the_data_api_inside_the_replace_flag",
+        ),
+    ),
+    Revert(
+        "task 7: a reload failure goes out raw",
+        ADDON_LINKING,
+        "        raise RuntimeError(_operator_failure_message(command, exc, known_paths)) from exc\n",
+        '        raise RuntimeError(f"{command} failed: {exc}") from exc\n',
+        (
+            f"{LKT}::test_reload_failure_reaches_the_client_sanitized_from_a_captured_blender_error",
+            f"{LKT}::test_reload_failure_of_a_relative_link_under_a_comma_directory_is_sanitized",
+            f"{LKT}::test_a_failed_relocate_restores_the_previous_path_and_is_sanitized",
+        ),
+    ),
+    Revert(
+        "task 7: relative known paths reach the sanitizer and eat the library name",
+        ADDON_LINKING,
+        "    return tuple(path for path in paths if isinstance(path, str) and os.path.isabs(path))\n",
+        "    return tuple(path for path in paths if isinstance(path, str))\n",
+        (f"{LKT}::test_a_reload_failure_in_an_unsaved_session_still_names_the_library",),
+    ),
+    Revert(
+        "task 7: relocate hands the raw path to Blender without roots or file checks",
+        ADDON_LINKING,
+        "        canonical = _checked_blend_path(filepath, must_exist=True)\n"
+        "        for other in bpy.data.libraries:\n",
+        "        canonical = str(filepath)\n        for other in bpy.data.libraries:\n",
+        (
+            f"{LKT}::test_relocate_validates_the_new_path_through_the_roots",
+            f"{LKT}::test_relocate_assigns_the_canonical_path_reloads_and_reports_the_name_both_sides",
+        ),
+    ),
+    Revert(
+        "task 7: relocate to a file another library already links",
+        ADDON_LINKING,
+        "            if other.session_uid != library.session_uid and canonical in _library_paths(other):\n",
+        "            if False:\n",
+        (f"{LKT}::test_relocate_refuses_a_file_another_library_already_links",),
+    ),
+    Revert(
+        "task 7: a failed relocate leaves the library pointing at the new file",
+        ADDON_LINKING,
+        "            library.filepath = previous  # type: ignore[attr-defined]\n            raise\n",
+        "            raise\n",
+        (f"{LKT}::test_a_failed_relocate_restores_the_previous_path_and_is_sanitized",),
+    ),
+    Revert(
+        "task 7: relocate stores the path as the client spelled it",
+        ADDON_LINKING,
+        "        library.filepath = canonical  # type: ignore[attr-defined]\n",
+        "        library.filepath = filepath  # type: ignore[attr-defined]\n",
+        (f"{LKT}::test_relocate_assigns_the_canonical_path_reloads_and_reports_the_name_both_sides",),
+    ),
+    Revert(
+        "task 7: an unknown uid refusal does not say where to read a current one",
+        ADDON_LINKING,
+        '        "library reload, so read a current one from list_libraries"\n',
+        '        "library reload"\n',
+        (
+            f"{LKT}::test_an_unknown_library_uid_is_refused[reload_library]",
+            f"{LKT}::test_an_unknown_library_uid_is_refused[relocate_library]",
+        ),
+    ),
+    Revert(
+        "task 7: unlink runs without confirm",
+        ADDON_LINKING,
+        "    if not confirm:\n",
+        "    if False:\n",
+        (f"{LKT}::test_unlink_refuses_without_a_real_confirmation[false]",),
+    ),
+    Revert(
+        "task 7: unlink's confirm is coerced with bool()",
+        ADDON_LINKING,
+        '        confirm = _require_bool("confirm", confirm)\n',
+        "        confirm = bool(confirm)\n",
+        (
+            f"{LKT}::test_unlink_refuses_without_a_real_confirmation[string]",
+            f"{LKT}::test_unlink_refuses_without_a_real_confirmation[int]",
+        ),
+    ),
+    Revert(
+        "task 7: unlink removes every library, not only the named ones",
+        ADDON_LINKING,
+        "            bpy.data.libraries.remove(current)\n",
+        "            for everything in list(bpy.data.libraries):\n"
+        "                bpy.data.libraries.remove(everything)\n",
+        (f"{LKT}::test_unlink_never_touches_a_library_that_was_not_named",),
+    ),
+    Revert(
+        "task 7: unknown uids are skipped instead of refusing the request",
+        ADDON_LINKING,
+        "    libraries = [_library(uid) for uid in uids]\n",
+        "    libraries = [lib for lib in bpy.data.libraries if lib.session_uid in uids]\n",
+        (f"{LKT}::test_unlink_resolves_every_uid_before_removing_anything",),
+    ),
+    Revert(
+        "task 7: the uid list is neither non-empty nor bounded",
+        ADDON_LINKING,
+        "    if not isinstance(library_uids, list) or not 0 < len(library_uids) <= MAX_UNLINK_UIDS:\n",
+        "    if not isinstance(library_uids, list):\n",
+        (
+            f"{LKT}::test_unlink_requires_an_explicit_bounded_uid_list[empty]",
+            f"{LKT}::test_unlink_requires_an_explicit_bounded_uid_list[big]",
+        ),
+    ),
+    Revert(
+        "task 7: uid list entries are coerced with int()",
+        ADDON_LINKING,
+        '    uids = list(dict.fromkeys(_require_uid("library_uids entry", uid) for uid in library_uids))\n',
+        "    uids = list(dict.fromkeys(int(uid) for uid in library_uids))\n",
+        (
+            f"{LKT}::test_unlink_requires_an_explicit_bounded_uid_list[bool]",
+            f"{LKT}::test_unlink_requires_an_explicit_bounded_uid_list[string]",
+        ),
+    ),
+    Revert(
+        "task 7: the removal report counts only the libraries",
+        ADDON_LINKING,
+        '            "removed_by_type": _count_by_type(before[uid][0] for uid in removed),\n',
+        '            "removed_by_type": {"libraries": len(removed_libraries)},\n',
+        (f"{LKT}::test_unlink_reports_exactly_what_it_removed",),
+    ),
+    Revert(
+        "task 7: the census walks bpy.data.all_ids, counting everything twice",
+        ADDON_LINKING,
+        '        aggregate = getattr(getattr(prop, "fixed_type", None), "identifier", None) == "ID"\n',
+        "        aggregate = False\n",
+        (
+            f"{LKT}::test_unlink_reports_exactly_what_it_removed",
+            f"{LKT}::test_unlink_purges_only_when_asked_and_only_what_it_orphaned",
+        ),
+    ),
+    Revert(
+        "task 7: an indirect library is unlinked",
+        ADDON_LINKING,
+        "    if indirect:\n",
+        "    if False:\n",
+        (f"{LKT}::test_unlink_refuses_an_indirect_library",),
+    ),
+    Revert(
+        "task 7: orphans are purged without purge_orphans",
+        ADDON_LINKING,
+        "        purged = _purge_newly_orphaned(before, known) if purge_orphans else []\n",
+        "        purged = _purge_newly_orphaned(before, known)\n",
+        (f"{LKT}::test_unlink_purges_only_when_asked_and_only_what_it_orphaned",),
+    ),
+    Revert(
+        "task 7: the purge also takes datablocks that were orphans before the unlink",
+        ADDON_LINKING,
+        "        if previous and previous[1] > 0 and datablock.users == 0",
+        "        if datablock.users == 0",
+        (f"{LKT}::test_unlink_purges_only_when_asked_and_only_what_it_orphaned",),
+    ),
+    Revert(
+        "task 7: a library is removed through a reference an earlier removal may have freed",
+        ADDON_LINKING,
+        "        current = next((library for library in bpy.data.libraries if library.session_uid == uid), None)\n",
+        "        current = next((library for library in libraries if library.session_uid == uid), None)\n",
+        (f"{LKT}::test_unlink_never_removes_a_datablock_an_earlier_removal_freed",),
+    ),
+    Revert(
+        "task 7: a libraries.remove failure goes out raw",
+        ADDON_LINKING,
+        '            message = _operator_failure_message("unlink_libraries", exc, known_paths)\n',
+        "            message = str(exc)\n",
+        (f"{LKT}::test_an_unlink_failure_reaches_the_client_sanitized",),
+    ),
+    Revert(
+        "task 7: the name helper returns the first of several matches",
+        ADDON_LINKING,
+        "    if len(matches) > 1:\n",
+        "    if False:\n",
+        (f"{LKT}::test_the_name_resolution_helper_refuses_ambiguity_listing_uids",),
+    ),
+    Revert(
+        "task 7: create_override grows a name handle",
+        ADDON_LINKING,
+        "    def create_override(collection_uid: object, *, scene_uid: object = None) -> dict[str, object]:\n",
+        "    def create_override(\n"
+        "        collection_uid: object, *, scene_uid: object = None, collection_name: object = None\n"
+        "    ) -> dict[str, object]:\n",
+        (f"{LKT}::test_no_linking_command_takes_a_datablock_name_as_a_handle",),
+    ),
+    Revert(
+        "task 7: unlink_libraries is not registered",
+        ADDON_SERVER_CORE,
+        '            "unlink_libraries": self.unlink_libraries,\n',
+        "",
+        (
+            f"{LKT}::test_the_linking_commands_are_dispatchable_and_advertised",
+            f"{LKT}::test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_does",
+        ),
+    ),
+    # --- Task 7: script auto-execution refusals (Spec Decision #7) ---
+    Revert(
+        "task 7: link_canon_library does not check use_scripts_auto_execute",
+        ADDON_LINKING,
+        '        _refuse_scripts_auto_execute("link_canon_library")\n',
+        "",
+        (
+            f"{LKT}::test_link_refuses_while_scripts_auto_execute_is_on[on]",
+            f"{LKT}::test_link_refuses_while_scripts_auto_execute_is_on[unreadable]",
+        ),
+    ),
+    Revert(
+        "task 7: reload_library does not check use_scripts_auto_execute",
+        ADDON_LINKING,
+        '        _refuse_scripts_auto_execute("reload_library")\n',
+        "",
+        (
+            f"{LKT}::test_reload_and_relocate_refuse_while_scripts_auto_execute_is_on[on]",
+            f"{LKT}::test_reload_and_relocate_refuse_while_scripts_auto_execute_is_on[unreadable]",
+        ),
+    ),
+    Revert(
+        "task 7: relocate_library does not check use_scripts_auto_execute",
+        ADDON_LINKING,
+        '        _refuse_scripts_auto_execute("relocate_library")\n',
+        "",
+        (
+            f"{LKT}::test_reload_and_relocate_refuse_while_scripts_auto_execute_is_on[on]",
+            f"{LKT}::test_reload_and_relocate_refuse_while_scripts_auto_execute_is_on[unreadable]",
+        ),
+    ),
+    Revert(
+        "task 7: the scripts check refuses even with the preference off",
+        ADDON_FILE_LIFECYCLE,
+        '    if getattr(filepaths, "use_scripts_auto_execute", True) is not False:\n',
+        "    if True:\n",
+        (
+            f"{LKT}::test_link_proceeds_while_scripts_auto_execute_is_off",
+            f"{LKT}::test_reload_and_relocate_proceed_while_scripts_auto_execute_is_off",
+            f"{LKT}::test_create_override_proceeds_while_scripts_auto_execute_is_off",
+            f"{PHT}::test_a_downloaded_blend_is_loaded_while_scripts_auto_execute_is_off",
+        ),
+    ),
+    Revert(
+        "task 7: the scripts refusal always names open_shot",
+        ADDON_FILE_LIFECYCLE,
+        '            f"{command} refuses to load while',
+        '            f"open_shot refuses to load while',
+        (
+            f"{LKT}::test_link_refuses_while_scripts_auto_execute_is_on[on]",
+            f"{PHT}::test_a_downloaded_blend_is_never_loaded_while_scripts_auto_execute_is_on[on]",
+        ),
+    ),
+    Revert(
+        "task 7: the Poly Haven .blend import does not check use_scripts_auto_execute",
+        ADDON_POLYHAVEN,
+        '                            _refuse_scripts_auto_execute("import_polyhaven_asset")\n',
+        "",
+        (
+            f"{PHT}::test_a_downloaded_blend_is_never_loaded_while_scripts_auto_execute_is_on[on]",
+            f"{PHT}::test_a_downloaded_blend_is_never_loaded_while_scripts_auto_execute_is_on[unreadable]",
+        ),
+    ),
+    # --- Task 7 cycle-1 repairs ---
+    Revert(
+        "task 7 C1: overrides are validated one at a time and nothing re-links a replaced instance",
+        ADDON_LINKING,
+        "    for collection in collections:\n"
+        "        _refuse_unoverridable(collection)\n"
+        "    unlinked: list[tuple[object, object]] = []\n"
+        "    reports = []\n"
+        "    try:\n"
+        "        for collection in collections:\n"
+        "            # Again, just before its own override: overriding a parent overrides every collection\n"
+        "            # inside it, so a nested request would otherwise build a second copy (measured, section K).\n"
+        "            _refuse_unoverridable(collection)\n"
+        "            reports.append(_override_hierarchy(collection, scene, unlinked))\n"
+        "    except Exception:\n"
+        "        for parent, child in reversed(unlinked):\n"
+        "            if not _has_child(parent, child):\n"
+        "                parent.children.link(child)  # type: ignore[attr-defined]\n"
+        "        raise\n"
+        "    return reports\n",
+        "    unlinked: list[tuple[object, object]] = []\n"
+        "    reports = []\n"
+        "    for collection in collections:\n"
+        "        _refuse_unoverridable(collection)\n"
+        "        reports.append(_override_hierarchy(collection, scene, unlinked))\n"
+        "    return reports\n",
+        (
+            f"{LKT}::test_a_refused_multi_collection_override_keeps_the_existing_placement",
+            f"{LKT}::test_a_later_override_failure_restores_the_instances_earlier_overrides_replaced",
+        ),
+    ),
+    Revert(
+        "task 7 C1: a later override failure does not re-link the instances earlier ones replaced",
+        ADDON_LINKING,
+        "            if not _has_child(parent, child):\n"
+        "                parent.children.link(child)  # type: ignore[attr-defined]\n",
+        "            pass\n",
+        (f"{LKT}::test_a_later_override_failure_restores_the_instances_earlier_overrides_replaced",),
+    ),
+    Revert(
+        "task 7 C1: a datablock the file no longer holds is listed as present",
+        ADDON_LINKING,
+        '        "is_missing": bool(getattr(datablock, "is_missing", False)),\n',
+        '        "is_missing": False,\n',
+        (
+            f"{LKT}::test_datablocks_the_file_no_longer_holds_are_reported_missing_with_a_warning[reload_library]",
+            f"{LKT}::test_datablocks_the_file_no_longer_holds_are_reported_missing_with_a_warning[relocate_library]",
+        ),
+    ),
+    Revert(
+        "task 7 C1: no warning when a reload leaves placeholders",
+        ADDON_LINKING,
+        "    if not missing:\n        return {}\n",
+        "    return {}\n",
+        (
+            f"{LKT}::test_datablocks_the_file_no_longer_holds_are_reported_missing_with_a_warning[reload_library]",
+            f"{LKT}::test_datablocks_the_file_no_longer_holds_are_reported_missing_with_a_warning[relocate_library]",
+        ),
+    ),
+    Revert(
+        "task 7 C1: the missing-datablock warning is sent when nothing is missing",
+        ADDON_LINKING,
+        "    if not missing:\n        return {}\n",
+        "",
+        (f"{LKT}::test_a_reload_that_finds_everything_carries_no_warning",),
+    ),
+    Revert(
+        "task 7 C1: an indirect library can be relocated",
+        ADDON_LINKING,
+        "        if _is_indirect_library(library):\n"
+        '            raise ValueError(\n                "that library is indirect',
+        '        if False:\n            raise ValueError(\n                "that library is indirect',
+        (f"{LKT}::test_relocate_refuses_an_indirect_library",),
+    ),
+    Revert(
+        "task 7 C1: create_override does not check use_scripts_auto_execute",
+        ADDON_LINKING,
+        '        _refuse_scripts_auto_execute("create_override")\n',
+        "",
+        (
+            f"{LKT}::test_create_override_refuses_while_scripts_auto_execute_is_on[on]",
+            f"{LKT}::test_create_override_refuses_while_scripts_auto_execute_is_on[unreadable]",
+        ),
+    ),
+    Revert(
+        "task 7 C1: a quoted library name is not reduced before path detection",
+        ADDON_FILE_PATHS,
+        "    text = _QUOTED_LIBRARY_NAME.sub(_leaf_library_name, text)\n",
+        "",
+        (
+            f"{FPT}::test_sanitizer_reduces_a_library_name_holding_an_absolute_path_to_its_leaf",
+            *(
+                f"{FPT}::test_sanitizer_reduces_every_quoted_library_name_shape_to_its_leaf[{case}]"
+                for case in ("relocate-indirect", "delete-indirect", "from-library")
+            ),
+        ),
+    ),
+    Revert(
+        "task 7 C1: a quoted library name is kept whole instead of reduced to its leaf",
+        ADDON_FILE_PATHS,
+        "{client_safe_name_leaf(match['name'])}",
+        "{match['name']}",
+        (
+            f"{FPT}::test_sanitizer_reduces_a_library_name_holding_an_absolute_path_to_its_leaf",
+            *(
+                f"{FPT}::test_sanitizer_reduces_every_quoted_library_name_shape_to_its_leaf[{case}]"
+                for case in ("relocate-indirect", "delete-indirect", "from-library")
+            ),
+        ),
+    ),
+    # --- Task 7 cycle-2 repairs ---
+    Revert(
+        "task 7 C2: a nested request is not re-checked before each override, so a child is overridden twice",
+        ADDON_LINKING,
+        "            _refuse_unoverridable(collection)\n            reports.append(",
+        "            reports.append(",
+        (f"{LKT}::test_a_nested_request_is_refused_before_it_overrides_a_collection_twice",),
+    ),
+    Revert(
+        "task 7 C2: the quoted-name match stops at a newline",
+        ADDON_FILE_PATHS,
+        '>]))", re.DOTALL\n',
+        '>]))"\n',
+        (f"{FPT}::test_sanitizer_reduces_a_library_name_containing_a_newline",),
+    ),
+    Revert(
+        "task 7 C2: a library name is reduced with the isdir-checking leaf rule",
+        ADDON_FILE_PATHS,
+        "{client_safe_name_leaf(match['name'])}",
+        "{client_safe_leaf(match['name'])}",
+        (f"{FPT}::test_sanitizer_reduces_a_library_name_without_touching_the_filesystem",),
+        also="\nfrom .text_hygiene import client_safe_leaf\n",
+    ),
+    Revert(
+        "task 7 C2: an absolute library name is not a known path",
+        ADDON_LINKING,
+        "    return _absolute((raw, expanded, canonical_path(expanded), name))\n",
+        "    return _absolute((raw, expanded, canonical_path(expanded)))\n",
+        (f"{LKT}::test_an_absolute_library_name_is_a_known_path_so_no_relative_tail_survives",),
+    ),
+    # --- Task 7 cycle-3 repairs ---
+    Revert(
+        "task 7 C3: a collection whose inner collection is already overridden is overridden again",
+        ADDON_LINKING,
+        "    if inner_overrides:\n",
+        "    if False:\n",
+        tuple(
+            f"{LKT}::test_overriding_a_parent_whose_inner_collection_is_already_overridden_is_refused[{route}]"
+            for route in ("create_override", "link_canon_library")
+        ),
+    ),
+    Revert(
+        "task 7 C3: a request naming a collection and one inside it is not refused up front",
+        ADDON_LINKING,
+        "    _refuse_nested_requests(collections)\n",
+        "",
+        (f"{LKT}::test_a_request_naming_a_collection_and_one_inside_it_is_refused_up_front",),
+    ),
+    Revert(
+        "task 7 C3: the library summary stats Library.name",
+        ADDON_FILE_LIFECYCLE,
+        '        "name": client_safe_name_leaf(getattr(library, "name", "")),',
+        '        "name": client_safe_leaf(getattr(library, "name", "")),',
+        (f"{LKT}::test_library_names_are_reduced_without_touching_the_filesystem",),
+    ),
+    Revert(
+        "task 7 C3: relocate stats Library.name for name_before",
+        ADDON_LINKING,
+        "        name_before = client_safe_name_leaf(library.name)",
+        "        name_before = client_safe_leaf(library.name)",
+        (f"{LKT}::test_library_names_are_reduced_without_touching_the_filesystem",),
+        also="\nfrom ..text_hygiene import client_safe_leaf\n",
+    ),
+    Revert(
+        "task 7 C3: relocate stats Library.name for name_after",
+        ADDON_LINKING,
+        '            "name_after": client_safe_name_leaf(library.name),',
+        '            "name_after": client_safe_leaf(library.name),',
+        (f"{LKT}::test_library_names_are_reduced_without_touching_the_filesystem",),
+        also="\nfrom ..text_hygiene import client_safe_leaf\n",
+    ),
+    Revert(
+        "task 7 C3: a refusal's candidate list stats Library.name",
+        ADDON_LINKING,
+        "        return client_safe_name_leaf(name)\n",
+        "        return client_safe_leaf(name)\n",
+        (f"{LKT}::test_library_names_are_reduced_without_touching_the_filesystem",),
+        also="\nfrom ..text_hygiene import client_safe_leaf\n",
     ),
 ]
 

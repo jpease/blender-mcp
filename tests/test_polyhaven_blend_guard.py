@@ -93,6 +93,9 @@ def _server(
     addon, bpy = _load_addon(monkeypatch, data={"filepath": "", "objects": objects})
     bpy.data.libraries = types.SimpleNamespace(load=loads.load)
     bpy.context.collection = types.SimpleNamespace(objects=types.SimpleNamespace(link=lambda _obj: None))
+    # Blender's factory value (measured, Task 6). Without a readable preference the
+    # scripts check refuses, as an unreadable preference must (TASK_STATE decision 18).
+    bpy.context.preferences = types.SimpleNamespace(filepaths=types.SimpleNamespace(use_scripts_auto_execute=False))
     handler = sys.modules[f"{addon.__name__}.handlers.polyhaven"]
     files = {"blend": {"1k": {"blend": {"url": _URL}}}}
     monkeypatch.setattr(handler, "get_json", lambda *_a, **_k: files)
@@ -156,6 +159,33 @@ def test_a_failed_blend_load_reports_no_absolute_path(monkeypatch: pytest.Monkey
     assert len(loads.calls) == 1
     assert "/private" not in result["error"] and "tmpabc" not in result["error"], result
     assert "Missing DNA" in result["error"]
+
+
+@pytest.mark.parametrize("preferences", ["on", "unreadable"])
+def test_a_downloaded_blend_is_never_loaded_while_scripts_auto_execute_is_on(
+    monkeypatch: pytest.MonkeyPatch, preferences: str
+) -> None:
+    """An appended object's Python driver ran with the preference on (measured); refused in Poly Haven's error shape."""
+    server, loads = _server(monkeypatch, (FIXTURES / "empty_zstd.blend").read_bytes())
+    filepaths = types.SimpleNamespace(use_scripts_auto_execute=True) if preferences == "on" else types.SimpleNamespace()
+    sys.modules["bpy"].context.preferences = types.SimpleNamespace(filepaths=filepaths)
+
+    result = server.import_polyhaven_asset("chair", "models", file_format="blend")
+
+    assert loads.calls == []
+    assert "import_polyhaven_asset refuses" in result["error"] and "use_scripts_auto_execute" in result["error"]
+    assert "/private" not in result["error"] and "/var/" not in result["error"] and "chair_1k" not in result["error"]
+
+
+def test_a_downloaded_blend_is_loaded_while_scripts_auto_execute_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The factory default does not block the import."""
+    server, loads = _server(monkeypatch, (FIXTURES / "empty_zstd.blend").read_bytes())
+    sys.modules["bpy"].context.preferences.filepaths.use_scripts_auto_execute = False
+
+    result = server.import_polyhaven_asset("chair", "models", file_format="blend")
+
+    assert result.get("success") is True, result
+    assert len(loads.calls) == 1
 
 
 # ---------------------------------------------------------------------------
