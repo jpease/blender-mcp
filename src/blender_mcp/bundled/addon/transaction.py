@@ -1,11 +1,15 @@
 import contextlib
 
+from collections.abc import Iterator
+from dataclasses import dataclass
+
 import bpy
 
 from .object_state import (
     backup_datablock_ids,
     capture_object_states,
     discard_backups,
+    invalidate_object_states,
     restore_object_states,
 )
 
@@ -33,7 +37,47 @@ _TRACKED_COLLECTIONS = (
     "metaballs",
     "lattices",
     "grease_pencils",
+    # A failed `link_canon_library` must not leak the Library it created.
+    # `_remove_datablocks` removes these last: removing a Library frees every
+    # datablock linked from it, and a later `remove()` on one raises
+    # ReferenceError that `suppress` would hide (measured on 5.2.2 by
+    # `scripts/blender_probes/transaction_library_rollback.py`, cases A and E).
+    "libraries",
 )
+
+# Appended to the error message when a rollback was skipped, so the client
+# learns its partial work was not undone. Constant text: no path reaches it.
+ROLLBACK_SKIPPED_WARNING = (
+    "The open database was replaced during this command (a file load or library reload), "
+    "so its earlier changes were not rolled back; inspect the scene before relying on it."
+)
+
+
+@dataclass
+class _DispatchState:
+    """
+    What the file handlers in `session.py` need to know about the command running now.
+
+    Assigned inside `mutation_transaction` / `replacing_library_contents` and
+    read from Blender's file handlers; both run on Blender's main thread, so no
+    lock.
+
+    Attributes:
+        active: The transaction wrapping the command running now, or None.
+        library_replace_in_progress: True while a handler is replacing a
+            library's contents in place (`lib.reload()`).
+
+    """
+
+    active: "Transaction | None" = None
+    library_replace_in_progress: bool = False
+
+
+_DISPATCH = _DispatchState()
+
+
+class RollbackSkippedError(Exception):
+    """A command failed after its transaction was invalidated, so nothing was rolled back."""
 
 
 def _snapshot_ids():
@@ -93,15 +137,17 @@ def _remove_datablocks(entries) -> None:
 
     Objects are removed first (and in reverse creation order) since a later
     object could reference an earlier one; everything else follows, also in
-    reverse. Each removal is isolated so one failure doesn't stop the rest
-    of the cleanup from running.
+    reverse; libraries go last, because removing a Library frees the
+    datablocks linked from it and those must already be gone. Each removal is
+    isolated so one failure doesn't stop the rest of the cleanup from running.
 
     Args:
         entries: (collection name, datablock) pairs, as returned by _new_datablocks().
 
     """
     objects = [db for coll_name, db in entries if coll_name == "objects"]
-    others = [(coll_name, db) for coll_name, db in entries if coll_name != "objects"]
+    others = [(coll_name, db) for coll_name, db in entries if coll_name not in {"objects", "libraries"}]
+    libraries = [db for coll_name, db in entries if coll_name == "libraries"]
 
     for obj in reversed(objects):
         with contextlib.suppress(Exception):
@@ -110,6 +156,10 @@ def _remove_datablocks(entries) -> None:
     for coll_name, db in reversed(others):
         with contextlib.suppress(Exception):
             getattr(bpy.data, coll_name).remove(db, do_unlink=True)
+
+    for library in reversed(libraries):
+        with contextlib.suppress(Exception):
+            bpy.data.libraries.remove(library, do_unlink=True)
 
 
 def _undo_unavailable_reason():
@@ -182,13 +232,43 @@ class Transaction:
         self._states = []
         self._backup_ids: frozenset[int] | set[int] = frozenset()
         self.committed = False
+        self.invalidated = False
 
     def begin(self, targets, capture_geometry) -> None:
         self._before_ids = _snapshot_ids()
         self._states = capture_object_states(targets, capture_geometry=capture_geometry)
         self._backup_ids = backup_datablock_ids(self._states)
 
-    def rollback(self) -> None:
+    def invalidate(self) -> None:
+        """
+        Disarm this transaction because the database it snapshotted was replaced.
+
+        A load or a library reload gives the replaced datablocks fresh
+        session_uids (measured on 5.2.2: a reload by
+        `scripts/blender_probes/library_replace_handlers.py`, a load by
+        `transaction_library_rollback.py` case D), so the snapshot would
+        classify the new contents as created by this request and a rollback
+        would remove them. The captured
+        object states may reference freed datablocks, so they are released
+        without being read or removed.
+        """
+        self.invalidated = True
+        self._before_ids = {}
+        self._backup_ids = frozenset()
+        invalidate_object_states(self._states)
+        self._states = []
+
+    def rollback(self) -> str | None:
+        """
+        Undo a failed request, unless the transaction was invalidated.
+
+        Returns:
+            str | None: `ROLLBACK_SKIPPED_WARNING` when invalidated (nothing was
+            touched), else None.
+
+        """
+        if self.invalidated:
+            return ROLLBACK_SKIPPED_WARNING
         # Restore existing objects first: a slot/parent may reference a
         # datablock this request created, and we want the reference put back to
         # its pre-request target before that created datablock is removed.
@@ -196,6 +276,7 @@ class Transaction:
         _remove_datablocks(_new_datablocks(self._before_ids, exclude_ids=self._backup_ids))
         # Any backups not consumed by a geometry restore are pure scaffolding.
         discard_backups(self._states)
+        return None
 
     def commit(self):
         """
@@ -236,6 +317,11 @@ def mutation_transaction(cmd_type, targets=(), capture_geometry=False):
     On success it leaves exactly one named undo checkpoint, returning a warning
     via `Transaction.commit()` when that checkpoint could not be created.
 
+    If the database is replaced while the block runs (`load_post`, or
+    `blend_import_post` inside `replacing_library_contents`), the transaction is
+    invalidated: a later failure removes and restores nothing, and the error
+    message carries `ROLLBACK_SKIPPED_WARNING`.
+
     Explicitly NOT guaranteed (documented limitations, not silent gaps):
     deleted pre-existing datablocks are not resurrected; applied modifiers
     (e.g. nd_apply_modifiers) are irreversible; object state outside the
@@ -256,15 +342,102 @@ def mutation_transaction(cmd_type, targets=(), capture_geometry=False):
         Transaction: call .commit() after the handler succeeds to push the
         checkpoint and collect any undo-unavailability warning.
 
+    Raises:
+        RollbackSkippedError: When the block failed after the transaction was
+            invalidated; chained from the original exception.
+
     """
     txn = Transaction(cmd_type)
     txn.begin(targets, capture_geometry)
+    previous = _DISPATCH.active
+    _DISPATCH.active = txn
     try:
         yield txn
-    except Exception:
-        txn.rollback()
-        raise
+    except Exception as exc:
+        warning = txn.rollback()
+        if warning is None:
+            raise
+        # The error envelope carries only `message`, so the warning rides in it.
+        raise RollbackSkippedError(f"{exc} ({warning})") from exc
     else:
         # A caller that didn't commit explicitly (so it could merge the
         # warning into its result) still gets a checkpoint here.
         txn.commit()
+    finally:
+        # `finally`, not `except`: a BaseException (Esc's KeyboardInterrupt)
+        # must not leave a finished command reachable from the next handler.
+        _DISPATCH.active = previous
+
+
+def active_transaction() -> Transaction | None:
+    """
+    Return the transaction wrapping the command running now.
+
+    Returns:
+        Transaction | None: The open transaction, or None between commands and
+        for commands that bypass the transaction.
+
+    """
+    return _DISPATCH.active
+
+
+def invalidate_active_transaction() -> bool:
+    """
+    Invalidate the open transaction, if there is one.
+
+    Called from `session.py`'s file handlers on Blender's main thread, inside
+    the call stack of the command whose handler triggered the load or reload.
+
+    Only the innermost transaction is invalidated. Nesting is not supported:
+    `mutation_transaction` has one caller (`server_core._run_handler`), which
+    never runs inside another, and an outer transaction around an inner one
+    would still roll back after a load.
+
+    Returns:
+        bool: True when a transaction was open and is now invalidated.
+
+    """
+    if _DISPATCH.active is None:
+        return False
+    _DISPATCH.active.invalidate()
+    return True
+
+
+def library_replace_in_progress() -> bool:
+    """
+    Report whether a handler is inside `replacing_library_contents`.
+
+    Returns:
+        bool: True while a library's contents are being replaced in place.
+
+    """
+    return _DISPATCH.library_replace_in_progress
+
+
+@contextlib.contextmanager
+def replacing_library_contents() -> Iterator[None]:
+    """
+    Mark a `lib.reload()` so `blend_import_post` can tell it from a link or an append.
+
+    Blender fires `blend_import_post` for all three (measured by
+    `scripts/blender_probes/library_replace_handlers.py`); a reload replaces
+    existing linked datablocks with fresh session_uids, while a link or append
+    adds new ones a failed request must roll back. Invalidating on every import
+    would disarm that rollback, so the handler invalidates only while this flag
+    is set. Wrap exactly the reload call.
+
+    No production handler calls this yet: Task 7's `reload_library` and
+    `relocate_library` will, and they also bypass the transaction, so today this
+    is defence in depth for a future side-effect reload.
+
+    Yields:
+        None: The flag is set for the duration of the block and restored after
+        it, including when the reload raises.
+
+    """
+    previous = _DISPATCH.library_replace_in_progress
+    _DISPATCH.library_replace_in_progress = True
+    try:
+        yield
+    finally:
+        _DISPATCH.library_replace_in_progress = previous

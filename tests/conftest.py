@@ -23,17 +23,25 @@ ROOT_ADDON = REPO_ROOT / "src" / "blender_mcp" / "bundled" / "addon" / "__init__
 # modules build a `bpy` stub that has to carry them, and three independent
 # copies of this tuple is how one of them silently stops exercising a handler
 # after a fifth event is added.
-FILE_LIFECYCLE_HANDLER_LISTS = ("load_pre", "load_post", "load_post_fail", "save_post", "save_post_fail")
+FILE_LIFECYCLE_HANDLER_LISTS = (
+    "load_pre",
+    "load_post",
+    "load_post_fail",
+    "save_post",
+    "save_post_fail",
+    "blend_import_post",
+)
 
 
 def install_file_lifecycle_handler_lists(handlers: ModuleType) -> ModuleType:
     """
-    Give a stub `bpy.app.handlers` the five empty lists `session.py` binds to.
+    Give a stub `bpy.app.handlers` the empty lists `session.py` binds to.
 
-    Measured by `scripts/blender_probes/session_handlers.py` against Blender
-    5.2.2: each of these really is a plain Python `list`, it accepts duplicate
-    callbacks without complaint, and `remove` raises when the callback is
-    absent. A stub that gets any of that wrong would let the idempotence guard
+    Measured against Blender 5.2.2 - the first five by
+    `scripts/blender_probes/session_handlers.py`, `blend_import_post` by
+    `scripts/blender_probes/library_replace_handlers.py`: each really is a plain
+    Python `list`, it accepts duplicate callbacks without complaint, and
+    `remove` raises when the callback is absent. A stub that gets any of that wrong would let the idempotence guard
     in `session.register_handlers` pass while being useless in Blender.
 
     Args:

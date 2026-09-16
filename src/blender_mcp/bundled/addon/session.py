@@ -63,6 +63,7 @@ import bpy
 from bpy.app.handlers import persistent
 
 from .text_hygiene import client_safe_leaf
+from .transaction import invalidate_active_transaction, library_replace_in_progress
 
 # Minted once per module import, which is once per Blender process (or per
 # Reload Scripts, which is the same thing from a client's point of view: the
@@ -236,11 +237,18 @@ def _on_load_post(file_path: str = "", _unused: object = None) -> None:
     `session_indeterminate`: the database is now wholly one file's, which is the
     only thing that makes the previous abort no longer true.
 
+    It also invalidates the open `mutation_transaction`, if a handler loaded a
+    file from inside one: that transaction's snapshot describes the old file,
+    and a rollback against the new one would remove it. The swap commands
+    themselves bypass the transaction in `server_core._run_handler`, so this
+    covers a load made as a side effect of some other command.
+
     Args:
         file_path: The .blend Blender loaded; empty for the startup file.
         _unused: Blender passes a second positional argument, always None.
 
     """
+    invalidate_active_transaction()
     _STATE.session_epoch += 1
     _STATE.current_filepath = _reported_path(file_path)
     _STATE.last_load_error = None
@@ -334,6 +342,33 @@ def _on_save_post_fail(file_path: str = "", _unused: object = None) -> None:
     _STATE.last_save_error = _failure_note("Saving", file_path)
 
 
+@persistent
+def _on_blend_import_post(_context: object = None, _unused: object = None) -> None:
+    """
+    Invalidate the open transaction when a library's contents were replaced in place.
+
+    Measured on 5.2.2 by `scripts/blender_probes/library_replace_handlers.py`:
+    `lib.reload()` (and a relocate) fires `blend_import_pre` / `blend_import_post`,
+    never `load_post`, and gives every datablock linked from that library a fresh
+    session_uid. But `libraries.load()` fires the same handler for a link or an
+    append, whose new datablocks a failed request must still roll back. Whether
+    the `BlendImportContext` argument distinguishes a reload is unmeasured, so
+    this ignores it and acts only inside `transaction.replacing_library_contents`.
+
+    Defence in depth: `reload_library` and `relocate_library` already bypass the
+    transaction via `server_core._DATABLOCK_REPLACING_COMMANDS`. `unlink_libraries`
+    fires no handler at all, so for it that routing is the only mechanism.
+    The epoch does not move: a reload is not a session swap.
+
+    Args:
+        _context: Blender's `BlendImportContext`; unused.
+        _unused: Blender passes a second positional argument, always None.
+
+    """
+    if library_replace_in_progress():
+        invalidate_active_transaction()
+
+
 # A constant, deliberately: it is published as `last_load_error`, where every
 # other value is derived from an attacker-choosable path and has to be reduced
 # by `client_safe_leaf` first. Nothing the client supplied reaches this sentence,
@@ -408,6 +443,7 @@ _HANDLER_BINDINGS = (
     ("load_post_fail", _on_load_post_fail),
     ("save_post", _on_save_post),
     ("save_post_fail", _on_save_post_fail),
+    ("blend_import_post", _on_blend_import_post),
 )
 
 

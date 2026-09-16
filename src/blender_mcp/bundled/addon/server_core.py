@@ -1987,11 +1987,22 @@ class BlenderMCPServer(
     # time a client checkpointed its work. Task 2's decision 11 - synchronous
     # validate-then-swap for `open_shot` - requires nothing of `save_shot`.
     #
-    # Task 4 adds a *second, separate* constant, `_DATABLOCK_REPLACING_COMMANDS`
+    # `_DATABLOCK_REPLACING_COMMANDS` below is a *second, separate* constant
     # (`reload_library` / `relocate_library` / `unlink_libraries`), which also
     # bypasses the transaction but does **not** trip this barrier: those replace
     # linked content in place, they do not swap the session. Do not merge them.
     _SESSION_SWAP_COMMANDS = frozenset({"open_shot", "reset_session"})
+
+    # Commands that replace or free linked datablocks in place: `lib.reload()`
+    # gave all 4 datablocks linked from the probe's library fresh session_uids, and
+    # `libraries.remove` / `orphans_purge` free them. Measured on 5.2.2 by
+    # `scripts/blender_probes/library_replace_handlers.py`. A transaction wrapped
+    # around them would read the reloaded contents as created by the request and
+    # remove them on any later raise. They bypass the transaction in
+    # `_run_handler`, but they are not session swaps (no barrier, no epoch) and
+    # not read-only. `link_canon_library` is deliberately absent: its new
+    # datablocks are the request's own and a failed link must roll them back.
+    _DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries"})
 
     def execute_command_internal(self, command):
         """
@@ -2252,14 +2263,17 @@ class BlenderMCPServer(
         # describe them: Transaction.begin() snapshots the session_uids of the
         # *pre-load* database, so after a swap every id in the new file is
         # "new" and a rollback would enumerate the whole file and remove it.
-        # This line is what *makes* the bypass happen; Task 4 is what makes it
-        # safe, by invalidating the transaction state rather than relying on
-        # this set staying correct.
+        # This line is what *makes* the bypass happen; `session._on_load_post`
+        # invalidating an open transaction covers a load made as a side effect
+        # of any other command. _DATABLOCK_REPLACING_COMMANDS bypass for the
+        # same reason (see the constant); `unlink_libraries` fires no handler,
+        # so for it this routing is the only protection.
         bypasses_transaction = (
             cmd_type in self._READ_ONLY_COMMANDS
             or dynamic_read_only
             or cmd_type in non_undo_commands
             or cmd_type in self._SESSION_SWAP_COMMANDS
+            or cmd_type in self._DATABLOCK_REPLACING_COMMANDS
         )
         if bypasses_transaction:
             return handler(**params)

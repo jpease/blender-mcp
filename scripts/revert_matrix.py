@@ -70,6 +70,8 @@ ADDON_SERVER_CORE = ROOT / "src/blender_mcp/bundled/addon/server_core.py"
 SERVER_CORE_TOOL = ROOT / "src/blender_mcp/server/tools/core.py"
 SERVER_CONNECTION = ROOT / "src/blender_mcp/server/connection.py"
 ADDON_SESSION = ROOT / "src/blender_mcp/bundled/addon/session.py"
+ADDON_TRANSACTION = ROOT / "src/blender_mcp/bundled/addon/transaction.py"
+ADDON_OBJECT_STATE = ROOT / "src/blender_mcp/bundled/addon/object_state.py"
 ADDON_TEXT_HYGIENE = ROOT / "src/blender_mcp/bundled/addon/text_hygiene.py"
 SERVER_TEXT_HYGIENE = ROOT / "src/blender_mcp/text_hygiene.py"
 ADDON_FILE_LIFECYCLE = ROOT / "src/blender_mcp/bundled/addon/handlers/file_lifecycle.py"
@@ -100,6 +102,8 @@ AMT = "tests/test_addon_manager.py"
 # limit inline, and splitting the f-string is what `ruff format` joins back.
 _LIST_SCALAR = "test_a_string_where_a_list_belongs_is_not_iterated_character_by_character"
 SESSIONT = "tests/test_session_state.py"
+TSWAPT = "tests/test_transaction_session_swap.py"
+MUTT = "tests/test_mutation_transaction.py"
 QBT = "tests/test_quiet_box.py"
 THREADT = "tests/server/test_threading.py"
 CONNT = "tests/server/test_connection_framing.py"
@@ -134,7 +138,7 @@ NFKC_BACKSLASH_LIB = (
 
 # The files added outright by a Phase 2 task; every node they collect must be
 # accounted for. Task 1 added the first five; Task 3 added `test_session_state.py`.
-NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT)
+NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT)
 # Nodes added to files that already existed. **Not optional bookkeeping:**
 # `coverage_gaps()` subtracts the rows below from *this* universe, so a task that
 # adds nodes here without listing them gets a "0 uncovered" that is true of the
@@ -259,6 +263,9 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{THREADT}::test_an_abort_in_the_swaps_prologue_still_answers_the_swaps_own_client",
     f"{THREADT}::test_a_swap_that_answers_normally_is_not_answered_a_second_time_by_the_guard",
     f"{THREADT}::test_a_second_abort_that_began_no_load_does_not_bump_the_marker_again",
+    # --- Task 4: the Step 1 / 1b reproductions, kept as regression guards ---
+    f"{MUTT}::test_regression_guard_a_transaction_unaware_of_a_file_swap_removes_the_whole_new_file",
+    f"{MUTT}::test_regression_guard_a_transaction_unaware_of_a_library_reload_removes_the_reloaded_contents",
 )
 
 # Nodes no single revert can break on their own, with the reason. Keeping these
@@ -1231,8 +1238,8 @@ REVERTS: list[Revert] = [
     Revert(
         "task 3: a swap is wrapped in mutation_transaction, whose rollback would enumerate the whole new file",
         ADDON_SERVER_CORE,
-        "            or cmd_type in self._SESSION_SWAP_COMMANDS\n        )",
-        "        )",
+        "            or cmd_type in self._SESSION_SWAP_COMMANDS\n",
+        "",
         (f"{SESSIONT}::test_a_session_swap_command_never_reaches_mutation_transaction",),
     ),
     Revert(
@@ -2528,6 +2535,171 @@ REVERTS: list[Revert] = [
         '        if receipt is not None:\n            receipt["answered"] = True\n\n',
         "",
         (f"{THREADT}::test_a_swap_that_answers_normally_is_not_answered_a_second_time_by_the_guard",),
+    ),
+    # --- Task 4: rollback that survives a file swap or a library reload -------
+    Revert(
+        "task 4: the library commands enter mutation_transaction, so a failed reload deletes what it reloaded",
+        ADDON_SERVER_CORE,
+        "            or cmd_type in self._DATABLOCK_REPLACING_COMMANDS\n",
+        "",
+        (
+            f"{TSWAPT}::test_a_library_replacing_command_never_reaches_mutation_transaction",
+            f"{TSWAPT}::test_a_reload_that_fails_after_churning_its_library_removes_nothing",
+        ),
+    ),
+    Revert(
+        "task 4: link_canon_library joins the datablock-replacing set, so a failed link leaks its library",
+        ADDON_SERVER_CORE,
+        '_DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries"})',
+        '_DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries", '
+        '"link_canon_library"})',
+        (
+            f"{TSWAPT}::test_the_datablock_replacing_set_is_the_three_library_commands_and_nothing_read_only",
+            f"{TSWAPT}::test_link_canon_library_still_enters_mutation_transaction",
+            f"{TSWAPT}::test_a_failed_link_rolls_back_its_library_with_the_file_handlers_registered",
+            f"{TSWAPT}::test_a_failed_link_never_removes_a_datablock_its_library_removal_already_freed",
+        ),
+    ),
+    Revert(
+        "task 4: Transaction.invalidate() does nothing, so a swap inside a transaction is rolled back",
+        ADDON_TRANSACTION,
+        (
+            "        self.invalidated = True\n"
+            "        self._before_ids = {}\n"
+            "        self._backup_ids = frozenset()\n"
+            "        invalidate_object_states(self._states)\n"
+            "        self._states = []\n"
+        ),
+        "        return\n",
+        (
+            f"{TSWAPT}::test_a_swap_inside_an_open_transaction_is_not_rolled_back_and_says_so",
+            f"{TSWAPT}::test_an_invalidated_geometry_backup_is_dropped_without_remove",
+            f"{TSWAPT}::test_blend_import_post_during_a_flagged_reload_invalidates_the_open_transaction",
+        ),
+    ),
+    Revert(
+        "task 4: rollback ignores the invalidation and diffs against the emptied snapshot",
+        ADDON_TRANSACTION,
+        "        if self.invalidated:\n            return ROLLBACK_SKIPPED_WARNING\n",
+        "",
+        (
+            f"{TSWAPT}::test_a_swap_inside_an_open_transaction_is_not_rolled_back_and_says_so",
+            f"{TSWAPT}::test_an_invalidated_geometry_backup_is_dropped_without_remove",
+            f"{TSWAPT}::test_blend_import_post_during_a_flagged_reload_invalidates_the_open_transaction",
+        ),
+    ),
+    Revert(
+        "task 4: a skipped rollback re-raises the original error, so the warning never reaches the envelope",
+        ADDON_TRANSACTION,
+        "        if warning is None:\n            raise\n",
+        "        raise\n",
+        (
+            f"{TSWAPT}::test_a_swap_inside_an_open_transaction_is_not_rolled_back_and_says_so",
+            f"{TSWAPT}::test_blend_import_post_during_a_flagged_reload_invalidates_the_open_transaction",
+        ),
+    ),
+    Revert(
+        "task 4: ObjectState.invalidate() removes the geometry backup a load may already have freed",
+        ADDON_OBJECT_STATE,
+        "        self.materials = []\n        self.geometry_backup = None\n\n    def discard_backup",
+        "        self.materials = []\n        self.discard_backup()\n\n    def discard_backup",
+        (
+            f"{TSWAPT}::test_an_invalidated_geometry_backup_is_dropped_without_remove",
+            f"{TSWAPT}::test_object_state_invalidate_releases_every_live_reference_without_touching_bpy",
+        ),
+    ),
+    Revert(
+        "task 4: libraries untracked, so a failed link leaks the Library datablock",
+        ADDON_TRANSACTION,
+        '    "libraries",\n)',
+        ")",
+        (
+            f"{TSWAPT}::test_libraries_are_tracked",
+            f"{TSWAPT}::test_a_failed_link_rolls_back_its_library_with_the_file_handlers_registered",
+            f"{TSWAPT}::test_a_failed_link_never_removes_a_datablock_its_library_removal_already_freed",
+        ),
+    ),
+    Revert(
+        "task 4: libraries removed in reverse order with everything else, before their linked datablocks",
+        ADDON_TRANSACTION,
+        'if coll_name not in {"objects", "libraries"}]',
+        'if coll_name != "objects"]',
+        (f"{TSWAPT}::test_a_failed_link_never_removes_a_datablock_its_library_removal_already_freed",),
+    ),
+    Revert(
+        "task 4: blend_import_post invalidates on every import, disarming a failed link's rollback",
+        ADDON_SESSION,
+        "    if library_replace_in_progress():\n        invalidate_active_transaction()\n",
+        "    invalidate_active_transaction()\n",
+        (
+            f"{TSWAPT}::test_a_failed_link_rolls_back_its_library_with_the_file_handlers_registered",
+            f"{TSWAPT}::test_blend_import_post_without_the_flag_leaves_the_transaction_armed",
+        ),
+    ),
+    Revert(
+        "task 4: the replace flag is not restored when the reload raises",
+        ADDON_TRANSACTION,
+        "    try:\n        yield\n    finally:\n        _DISPATCH.library_replace_in_progress = previous",
+        "    yield\n    _DISPATCH.library_replace_in_progress = previous",
+        (f"{TSWAPT}::test_the_replace_flag_is_cleared_when_the_reload_raises",),
+    ),
+    Revert(
+        "task 4: load_post stops invalidating the open transaction",
+        ADDON_SESSION,
+        "    invalidate_active_transaction()\n    _STATE.session_epoch += 1\n",
+        "    _STATE.session_epoch += 1\n",
+        (
+            f"{TSWAPT}::test_a_swap_inside_an_open_transaction_is_not_rolled_back_and_says_so",
+            f"{TSWAPT}::test_an_invalidated_geometry_backup_is_dropped_without_remove",
+        ),
+    ),
+    Revert(
+        "task 4: the blend_import_post handler is never registered",
+        ADDON_SESSION,
+        '    ("blend_import_post", _on_blend_import_post),\n',
+        "",
+        (
+            f"{TSWAPT}::test_blend_import_post_is_registered_once_across_disable_enable_cycles",
+            f"{TSWAPT}::test_blend_import_post_during_a_flagged_reload_invalidates_the_open_transaction",
+        ),
+    ),
+    Revert(
+        "task 4: the active transaction is cleared only on success, so a failed command stays reachable",
+        ADDON_TRANSACTION,
+        (
+            "        txn.commit()\n"
+            "    finally:\n"
+            "        # `finally`, not `except`: a BaseException (Esc's KeyboardInterrupt)\n"
+            "        # must not leave a finished command reachable from the next handler.\n"
+            "        _DISPATCH.active = previous\n"
+        ),
+        "        txn.commit()\n        _DISPATCH.active = previous\n",
+        (
+            f"{TSWAPT}::test_the_active_transaction_never_outlives_its_command[exception]",
+            f"{TSWAPT}::test_the_active_transaction_never_outlives_its_command[base]",
+        ),
+    ),
+    Revert(
+        "task 4: the active transaction is never cleared",
+        ADDON_TRANSACTION,
+        (
+            "    finally:\n"
+            "        # `finally`, not `except`: a BaseException (Esc's KeyboardInterrupt)\n"
+            "        # must not leave a finished command reachable from the next handler.\n"
+            "        _DISPATCH.active = previous\n"
+        ),
+        "",
+        (f"{TSWAPT}::test_the_active_transaction_never_outlives_its_command[success]",),
+    ),
+    Revert(
+        "task 4 harness check: rollback stops removing new datablocks, so the Step 1/1b reproductions stop reproducing",
+        ADDON_TRANSACTION,
+        "        _remove_datablocks(_new_datablocks(self._before_ids, exclude_ids=self._backup_ids))\n",
+        "",
+        (
+            f"{MUTT}::test_regression_guard_a_transaction_unaware_of_a_file_swap_removes_the_whole_new_file",
+            f"{MUTT}::test_regression_guard_a_transaction_unaware_of_a_library_reload_removes_the_reloaded_contents",
+        ),
     ),
 ]
 

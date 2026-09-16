@@ -28,8 +28,8 @@ that had already been lost once (see the closed item under "Known failures / blo
 | | |
 |---|---|
 | Branch | `main`, **unpushed**. `origin/main` is still at `523f427`. |
-| Last commit | **`2c1d678` — Task 3**, committed at **88.75/100 against a 90 gate** (below it; see the closing note at the end of this file). Task 2 closed after four cycles; Task 1 at 94/100. |
-| Next task | **Task 4** (make rollback survive a file swap, track `libraries`). Task 3 is **done and committed**. Read its closing note first — it says why it took six cycles and what §06's gate-driven amendment changes. **Task 4 must not assume "the epoch moved ⇒ a `load_post` fired"**: three sites move it (see T3-18/19). `_SESSION_SWAP_COMMANDS` is landed and single-sourced; Task 4 adds `_DATABLOCK_REPLACING_COMMANDS` as a **separate** constant and must not merge them. |
+| Last commit | **Task 4** (after `1f3619f`, the decision-13 amendment). Before it, **`2c1d678` — Task 3**, committed at **88.75/100 against a 90 gate** (below it; see the closing note at the end of this file). Task 2 closed after four cycles; Task 1 at 94/100. |
+| Next task | **Task 5** (filesystem trust boundary). Task 4 is done and committed; read its section at the end of this file. Historical note for Task 4, kept: Task 3 is **done and committed**. Read its closing note first — it says why it took six cycles and what §06's gate-driven amendment changes. **Task 4 must not assume "the epoch moved ⇒ a `load_post` fired"**: three sites move it (see T3-18/19). `_SESSION_SWAP_COMMANDS` is landed and single-sourced; Task 4 adds `_DATABLOCK_REPLACING_COMMANDS` as a **separate** constant and must not merge them. |
 | Working tree | Clean apart from `uv.lock`, which stays unstaged permanently (§03 incidental churn). |
 | Blender | **5.2.2 LTS** at `/opt/homebrew/bin/blender`. Every API fact re-verified against it; see "5.2.2 re-verification". |
 | Review loop | **Changed again 2026-09-16 for Tasks 4-10** (decision 13, handoff §06's 2026-09-16 amendment): findings triaged as bug / hardening / record-keeping; only bugs and automatically-critical items block; at most two cycles, then ask the user; scores recorded, not gated. Hardening goes to the backlog under decision 13. Tasks 1-3 ran under earlier rules. |
@@ -179,7 +179,10 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 
 | Task | Finding | Cost if left | Found by |
 |---|---|---|---|
-| — | *(empty; Task 3's hardening residuals are in its own residual table below)* | | |
+| 4 | **Nested transactions: a load inside an inner `mutation_transaction` invalidates only the innermost**; the outer still rolls back and removed 7 of 7 loaded datablocks (Critic 1 probe P2; Critic 2 E4). Unreachable: one caller, never nested. Docstring on `invalidate_active_transaction` now says so. | A future nested call site silently deletes a loaded file. Fix: invalidate the outer when the inner raises `RollbackSkippedError`, or chain `previous`. ~3 lines. | Critics 1, 2 |
+| 4 | **An unflagged `lib.reload()` inside a transaction still destroys the library's contents** (probe case C: linked 4 -> 0). No call exists in `src/`; the Task 7 reload commands bypass the transaction. | A future handler that forgets `replacing_library_contents()` loses linked contents on a later raise. Candidate fix: `_new_datablocks` skips linked ids whose Library predates the transaction — trade-off: a failed link into an already-linked library then leaks its new ids. | Critic 1, implementer |
+| 4 | **`_on_load_post` invalidates before updating epoch / `load_in_flight`**; if invalidation ever raised, Blender swallows it and the epoch would not move (Critic 2 E6, with `invalidate` patched to raise). Unreachable: invalidation only assigns attributes. | Stale-stamped commands could run against a new file. Fix: move the call last or `try/finally`; revert-matrix row pins current order. | Critic 2 |
+| 4 | **Probe scripts leave fixture `.blend` files in the OS temp dir.** | Temp-dir clutter on a developer machine. | Critic 3 |
 
 ## Tasks
 | # | Task | Tier | Status | Commit | Notes |
@@ -187,7 +190,7 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | 1 | Land the live-Blender acceptance rig on `main` | Opus | **Done — 94/100 after cycle-4 repairs** | `2852803` + repairs |  9 files ported, full `output_roots` wiring + 30 → 31 bump, ported lint debt cleaned to zero, `scripts/blender_rig.py` written, Step 5 re-verified live and **re-run end to end after each repair cycle**, README documented, `scripts/revert_matrix.py` landed so the revert evidence is reproducible. Repairs R1-R22 (cycle 2) and A1-A6/B1-B5/C1-C4/D1/F1-F10 (cycle 3); see both repair tables. **Acceptance criteria 2 and 3 now PASS** against a real container, after the decision-8 follow-up ported the HTTP transport (a tenth file) and fixed the two `entrypoint.sh` defects the first container run exposed. |
 | 2 | Decide the reentrancy strategy by experiment | Opus | **Done** | `969df10` (rule), `9608561` (evidence + spec), `807ef52` (`use_scripts` gap), `c54b8b6` (cycle 1+2 repairs), + the re-score repair commit | Decision rule committed **before** the spike existed, so the branch could not be picked after seeing the result. **Decided: synchronous validate-then-swap, answer after the swap** — the callback survives, all four pre-registered conditions met, **18/18** swaps, no intermittency. Async-job-with-polling rejected; its premise is false. **Six rig runs** on 5.2.2 (see the per-run tally). Findings with downstream teeth: the scene-gated capability set follows the swapped file; `bpy.context.window` is `None` for the rest of the swapping tick but operators still run and it recovers by the next tick; the ordering hazard is demonstrated on both sides of the drain budget; `bpy.data.is_dirty` is a usable pre-swap guard and unsaved work is otherwise destroyed silently; five failure modes yielding three distinct path-leaking error texts, flagged for Task 5 (**not** the different "five error shapes" of Finding 5, which spans open/save/reload). No production code changed; spike deleted. |
 | 3 | Drain-loop file-swap barrier, session epoch, failure handlers | Opus | **Done — committed at 88.75/100 measured, below the 90 gate. See the closing note.** | this commit | Protocol 31 **asserted, not bumped** (decision 2). Barrier is snapshot **+** enqueue-epoch stamp; `session_indeterminate` latch on a `load_pre` positive signal; allowlist hygiene on both sides of the socket. 24 decisions, 15 residuals with owners. |
-| 4 | Make rollback survive a file swap, track `libraries` | Opus | Not started | — | |
+| 4 | Make rollback survive a file swap, track `libraries` | Opus | **Done — one cycle, no blocking findings** (decision 13) | this commit | `_DATABLOCK_REPLACING_COMMANDS` bypass, `Transaction.invalidate()` via `load_post` and a flagged `blend_import_post`, `ObjectState.invalidate()`, `libraries` tracked and removed last. See "Task 4" at the end of this file. |
 | 5 | The filesystem trust boundary | Opus | Not started | — | Promotes `output_roots.py`, landed here. |
 | 6 | Addon file-lifecycle handlers | Opus | Not started | — | **Inherits from Task 2:** `open_shot` must refuse when `bpy.data.is_dirty` unless the caller passes an explicit discard flag (unsaved work is otherwise destroyed silently — measured); `wm.open_mainfile` must pass `use_scripts=False` explicitly; the post-swap half runs with `bpy.context.window` at `None` but an inherited context still works. |
 | 7 | Addon linking handlers | Opus | Not started | — | |
@@ -3010,3 +3013,164 @@ force here, this task would have closed several cycles earlier at a similar scor
 **Still open and owned:** 15 residuals, each with a named owner — the largest being 60 `result.get(` sites and
 52 error-interpolation sites under `server/tools/` that carry the same hygiene defect one layer out (Task 9),
 and `current_filepath`'s manufactured-traversal exposure (Task 5, before anything compares it as a path).
+
+---
+
+## Task 4 — rollback survives a file swap and a library reload; `libraries` tracked
+
+Run under decision 13. **One cycle; no finding classified as a bug or automatically critical, so no repair
+round.** Implementer Opus; critics 1-2 Opus, 3-4 Sonnet, run in parallel.
+
+### What landed
+
+- `server_core._DATABLOCK_REPLACING_COMMANDS = {reload_library, relocate_library, unlink_libraries}` — separate
+  from `_SESSION_SWAP_COMMANDS`, added to `_run_handler`'s `bypasses_transaction`. Item 1's enforcing test
+  already existed (`tests/test_session_state.py::test_a_session_swap_command_never_reaches_mutation_transaction`).
+- `transaction._DISPATCH` (a small dataclass): `active` is set by `mutation_transaction` after `begin()` and
+  restored in `finally`; `library_replace_in_progress` is set by `replacing_library_contents()` and restored in
+  `finally`. `session._on_load_post` calls `invalidate_active_transaction()`; the new `@persistent`
+  `_on_blend_import_post` (in `_HANDLER_BINDINGS`) does so only while the flag is set. Neither touches the epoch.
+- `Transaction.invalidate()` empties the snapshot and calls `ObjectState.invalidate()` (clears references, never
+  `remove()`); `rollback()` then returns `ROLLBACK_SKIPPED_WARNING` and touches nothing, and
+  `mutation_transaction` raises `RollbackSkippedError(f"{exc} ({warning})")` — the error envelope has only
+  `message`, so the warning rides there. Envelope keys unchanged.
+- `"libraries"` in `_TRACKED_COLLECTIONS`; `_remove_datablocks` removes libraries **last** (case E below).
+- **Deviation from spec, accepted:** the plan says drop `_states` "without touching them"; `invalidate()` calls
+  `ObjectState.invalidate()` first, which touches only Python attributes, so item 3's revert is detectable.
+  Step 1/1b tests kept as regression guards (the plan's second option) beside new fixed-behaviour tests.
+
+### Step 1 / 1b — the hazard, reproduced by the reviewer against unmodified source
+
+A detached worktree at `1f3619f` (pre-Task-4 source) with only the new test file copied in,
+`PYTHONPATH=<worktree>/src`:
+
+```
+tests/test_mutation_transaction.py -k regression_guard
+..                                                                       [100%]
+2 passed, 12 deselected in 0.29s
+```
+
+`test_regression_guard_a_transaction_unaware_of_a_file_swap_removes_the_whole_new_file` and
+`..._of_a_library_reload_removes_the_reloaded_contents` assert the destructive behaviour and pass on the old
+code. Step 3 (implementer): new tests **16 failed, 1 passed** before implementation; the passer is the
+flag-clear case, which passes only because nothing invalidated yet.
+
+### Step 5b — handler/uid table, reproduced by the reviewer on Blender 5.2.2
+
+`/opt/homebrew/bin/blender --background --factory-startup --python scripts/blender_probes/library_replace_handlers.py`, exit 0:
+
+```
+=== libraries.load(link=True) ===
+  handlers fired: ['blend_import_pre', 'blend_import_post']
+  linked datablocks before/after: 0/4
+=== libraries.load(link=False) (append) ===
+  handlers fired: ['blend_import_pre', 'blend_import_post']
+=== lib.reload() ===
+  handlers fired: ['blend_import_pre', 'blend_import_post']
+  linked datablocks before/after: 4/4
+  session_uid changed: 4 of 4
+=== relocate: lib.filepath = <copy>; lib.reload() ===
+  handlers fired: ['blend_import_pre', 'blend_import_post']
+  session_uid changed: 4 of 4
+=== failed lib.reload() (invalid path) ===
+  handlers fired: NONE
+  session_uid changed: 0 of 4
+=== bpy.data.orphans_purge(...) -> 1 ===
+  handlers fired: NONE
+=== bpy.data.libraries.remove(lib): libraries 1 -> 0 ===
+  handlers fired: NONE
+blend_import_post is a list; len 1 -> 3 after appending twice
+  remove() of an absent callback raises ValueError
+```
+
+`load_post` does not fire for a reload, so item 2a's shape stands (no escalation).
+
+### Step 5 — the real `transaction.py` / `session.py` in Blender, reproduced by the reviewer
+
+`/opt/homebrew/bin/blender --background --factory-startup --python scripts/blender_probes/transaction_library_rollback.py`, exit 0:
+
+```
+=== A: a failed link inside mutation_transaction ===
+after rollback: libraries = 0 linked = []
+pre-existing datablocks all present with the same session_uid: True
+anything left that did not exist before: NOTHING
+=== B: lib.reload() inside replacing_library_contents, then a raise ===
+transaction invalidated by blend_import_post: True
+raised RollbackSkippedError; carries the warning: True
+linked contents before/after: 4 / 4
+=== C: the same reload WITHOUT the flag (the hazard), then a raise ===
+transaction invalidated: False
+linked contents before/after: 4 / 0
+=== D: open_mainfile inside a transaction holding a geometry backup, then a raise ===
+session_uids surviving the load: 0 of 5
+transaction invalidated by load_post: True ; states held: 0
+loaded file intact after the failed command: True
+active transaction cleared: True
+=== E: removing a Library first, then its linked datablocks ===
+  objects.remove(<freed>) raised ReferenceError: StructRNA of type Object has been removed
+```
+
+Criterion 4 is met by verification, not by the documented-leak fallback. Critic 1 additionally ran, on 5.2.2:
+a new Library linked beside an existing one that local data already uses (only the new Library and its contents
+removed); an append from an already-linked file (nothing pre-existing removed); a failed flagged reload
+(transaction stays armed, flag clears); and `read_homefile` inside a transaction (invalidated, 0 lost).
+
+### Falsifiability
+
+`scripts/revert_matrix.py`: **259 rows** (15 new), `scripts/check_revert_anchors.py` → 259 intact, 0 broken,
+0 unparseable (re-run after the commit-time docstring edits). Implementer's per-revert failing-node counts:
+
+| Revert | Failing nodes |
+|---|---|
+| library commands no longer bypass the transaction | 2 |
+| `link_canon_library` added to the new constant | 4 |
+| `Transaction.invalidate()` a no-op | 3 |
+| rollback ignores invalidation | 3 |
+| warning dropped from the error | 2 |
+| `ObjectState.invalidate()` calls `discard_backup` | 2 |
+| `libraries` untracked | 3 |
+| libraries removed before their linked datablocks | 1 |
+| `blend_import_post` invalidates on every import | 2 |
+| flag not restored in `finally` | 1 |
+| `load_post` stops invalidating | 2 |
+| `blend_import_post` handler not registered | 2 |
+| active reference cleared only on success | 2 |
+| active reference never cleared | 1 |
+| rollback stops removing new datablocks (guards stop reproducing) | 2 |
+
+Independently re-applied in scratch copies: 8 reverts by Critic 1 and 6 by Critic 4; every one failed its named
+tests.
+
+### Gates (reviewer, after the commit-time edits)
+
+| Check | Value | Baseline |
+|---|---|---|
+| pytest | **1015 passed** | 996 |
+| `ruff check .` | **9,832** | 9,833 (`transaction.py` 22 → 21) |
+| `ruff format --check .` | 12 unformatted | 12 |
+| basedpyright | 71 errors / 4 warnings | 71 / 4 |
+| `all` | 285 tools / 1,181,023 B | unchanged — no catalog change |
+| existing assertions removed | `git diff tests/ \| grep "^-" \| grep -c assert` → 0 | — |
+
+Protocol stays 31/31; `tests/test_addon_manager.py` 52 passed (Critic 4).
+
+### Scores (recorded, not gated — decision 13)
+
+| Dimension | Score |
+|---|---|
+| Data durability | 28/30 |
+| Concurrency and liveness | 24/25 |
+| Filesystem and trust boundary | 20/20 |
+| Evidence | 12/15 (before this record existed; the gap was the record) |
+| Code quality | 9/10 |
+| **Total** | **93/100** |
+
+### Findings triage
+
+- **Bug / automatically critical:** none.
+- **Hardening:** four, in the backlog under decision 13.
+- **Record-keeping, fixed at commit:** `invalidate_active_transaction` now states nesting is unsupported;
+  `replacing_library_contents` states it has no production caller until Task 7; `ObjectState.invalidate`'s
+  orphaned-backup sentence is marked as inference (case B holds no geometry backup); this section.
+
+**Wall time:** implementer ~24 min, four parallel critics ~10 min, reviewer verification and record ~15 min.

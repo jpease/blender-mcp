@@ -509,3 +509,142 @@ def test_nd_mark_as_util_validates_all_names_before_mutating_any(monkeypatch) ->
 
     assert existing.display_type == "SOLID"
     assert existing.hide_render is False
+
+
+# ---------------------------------------------------------------------------
+# Task 4: a rollback that outlives the database it snapshotted
+# ---------------------------------------------------------------------------
+
+
+# The datablocks each reproduction links from its stub library.
+_LINKED_FROM_CANON = (("objects", "HeroBody"), ("meshes", "HeroMesh"), ("collections", "CanonHero"))
+
+
+class FakeLinkedDatablock(FakeDatablock):
+    """A datablock linked from a library: `library` names the `Library` it came from."""
+
+    def __init__(self, name: str, library: FakeDatablock) -> None:
+        """
+        Allocate the datablock with a fresh session_uid.
+
+        Args:
+            name: The datablock's name.
+            library: The stub `Library` it is linked from.
+
+        """
+        super().__init__(name)
+        self.library = library
+
+
+def _replace_whole_database(data: dict[str, FakeCollection]) -> dict[str, list[int]]:
+    """
+    Model a file load: every tracked datablock is freed and the new file's take their place.
+
+    Each replacement gets a fresh `session_uid`, which is what a load does to
+    every datablock in the database - including ones with the same name.
+
+    Args:
+        data: The stub `bpy.data` collections, keyed by collection name.
+
+    Returns:
+        dict[str, list[int]]: The new file's session_uids, per collection.
+
+    """
+    loaded = {}
+    for coll_name, collection in data.items():
+        names = [db.name for db in collection] or [f"{coll_name}.from_new_file"]
+        for db in list(collection):
+            collection.remove(db)
+        loaded[coll_name] = [collection.new(name).session_uid for name in names]
+    return loaded
+
+
+def _reload_library_contents(data: dict[str, FakeCollection], library: FakeDatablock) -> list[int]:
+    """
+    Model `lib.reload()`: every datablock linked from `library` comes back with a fresh `session_uid`.
+
+    Measured on 5.2.2 by `scripts/blender_probes/library_replace_handlers.py`.
+    Local datablocks and the `Library` itself keep theirs.
+
+    Args:
+        data: The stub `bpy.data` collections, keyed by collection name.
+        library: The stub library being reloaded.
+
+    Returns:
+        list[int]: The reloaded datablocks' new session_uids.
+
+    """
+    reloaded = []
+    for collection in data.values():
+        for db in [db for db in collection if getattr(db, "library", None) is library]:
+            collection.remove(db)
+            fresh = FakeLinkedDatablock(db.name, library)
+            collection[db.name] = fresh
+            reloaded.append(fresh.session_uid)
+    return reloaded
+
+
+def test_regression_guard_a_transaction_unaware_of_a_file_swap_removes_the_whole_new_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Task 4 Step 1's reproduction, kept as a guard on the mechanism the fix defends against.
+
+    `Transaction.begin()` snapshots the *pre-load* session_uids; a load gives
+    every datablock a fresh one; a raise then makes `_new_datablocks()` read the
+    whole new file as "created by this request". This passed against the
+    unmodified code and still passes: nothing here tells the transaction a swap
+    happened. It stays so that the tests proving the fix (a swap command
+    bypassing the transaction; `load_post` invalidating one) cannot pass on a
+    harness that never reproduced the hazard in the first place.
+
+    Raises:
+        RuntimeError: Inside the transaction, to trigger the rollback.
+
+    """
+    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
+    addon, bpy = _load_addon(monkeypatch, data=data)
+    transaction = sys.modules[f"{addon.__name__}.transaction"]
+    bpy.data.objects["Hero"] = FakeDatablock("Hero")
+    bpy.data.meshes["HeroMesh"] = FakeDatablock("HeroMesh")
+
+    with pytest.raises(RuntimeError, match="after the load"), transaction.mutation_transaction("do_mutate"):
+        loaded = _replace_whole_database(data)
+        assert sum(len(uids) for uids in loaded.values()) == len(_TRACKED_COLLECTIONS)
+        raise RuntimeError("after the load")
+
+    assert {name: len(collection) for name, collection in data.items()} == dict.fromkeys(data, 0)
+
+
+def test_regression_guard_a_transaction_unaware_of_a_library_reload_removes_the_reloaded_contents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Task 4 Step 1b's reproduction: the reload shape, reachable by a command that is not a session swap.
+
+    Only the datablocks linked from one library get fresh session_uids - the
+    shape `lib.reload()` produces - and a raise then removes exactly those,
+    while the local mesh beside them survives. Passed against the unmodified
+    code and still passes, for the same reason as the Step 1 guard above: the
+    transaction here is told nothing. `_DATABLOCK_REPLACING_COMMANDS` and the
+    replace-in-progress flag are what keep a real reload out of this shape.
+
+    Raises:
+        RuntimeError: Inside the transaction, to trigger the rollback.
+
+    """
+    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
+    addon, bpy = _load_addon(monkeypatch, data=data)
+    transaction = sys.modules[f"{addon.__name__}.transaction"]
+    library = FakeDatablock("canon.blend")
+    for coll_name, name in _LINKED_FROM_CANON:
+        data[coll_name][name] = FakeLinkedDatablock(name, library)
+    local = bpy.data.meshes.new("LocalMesh")
+
+    with pytest.raises(RuntimeError, match="after the reload"), transaction.mutation_transaction("do_mutate"):
+        reloaded = _reload_library_contents(data, library)
+        assert len(reloaded) == len(_LINKED_FROM_CANON)
+        raise RuntimeError("after the reload")
+
+    survivors = {db.session_uid for collection in data.values() for db in collection}
+    assert survivors == {local.session_uid}

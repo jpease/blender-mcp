@@ -148,6 +148,25 @@ class ObjectState:
             with contextlib.suppress(Exception):
                 obj.modifiers.remove(mod)
 
+    def invalidate(self) -> None:
+        """
+        Release every datablock reference after the database was replaced.
+
+        A load or library reload may have freed each of these, so nothing here
+        reads or removes them: `remove()` on a freed geometry backup is a
+        use-after-free that the `suppress(Exception)` around the other removal
+        paths would hide. A backup that survives (a library reload leaves local
+        session_uids unchanged, measured by
+        `scripts/blender_probes/transaction_library_rollback.py` case B) is
+        presumably left as an unused orphan - inferred, not measured: that case
+        holds no geometry backup. A leak is recoverable; a wrong removal is not.
+        """
+        self.obj = None
+        self.parent = None
+        self.collections = []
+        self.materials = []
+        self.geometry_backup = None
+
     def discard_backup(self) -> None:
         """Drop the geometry backup on the success path (nothing to restore)."""
         if self.geometry_backup is None:
@@ -212,6 +231,18 @@ def backup_datablock_ids(states):
         if uid is not None:
             ids.add(uid)
     return ids
+
+
+def invalidate_object_states(states: "list[ObjectState]") -> None:
+    """
+    Release the datablock references held by each snapshot, without touching bpy.
+
+    Args:
+        states: Snapshots from capture_object_states().
+
+    """
+    for state in states:
+        state.invalidate()
 
 
 def discard_backups(states) -> None:
