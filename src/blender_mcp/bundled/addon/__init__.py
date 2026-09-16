@@ -28,6 +28,7 @@ bl_info = {
 # server's parse defaults it to an empty list.
 ADDON_PROTOCOL_VERSION = 31
 
+from . import session  # ruff: ignore[module-import-not-at-top-of-file]
 from .server_core import BlenderMCPServer  # ruff: ignore[module-import-not-at-top-of-file]
 from .ui import (  # ruff: ignore[module-import-not-at-top-of-file]
     BLENDERMCP_AddonPreferences,
@@ -80,6 +81,13 @@ def register() -> None:
         default=False,
     )
 
+    # Before the server can accept a command: the session epoch it advertises
+    # has to be maintained from the first file load onwards, and these handlers
+    # are @persistent so they survive the loads they observe. Registration is
+    # idempotent, which matters because disable/enable is how users reload the
+    # addon and Blender's handler lists take duplicates without complaint.
+    session.register_handlers()
+
     # Register preferences class
     bpy.utils.register_class(BLENDERMCP_AddonPreferences)
 
@@ -111,6 +119,8 @@ def unregister() -> None:
     if hasattr(bpy.types, "blendermcp_server") and bpy.types.blendermcp_server:
         bpy.types.blendermcp_server.stop()
         del bpy.types.blendermcp_server
+
+    session.unregister_handlers()
 
     bpy.utils.unregister_class(BLENDERMCP_PT_Panel)
     bpy.utils.unregister_class(BLENDERMCP_OT_StartServer)

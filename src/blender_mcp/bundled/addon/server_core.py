@@ -19,6 +19,7 @@ from .handlers.animation import AnimationHandlersMixin
 from .handlers.camera import CameraHandlersMixin
 from .handlers.character_rigging import CharacterRiggingHandlersMixin
 from .handlers.cloth import ClothHandlersMixin
+from .handlers.file_lifecycle import FileLifecycleHandlersMixin
 from .handlers.lighting import LightingHandlers
 from .handlers.liquid import LiquidHandlersMixin
 from .handlers.mesh import MeshHandlersMixin
@@ -35,6 +36,7 @@ from .handlers.sketchfab import SketchfabHandlersMixin
 from .handlers.viewport import ViewportHandlersMixin
 from .helpers import get_blendermcp_addon_preferences, get_mesh_object, paginate, sync_from_editmode
 from .output_roots import configured_roots, writable_roots
+from .session import load_in_flight, mark_session_indeterminate, session_is_indeterminate, session_snapshot
 from .transaction import mutation_transaction
 
 
@@ -123,6 +125,7 @@ class BlenderMCPServer(
     ModelHandlersMixin,
     ClothHandlersMixin,
     LiquidHandlersMixin,
+    FileLifecycleHandlersMixin,
     SceneHandlersMixin,
     ScenePhysicsHandlersMixin,
     ObjectAnimationHandlersMixin,
@@ -234,15 +237,15 @@ class BlenderMCPServer(
 
         `bpy.app.timers` matches registrations by **identity**, and
         `self.drain_command_queue` builds a *new* bound method on every
-        attribute access. Measured against Blender 5.2.2::
+        attribute access - so a fresh access can neither be found by
+        `is_registered()` nor removed by `unregister()`, which raises
+        `ValueError: function is not registered` for it. Measured against
+        Blender 5.2.2 and recorded in `PHASE2_TASK_STATE.md` under Task 1's
+        timer-identity probe; no transcript is pasted here, because a transcript
+        in a docstring that no committed script emits cannot be re-run and three
+        of them were found in this task alone.
 
-            PROBE bound-method identity: False
-            PROBE is_registered(fresh access): False
-            PROBE is_registered(held ref):     True
-            PROBE unregister(fresh access) raised: ValueError function is not registered
-
-        So a fresh access can neither be found by `is_registered()` nor removed
-        by `unregister()`. Capturing one reference here is what makes both the
+        Capturing one reference here is what makes both the
         guard below and `_unregister_drain_timer` mean what they read as
         meaning.
 
@@ -356,6 +359,31 @@ class BlenderMCPServer(
         Registered once by start(); returns the poll interval so Blender keeps
         calling it. All bpy access happens here, on the main thread.
 
+        Two mechanisms keep a command from running against a file it was not
+        sent for, and they are **not** alternatives - they cover disjoint cases:
+
+        =========================================  =========  =========
+        case                                       snapshot   stamp
+        =========================================  =========  =========
+        queued before, swap succeeds               rejects    rejects
+        queued before, swap **fails**              rejects    silent
+        queued before, swap is **aborted**         rejects    rejects
+        arrives **during** the load                misses     rejects
+        arrives **during** an aborted load         misses     rejects
+        arrives after the client saw the response  executes   executes
+        never stamped at all                       misses     rejects
+        =========================================  =========  =========
+
+        The two abort rows are why `session.mark_session_indeterminate` exists:
+        `load_post` does not fire on an aborted load and neither does
+        `load_post_fail`, so without moving the marker in
+        `_run_session_swap`'s `except` the stamp column read "silent" there and
+        a command queued mid-load executed against a half-replaced database.
+
+        The stamp is checked here, first, because a stale command must not be
+        able to trip the barrier a second time. See `_stamp_session` for the
+        recorded design and `_run_session_swap` for the snapshot half.
+
         Returns:
             Result produced by the operation.
 
@@ -363,6 +391,33 @@ class BlenderMCPServer(
         if not self.running:
             return None
 
+        try:
+            self._drain_batch()
+        except BaseException:
+            # Blender **drops** a timer callback that raises - measured live on
+            # 5.2.2 via the rig's in-Blender probe:
+            #
+            #   {"calls_after_raising_once": 1, "still_registered": false,
+            #    "successor_calls": 9, "successor_still_registered": true}
+            #
+            # `persistent=True` does not change it. So re-raising out of here -
+            # which `_execute_and_answer` has to do rather than swallow an abort
+            # - would end the drain loop for good, and **every** connected
+            # client would then wait out its own 180 s timeout with no response
+            # and no error, forever after. The same measurement gives the fix:
+            # a successor registered from inside the failing callback, as a
+            # different function object, survives and keeps ticking.
+            self._replace_this_dying_timer()
+            raise
+        return 0.05
+
+    def _drain_batch(self) -> None:
+        """
+        Run up to one tick's worth of queued commands, applying both barriers.
+
+        Split out of `drain_command_queue` so the recovery path there wraps
+        every statement of it, including the `get_nowait` that starts the loop.
+        """
         processed = 0
         deadline = time.monotonic() + self._DRAIN_TIME_BUDGET_SECONDS
         while processed < self._MAX_COMMANDS_PER_TICK and time.monotonic() < deadline:
@@ -371,28 +426,775 @@ class BlenderMCPServer(
             except queue.Empty:
                 break
 
+            # Popped rather than read: the stamp is transport bookkeeping and
+            # has no business reaching a handler's `command` dict.
+            #
+            # **Fails closed.** An *absent* stamp used to execute, on the
+            # argument that `_stamp_session` is the sole producer and
+            # `test_the_enqueue_path_is_the_only_producer_and_it_stamps` proves
+            # it. That test walks `ast.FunctionDef` only, matches only
+            # `.put_nowait`, and requires the receiver spelled
+            # `<x>.command_queue`; five producer shapes were demonstrated to
+            # evade it - a blocking `put()`, an `async def`, a local alias, a
+            # lambda at class scope, and a helper that takes the queue as an
+            # argument. The last two are exactly what Task 6's re-queue path
+            # looks like. Failing open bought nothing, because the sole producer
+            # already stamps: rejecting costs a correct system nothing and costs
+            # an incorrect one one error frame instead of a command run against
+            # a database it was not sent for.
+            stamp = command.pop(self._SESSION_STAMP_KEY, None)
+            if stamp != self._session_marker():
+                self._discard_superseded([(command, client)], self._reject_reason(stamp))
+                processed += 1
+                continue
+
+            # The indeterminate latch, checked **after** the stamp so a stale
+            # command is still reported as stale, and **before** dispatch so
+            # nothing runs against a database that may be part of two files.
+            # Without it the flag was advisory: `session.INDETERMINATE_SESSION_NOTE`
+            # had no read site anywhere in `src/`, so the command after an abort
+            # answered `status: success` against a half-replaced database.
+            if session_is_indeterminate() and command.get("type") not in self._INDETERMINATE_SAFE_COMMANDS:
+                self._discard_superseded([(command, client)], self._INDETERMINATE_REASON)
+                processed += 1
+                continue
+
+            # Membership, not just name: `open_shot` and `reset_session` are not
+            # dispatchable until Task 6, and a barrier that fires for a command
+            # the addon cannot run lets one 40-byte frame discard up to
+            # `_MAX_QUEUED_COMMANDS` commands belonging to *other* server
+            # processes. An undispatchable name falls through to the ordinary
+            # path, which answers it "Unknown command type" and costs nobody
+            # else anything.
+            #
+            # Asked **before** the dequeue result is committed to: if
+            # `_build_command_handlers()` raises, the command has already been
+            # popped and would be lost with no response on any path, so the
+            # answer is produced from the `except` rather than left to a caller
+            # that no longer has it.
             try:
-                response = self.execute_command(command)
+                is_swap = command.get("type") in self._SESSION_SWAP_COMMANDS and self._is_dispatchable(
+                    command.get("type")
+                )
             except Exception as e:
-                print(f"Error executing command: {e!s}")
+                print(f"Could not classify a dequeued command: {e!s}")
                 traceback.print_exc()
-                response = {"status": "error", "message": str(e)}
+                self._answer(command, client, {"status": "error", "message": "Command could not be dispatched"})
+                processed += 1
+                continue
 
-            # Echo the request id (if any) back so the client can match this
-            # response to the command it sent instead of relying purely on
-            # stream ordering.
-            response["id"] = command.get("id")
+            if is_swap:
+                self._run_session_swap(command, client)
+                break
 
-            # Encoded *before* the try that guards the send, so a failure to
-            # serialize can never be mistaken for a disconnect.
-            payload = self._encode_response(response, command.get("id"))
-            try:
-                self._send_frame(client, payload)
-            except Exception:
-                print("Failed to send response - client disconnected")
+            self._execute_and_answer(command, client)
             processed += 1
 
-        return 0.05
+    def _replace_this_dying_timer(self) -> None:
+        """
+        Hand the drain loop to a fresh callback before this one is dropped.
+
+        Runs from a timer callback, which is Blender's main thread, so
+        registering here is legal - the prohibition in `_register_drain_timer`
+        is about *client* threads.
+
+        `self._drain_timer` is cleared first so `_register_drain_timer` does not
+        short-circuit on the doomed registration, and because every access to
+        `self.drain_command_queue` builds a **new** bound-method object, the
+        successor is a different object from the one Blender is about to drop
+        (measured; see `_register_drain_timer` for the identity rules).
+
+        A stopped server is left alone: resurrecting a timer that `stop()`
+        deliberately removed is the accumulation `_unregister_drain_timer`
+        exists to prevent.
+
+        **The dying timer is unregistered explicitly, rather than trusted to be
+        dropped.** Blender really does drop a callback that raises, and
+        `persistent=True` does not change it - the live rig reports
+        `calls_after_raising_once: 1, still_registered: false`. But "exactly one
+        live drain timer" then rests entirely on a behaviour this stub does
+        not model, so no test could ever see a duplicate. Asking Blender to
+        remove it first makes the invariant hold by construction on both sides.
+        The call is suppressed because the drop usually got there first, which
+        raises `ValueError: function is not registered`.
+
+        A failed handoff is **printed**. `suppress(Exception)` around the
+        registration was silent, and its consequence is not: with no drain timer
+        and `running` still true, every connected client waits out its own 180 s
+        timeout having received nothing, forever after. Blender's console is the
+        only place an operator can see that it happened.
+        """
+        if not self.running:
+            return
+        dying = self._drain_timer
+        self._drain_timer = None
+        if dying is not None:
+            with suppress(Exception):
+                bpy.app.timers.unregister(dying)
+        try:
+            self._register_drain_timer()
+        except Exception as e:
+            print(f"BlenderMCP: could not hand the drain loop to a fresh timer ({e!s}) - restart the MCP server")
+            traceback.print_exc()
+
+    def _is_dispatchable(self, cmd_type: object) -> bool:
+        """
+        Report whether a command name has a handler behind it right now.
+
+        `_build_command_handlers()` is rebuilt per call and is not cheap, which
+        is why this is asked only for the two names in
+        `_SESSION_SWAP_COMMANDS` - never per command.
+
+        Args:
+            cmd_type: The command name from the frame.
+
+        Returns:
+            bool: True when `execute_command` would find a handler for it.
+
+        """
+        return cmd_type in self._build_command_handlers()
+
+    @staticmethod
+    def _session_marker() -> tuple[object, object]:
+        """
+        Read the pair that identifies "which database, in which process".
+
+        The epoch alone is not monotonic - module state is rebuilt at 0 by a
+        Blender restart or Reload Scripts - so a bare counter can hand back a
+        value a client has already seen against a different database. Pairing it
+        with the process-unique `session_id` closes that.
+
+        Returns:
+            tuple: `(session_id, session_epoch)`, both immutable.
+
+        """
+        snapshot = session_snapshot()
+        return (snapshot["session_id"], snapshot["session_epoch"])
+
+    def _stamp_session(self, command: dict) -> None:
+        """
+        Record, on the client thread, which database a command was queued against.
+
+        **This is the recorded design**, `docs/superpowers/plans/PHASE2_TASK_STATE.md:2265-2275`:
+
+            "Post-load inspection therefore **cannot** distinguish 'queued
+            before the swap', 'arrived during the swap' and 'sent after the
+            client saw the swap response': all three sit in one FIFO with no
+            marker. The epoch has to be stamped **at enqueue time, on the client
+            thread**, and compared at dequeue."
+
+        The pre-swap queue snapshot in `_run_session_swap` cannot substitute for
+        it, because `session_epoch` moves in `load_post` - at the *end* of the
+        load. `wm.open_mainfile` was measured at 4.6 s on a 1.05 GB fixture
+        (TASK_STATE decision 11), every `handle_client` thread keeps running
+        throughout, and a second server *process* has no way to know a swap is
+        under way at all. Everything those threads enqueue during that window
+        arrives after the snapshot was taken and before the epoch moved.
+
+        Stamping is legal here because it reads two immutable values off module
+        state and touches **no `bpy`**; the whole point of this thread boundary
+        is that Blender data is not read from it.
+
+        An *unstamped* command is **rejected**, not executed. This being the sole
+        producer is why that costs nothing: nothing else in `src/` puts anything
+        on `command_queue`, so in a correct tree the closed branch is never
+        taken. It is the incorrect tree the branch is for -
+        `test_the_enqueue_path_is_the_only_producer_and_it_stamps` asserts the
+        sole-producer property over the AST, but five producer shapes were
+        demonstrated to evade its previous form, so the static check is a second
+        line of defence behind the runtime one rather than in front of it.
+
+        Args:
+            command: The decoded command, mutated in place. The key is
+                overwritten unconditionally, so a client cannot forge it.
+
+        """
+        command[self._SESSION_STAMP_KEY] = self._session_marker()
+
+    def _execute_and_answer(
+        self,
+        command: dict,
+        client: object,
+        *,
+        receipt: "dict | None" = None,
+    ) -> None:
+        """
+        Run one command and write exactly one response frame back to its client.
+
+        `BaseException` is caught, not just `Exception`. `MemoryError` is an
+        `Exception` and was already handled; `KeyboardInterrupt`, `SystemExit`
+        and `GeneratorExit` are not, and a 1 GB `wm.open_mainfile` on Blender's
+        main thread is exactly where a blender-side abort lands. Before this,
+        the abort propagated out of `drain_command_queue` and the swap's own
+        client received no frame at all;
+        `test_the_swaps_own_client_is_answered_when_the_swap_raises_a_base_exception`
+        reproduces it on demand (revert-matrix row "only Exception is caught, so
+        a blender-side abort strands the swap's own client"), which is a
+        re-runnable instrument where the pasted transcript that used to sit here
+        was not.
+
+        The client is answered **first** and the exception is then re-raised
+        unchanged, so the abort still reaches Blender rather than being
+        swallowed into a silent no-op.
+
+        **`receipt` is an observational receipt, not a prediction, and that is
+        the whole of its meaning.** `_run_session_swap` has to know whether this
+        function answered the swap's own client, because it is the only thing
+        that does and the `except` there must not leave that client in `recv()`
+        for its 180 s timeout. The flag it replaces was `handed_off = True` in
+        the *caller*, set immediately before this call - so a `BaseException`
+        between that statement and this function's own `try:` was answered by
+        nobody at all (a critic measured `frames=0` through that window). A
+        prediction cannot be made accurate by moving it closer; the receipt is
+        written by `_answer` itself, as its first statement, so "answered" means
+        an answer was actually begun on this socket. `dict`, not `bool`, only
+        because the callee has to be able to write to the caller's binding.
+
+        **The window this leaves, stated rather than implied.** The receipt marks
+        `_answer` as *entered*, not as completed, so a `BaseException` raised
+        inside `_answer` after that first statement and before the frame reaches
+        the socket is recorded as answered. That direction is chosen
+        deliberately: recording completion instead would let the same abort
+        produce two frames on one socket, and a duplicate response is a
+        correctness problem for a client that matches by ordering, where a
+        missing one is a timeout.
+
+        Args:
+            command: The decoded command to run.
+            client: The socket its response belongs on.
+            receipt: Optional dict whose `"answered"` key is set True by
+                `_answer`; see above. Keyword-only, so it cannot be passed
+                positionally into the slot a future argument takes.
+
+        """
+        response: dict
+        try:
+            response = self.execute_command(command)
+        except Exception as e:
+            print(f"Error executing command: {e!s}")
+            traceback.print_exc()
+            response = {"status": "error", "message": str(e)}
+        except BaseException as e:
+            print(f"Command aborted by {type(e).__name__}: answering the client before re-raising")
+            self._answer(
+                command,
+                client,
+                {
+                    "status": "error",
+                    "message": (
+                        f"Blender aborted this command ({type(e).__name__}) before it produced a result; "
+                        "the session may be in an indeterminate state - poll get_session_info before resending."
+                    ),
+                },
+                receipt=receipt,
+            )
+            raise
+
+        self._answer(command, client, response, receipt=receipt)
+
+    def _answer(self, command: dict, client: object, response: dict, *, receipt: "dict | None" = None) -> None:
+        """
+        Write one response frame, whatever the handler did or did not produce.
+
+        **Every frame this function builds carries the session marker**, not
+        only a barrier rejection, `get_addon_info` and `get_session_info`. The
+        qualifier is exact and an earlier revision dropped it: `_encode_response`
+        falls back to `_error_frame` when a response cannot be serialized or
+        exceeds `_MAX_MESSAGE_BYTES`, and that frame carries an id, a status and
+        a message and no marker at all. Those two paths are already telling the
+        client its command produced nothing usable, so they are not a silent
+        staleness hole - but "every frame" without the qualifier was false, and
+        a client written against it would be wrong twice.
+
+        Before the marker was here, it reached
+        the server only when one of those three happened, so an artist doing
+        File -> Open in Blender's own UI - no MCP command in flight - moved the
+        epoch and nothing noticed: `send_command` kept gating on the cached
+        `capabilities`, and `writable_output_roots`, which decides where files
+        may be written, stayed wrong. Two integers on a frame the server is
+        already parsing closes it, and the server-side reader
+        (`connection._reported_session_marker`) already looks at frame level
+        first because the rejection path put them there.
+
+        **The receipt is written first, before anything that can fail.** It is
+        how `_run_session_swap` knows the swap's own client has an answer coming
+        from here rather than from its own `except`, and the whole value of it
+        over the `handed_off` flag it replaces is that it is written by the
+        function that does the work instead of guessed by the caller one
+        statement earlier. Everything below can raise; the receipt must not
+        depend on which of it ran, because a caller that concludes "not
+        answered" after this function began answering produces two frames on one
+        socket.
+
+        Args:
+            command: The command being answered, for its echoed id.
+            client: The socket the frame belongs on.
+            response: The response body.
+            receipt: Optional dict to record the answer in; see above. Only
+                `_run_session_swap`'s path passes one.
+
+        """
+        if receipt is not None:
+            receipt["answered"] = True
+
+        # Echo the request id (if any) back so the client can match this
+        # response to the command it sent instead of relying purely on
+        # stream ordering.
+        response["id"] = command.get("id")
+        response["session_id"], response["session_epoch"] = self._session_marker()
+
+        # Encoded *before* the try that guards the send, so a failure to
+        # serialize can never be mistaken for a disconnect.
+        payload = self._encode_response(response, command.get("id"))
+        try:
+            self._send_frame(client, payload)
+        except Exception:
+            print("Failed to send response - client disconnected")
+
+    def _drain_queue_into(self, superseded: list[tuple[dict, object]]) -> None:
+        """
+        Empty the command queue into a list the **caller** already owns.
+
+        Appending into the caller's list rather than returning a new one is the
+        whole point of the signature. A `BaseException` raised part-way through
+        this loop must not lose the commands already taken off the queue: they
+        are unreachable by `stop()`'s own drain and by every other rejection
+        path, so their clients would wait out a 180 s timeout for a response no
+        code path could still produce. `_run_session_swap`'s `finally` answers
+        whatever is in the list, including a partial one.
+
+        The bound is the loop's own. `while True: get_nowait()` races producers
+        that free a slot as fast as it frees one, so an earlier docstring's claim
+        that the drain was "bounded by `_MAX_QUEUED_COMMANDS`" was not enforced
+        by anything.
+
+        Args:
+            superseded: The list to append `(command, client)` pairs to.
+
+        """
+        for _slot in range(self._MAX_QUEUED_COMMANDS):
+            try:
+                superseded.append(self.command_queue.get_nowait())
+            except queue.Empty:
+                break
+
+    def _run_session_swap(self, command: dict, client: object) -> None:
+        """
+        Run a command that replaces the database, and discard the batch behind it.
+
+        The queue is emptied **before** the swap is executed, on this thread.
+        That timing is what makes this half of the barrier mean anything:
+        everything taken out here was queued while the old file was still open.
+        Measured on Blender 5.2.2 (Task 2 Step 7), the drain loop otherwise keeps
+        draining after `wm.open_mainfile` returns - inside the same tick - and
+        answers a command queued against one shot from a different file, with
+        `status: success` and nothing marking the change.
+
+        What this snapshot **cannot** see is anything a client thread enqueues
+        during the load, which is `_stamp_session`'s half. What the stamp cannot
+        see is a **failed** swap, where the epoch never moves and every stamp
+        still matches - so both exist, and neither is redundant.
+
+        The drain itself is `_drain_queue_into`, which appends into the list
+        built here rather than returning one of its own - so a `BaseException`
+        raised part-way through it still leaves everything already dequeued
+        reachable by the `finally` below. Commands taken off the queue and then
+        dropped are unreachable by this rejection path and by `stop()`'s own
+        drain alike, and their clients would wait out a 180 s timeout for a
+        response no code path can still produce.
+
+        The rejections go out in the `finally`, and *after* the swap, so the
+        epoch they name is the one that is current once the outcome is known.
+
+        **The abort guard is one positive condition, and it used to be three
+        negative ones.** The `try` spans the pre-swap drain as well as the swap,
+        so a bare `except BaseException: mark_session_indeterminate()` asserted
+        something false about the user's data whenever the abort landed anywhere
+        but mid-load. The previous repair excluded those cases by asking what had
+        *not* happened - was the swap dispatched, did the marker stay put, did
+        the failure counter stay put - and inferring "then it must be mid-load".
+        Three things were wrong with that, and the third is why it is gone:
+
+        - it latched for an abort between the dispatch and `wm.open_mainfile`
+          actually starting (`execute_command`'s own dispatch, and from Task 6
+          the swap handler's path validation), which is a false positive
+          recorded as a Task 6 residual;
+        - it needed two separate flags to avoid double-answering the swap's own
+          client, because one of them was also the caller's hand-off marker;
+        - **it had a false negative a critic reproduced.** A handler that fails
+          one open and is then aborted part-way through a second, real load had
+          already moved `load_failures` on the first open, so the counter
+          condition read "a failure accounted for this abort" and
+          `session_indeterminate` stayed False while the second load really had
+          been cut in half. Every negative predicate has this shape: it is an
+          inference, and an inference can be satisfied by the wrong event.
+
+        `session.load_in_flight()` replaces all three with the thing itself.
+        Measured on 5.2.2 by `scripts/blender_probes/session_handlers.py`:
+        `load_pre` fires for `wm.open_mainfile` on the succeeding path and on
+        every failing one, and when it fires `bpy.data.filepath` and the object
+        table are still the old file's. So the flag is True exactly between "a
+        load was begun" and "that load was accounted for", `load_post` clears it
+        on success, `load_post_fail` clears it on a clean failure, and an abort
+        observed while it holds is the one case where the open database may be
+        part of two files. An abort before `load_pre` reads False, which is not a
+        guess: Blender had not begun reading over the old database yet.
+
+        **The swap's own client is answered when the abort beat the answer.**
+        `_drain_queue_into` runs inside the `try` and before `_execute_and_answer`,
+        which is the only thing that answers the swap command; its superseded
+        siblings are answered in the `finally` and it is not, so an abort during
+        the pre-swap drain left it in `recv()` for its full 180 s timeout with
+        neither a response nor an error - §07's automatically-critical outcome.
+        The `receipt` dict is how that is decided, and it is an **observation
+        rather than a prediction**: `_answer` sets it as its own first statement,
+        so `not receipt["answered"]` means no answer was begun on this socket by
+        anyone. The `handed_off = True` it replaces was set here, in the caller,
+        immediately before the call - which left a real window (a critic measured
+        `frames=0` through it) where a `BaseException` raised after that
+        statement and before `_execute_and_answer`'s own `try:` was answered by
+        nobody, while this docstring said the window was closed.
+
+        **An abort moves the session marker before it is re-raised**, which is
+        `session.mark_session_indeterminate`'s whole reason to exist. `load_post`
+        never fires on an aborted `wm.open_mainfile` and neither does
+        `load_post_fail`, so without this the epoch stayed put, every command a
+        client thread enqueued *during* that load carried a stamp that still
+        matched, and it executed on the next tick against a half-replaced
+        database. The swap's own client was told the session might be
+        indeterminate; nobody else was told anything. Pinned by
+        `test_an_aborted_swap_invalidates_the_stamps_taken_during_its_load`,
+        which observes exactly that when the call below is reverted (revert-matrix
+        row "an aborted swap leaves the marker where it was"). Moving the marker in the `except` - before
+        the `finally` runs - means the rejection frames below name the moved
+        epoch as well, so every peer that had something queued learns it too.
+
+        Args:
+            command: The session-swap command to run.
+            client: The socket its response belongs on.
+
+        """
+        superseded: list[tuple[dict, object]] = []
+        receipt = {"answered": False}
+
+        try:
+            self._drain_queue_into(superseded)
+            self._execute_and_answer(command, client, receipt=receipt)
+        except BaseException:
+            # Two independent obligations, so two independent `if`s. An `elif`
+            # here made them exclusive, and the case it dropped was the one that
+            # matters: a second abort that lands before `_answer` writes the
+            # receipt leaves the receipt False while `load_pre` has already
+            # fired, so the latch was skipped exactly when a load was in flight.
+            # Read before the latch, because `mark_session_indeterminate` clears
+            # the flag (T3-19); the message below depends on it.
+            mid_load = load_in_flight()
+            if mid_load:
+                mark_session_indeterminate()
+            if not receipt["answered"]:
+                self._answer(command, client, {"status": "error", "message": self._abort_message(mid_load)})
+            raise
+        finally:
+            self._discard_superseded(superseded)
+
+    # What the swap's own client is told when nothing had begun answering it -
+    # the pre-swap drain, and the prologue between it and `_execute_and_answer`'s
+    # own `try:`, both of which are windows where no other code path in this
+    # class can still answer. No path: the swap's filepath is sitting in the
+    # command being processed and this socket is unauthenticated.
+    #
+    # **It claims the database is unchanged, so it is sent only when
+    # `load_in_flight()` is False**, which is an observation rather than the
+    # inference this comment used to carry. The old text read "every route out of
+    # `_execute_and_answer` writes the receipt through `_answer` first, so
+    # reaching this string means ... `load_pre` cannot have run". Two routes do
+    # not write the receipt - a `BaseException` raised inside the
+    # `except Exception` body (`print`, `traceback.print_exc()`), and one inside
+    # the `except BaseException` body before `_answer` is reached - and through
+    # either of them this string was sent with a load genuinely in flight.
+    # `_abort_message` now asks the flag instead of arguing from the receipt.
+    _ABORTED_BEFORE_HANDOFF = (
+        "Blender aborted before this file swap was dispatched; nothing was loaded and the open "
+        "database is unchanged. Poll get_session_info, then resend."
+    )
+    # The same window with a load actually in flight. It says the opposite thing
+    # about the database, and it points at the repair rather than at a resend,
+    # because a resend against a half-replaced database is the move the latch
+    # exists to prevent.
+    _ABORTED_MID_LOAD = (
+        "Blender aborted this file swap while a load was in flight; the open database may be part of "
+        "two files and this session is now marked indeterminate. Poll get_session_info and open a "
+        "known shot before resending anything."
+    )
+    # The two reasons a dequeued command is answered without being run. Named
+    # constants rather than an inline string because the second one is *not* a
+    # swap and saying it was would be the same class of lie the epoch wording
+    # below exists to avoid.
+    _SUPERSEDED_REASON = (
+        "a session file swap was attempted while this command was queued, "
+        "so it was never run against the file it was sent for"
+    )
+    _UNSTAMPED_REASON = (
+        "it reached the queue without the session stamp the enqueue path applies, "
+        "so which database it was sent for cannot be established"
+    )
+    # The third reason, and the only one that persists across ticks. Its own
+    # constant rather than a reuse of `_SUPERSEDED_REASON`, because a client
+    # that reads "a swap was attempted while this command was queued" will
+    # resend, and resending is precisely the wrong move here: the condition
+    # outlives the batch and is cleared only by a completed load.
+    _INDETERMINATE_REASON = (
+        "a session file swap was aborted part-way and no load has completed since, "
+        "so the open database may be part of two files; poll get_session_info and "
+        "open a known shot before resending anything"
+    )
+    # What may still run while `session.session_is_indeterminate()` holds, and
+    # why each one: the two swap commands are how a client **repairs** the
+    # condition (a completed `load_post` is the only thing that clears it), and
+    # the two read-only reports are how a client **observes** it - both publish
+    # `session_indeterminate`, so refusing them would hide the reason for every
+    # other refusal. Nothing else runs: this is the whole point of the latch.
+    _INDETERMINATE_SAFE_COMMANDS = frozenset({"get_addon_info", "get_session_info", "open_shot", "reset_session"})
+
+    def _abort_message(self, mid_load: bool) -> str:
+        """
+        Say what an abort did to the database, rather than what it probably did.
+
+        Both strings are sent from the same window - no answer had begun on the
+        swap's socket - and they differ on the only question the client needs
+        settled: whether Blender had begun reading over the open database. That
+        is `load_in_flight()`, read before the latch clears it.
+
+        Args:
+            mid_load: Whether a load was in flight when the abort was observed.
+
+        Returns:
+            str: The message for that case.
+
+        """
+        return self._ABORTED_MID_LOAD if mid_load else self._ABORTED_BEFORE_HANDOFF
+
+    def _reject_reason(self, stamp: object) -> str:
+        """
+        Say why a dequeued command is being answered instead of run.
+
+        Args:
+            stamp: The session marker popped off the command, or None when the
+                command carried none at all.
+
+        Returns:
+            str: The clause `_discard_superseded` folds into its message.
+
+        """
+        return self._UNSTAMPED_REASON if stamp is None else self._SUPERSEDED_REASON
+
+    def _discard_superseded(self, superseded: list[tuple[dict, object]], reason: str | None = None) -> None:
+        """
+        Answer every command a swap invalidated, under a deadline, so no client waits.
+
+        **The message names the current epoch; it does not assert that the epoch
+        moved.** After a successful swap the epoch has changed, so a client
+        comparing it against its cached value re-handshakes before resending -
+        the advertised capability set is scene-gated and therefore follows the
+        swapped file. After a *failed* swap the epoch is unchanged (a failed
+        `open_mainfile` leaves the old database completely untouched), so the
+        same message tells that client to skip a pointless re-handshake and
+        simply resend. Wording that hard-coded "the epoch changed" would be a lie
+        on the second path.
+
+        The epoch and the session id are also **fields** on the frame, not only
+        prose. A client that has to regex an English sentence to notice its
+        cached `capabilities` went stale will not notice, which is how
+        `connection.py` came to hold a handshake across a swap with nothing
+        watching.
+
+        No path appears in the message. The swap's own filepath is sitting right
+        there in the command being processed, and an absolute path reaching a
+        client is a disclosure this layer has no business making.
+
+        **Every peer is sent to; the budget decides how long a send may block,
+        never whether one is attempted.** The previous form read
+        `if time.monotonic() >= deadline or not self._send_bounded(...)`, and
+        Python short-circuits `or`: once the *global* budget was spent
+        `_send_bounded` was never called again, so every remaining client was
+        closed with **zero** send attempts and its health never tested. Five slow
+        peers are enough:
+        `test_a_healthy_peer_queued_behind_stalled_ones_is_still_answered` builds
+        exactly that queue and sees the healthy peer receive no frame at all when
+        the short-circuit is restored (revert-matrix row "`or` short-circuits
+        again"). That defeated the rejection's own purpose as well as the plan's
+        no-dropped-socket rule: this frame is the only carrier of the
+        `session_id`/`session_epoch` pair, so the peers the barrier dropped were
+        exactly the ones that never learned to re-handshake.
+
+        Past the deadline the send is still made, under a 1 ms floor
+        (`_PAST_BUDGET_SEND_TIMEOUT_SECONDS`). A ~250-byte frame fits any send
+        buffer that is not already full, so a healthy peer queued behind a
+        stalled one is answered rather than closed, and a stalled one fails
+        almost immediately instead of costing another timeout. The floor is
+        positive rather than zero because `settimeout(0.0)` takes the socket out
+        of timeout mode entirely, and its own `handle_client` thread is sitting
+        in `recv()` on it - see the constant for the connection that cost.
+
+        **"Almost immediately" is 1 ms, twice, per peer - not zero.** Three
+        revisions of this file called the past-budget pass a "non-blocking
+        tail", and since the floor stopped being `0.0` that has been false: the
+        write lock is acquired under the same timeout before `sendall` blocks
+        under it. For **one** peer the cost is paid once, because the first
+        failure abandons it and every later entry belonging to it is skipped -
+        which is exactly why
+        `test_rejecting_a_full_queue_to_a_stalled_peer_is_bounded` cannot see
+        this. For `_MAX_QUEUED_COMMANDS` entries belonging to as many *distinct*
+        peers - the multi-process case this barrier exists for - nothing is
+        skipped and the cost is paid 255 times.
+        `test_rejecting_a_full_queue_to_distinct_stalled_peers_is_bounded` is
+        that shape; measured on a quiet box (0.12 load per core), the whole pass
+        takes 0.644 / 0.644 / 0.641 s.
+
+        **A peer is abandoned on the first failed write, and deliberately not on
+        the second.** P1b asked for a second-consecutive-failure rule; it is not
+        safe here and the reason is `sendall`: a `sendall` that times out or
+        raises `BlockingIOError` may already have written *part* of the frame,
+        and this stream is parsed by newline framing on both sides. Writing
+        again after a failure would splice a truncated line into it. So the
+        tolerance for a merely slow peer is bought the other way - by raising
+        `_REJECTION_SEND_TIMEOUT_SECONDS` to a value a live loopback reader
+        cannot hit - and a peer that still fails has its socket closed, which is
+        also what makes the half-written frame harmless: the peer sees a partial
+        line then EOF, which is an answer, rather than silence, which is a hang.
+
+        **The bound, stated as arithmetic rather than as a measurement.** One
+        blocking send may be in flight when the deadline passes, and
+        `_send_frame` takes the per-client write lock under the same timeout, so
+        the blocking phase costs at most
+        `_REJECTION_TIME_BUDGET_SECONDS + 2 * _REJECTION_SEND_TIMEOUT_SECONDS`
+        = 0.75 s. **The tail adds to that rather than being free**: at most
+        `_MAX_QUEUED_COMMANDS` entries, each costing up to
+        `2 * _PAST_BUDGET_SEND_TIMEOUT_SECONDS` = 2 ms (the lock, then the
+        write), so up to 0.512 s more. The whole pass is bounded by **1.262 s**,
+        and the 0.75 s this docstring used to name was the blocking phase
+        mistaken for the total. Before any of these bounds existed the
+        worst case was `_MAX_QUEUED_COMMANDS` entries at the socket's own
+        `_CLIENT_SOCKET_TIMEOUT_SECONDS` each - 256 x 1.0 s - on Blender's main
+        thread, with the UI frozen throughout and every *other* connected
+        process exceeding its own 180 s timeout having received nothing at all.
+
+        Args:
+            superseded: `(command, client)` pairs taken off the queue, bounded
+                by `_run_session_swap`'s own loop.
+            reason: Why these commands were not run; defaults to the swap case.
+
+        """
+        snapshot = session_snapshot()
+        epoch = snapshot["session_epoch"]
+        message = (
+            f"Discarded without running: {reason or self._SUPERSEDED_REASON}. "
+            f"The session epoch is now {epoch} - "
+            "re-handshake first if that differs from the epoch you last saw, then resend."
+        )
+        deadline = time.monotonic() + self._REJECTION_TIME_BUDGET_SECONDS
+        abandoned: set[object] = set()
+        for command, client in superseded:
+            # A socket this pass already closed is skipped outright rather than
+            # written to again: the write would fail, and paying a syscall - or
+            # a timeout - to rediscover that is exactly the cost the budget is
+            # trying not to spend.
+            if client in abandoned:
+                continue
+            frame = self._encode_frame(
+                {
+                    "id": command.get("id"),
+                    "status": "error",
+                    "message": message,
+                    "session_id": snapshot["session_id"],
+                    "session_epoch": epoch,
+                }
+            )
+            timeout = (
+                self._REJECTION_SEND_TIMEOUT_SECONDS
+                if time.monotonic() < deadline
+                else self._PAST_BUDGET_SEND_TIMEOUT_SECONDS
+            )
+            if not self._send_bounded(client, frame, timeout):
+                self._abandon_unreachable_client(client)
+                abandoned.add(client)
+
+    def _send_bounded(self, client: object, payload: bytes, timeout: float) -> bool:
+        """
+        Write one frame under a caller-chosen deadline, then put the socket's own back.
+
+        The timeout is restored because this socket belongs to a `handle_client`
+        thread that is concurrently sitting in `recv()` with
+        `_CLIENT_SOCKET_TIMEOUT_SECONDS` of its own; leaving it at the rejection
+        path's much shorter value would turn that loop into a spin. **No caller
+        may pass 0**: that leaves the socket non-blocking rather than merely
+        impatient, and a non-blocking `recv` raises `BlockingIOError`, which is
+        not a `TimeoutError` and which `handle_client` therefore treated as a
+        dead peer. `_PAST_BUDGET_SEND_TIMEOUT_SECONDS` is the floor that keeps
+        that from being expressible from inside this class.
+
+        **A failed restore reports the send as not delivered**, even when the
+        write itself succeeded. The previous form restored inside a `finally`
+        under `suppress(Exception)` and returned True regardless, so a socket
+        left at 50 ms - or, now, non-blocking - stayed in the registry with its
+        `recv` loop spinning at 20 Hz for the life of the process. Reporting
+        False routes it to `_abandon_unreachable_client`, which closes it: a peer
+        whose timeout cannot be set is one this server can no longer talk to on
+        the terms the rest of the code assumes.
+
+        Args:
+            client: The socket to write to.
+            payload: The framed bytes.
+            timeout: Seconds the write may block. `_PAST_BUDGET_SEND_TIMEOUT_SECONDS`
+                means "attempt it, and barely wait" - it is a 1 ms floor, not
+                zero, and it is spent twice (the write lock, then `sendall`).
+                Reading it as "do not wait" is what made the past-budget pass
+                look free; see `_discard_superseded` for what it actually costs.
+
+        Returns:
+            bool: True when the frame was written and the socket was handed back
+            in the state its own thread expects; False otherwise.
+
+        """
+        settimeout = getattr(client, "settimeout", None)
+        try:
+            if settimeout is not None:
+                settimeout(timeout)
+            self._send_frame(client, payload, timeout)
+        except Exception:
+            delivered = False
+        else:
+            delivered = True
+
+        if settimeout is None:
+            return delivered
+        try:
+            settimeout(self._CLIENT_SOCKET_TIMEOUT_SECONDS)
+        except Exception:
+            print("Could not restore a client socket's own timeout - closing it rather than leaving it spinning")
+            return False
+        return delivered
+
+    def _abandon_unreachable_client(self, client: object) -> None:
+        """
+        Close a peer this thread could not answer, so it sees EOF rather than silence.
+
+        Silence is the one outcome §07 makes automatically critical: the client
+        waits out its own 180 s timeout having received no response and no
+        error. A closed socket ends its `recv()` immediately with an error it
+        can act on, and its `handle_client` thread then unwinds through the same
+        cleanup a normal disconnect takes.
+
+        Args:
+            client: The socket to drop.
+
+        """
+        with self._clients_lock:
+            self._clients.pop(client, None)
+        with suppress(Exception):
+            client.shutdown(socket.SHUT_RDWR)
+        with suppress(Exception):
+            client.close()
 
     # Messages are newline-delimited JSON. Bound how large a single message
     # can grow before we give up on it - without this, malformed input (or
@@ -404,6 +1206,65 @@ class BlenderMCPServer(
     _MAX_QUEUED_COMMANDS = 256
     _MAX_COMMANDS_PER_TICK = 8
     _DRAIN_TIME_BUDGET_SECONDS = 0.02
+
+    # How long a client socket waits in recv() before re-checking self.running.
+    # Named because `_send_bounded` has to put it back after borrowing the
+    # socket for a shorter write, and two copies of 1.0 would eventually differ.
+    _CLIENT_SOCKET_TIMEOUT_SECONDS = 1.0
+    # The rejection path's bounds, all on Blender's main thread and all
+    # deliberately below `_CLIENT_SOCKET_TIMEOUT_SECONDS`. See
+    # `_discard_superseded` for the worst case they add up to.
+    #
+    # **The send timeout is a health threshold, not a performance target**, and
+    # 0.05 s was the wrong number for the job. A reader that takes tens of
+    # milliseconds to drain its buffer - backpressured by a previous large
+    # paginated response, which `_discard_superseded` itself names as a cause -
+    # received zero frames and had its connection destroyed, forfeiting every
+    # other command it had queued.
+    # `test_a_peer_slower_than_a_loopback_reader_is_not_destroyed_for_it` pins
+    # that case at 60 ms. 0.25 s is chosen so a peer failing it is genuinely not
+    # reading: 4x that test's reader, and still a quarter of the timeout the
+    # peer's own recv loop runs on.
+    _REJECTION_SEND_TIMEOUT_SECONDS = 0.25
+    _REJECTION_TIME_BUDGET_SECONDS = 0.25
+    # Past the batch budget, a frame is still *attempted* - it just barely
+    # waits. See `_discard_superseded` for why attempting it matters.
+    #
+    # **A positive floor, not zero, and the difference is a dropped connection.**
+    # `settimeout(0.0)` puts the socket in **non-blocking** mode, and this socket
+    # is concurrently being read by its own `handle_client` thread. A
+    # non-blocking `recv` with no data raises `BlockingIOError`, which is
+    # `OSError` -> `Exception` and **not** a subclass of `TimeoutError`
+    # (`issubclass(BlockingIOError, TimeoutError)` is False), so it fell past
+    # `handle_client`'s `except TimeoutError: continue` into its `except
+    # Exception: break` and closed the peer. A critic reproduced ~100 of 150
+    # rejection frames lost that way, 3 of 3 runs, against a clean control -
+    # i.e. the fix for "no dropped healthy socket" reintroduced the defect it
+    # was fixing. 1 ms keeps the socket in **timeout** mode throughout, so the
+    # only thing a concurrent `recv` can raise is `TimeoutError`, which that
+    # loop has always handled. It is still far below
+    # `_CLIENT_SOCKET_TIMEOUT_SECONDS` and far below one tick's budget.
+    #
+    # **It did change the bound, and saying it did not was the third copy of
+    # that claim in this file.** At 0.0 the past-budget pass really was
+    # non-blocking; at 0.001 each entry can cost this twice - `_send_frame`
+    # acquires the per-client write lock under it before `sendall` blocks under
+    # it - and up to `_MAX_QUEUED_COMMANDS` entries belonging to distinct peers
+    # are attempted, none of which the `abandoned` set can skip. That is 0.512 s
+    # added to a blocking phase of 0.75 s. The trade is still the right one: 1 ms
+    # of main-thread time per peer buys a peer that is not destroyed for being
+    # slow, where 0.0 bought a `BlockingIOError` that closed it. The arithmetic
+    # is restated in `_discard_superseded` rather than waved at here.
+    _PAST_BUDGET_SEND_TIMEOUT_SECONDS = 0.001
+
+    # Where `_stamp_session` records which database a command was queued
+    # against. It lives on the command dict because the queue's `(command,
+    # client)` 2-tuple shape is load-bearing for four existing test sites
+    # (`tests/server/test_socket_unicode.py:104,127,155` and
+    # `tests/server/test_threading.py:625`), none of which reads anything but
+    # `type` and `params`. Popped at dequeue, so no handler ever sees it, and
+    # overwritten unconditionally at enqueue, so no client can forge it.
+    _SESSION_STAMP_KEY = "_blendermcp_session_marker"
 
     @staticmethod
     def _encode_frame(response: dict) -> bytes:
@@ -473,7 +1334,7 @@ class BlenderMCPServer(
         """
         return self._encode_frame({"id": request_id, "status": "error", "message": message})
 
-    def _send_frame(self, client, payload: bytes) -> None:
+    def _send_frame(self, client, payload: bytes, lock_timeout: float | None = None) -> None:
         """
         Write one frame to a client, excluding any other writer to that socket.
 
@@ -487,13 +1348,32 @@ class BlenderMCPServer(
         Lock ordering is deliberately trivial: `_clients_lock` guards only the
         registry and is released before the per-client lock is taken, and
         nothing else - no queue operation, no bpy access - happens while that
-        lock is held. Every client socket also carries a finite timeout (set in
-        handle_client), so a stalled peer releases the lock rather than pinning
-        Blender's main thread on it.
+        lock is held.
+
+        **The acquisition itself is what `lock_timeout` bounds, and without it
+        the rejection path's own bounds did not hold.** `with send_lock:` waits
+        forever. The other writer is `_send_protocol_error`, on a `handle_client`
+        thread whose socket timeout is `_CLIENT_SOCKET_TIMEOUT_SECONDS`, so a
+        single malformed frame arriving while a rejection batch is running
+        parked Blender's main thread for as long as that thread held the lock,
+        *inside* a call `_discard_superseded` documented as capped at 50 ms.
+        `test_a_malformed_frame_arriving_mid_rejection_cannot_park_the_main_thread`
+        holds it for `_LOCK_HELD_SECONDS` and asserts this call does not wait it
+        out. A caller that passes a timeout
+        gets `TimeoutError` instead, which `_send_bounded` reads as
+        not-delivered; the default stays unbounded for the ordinary response
+        path, where waiting for the lock is the correct behaviour and no budget
+        is being promised.
 
         Args:
             client: The socket to write to.
             payload: The framed bytes to write.
+            lock_timeout: Seconds to wait for the per-client write lock, or None
+                to wait indefinitely. 0 attempts the acquisition without waiting.
+
+        Raises:
+            TimeoutError: When `lock_timeout` elapsed with the write lock still
+                held by the other writer.
 
         """
         with self._clients_lock:
@@ -504,17 +1384,35 @@ class BlenderMCPServer(
             # socket is gone.
             client.sendall(payload)
             return
-        with send_lock:
+        if lock_timeout is None:
+            with send_lock:
+                client.sendall(payload)
+            return
+        # `acquire(timeout=0)` is rejected by threading.Lock; the non-blocking
+        # form is the same request spelled the way the API accepts it.
+        acquired = send_lock.acquire(False) if lock_timeout <= 0 else send_lock.acquire(timeout=lock_timeout)
+        if not acquired:
+            raise TimeoutError("another thread holds this client's write lock")
+        try:
             client.sendall(payload)
+        finally:
+            send_lock.release()
 
     def _send_protocol_error(self, client, request_id, message) -> None:
         """
         Return a bounded transport-level validation error without touching bpy data.
 
+        One caller: `_decode_and_queue_frame`, answering a frame that never
+        became a command. It has no handler result to report and must be
+        incapable of raising - a failure here is one client left waiting in
+        `recv()` until its own 180 s timeout. (The file-swap rejection path
+        builds its own frame instead, because it carries the session fields and
+        needs a deadline; see `_discard_superseded`.)
+
         Args:
             client: The socket the offending frame arrived on.
             request_id: The request's id, or None when it could not be read.
-            message: Client-safe explanation of the protocol violation.
+            message: Client-safe explanation; never a path or a traceback.
 
         """
         with suppress(Exception):
@@ -564,6 +1462,12 @@ class BlenderMCPServer(
         # Hand off to the main thread. Never call
         # bpy.app.timers.register() from here - it is not thread-safe and
         # the callback can be silently lost.
+        #
+        # Stamped here, on this client thread, and nowhere else: this is the one
+        # moment at which "which database was this command sent for?" is still
+        # knowable. See `_stamp_session` for the recorded design and for why a
+        # post-load inspection cannot answer the same question.
+        self._stamp_session(command)
         print(f"Queued command: {command.get('type')}")
         try:
             self.command_queue.put_nowait((command, client))
@@ -582,7 +1486,7 @@ class BlenderMCPServer(
         print("Client handler started")
         # A finite timeout keeps this loop responsive to self.running instead
         # of parking in recv() forever.
-        client.settimeout(1.0)
+        client.settimeout(self._CLIENT_SOCKET_TIMEOUT_SECONDS)
         with self._clients_lock:
             # One write lock per client, created here so both this thread and
             # the main-thread drain find the same one. See _send_frame.
@@ -630,6 +1534,18 @@ class BlenderMCPServer(
                 except TimeoutError:
                     # Expected; loop round and re-check self.running.
                     continue
+                except BlockingIOError:
+                    # "Nothing to read *right now*", which is not a dead peer.
+                    # `BlockingIOError` is `OSError` -> `Exception` and **not** a
+                    # subclass of `TimeoutError`, so before this branch existed
+                    # it reached the `break` below and closed a healthy
+                    # connection. `_PAST_BUDGET_SEND_TIMEOUT_SECONDS` is what
+                    # makes it unreachable from this server's own code; this
+                    # branch is what stops it being fatal if anything else ever
+                    # hands the socket back non-blocking. It cannot become a
+                    # busy loop while that floor holds, because a socket in
+                    # timeout mode raises `TimeoutError`, never this.
+                    continue
                 except Exception as e:
                     print(f"Error receiving data: {e!s}")
                     break
@@ -675,6 +1591,7 @@ class BlenderMCPServer(
         handlers = {
             "list_scene_objects": self.list_scene_objects,
             "get_addon_info": self.get_addon_info,
+            "get_session_info": self.get_session_info,
             "get_object_info": self.get_object_info,
             "get_mesh_data": self.get_mesh_data,
             "inspect_animation": self.inspect_animation,
@@ -997,6 +1914,7 @@ class BlenderMCPServer(
         {
             "list_scene_objects",
             "get_addon_info",
+            "get_session_info",
             "get_object_info",
             "get_mesh_data",
             "inspect_animation",
@@ -1051,6 +1969,29 @@ class BlenderMCPServer(
             "validate_scene",
         }
     )
+
+    # Commands that replace Blender's entire database. Two consequences, both
+    # enforced here: drain_command_queue makes such a command the last one its
+    # tick runs (see _run_session_swap), and _run_handler keeps it out of
+    # mutation_transaction.
+    #
+    # Task 6 implements these; the constant lands here because Task 3's barrier
+    # and Task 4's transaction invalidation have to agree on one definition of
+    # "the session was swapped", and two copies would eventually disagree.
+    #
+    # **save_shot is deliberately absent.** `wm.save_as_mainfile` moves
+    # `bpy.data.filepath` but replaces no datablock: every id a queued command
+    # named still exists with the same session_uid, so the batch behind a save
+    # remains safe to run, and the epoch does not move for a save either (a save
+    # changes no capability). Including it would discard a whole batch every
+    # time a client checkpointed its work. Task 2's decision 11 - synchronous
+    # validate-then-swap for `open_shot` - requires nothing of `save_shot`.
+    #
+    # Task 4 adds a *second, separate* constant, `_DATABLOCK_REPLACING_COMMANDS`
+    # (`reload_library` / `relocate_library` / `unlink_libraries`), which also
+    # bypasses the transaction but does **not** trip this barrier: those replace
+    # linked content in place, they do not swap the session. Do not merge them.
+    _SESSION_SWAP_COMMANDS = frozenset({"open_shot", "reset_session"})
 
     def execute_command_internal(self, command):
         """
@@ -1306,7 +2247,21 @@ class BlenderMCPServer(
             )
         )
         non_undo_commands = {"set_viewport_overlay", "nd_pulse_viewport_toggle", "nd_capture_utils", "render_scene"}
-        if cmd_type in self._READ_ONLY_COMMANDS or dynamic_read_only or cmd_type in non_undo_commands:
+        # _SESSION_SWAP_COMMANDS are not read-only - they mutate more than any
+        # other command does. They bypass the transaction because it cannot
+        # describe them: Transaction.begin() snapshots the session_uids of the
+        # *pre-load* database, so after a swap every id in the new file is
+        # "new" and a rollback would enumerate the whole file and remove it.
+        # This line is what *makes* the bypass happen; Task 4 is what makes it
+        # safe, by invalidating the transaction state rather than relying on
+        # this set staying correct.
+        bypasses_transaction = (
+            cmd_type in self._READ_ONLY_COMMANDS
+            or dynamic_read_only
+            or cmd_type in non_undo_commands
+            or cmd_type in self._SESSION_SWAP_COMMANDS
+        )
+        if bypasses_transaction:
             return handler(**params)
 
         targets = self._resolve_targets(params)
@@ -1328,10 +2283,21 @@ class BlenderMCPServer(
         """
         Version/capability handshake for the MCP server (and install tooling).
 
+        `capabilities` is scene-gated - the Poly Haven / Sketchfab / ND handlers
+        are advertised only when this .blend's `blendermcp_use_*` flags say so -
+        so it follows the file. `session_epoch` is what lets a client notice: it
+        moves once per completed database swap and never for a save or a failed
+        load, so a client that sees the same number knows its cached capability
+        set is still the right one. `session_indeterminate` is the other half of
+        that story: while it is true the drain loop is refusing everything but
+        this call, `get_session_info` and the swap commands, and a client that
+        cannot see it has no way to tell those refusals from a broken addon.
+
         Returns:
             Result produced by the operation.
 
         """
+        session = session_snapshot()
         return {
             "name": bl_info.get("name", "Blender MCP"),
             "addon_version": list(bl_info.get("version", (0, 0))),
@@ -1339,6 +2305,18 @@ class BlenderMCPServer(
             "capabilities": sorted({"ping", "get_polyhaven_status", "get_nd_status", *self._build_command_handlers()}),
             "blender_version": bpy.app.version_string,
             "writable_output_roots": self._writable_output_roots(),
+            # The pair, not the counter alone: module state is rebuilt at epoch
+            # 0 by a Blender restart or Reload Scripts, so a client comparing
+            # only the number can see a value it has already seen against an
+            # entirely different database. See `session.SESSION_ID`.
+            "session_id": session["session_id"],
+            "session_epoch": session["session_epoch"],
+            "current_filepath": session["current_filepath"],
+            # Published here as well as on `get_session_info`, because this is
+            # the surface a client re-handshakes against and it must be able to
+            # learn *why* its commands are being refused from the one call the
+            # barrier still lets through.
+            "session_indeterminate": session["session_indeterminate"],
         }
 
     @staticmethod

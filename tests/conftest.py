@@ -19,6 +19,35 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ROOT_ADDON = REPO_ROOT / "src" / "blender_mcp" / "bundled" / "addon" / "__init__.py"
 
+# The `bpy.app.handlers` lists `addon/session.py` attaches to. Three test
+# modules build a `bpy` stub that has to carry them, and three independent
+# copies of this tuple is how one of them silently stops exercising a handler
+# after a fifth event is added.
+FILE_LIFECYCLE_HANDLER_LISTS = ("load_pre", "load_post", "load_post_fail", "save_post", "save_post_fail")
+
+
+def install_file_lifecycle_handler_lists(handlers: ModuleType) -> ModuleType:
+    """
+    Give a stub `bpy.app.handlers` the five empty lists `session.py` binds to.
+
+    Measured by `scripts/blender_probes/session_handlers.py` against Blender
+    5.2.2: each of these really is a plain Python `list`, it accepts duplicate
+    callbacks without complaint, and `remove` raises when the callback is
+    absent. A stub that gets any of that wrong would let the idempotence guard
+    in `session.register_handlers` pass while being useless in Blender.
+
+    Args:
+        handlers: The stub module standing in for `bpy.app.handlers`.
+
+    Returns:
+        ModuleType: The same module, so a caller can build and populate it in
+        one expression.
+
+    """
+    for list_name in FILE_LIFECYCLE_HANDLER_LISTS:
+        setattr(handlers, list_name, [])
+    return handlers
+
 
 def load_addon_source_module(file_name: str, alias: str) -> ModuleType:
     """
@@ -26,10 +55,20 @@ def load_addon_source_module(file_name: str, alias: str) -> ModuleType:
 
     The addon package cannot be imported outside Blender - `__init__.py` and
     `server_core.py` both import `bpy` - but individual leaf modules such as
-    `output_roots.py` are deliberately free of it. Loading by path is what lets
-    a test read the addon's own constants instead of retyping them. Nothing is
-    cached: each call re-executes the source, so a test that mutates module
-    state cannot leak into the next one.
+    `output_roots.py` and `text_hygiene.py` are deliberately free of it. Loading
+    by path is what lets a test read the addon's own constants instead of
+    retyping them. Nothing is cached: each call re-executes the source, so a
+    test that mutates module state cannot leak into the next one.
+
+    **A throwaway parent package is registered for the duration of the load**,
+    with `__path__` pointing at the addon directory, so a module loaded this way
+    may use ordinary relative imports for its `bpy`-free siblings -
+    `session.py`'s `from .text_hygiene import client_safe_leaf` is the case that
+    needed it. Without the scaffolding that line raises "attempted relative
+    import with no known parent package", which would have forced the hygiene
+    rule to stay inside `session.py` for the convenience of this loader. Every
+    module the load registers is removed afterwards, so "nothing is cached"
+    still holds for siblings as well as for the module asked for.
 
     Args:
         file_name: The module's file name inside the addon package.
@@ -45,12 +84,22 @@ def load_addon_source_module(file_name: str, alias: str) -> ModuleType:
 
     """
     path = ROOT_ADDON.parent / file_name
-    spec = importlib.util.spec_from_file_location(alias, path)
-    if spec is None or spec.loader is None:
-        raise AssertionError(f"{path} is not an importable module")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    package_name = f"{alias}__pkg"
+    package = ModuleType(package_name)
+    package.__path__ = [str(ROOT_ADDON.parent)]  # type: ignore[attr-defined]
+    sys.modules[package_name] = package
+    try:
+        spec = importlib.util.spec_from_file_location(f"{package_name}.{path.stem}", path)
+        if spec is None or spec.loader is None:
+            raise AssertionError(f"{path} is not an importable module")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        module.__name__ = alias
+        return module
+    finally:
+        for registered in [name for name in sys.modules if name == package_name or name.startswith(package_name + ".")]:
+            del sys.modules[registered]
 
 
 def load_addon_package(monkeypatch, name):

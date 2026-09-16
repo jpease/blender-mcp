@@ -339,6 +339,52 @@ After each task's implementation and before its commit, run **at least two cycle
 through the critics' eyes → diagnose → fix*. Run **four cycles on Tasks 3, 4, 5, 6 and 7** — the concurrency,
 data durability and security tasks, where a defect is silent and expensive.
 
+> ### Amendment, 2026-09-15 — cycles are gate-driven from Task 4 onward (user decision)
+>
+> **Applies to Tasks 4–10. Tasks 1–3 ran under the original rule and their records stand.** The fixed
+> four-cycle count is replaced by a stop condition, because Task 3 measured what the count actually bought:
+> cycle 1 scored 46/100, cycle 2 scored 62.5, and the gap was concentrated in a handful of *known* defects
+> rather than unknown ones. Four cycles is twenty Opus agent runs per task; Task 3 spent ~4.5 hours of agent
+> wall time before its third repair round. The user authorised this change on 2026-09-15 after that cost
+> became visible.
+>
+> **1. Stop when the gate is met, not at a fixed count.** Run cycles until **≥90/100 overall, every dimension
+> ≥80% of its points, and zero automatically-critical items** — then stop. **Minimum two cycles**; hard
+> maximum four. §06's existing structural-escalation rule is unchanged and still bites first: below the gate
+> and improving by less than one point across two consecutive complete cycles means stop patching and
+> re-examine the approach.
+>
+> **2. Triage repairs by gate impact.** Classify every critic finding as **gate-blocking** (repair now) or
+> **residual** (record in TASK_STATE with an owner and a cost, and move on). Only gate-blocking findings enter
+> a repair round. Task 3's cycle-3 round carried 15 items when roughly 7 moved a dimension over its
+> threshold; the rest were real but not load-bearing. A residual that is written down with an owner is a
+> managed decision — an un-triaged repair queue is not more rigorous, only slower.
+>
+> **3. Scale the critic panel.** Cycle 1 runs all four lenses — it is the cheap insurance that catches the
+> unknown. From cycle 2, run only the lenses that **failed their gate**, plus **Critic 4 (Evidence and
+> Contract)**, which is the cheapest and is what catches false claims. A lens that has passed its gate does
+> not need re-running unless the repairs touched its subsystem.
+>
+> **4. Three standing pre-checks, because each prevented failure cost Task 3 a full cycle.** These are not
+> optional and they are nearly free:
+>
+> - **Before accepting an implementer's pushback on any design point, grep `PHASE2_TASK_STATE.md` and the
+>   plan for a recorded ruling on that question.** Task 3's cycle-1 failure was exactly this: a recorded Task 2
+>   decision (`PHASE2_TASK_STATE.md:2265-2275`) was overruled, uncited, and the reviewer approved it on a
+>   plausible equivalence argument that held only against a different design. **A pushback against a cited
+>   decision must cite the decision back.**
+> - **Every repair greps for sibling instances of the defect class before it is called done.** Task 3
+>   hardened `_failure_note` in one cycle and left `_library_summary` — a sibling field in the *same
+>   response* — carrying the identical three defects into the next. Fix the class; name the siblings you
+>   checked.
+> - **Every factual claim written into a docstring must name the committed instrument that produces it, or be
+>   deleted.** Four such claims were verified false across Task 3's cycles. This is the Phase 1 lesson already
+>   recorded below, restated as a check because restating it as a warning did not work.
+>
+> **Unchanged and non-negotiable:** the automatically-critical list, the live-Blender transcript requirement,
+> revert-matrix coverage of every new node, TDD with both failure counts, and "all existing tests pass
+> unmodified". Those are the product, not process overhead, and nothing here relaxes them.
+
 **Task 1 is Opus-tier but stays at two cycles**, and the distinction is worth stating rather than leaving as an
 apparent inconsistency: its consequence is high because every other task's *evidence* runs through it (see
 §05), but its defects are of a kind two cycles find — a missing wiring site makes a ported test fail, a missed

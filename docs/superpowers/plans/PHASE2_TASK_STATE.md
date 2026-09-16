@@ -32,6 +32,7 @@ that had already been lost once (see the closed item under "Known failures / blo
 | Next task | **Task 3** (drain-loop file-swap barrier, session epoch, failure handlers). Task 2 is **done**: `open_shot` is synchronous validate-then-swap, answering after the swap. Read "Task 2 — the reentrancy strategy" before starting; its Step 7 is Task 3's measured input. |
 | Working tree | Clean apart from `uv.lock`, which stays unstaged permanently (§03 incidental churn). |
 | Blender | **5.2.2 LTS** at `/opt/homebrew/bin/blender`. Every API fact re-verified against it; see "5.2.2 re-verification". |
+| Review loop | **Changed 2026-09-15 for Tasks 4-10**: cycles are gate-driven, not a fixed four. See decision 12 and the dated amendment in handoff §06. Tasks 1-3 ran under the original rule. |
 
 ### Committed tooling, and what each is for
 
@@ -168,12 +169,15 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 
 | 11 | **Task 2's reentrancy decision: `open_shot` is synchronous validate-then-swap, answering AFTER the swap.** The drain callback survives `wm.open_mainfile` called from inside its own frame and can still answer the client. The async-job-with-polling branch is **rejected**: not wrong, but unnecessary, because the premise it exists to work around does not hold. Two-phase answer-before-swap stays rejected on the spec's own reasoning — it commits a success response before the load can fail, and the load fails in five measured ways. | **The rule was committed at `969df10`, BEFORE the spike was written**, so the ordering is provable from `git log` rather than asserted by a date; `9608561` lands 13 minutes later. Four pre-registered conditions, all met on 18 successful swaps and 9 failing loads across six GUI rig runs on Blender 5.2.2, three orders of magnitude of file size (494 KB / 3 ms to 1.05 GB / 4.6 s), both `use_scripts` settings, and both sides of the 0.02 s drain budget. No intermittency. Transcripts under "Task 2 — the reentrancy strategy". | **The honest cost, which cycle 1 got wrong and cycle 2 corrected.** Cycle 1 wrote that the async branch bought "nothing measurable"; it buys a **bounded first response** and forecloses the give-up-then-reuse desync demonstrated in cycle 2 (a client that abandons a slow swap and reuses its connection reads the previous command's response, which `connection.py:223-231` raises on). If a `.blend` ever loads slowly enough to cross a client's timeout, the synchronous branch desyncs that connection after an **irreversible** swap. Measured magnitude is small — reaching the 180 s timeout by size alone would need roughly 40x the largest fixture tested — and the mitigations are Task 5's validate-before-swap, the `is_dirty` guard, and Task 3's epoch. **The rule itself was under-specified:** it asked only whether the callback can answer, never what a late or lost answer costs after an irreversible swap. It did not trigger the escalation clause (the outcome fit branch one cleanly on all four conditions), but a future rule of this kind should price the answer, not just its existence. |
 
+
+| 12 | **Tasks 4-10 run gate-driven review cycles instead of a fixed four** (user decision, 2026-09-15). Stop when >=90/100 with every dimension >=80% and zero automatically-critical items; minimum two cycles, maximum four. Repairs are triaged into gate-blocking (fix now) and residual (recorded with an owner). Cycle 1 runs all four critic lenses; from cycle 2 only the lenses that failed their gate plus Critic 4. Three standing pre-checks added: grep for a recorded ruling before accepting a pushback, grep for sibling instances of a defect class before calling a repair done, and name the committed instrument behind every factual docstring claim. Full text in handoff §06's dated amendment. | Measured on Task 3, which ran the original rule: cycle 1 **46/100**, cycle 2 **62.5/100**, ~4.5 h of agent wall time across 13 Opus runs before the third repair round. The remaining gap was concentrated in known defects, not unknown ones. The three pre-checks each address a failure that cost Task 3 a full cycle: a recorded Task 2 ruling overruled and approved on a plausible-but-wrong equivalence argument; `_failure_note` hardened while its sibling `_library_summary` kept the identical three defects; and four false docstring claims. | **The cheap direction is being wrong about the cycle *count*, not about the gates** - every hard gate is unchanged, so a task that needs four cycles still gets them, and the stop condition is the rubric itself rather than a number. The real risk is triage: a finding filed as a residual that was in fact gate-blocking. Mitigated by requiring every residual to carry an owner and a cost, which is the same discipline the phase already applies to deferred work. If the change is wrong, the symptom is a later task's critic re-finding something an earlier task filed as a residual - at which point restore the fixed count and say so here. |
+
 ## Tasks
 | # | Task | Tier | Status | Commit | Notes |
 |---|---|---|---|---|---|
 | 1 | Land the live-Blender acceptance rig on `main` | Opus | **Done — 94/100 after cycle-4 repairs** | `2852803` + repairs |  9 files ported, full `output_roots` wiring + 30 → 31 bump, ported lint debt cleaned to zero, `scripts/blender_rig.py` written, Step 5 re-verified live and **re-run end to end after each repair cycle**, README documented, `scripts/revert_matrix.py` landed so the revert evidence is reproducible. Repairs R1-R22 (cycle 2) and A1-A6/B1-B5/C1-C4/D1/F1-F10 (cycle 3); see both repair tables. **Acceptance criteria 2 and 3 now PASS** against a real container, after the decision-8 follow-up ported the HTTP transport (a tenth file) and fixed the two `entrypoint.sh` defects the first container run exposed. |
 | 2 | Decide the reentrancy strategy by experiment | Opus | **Done** | `969df10` (rule), `9608561` (evidence + spec), `807ef52` (`use_scripts` gap), `c54b8b6` (cycle 1+2 repairs), + the re-score repair commit | Decision rule committed **before** the spike existed, so the branch could not be picked after seeing the result. **Decided: synchronous validate-then-swap, answer after the swap** — the callback survives, all four pre-registered conditions met, **18/18** swaps, no intermittency. Async-job-with-polling rejected; its premise is false. **Six rig runs** on 5.2.2 (see the per-run tally). Findings with downstream teeth: the scene-gated capability set follows the swapped file; `bpy.context.window` is `None` for the rest of the swapping tick but operators still run and it recovers by the next tick; the ordering hazard is demonstrated on both sides of the drain budget; `bpy.data.is_dirty` is a usable pre-swap guard and unsaved work is otherwise destroyed silently; five failure modes yielding three distinct path-leaking error texts, flagged for Task 5 (**not** the different "five error shapes" of Finding 5, which spans open/save/reload). No production code changed; spike deleted. |
-| 3 | Drain-loop file-swap barrier, session epoch, failure handlers | Opus | Not started | — | **Inherits protocol 31; asserts, does not bump** (decision 2). |
+| 3 | Drain-loop file-swap barrier, session epoch, failure handlers | Opus | **Done — committed at 88.75/100 measured, below the 90 gate. See the closing note.** | this commit | Protocol 31 **asserted, not bumped** (decision 2). Barrier is snapshot **+** enqueue-epoch stamp; `session_indeterminate` latch on a `load_pre` positive signal; allowlist hygiene on both sides of the socket. 24 decisions, 15 residuals with owners. |
 | 4 | Make rollback survive a file swap, track `libraries` | Opus | Not started | — | |
 | 5 | The filesystem trust boundary | Opus | Not started | — | Promotes `output_roots.py`, landed here. |
 | 6 | Addon file-lifecycle handlers | Opus | Not started | — | **Inherits from Task 2:** `open_shot` must refuse when `bpy.data.is_dirty` unless the caller passes an explicit discard flag (unsaved work is otherwise destroyed silently — measured); `wm.open_mainfile` must pass `use_scripts=False` explicitly; the post-swap half runs with `bpy.context.window` at `None` but an inherited context still works. |
@@ -2707,3 +2711,293 @@ writes it; and decisions 9, 10 and 11 each sit after a blank line, so they rende
 table rows (a pre-existing pattern this task matched rather than created). None changes a measurement or
 misleads a later task, and **four cycles have now demonstrated that a findings list generates its own next
 findings list.** Task 2 is closed.
+
+---
+
+# Task 3 — drain-loop file-swap barrier, session epoch, failure handlers
+
+Implementation, **three critic cycles**, a **§06 structural pass**, and two triaged repair rounds — **six scored
+cycles**. Final gate verdict below. Nothing is committed; the tree carries Task 3 uncommitted alongside `uv.lock`.
+
+## The most useful thing in this task: a recorded ruling was overruled, and the reviewer approved it
+
+Task 2's decision at **`PHASE2_TASK_STATE.md:2265-2275`** says the epoch *"has to be stamped **at enqueue time,
+on the client thread**, and compared at dequeue."* Task 3's own Hazards section says *"implement whichever
+protocol Task 2 decided, and **cite the decision by its TASK_STATE section**. Do not re-litigate it here."*
+
+Cycle 1 shipped a **pre-swap queue snapshot** instead, argued as equivalent, uncited. **The reviewer accepted
+that argument and was wrong to.** The equivalence holds only against a *different* design — bumping a
+generation counter at swap *start*. Against the recorded design it fails, because `session_epoch` moves in
+`load_post`, at the **end** of the load: a command enqueued mid-load carries the pre-swap epoch and a
+dequeue-time comparison rejects it, while a snapshot taken before the operator ran never saw it at all. Three
+critics reproduced the gap independently, including a second *process*'s command answered `status: success`
+out of a file it was never sent for.
+
+The implementer's practical objection — that stamping would force the queue item from a 2-tuple to a 3-tuple and
+break four existing test sites §03 forbids editing — was **half right**. A 3-tuple would; a key on the command
+dict breaks none, because `tests/server/test_socket_unicode.py:104,127,155` assert only on `command["type"]`
+and `command["params"][...]`.
+
+Restored in cycle 2 with **both** mechanisms, because they cover disjoint cases and are not alternatives:
+
+| case | snapshot | stamp |
+|---|---|---|
+| queued before, swap succeeds | rejects | rejects |
+| queued before, swap **fails** (epoch never moves) | **rejects — only it can** | silent |
+| arrives **during** the load (same or another process) | **misses** | **rejects — only it can** |
+| arrives during a *failed* load | misses | silent → executes, which is correct (database untouched) |
+| arrives after the client saw the response | executes | executes |
+
+**The process lesson, which is the transferable one:** the overrule was never *recorded*, so nothing forced the
+equivalence argument to be checked against the ruling it replaced. **A pushback against a cited decision must
+cite the decision back.** This is now a standing pre-check in handoff §06's dated amendment.
+
+## Decisions taken, each with its cost if wrong
+
+| # | Decision | Cost if wrong |
+|---|---|---|
+| T3-1 | **The barrier is a pre-swap snapshot *and* an enqueue-time epoch stamp.** Neither alone is sufficient. | One redundant mechanism (~40 lines, two matrix rows). Cost of the alternative, measured: a command from another process answered `status: success` out of a file it was never sent for. |
+| T3-2 | **An unstamped command fails closed.** Cycle 2 shipped it fail-*open*, justified by an AST tripwire; a critic demonstrated **five evasions** (blocking `put`, `async def`, local alias, lambda, helper-takes-queue). | Zero in a correct tree — the sole producer already stamps, and client forgery is impossible because `_stamp_session` overwrites unconditionally. One error frame in an incorrect one. |
+| T3-3 | **`save_shot` is NOT in `_SESSION_SWAP_COMMANDS`.** The set is `{open_shot, reset_session}`. | `wm.save_as_mainfile` moves `bpy.data.filepath` but replaces no datablock, so the batch behind a save stays safe. Including it would discard a whole batch on every checkpoint. |
+| T3-4 | **`reset_session` needs no epoch increment of its own.** Measured on 5.2.2: `wm.read_homefile(use_empty=True)` **and** `wm.read_factory_settings()` both fire `load_post` with `file_path == ""`. | A separate bump would double-count one swap and break "increments exactly once per successful swap". Named beneficiary: **Task 6**, which must not add one. |
+| T3-5 | **`_on_save_post` reads `bpy.data.filepath`, not its argument.** `wm.save_as_mainfile(copy=True)` hands the handler the **copy's** path while the open file is unchanged — reproduced by the reviewer on 5.2.2. | A human doing File → Save Copy poisoned `current_filepath` permanently. Task 6's `save_shot` is built on it. The cycle-1 test asserted the buggy value as correct. |
+| T3-6 | **"an aborted swap moves the marker although the plan's ruling says a failure never does"** — a `BaseException` escaping a swap sets `session_indeterminate` and moves the marker, narrowly guarded by `swap_started and marker unchanged`. The plan's "never bump on a failure" ruling rests on measurements across `open_mainfile`'s own failure modes, all of which fire `load_post_fail` with the database intact. **An abort fires neither handler.** | One re-handshake per connected process on an event that may have changed nothing — the cost the ruling rejects for `load_post_fail` — accepted because the alternative is executing against a database nobody can describe. An unnarrowed guard fired when *no load ran at all* and double-bumped after a **clean** swap, publishing "the database may be partly replaced" on the very poll surface the design points clients at. |
+| T3-7 | **"re-registration moves the marker only when the observed file differs"** — `register_handlers()` bumps the epoch when the re-read `bpy.data.filepath` differs from the recorded one. | An unconditional bump moves the counter on every Blender start in every process. The conditional form **misses a same-path re-open during the handler gap** — measured on 5.2.2, recorded as a residual below. |
+| T3-8 | **`session_indeterminate` is a latch enforced in `_drain_batch`, not a note.** Cleared only by a completed `load_post`; `current_filepath` nulled. | The note alone was read by **nothing** in `src/` — after an abort the next command ran `status: success` against a half-replaced database while `current_filepath` still named the old shot, which is the value Task 6's `save_shot` would write over. Too narrow a safe-command list wedges the addon; today the abort path is unreachable in production (neither swap command is dispatchable until Task 6), so the wedge risk arrives with the clearing command. |
+| T3-9 | **Publication uses an allowlist, not a blocklist**, in one shared `bundled/addon/text_hygiene.py`; the gate runs on the string that will actually be published. | Three cycles each fixed the instance and shipped the class: cycle 1 blocked ASCII `/` (broken by `C:\`), cycle 2 blocked both ASCII families (broken by U+FF0F), cycle 3 blocked five homoglyphs (broken by U+FE68, U+29F8, and `///Users/...` needing no homoglyph at all). Cycle 3 also had a **validate-then-transform** bug: the gate ran on the raw string and the publisher stripped `Cf`, *manufacturing* the `..` the gate rejected. Cost of the allowlist: a library under a non-Latin directory reports by leaf rather than whole. |
+| T3-10 | **NFKC rejects; it never rewrites.** This **deviates from the reviewer's written instruction** ("decide on the NFKC-normalised form"); the decision is taken on the NFKC form by requiring it to *equal* the raw form. | Rewriting would publish `canon.blend` for a library actually named `canon․blend` — a different file, asserted confidently. Cost of this choice: a legitimate name containing a ligature or fullwidth letter reports as `the requested file`. |
+| T3-11 | **The control-character rule is duplicated across the socket and the duplication is enforced by a test.** The addon installs as a self-contained package and §03 forbids the reverse import, so no shared module exists. | The server boundary was the **fourth recurrence** of the same class — `normalized_session_text` checked type and length only, so a 5-line `session_id` carrying NUL/ESC/RLO reached an agent's context verbatim. If `test_both_sides_of_the_socket_hold_the_same_control_character_block` is deleted, the copies drift and the server side silently reverts. |
+| T3-12 | **`_PAST_BUDGET_SEND_TIMEOUT_SECONDS = 0.001`, not `0.0`.** | `settimeout(0.0)` takes a live socket out of timeout mode; its own `handle_client` thread then takes `BlockingIOError` — **not** a `TimeoutError` — as a disconnect and closes the connection. Reproduced: ~100 of 150 rejection frames lost, 3/3 runs. That was the same "no dropped healthy socket" defect its own fix was for. A `BlockingIOError` branch is added **as well**, never instead. |
+| T3-13 | **Abandon a peer on the first failed rejection send, not the second** (the reviewer's instruction, refused and upheld). | Two critics confirmed the premise independently: CPython's `sendall` does not report how many bytes went out, and one measured **90,040 bytes readable by the peer after a `TimeoutError`**. Retrying splices a truncated line into a newline-framed stream. Over-applied in one case — a lock-acquisition `TimeoutError` provably writes zero bytes — recorded as a residual. |
+| T3-14 | **`current_filepath` is published as a full absolute path to the unauthenticated socket, deliberately.** It reaches `get_session_info`, `get_addon_info`, `AddonHandshake` and the `get_addon_status` tool. Adjudicated as **not** automatically-critical in three consecutive cycles: §07's clause is scoped to *"an absolute filesystem path reaching the client **in any error message**"*, and this is a specified success-path data field that plan item 3 requires by name ("`session_epoch` and `filepath` added to `get_addon_info`'s payload"). `writable_output_roots` is the shipped precedent — it already publishes absolute directories through this same handshake, landed by Task 1 and accepted. **Recorded here because it was adjudicated three times and written down zero times**, which is how a settled decision gets re-litigated by the next reviewer. | **The largest remaining layout disclosure in the phase, and it is inconsistent with its own neighbours.** The same path is reduced to a leaf in `last_load_error` one field away, and an absolute *library* path is reduced too — so a client that wants the studio tree reads `current_filepath`, not `libraries`. The consumer genuinely needs it absolute: Task 5's root validation and Task 6's `save_shot` compare against realpath'd forms, and a leaf would force the client to guess. Marginal disclosure is currently zero — the socket is unauthenticated and loopback, so anyone who can read this can already read `writable_output_roots` and list the scene. **If Task 8 authenticates the socket or it is ever exposed beyond loopback, this becomes a real disclosure**; the remedy is the shape `_library_summary` already uses (leaf plus a relative flag), and `normalized_session_text`'s 4096-char bound already caps the field. Estimated cost of that correction: under an hour, one revert-matrix row. Owner if revisited: **Task 8**. |
+| T3-15 | **`libraries[*].name` is allowlisted through `client_safe_leaf`, like `filepath`** — the **fifth** recurrence of this task's defect class, on the line directly above the field the previous round had just fixed. Measured on 5.2.2: `Library.name` accepts `/Users/victim/shots/canon.blend`, `../../etc/passwd`, `C:\studio\vault` and 80 characters verbatim. | Zero in the benign case (a Blender ID name is already a basename). The oracle that missed it was strong — `test_the_library_summary_reports_identity_without_the_asset_library_layout` asserts `"/Volumes/" not in` over the whole JSON **including `name`** — but every fixture pinned `name="canon.blend"`. A strong assertion fed only benign inputs. A 16-row hostile-name table now feeds it hostile ones. |
+| T3-16 | **`refresh_handshake_if_session_changed` adopts any well-formed refreshed marker** instead of demanding equality with the observed pair. | Demanding equality assumed the addon was still at the epoch that was seen; two File→Opens, a second process, or one swap inside the measured 4.6 s `open_mainfile` window each break it, and `_refreshing` suppressed the refresh's own report. Measured **20 extra `get_addon_info` round trips for 20 commands, permanently** — the same class `_refreshing` had been added to fix. Third time in this task a fix reintroduced its own defect. |
+| T3-17 | **The swap's own client is answered by an observational receipt, not a predicted flag.** `_answer` writes `receipt["answered"] = True` as its first statement; the abort guard reads it. | A predictive `handed_off` set in the caller left a real no-response window between the assignment and `_execute_and_answer`'s `try:` — §07's "no response and no error", reproduced at `frames=0`. **Known limit, accepted:** the receipt marks `_answer` as *entered*, not completed, so an abort inside it after that statement reads as answered. Chosen deliberately — recording completion instead would let one abort emit two frames on a socket that matches by stream order, and a duplicate response is a correctness bug where a missing one is a timeout. |
+| T3-18 | **The abort guard is one positive predicate: `session.load_in_flight()`.** It replaces `dispatched` + marker comparison + failure counter. | **Unblocked by a three-minute probe nobody had run.** Measured on 5.2.2 and reproduced independently by the reviewer: `load_pre` fires on **every** open path — success, missing file, a directory, a non-`.blend` — and, the half that makes the collapse *safe*, `bpy.data.filepath` and the object table are still the **old** file's when it fires on all four. So "no `load_pre`, therefore nothing was replaced" is a statement about Blender's ordering, not a hope. Closes the recorded retry-then-abort false negative **and** the `dispatched`-to-operator residual that had been assigned to Task 6 *explicitly because this was unmeasured*. |
+| T3-19 | **`mark_session_indeterminate` clears `load_in_flight`.** The flag means "a load whose outcome is unaccounted for"; an abort that latches **is** the accounting. | Leaving it set makes the next unrelated abort latch on the strength of this one, and each latch bumps the epoch — the re-handshake storm the plan's epoch ruling forbids. |
+| T3-20 | **`addon_version` is validated as a version, not sanitized as text** — a correction to the reviewer's own instruction. | The reviewer specified routing it through `normalized_session_text`. The field is `list[int] | None` on the wire and in the dataclass, so that would have returned `None` for **every well-formed payload** and broken `format_handshake_log` plus eight existing tests. The hostile case is a *string* arriving where a version list belongs; the answer is to refuse it, not to strip characters and publish the remainder as a version. |
+| T3-21 | **`is_confusable` compares NFKC against NFC, and that is a widening — stated, not hidden.** | It fixes a real false positive (NFD `cafe\u0301.blend`, what macOS produced for years, was reduced to `the requested file`). But it newly admits **1,097 leaf-publishable code points**, 1,026 of them singleton canonical decompositions, including U+212B ANGSTROM SIGN and U+2126 OHM SIGN — classic UTS #39 confusable pairs that are *different files* on ext4 and NTFS. The instrument that appeared to license the change measured `NFKC(x) == NFKC(NFC(x))` — a property of the NFKC form, while the predicate compares NFKC against NFC — under the headline "composing first widens nothing". **An instrument that retires a question it did not answer is worse than no instrument.** Headline deleted, flip set now measured, and `client_safe_leaf`'s stated limit widened to name both populations. |
+| T3-22 | **`warning` is normalized like every other handshake field, because it is not server-minted.** `handshake_addon`'s `except` builds `f"Addon handshake failed: {e}"`, and `e` is raised at `connection.py:272` from the addon's own `message` off the unauthenticated socket. Measured: it reached `get_addon_status` **five lines long with ESC and an absolute path intact**, in the same response as the seven normalized fields, one key over. | Near zero — the other three `warning` values are two literals and an `int \| None` interpolation (`grep -n "warning=" addon_manager.py` → four sites, checked). **What hid it is the finding:** the test's exclusion set named `warning` "server-minted, so there is no wire field to poison" — **the eighth false universal claim in this task**. A test whose exclusion list carries its own justification is only as good as that justification, and this one had never been run against. |
+| T3-23 | **The two structured list fields refuse a cleaned element rather than publishing it.** `capabilities` and `writable_output_roots` publish an element only when removing unsafe characters removed nothing but surrounding whitespace. | **Stripping `Cf` from structured data manufactures structure.** Reproduced by the reviewer: `/studio/out\u200b/../../etc` published as `/studio/out/../../etc`, normpath `/etc` — a traversal the addon never sent, in the field that decides where files may be written; and `open_shot\u200b\u202e` became the exact membership entry `connection.py:214` gates dispatch on. **This is T3-9's own cycle-3 validate-then-transform bug, on the server side** — the addon side already measures it (`text_hygiene_enumeration.py` §3); the server side had no structural gate at all. Cost: a legitimate root or capability containing a format character is dropped, which is the same fail-closed direction the function already takes. |
+| T3-24 | **The abort guard's two obligations are two independent `if`s, and the message asks `load_in_flight()`.** Answering the swap's own client and latching the session have different triggers; the `elif` between them made them exclusive. | The `elif` skipped the latch **exactly when a load was in flight**: reproduced at `load_in_flight=True`, `session_indeterminate=False`, and a frame telling the client *"nothing was loaded and the open database is unchanged"* while `load_pre` had already fired — leaving `load_in_flight` stuck `True`, so the **next** unrelated abort would latch on the strength of this one, which is the failure **T3-19** exists to prevent arriving from the other direction. The comment asserting this was impossible is **the ninth false universal claim**; two routes out of `_execute_and_answer` do not write the receipt. |
+
+## Live-Blender evidence — reproduced by the reviewer, not only by the implementer
+
+GUI Blender **5.2.2 LTS** (hash `d13f752e3b9c`) at `/opt/homebrew/bin/blender`, real addon socket. Re-run by the
+reviewer after every cycle; the transcript below is from the post-structural-pass run.
+
+```
+RIG: blender_version = 5.2.2 LTS
+RIG: protocol_version = 31
+RIG: get_session_info = {"session_id": "d6348bc6...", "session_epoch": 0, "current_filepath": null,
+     "last_load_error": null, "last_save_error": null, "session_indeterminate": false,
+     "is_dirty": false, "libraries": []}
+RIG: epoch after a completed swap = 0 -> 1
+RIG: epoch after a failed swap = 1 (unmoved)
+RIG: get_session_info after the failure = {... "last_load_error": "Loading does-not-exist.blend failed;
+     the operator\'s own error text is in Blender\'s console." ...}
+RIG: mid-load arrival rejected by the enqueue stamp; epoch 1 -> 2, frame carries session_epoch=2
+RIG: four-connection round discarded 0 of 4: []
+RIG: timer after it raised once -> {"calls_after_raising_once": 1, "still_registered": false,
+     "successor_calls": 9, "successor_still_registered": true}
+RIG: barrier held on both paths, server still serving
+RIG PASSED
+```
+
+**Which layer this reaches.** The **addon socket only**. It shows `get_addon_info` / `get_session_info`
+carrying the epoch, the session id and the latch, the barrier answering real sockets on both paths, and the
+mid-load stamp rejection. It does **not** reach the MCP tool `get_addon_status` — that runs in an MCP process
+the rig never starts, and is covered by `tests/server/tools/test_core.py`. **Docker was not used; no
+containerised end-to-end claim is made.**
+
+**Blender facts established here, each by a committed instrument (`scripts/blender_probes/session_handlers.py`,
+`scripts/text_hygiene_enumeration.py`, and the rig):**
+
+- `bpy.app.timers` **drops a callback that raises** — `calls_after_raising_once: 1, still_registered: false` —
+  and a **successor registered from inside the dying callback survives** (`successor_calls: 9`). This is why
+  `drain_command_queue` hands off before it re-raises, and it **overturned a written reviewer instruction**
+  ("catch `BaseException`, answer, then re-raise"), which alone would have killed the drain loop permanently.
+- `wm.read_homefile(use_empty=True)` and `wm.read_factory_settings()` both fire `load_post` with `""`.
+- `wm.save_as_mainfile(copy=True)` fires `save_post` with the **copy's** path while `bpy.data.filepath` is
+  unchanged.
+- `@persistent` returns the same function object, so membership testing is exact — unlike the bound-method trap
+  in `_register_drain_timer`. Handler lists **do** accept duplicates (2 → 3 → 4).
+- A **non-persistent** handler is stripped by any file load; it silently emptied three probe measurements on a
+  first attempt.
+- `Library.session_uid` and `Library.is_missing` exist and are read-only; the library's own `session_uid`
+  survives `lib.reload()` while the linked object's does not — which is what makes it Task 7's handle.
+
+## Falsifiability, and two disclosed TDD deviations
+
+`scripts/revert_matrix.py`: **244 rows, 0 survivors, 0 uncovered**, anchors **244/244**, run end to end by the
+reviewer with the tree restored afterwards. Cycle 1's matrix reported "0 uncovered" while its universe
+**excluded 28 of 30 new nodes** — true and vacuous. The universe is now verified complete.
+
+Two harness defects were found and fixed *by the harness*, both of the same class it exists to prevent:
+
+- **`__pycache__` false credit.** CPython keys bytecode on mtime-in-whole-seconds plus size, so two rows editing
+  one file within a second could hit stale bytecode and report a SURVIVOR falsely. `apply()`/`restore()` now
+  invalidate bytecode.
+- **Editable-install false survivors.** `.venv`'s `.pth` points at the original `src`, so a matrix run in a
+  copied tree wrote reverts to the copy and imported from the original — **39 false survivors**. Re-running
+  outside the repo root requires `PYTHONPATH=<copy>/src`. Both traps are recorded in the harness docstring.
+
+**Disclosed deviations from §03's TDD rule** — stated rather than smoothed over:
+
+1. The two drain-recovery tests were written **alongside** their implementation, not before, because they were
+   inconceivable until the live measurement that Blender drops a raising timer. Falsifiability rests on two
+   dedicated matrix rows, both `[FAILS as required]`.
+2. The §06 structural pass **inverted TDD order for most changes** — implemented first, tests after. Evidence is
+   the 244-row matrix plus a whole-implementation stash (**27 of 30 failing**; the 3 passers explained by
+   `git stash` not stashing untracked files). That is the same evidence a clean cycle produces, but it is not
+   the same process.
+
+## Measured deltas
+
+| Check | Pre-Task-3 (`70dbe51`) | After the structural pass | Gate |
+|---|---|---|---|
+| pytest | 798 passed | **996 passed** (all 798 pre-existing unmodified; `git diff tests/ \| grep "^-" \| grep -c assert` → **0**) | pass |
+| `ruff check .` | 9,833 | **9,833** | `<= 9,834` pass |
+| `ruff format --check .` | 12 unformatted, 337 formatted | **12 unformatted, 360 formatted** (372 files; the gated figure is the 12) | pass |
+| basedpyright | 71 errors, 4 warnings | **71 / 4** | pass |
+| `all` | 285 tools / 1,181,023 B | **285 / 1,181,023 B** | matches `bundles.py` |
+| `shot` | 53 tools / 203,079 B | **53 / 203,079 B** | `<= 203,094`, ceiling constant untouched |
+| revert matrix | 117 rows | **244 rows / 0 survivors / 0 uncovered**, anchors 244/244 (quiet-box verified, 0.21 → 0.21 load per core) | pass |
+
+> **These figures were wrong twice before they were right, and the reason is worth more than the figures.**
+> The decisions table was kept current through every cycle while these summary blocks went stale — and they are
+> the blocks a reader trusts first. The first correction missed the Falsifiability block entirely and the two it
+> did fix went stale again *inside the same round*, because that round's own repairs added tests and matrix rows
+> after the refresh. Cost: **1.0 Evidence, twice**. The ordering that finally worked: **freeze the code, re-measure,
+> then write the record** — never the reverse.
+
+**Task 3's net catalog cost is zero bytes**, despite `get_addon_status` gaining `session_epoch`, `session_id`,
+`current_filepath` and `session_indeterminate` — paid for by trimming the same docstring, with
+`test_get_addon_status_documents_every_key_it_returns` still green. `SHOT_MODE_BYTE_CEILING` was never raised.
+Task 9 inherits **15 B** of headroom, not the 2 B an intermediate cycle left.
+
+One number **corrected**: a cycle-2 commit claimed "104 B removed, 99 B spent, net +1 B", which does not hold
+(99 − 104 = −5). Three different layers were conflated — raw docstring, rendered description, catalog payload.
+Stated per layer thereafter.
+
+## Scores by cycle
+
+| Dimension | C1 | C2 | C3 | C4 (structural) | C5 | C6 | Gate |
+|---|---|---|---|---|---|---|---|
+| Data durability and rollback safety | 12 | 15 | 20 | 25 | 26 | **26.5** | 24 ✓ |
+| Concurrency and liveness | 6 | 15 | 17 | 20.5 | 21 | **21.5** | 20 ✓ |
+| Filesystem and trust boundary | 10.5 | 11.5 | 11.0 | 11.0 | 15.5 | **17.0** | 16 ✓ |
+| Evidence quality | 10 | 13 | 13.5 | 13.5 | 13.5 | **13.0** | 12 ✓ |
+| Code quality and contract fidelity | 7.5 | 8.0 | 8.5 | 8.5 | 8.5 | **8.5** | 8 ✓ |
+| **Total** | **46** | **62.5** | **70** | **79.5** | **84.5** | **86.5** | **90** |
+
+**Every dimension clears its 80% floor and zero automatically-critical items are tripped, but the overall
+total is 3.5 short.** Trust boundary cleared its gate for the first time at C6, after failing five consecutive
+cycles — the §06 structural pass at C4 (blocklist → allowlist) is what moved it, and it moved nothing that
+cycle because the pass landed alongside a new unfixed sibling; the credit arrived at C5 and C6.
+
+**Evidence regressed at C6 (13.5 → 13.0)** for two reasons, both the reviewer's: this record's three summary
+blocks were left two rounds stale while the decisions table was kept current, and two new universal claims
+were written that one run falsifies — the eighth and ninth in the recorded series.
+
+**§06's structural-escalation rule fired after cycle 3**: Filesystem and trust boundary moved 10.5 → 11.5 → 11.0,
+below its gate throughout — less than one point across two consecutive cycles. The response was a structural
+pass (T3-9 through T3-11), not a fourth patch round.
+
+## Residuals — each with an owner and a cost
+
+| Residual | Cost | Owner |
+|---|---|---|
+| **`register_handlers` misses a same-path re-open during the handler gap** (T3-7). Measured: disable → open a *different* shot → enable bumps correctly; disable → open the **same** path → enable does not. | An MCP process keeps a stale `capabilities` **and** `writable_output_roots` — the field that decides where files may be written. Needs a `load_pre` counter; a design change, not a patch. | **Task 6** |
+| **Command amplification narrowed to a bounded ~1.9×, not closed.** A peer that moves its marker every frame re-arms the flag permanently. | One extra `get_addon_info` per command against a non-conforming peer. Bounded by `_refreshing`. | Task 3, recorded |
+| **A zero-byte lock-acquisition `TimeoutError` is treated as a possible partial write** and closes the peer (T3-13). | A peer loses its connection and queued batch for a lock contention it did not cause. | Task 3, recorded |
+| **`normalized_session_text` returning `None` conflates "absent" with "refused".** Logged, not typed. | An LLM reads `current_filepath: null` as "unsaved scratch file" and may treat the open file as overwritable. | **Task 5** |
+| **`client_safe_leaf`'s `isdir` call is a directory-existence oracle** — one bit per probe, enumerable once Task 6 lands `open_shot`. | Accepted; Task 6's root check is where path probing is stopped. | **Task 6** |
+| **`is_confusable` refuses legitimate names** containing ligatures, fullwidth letters or Roman-numeral characters. | A usability cost taken deliberately over a forgery risk. | Task 3, recorded |
+| **`session_uid` discloses a coarse, global-monotonic datablock allocation count.** | Required by Task 7, which resolves libraries by uid and never by name. | **Task 7** |
+| **`get_session_info` has no MCP tool wrapper.** Ruled **not** automatically-critical: §05 sequences tools into Task 9, and 16 addon commands already ship without one (15 predating this task). | An agent cannot poll `is_dirty` / `libraries` / `last_load_error` until the wrapper lands. | **Task 9** |
+| **Suite is green when idle, flaky under CPU contention.** Reviewer measured **907 passed 4/4 consecutive** on an idle box; a critic running alongside three others saw 906/905/905/907. Bounds: `..._malformed_frame_arriving_mid_rejection...` asserts `< 1.25 s` against a lock held 2.0 s; `..._full_queue_to_a_stalled_peer_is_bounded` asserts `< 1.5 s`. **Neither is trivially too tight; both left as they are.** | A CI machine under load reports phantom failures. Rule adopted: re-run an anomalous count on a quiet box before believing it. | Task 3, recorded |
+| **The `isdir` directory-existence oracle now covers two fields, not one.** `client_safe_leaf` stats its argument and returns the unnameable placeholder when it names a directory — one bit per probe. Recorded against `Library.filepath`; it applies equally to **`Library.name`** since T3-15 routed it through the same function. On `name` the probe is **relative to the process CWD**, because a bare name has no leading separator: measured with cwd = repo root, `client_safe_leaf('scripts')` → `the requested file` while `client_safe_leaf('scriptsNOPE')` → `'scriptsNOPE'`. | The oracle answers about the server's CWD as well as about absolute paths. Accepted for the same reason as before. | **Task 6** (its root check is where path probing is meant to stop) |
+| **The same hygiene defect exists one layer out, across the whole tool surface — the seventh recurrence, and the largest.** `grep -rn "result\.get(" src/blender_mcp/server/tools/` returns **60 sites** reading values out of addon command responses straight into MCP tool payloads, and `grep -rn "text_hygiene\|normalized_session_text" src/blender_mcp/server/tools/` returns **nothing** — the hygiene module is imported nowhere under `tools/`. Found by sibling sweep during Task 3 and **deliberately not fixed**: it is the whole tool layer, not the handshake, and repairing it here would be exactly the scope creep the triage rules out. | An unauthenticated socket's values reach an agent's context without the gate that `text_hygiene.py`'s own docstring says exists "at the server boundary". Same payload shape already demonstrated against the handshake. | **Task 8** owns the trust-boundary design statement (spec §4.8 outlives this plan); **Task 9** touches these files and is the natural place to land the fix. |
+| **`current_filepath` has T3-23's exposure and does not get T3-23's gate.** Measured: `/studio/out/.\u200b./secrets.blend` publishes as `/studio/out/../secrets.blend`, normpath `/studio/secrets.blend`. Unfixed for a structural reason, not a preference: `normalized_session_text` is shared with `session_id`, where refusing returns `None` and a `None` marker re-arms the staleness flag on every response, so the gate cannot go into that function without splitting it. Nothing in `src/` consumes the field as a path today (T3-14). | A manufactured traversal in the field Task 5's root validation will compare against. | **Task 5**, before anything compares it |
+| **An empty `capabilities` list disables the dispatch gate entirely.** `connection.py:214` gates on `handshake.capabilities and command_type not in handshake.capabilities`, so `[]` allows every command. Not a privilege gain — the peer controlling `capabilities` is the peer executing commands — and the alternative wedges an addon predating the field. **The gap is coverage, not behaviour:** the committed test asserts `== []` and never asks what `[]` does downstream, so the fail-open reading is unasserted in either direction. | One test on `send_command` with an empty-capability handshake closes it. | **Task 3**, recorded |
+| **The class T3-22 fixes is 52 sites wide outside this task.** `grep -rn 'raise \(ToolError\|Exception\)(f".*{e' src/blender_mcp/server/tools/` → **52** wrappers interpolating a `BlenderOperationError` — the addon's own `message` — into an agent-visible error. Phase-wide, predates Phase 2. Distinct from the seventh recurrence above (60 `result.get(` sites); this is the *error* path, that is the *success* path. | An unauthenticated socket's text reaches an agent's context through the error channel. | **Task 9** (the plan already puts "into an agent's context" there) |
+| **Task 1's `test_teardown_finishes_even_when_a_child_ignores_sigterm` leaks wedged child processes.** Reviewer found **24 orphans**, oldest alive **12 h 46 m**, burning **~18.5 % aggregate CPU** on a shared machine; killed 2026-09-16. | Baseline load that nothing accounts for, making every wall-clock-bounded test flakier. | **Task 1** |
+
+## Process findings this task produced
+
+- **Seven false claims written into docstrings during repair cycles.** §06 already warns that "a docstring
+  written during a repair is new code"; warning did not work. The reviewer's first rule — *every factual claim
+  must name a committed instrument* — was **too narrow**, because it targets measured numbers while the claims
+  that kept breaking were architectural: *"the only place the epoch moves"* (three writers), *"every frame
+  carries the session marker"* (false on two `_error_frame` paths), *"cannot name anything outside the shot's
+  own directory tree"* (false for `///Users/...`), and two *"Recorded as a decision in TASK_STATE"* claims for
+  rulings that were not recorded — **T3-6 and T3-7 exist by those exact names to make them true.** The rule that
+  replaced it: **any universal or negative claim ("only", "always", "never", "every", "cannot") must be
+  demonstrable by a one-line grep the author runs and pastes, or be rewritten as something bounded.**
+- **Fixes landed on instances, not classes, three cycles running.** `_failure_note` was hardened while
+  `_library_summary` — a sibling field in the *same response* — kept the identical three defects; both hygiene
+  guards stayed ASCII-only so the shared blind spot moved rather than closed. Now a standing pre-check.
+- **A repair reintroduced its own defect three times.** The `or` short-circuit dropped healthy peers; the
+  non-blocking tail that replaced it dropped healthy peers by a different mechanism; and `_refreshing`, added to
+  stop a double re-handshake, now *causes* a permanent one because it suppresses the notice that would record the
+  newer marker (measured: 20 extra round trips for 20 commands). Changing the mechanism is not fixing the
+  invariant — and in all three cases the docstring asserting the fix survived the defect's return.
+- **The most transferable finding: a check that looks active and cannot fire is worse than no check**, because
+  its absence would be legible and its under-delivery is not. **Five instances in this one task**, all found by
+  someone other than their author:
+  - the cycle-1 revert matrix reported `0 uncovered` against a universe that **excluded 28 of the 30 new nodes**
+    — true, and vacuous;
+  - `__pycache__` keyed on mtime-in-whole-seconds let one row inherit the previous row's bytecode and report a
+    SURVIVOR falsely;
+  - `.venv`'s editable-install `.pth` made a matrix run in a copied tree import the *original* source —
+    **39 false survivors**;
+  - `_assert_hygienic`'s separator list was the implementation's own constant restated by hand, under a docstring
+    claiming it "comes from the threat, not from the fix", so it could not catch what the implementation missed;
+  - `test_the_library_summary_reports_identity_without_the_asset_library_layout` asserts `"/Volumes/" not in`
+    over the whole `libraries` JSON **including `name`** — an assertion that *could* have caught the unallowlisted
+    `name` field, fed only benign fixtures so it never did.
+
+  The common shape is a guard whose *scope* is narrower than its *claim*. Neither the rubric's gates nor a
+  passing suite detects it, because it passes. What detects it is asking, of each guard, **"what input would make
+  this fail, and is that input in the fixture set?"** — which is the question the revert matrix exists to force
+  and which the matrix itself failed twice.
+- **Two reviewer instructions were correctly refused on measurement** (the `BaseException` re-raise, the
+  second-consecutive-failure retry) and one was correctly deviated from (NFKC rewrite → reject). All three are
+  recorded above. The house rule — measurement beats reasoning, including the reviewer's — held.
+
+---
+
+## Closing note — why this committed below its gate
+
+**Last independently measured score: 88.75/100 against a 90 exit gate.** Every dimension cleared its 80% floor
+(durability 27/30, concurrency 21.75/25, trust 18.25/20, evidence 13/15, code quality 8.75/10), zero
+automatically-critical items, live transcript present. The scorer named two fixes worth an estimated +1.5:
+tighten `_is_structurally_intact` from `cleaned == element.strip()` to `cleaned == element`, and refresh four
+stale numeric claims in this file. **Both were done and verified**; neither was re-scored, because the user
+called time. **So the 90 is an estimate and 88.75 is the last measurement. Do not quote 90.**
+
+**The honest accounting.** This task took roughly **15¾ hours** and **six scored cycles** plus a §06 structural
+pass. That is far too long, and the cost was not in the code — it was in a review loop that kept finding real
+defects and kept being allowed to run. Three things drove it, and the third is the one to fix:
+
+1. **A recorded ruling was overruled in cycle 1 and the reviewer approved it.** Task 2's enqueue-stamp decision
+   was re-litigated on an equivalence argument that held only against a different design. Cost: two cycles.
+   The standing pre-check added to handoff §06 — *a pushback against a cited decision must cite the decision
+   back* — exists because of this.
+2. **Fixes landed on instances, not classes, seven times.** Each repair hardened one field and left its sibling
+   in the same dict, the same response, or the same function untouched. The sibling-grep pre-check exists
+   because of this.
+3. **Ten false universal claims** were written into docstrings and test comments across the cycles, every one
+   while fixing something else, every one falsified by a single grep or a single run. The rule that finally
+   held — *any universal or negative claim must be demonstrable by a one-line grep the author runs and pastes,
+   or be rewritten as bounded* — was itself the third attempt at a rule, because the first two were too narrow.
+
+**What the next task should take from this.** The gate-driven amendment in handoff §06 (decision 12) is now in
+force for Tasks 4-10: stop at the gate rather than at a fixed cycle count, triage every finding into
+gate-blocking or residual, and scale the critic panel to the dimensions that actually failed. Had that been in
+force here, this task would have closed several cycles earlier at a similar score.
+
+**Still open and owned:** 15 residuals, each with a named owner — the largest being 60 `result.get(` sites and
+52 error-interpolation sites under `server/tools/` that carry the same hygiene defect one layer out (Task 9),
+and `current_filepath`'s manufactured-traversal exposure (Task 5, before anything compares it as a path).

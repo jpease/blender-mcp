@@ -102,3 +102,106 @@ def test_get_addon_status_documents_every_key_it_returns(monkeypatch: pytest.Mon
     documented = core.get_addon_status.__doc__ or ""
     undocumented = sorted(key for key in payload if f'"{key}"' not in documented)
     assert not undocumented, f"payload keys missing from the docstring: {undocumented}"
+
+
+# An epoch the addon could plausibly be at; any non-zero value would do.
+_EPOCH = 7
+
+
+def test_get_addon_status_reports_the_session_epoch_and_the_open_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The tool-wrapper half of the epoch's end-to-end path, proven where it can be.
+
+    The live rig speaks the addon socket only, so it can demonstrate
+    `get_addon_info` carrying the epoch but never `get_addon_status` surfacing
+    it - that layer runs inside the MCP process. This is that layer: the fields
+    have to survive `AddonHandshake` and reach the payload the agent reads.
+    """
+    _install_handshake(monkeypatch, _handshake(session_epoch=_EPOCH, current_filepath="/shots/sq010.blend"))
+
+    payload = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]
+
+    assert payload["session_epoch"] == _EPOCH
+    assert payload["current_filepath"] == "/shots/sq010.blend"
+
+
+def test_get_addon_status_reports_the_session_id_the_epoch_is_only_comparable_within(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The epoch was surfaced without the id it is only meaningful next to.
+
+    The docstring tells the agent to re-read capabilities when the epoch moves,
+    and the addon's counter restarts at 0 with the process - so epoch 1 ->
+    restart -> 0 -> one swap -> 1 reads as "nothing happened" to an agent holding
+    only the number. That is the ABA case the *pair* exists to close, and the
+    payload published exactly the half that cannot close it.
+    """
+    _install_handshake(monkeypatch, _handshake(session_epoch=_EPOCH, session_id="c0ffee"))
+
+    payload = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]
+
+    assert payload["session_id"] == "c0ffee"
+    assert payload["session_epoch"] == _EPOCH
+
+
+def test_get_addon_status_reports_no_epoch_for_an_addon_that_does_not_send_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    An addon that predates the field must not break the payload.
+
+    The `is None` assertion alone cannot tell "the handshake's None reached the
+    payload" from "the payload hardcodes None", because the dataclass field
+    defaults to None too. The populated control below is what makes the first
+    assertion mean something - the same pairing
+    `test_get_addon_status_reports_no_roots_for_an_addon_that_does_not_send_them`
+    uses one field over.
+    """
+    _install_handshake(monkeypatch, _handshake())
+
+    payload = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]
+
+    assert payload["session_epoch"] is None
+    assert payload["current_filepath"] is None
+
+    _install_handshake(monkeypatch, _handshake(session_epoch=0, current_filepath="/shots/sq010.blend"))
+
+    payload = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]
+
+    assert payload["session_epoch"] == 0, "the None above came from the payload hardcoding one, not the handshake"
+    assert payload["current_filepath"] == "/shots/sq010.blend"
+
+
+def test_get_addon_status_reports_an_indeterminate_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    The tool-wrapper half of the latch, proven the way this repo proves every wrapper.
+
+    The rig speaks the addon socket only, so what it can show live is
+    `get_addon_info` and `get_session_info` carrying the flag. This is the other
+    half: the field has to survive `AddonHandshake` and reach the payload an
+    agent reads, because while it is set the addon is refusing almost every
+    command and the open .blend must not be saved over. A refusal an agent
+    cannot explain is indistinguishable from a broken addon.
+    """
+    _install_handshake(monkeypatch, _handshake(session_indeterminate=True))
+
+    payload = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]
+
+    assert payload["session_indeterminate"] is True
+
+
+def test_get_addon_status_reports_a_healthy_session_as_determinate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    The negative direction, which is the one that catches a hardcoded True.
+
+    A field that is always true is not a signal, and an agent that stops trusting
+    it is back where it started.
+    """
+    _install_handshake(monkeypatch, _handshake())
+
+    payload = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]
+
+    assert payload["session_indeterminate"] is False

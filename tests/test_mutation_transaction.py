@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from conftest import load_addon_package
+from conftest import install_file_lifecycle_handler_lists, load_addon_package
 
 _UID = itertools.count(1)
 
@@ -184,6 +184,10 @@ def _load_addon(monkeypatch, *, data=None, use_global_undo=None):
     handlers.undo_post = []
     handlers.redo_post = []
     handlers.depsgraph_update_post = []
+    # The four file-lifecycle lists come from the one helper, not from four more
+    # hand-rolled assignments: this is the third of the three sites its own
+    # docstring says it has, and it was the one still hand-rolling them.
+    install_file_lifecycle_handler_lists(handlers)
 
     app = types.ModuleType("bpy.app")
     app.version = (5, 1, 0)

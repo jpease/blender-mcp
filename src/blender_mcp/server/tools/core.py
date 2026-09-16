@@ -63,11 +63,11 @@ async def get_addon_status(ctx: Context) -> dict:
         ctx: MCP request context.
 
     Returns:
-        "up_to_date" (bool), "protocol_version"/"expected_protocol_version" (ints to compare), "addon_version",
-        "capabilities" (feature flags reported by the addon), "blender_version", "writable_output_roots"
-        (directories Blender can write to; empty when the addon reports none), "source" (how the
-        handshake was obtained), "warning" (non-None if something looks off), "update_command" (run it when
-        up_to_date is false), and "after_install" (what to do in Blender afterwards).
+        "up_to_date" (bool), "protocol_version"/"expected_protocol_version", "addon_version", "capabilities",
+        "blender_version", "writable_output_roots" (empty when none), "current_filepath",
+        "session_id"/"session_epoch" (compare the *pair*; re-read capabilities when either moves),
+        "session_indeterminate" (true: a swap was aborted, most commands are refused, do not save over the
+        open file), "source", "warning" (non-None if odd), "update_command", "after_install".
 
     Raises:
         ToolError: If the operation cannot be completed.
@@ -86,6 +86,19 @@ async def get_addon_status(ctx: Context) -> dict:
             "capabilities": result.capabilities,
             "blender_version": result.blender_version,
             "writable_output_roots": result.writable_output_roots,
+            "current_filepath": result.current_filepath,
+            # Both halves, because the epoch is only comparable within one
+            # session_id: the addon's counter restarts at 0 with the process, so
+            # an agent told to "re-read capabilities when the epoch moves" and
+            # given only the counter walks straight into the ABA case the pair
+            # exists to close.
+            "session_id": result.session_id,
+            "session_epoch": result.session_epoch,
+            # True means the addon aborted a file swap part-way and is refusing
+            # every command but this one, get_session_info and the swap
+            # commands. Without it those refusals are indistinguishable from a
+            # broken addon, and the open .blend must not be saved over.
+            "session_indeterminate": result.session_indeterminate,
             "source": result.source,
             "warning": result.warning,
             "update_command": "blender-mcp install-addon",
