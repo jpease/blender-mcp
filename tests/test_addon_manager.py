@@ -872,3 +872,20 @@ def test_a_capability_that_only_matches_once_cf_is_stripped_is_refused() -> None
     published = _hostile_handshake(capabilities=["ping", "open_shot\u200b\u202e"]).capabilities
 
     assert published == ["ping"], f"a cleaned capability was published: {published!r}"
+
+
+def test_handshake_surfaces_the_file_path_policy() -> None:
+    """The enforced roots and the mode have to survive the server boundary to be observable."""
+    handshake = _hostile_handshake(file_roots=["/canon", "/output"], file_roots_enforced=True)
+
+    assert handshake.file_roots == ["/canon", "/output"]
+    assert handshake.file_roots_enforced is True
+
+
+def test_handshake_reads_an_addon_that_omits_the_file_path_policy_as_permissive() -> None:
+    """An addon that predates the fields enforces nothing, so the defaults must say exactly that."""
+    handshake = _hostile_handshake()
+
+    assert handshake.file_roots == []
+    assert handshake.file_roots_enforced is False
+    assert _hostile_handshake(file_roots_enforced="true").file_roots_enforced is False

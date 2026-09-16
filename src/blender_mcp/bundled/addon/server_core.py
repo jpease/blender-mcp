@@ -15,6 +15,7 @@ import bpy
 import mathutils
 
 from . import ADDON_PROTOCOL_VERSION, bl_info
+from .file_paths import canonical_path
 from .handlers.animation import AnimationHandlersMixin
 from .handlers.camera import CameraHandlersMixin
 from .handlers.character_rigging import CharacterRiggingHandlersMixin
@@ -35,9 +36,29 @@ from .handlers.scene_physics import ScenePhysicsHandlersMixin
 from .handlers.sketchfab import SketchfabHandlersMixin
 from .handlers.viewport import ViewportHandlersMixin
 from .helpers import get_blendermcp_addon_preferences, get_mesh_object, paginate, sync_from_editmode
-from .output_roots import configured_roots, writable_roots
+from .output_roots import configured_file_roots, configured_roots, writable_roots
 from .session import load_in_flight, mark_session_indeterminate, session_is_indeterminate, session_snapshot
 from .transaction import mutation_transaction
+
+
+@functools.lru_cache(maxsize=1)
+def _canonical_file_roots(roots: tuple[str, ...]) -> tuple[str, ...]:
+    """
+    Canonicalize the configured file roots once per distinct configuration.
+
+    `realpath` stats every component, and the handshake runs on Blender's main
+    thread, so this is memoized for the reason `_probe_writable_roots` is. A
+    root that does not exist is kept: dropping it would turn a misconfigured
+    enforced deployment into a permissive one.
+
+    Args:
+        roots: The configured roots, in order. A tuple so it can key the cache.
+
+    Returns:
+        tuple[str, ...]: Canonical roots, deduplicated, order kept.
+
+    """
+    return tuple(dict.fromkeys(canonical_path(root) for root in roots))
 
 
 @functools.lru_cache(maxsize=1)
@@ -2319,6 +2340,9 @@ class BlenderMCPServer(
             "capabilities": sorted({"ping", "get_polyhaven_status", "get_nd_status", *self._build_command_handlers()}),
             "blender_version": bpy.app.version_string,
             "writable_output_roots": self._writable_output_roots(),
+            # The enforced path policy, distinct from the advisory ranking above:
+            # empty roots and `false` mean no containment is enforced.
+            **self._file_path_policy(),
             # The pair, not the counter alone: module state is rebuilt at epoch
             # 0 by a Blender restart or Reload Scripts, so a client comparing
             # only the number can see a value it has already seen against an
@@ -2344,8 +2368,9 @@ class BlenderMCPServer(
         defaults.
 
         This list is an **advisory preference ranking, not an enforced root
-        set**. Nothing here validates a later write against it. Three caveats a
-        containment boundary must not be built on without deciding them first:
+        set**. Nothing here validates a later write against it; the enforced
+        roots are `_file_path_policy`'s, read from the deployment's variables
+        only, for the third reason below. Three caveats of this list:
 
         - `bpy.app.tempdir` is session-scoped and Blender deletes it on exit,
           yet it ranks *first* whenever no .blend is open and no roots are
@@ -2377,6 +2402,24 @@ class BlenderMCPServer(
             os.path.expanduser("~"),
         )
         return list(_probe_writable_roots(candidates))
+
+    @staticmethod
+    def _file_path_policy() -> dict[str, object]:
+        """
+        Publish the roots `.blend` file commands are confined to, and whether any are.
+
+        Permissive-when-unset is only acceptable if a client can see it, so the
+        mode is a field of its own rather than something inferred from an empty
+        list. The roots are published canonical (realpath'd), because that is
+        the form containment is decided on; a symlinked mount is otherwise
+        reported under one name and enforced under another.
+
+        Returns:
+            dict[str, object]: `file_roots` (list[str]) and `file_roots_enforced` (bool).
+
+        """
+        roots = list(_canonical_file_roots(tuple(configured_file_roots())))
+        return {"file_roots": roots, "file_roots_enforced": bool(roots)}
 
     _SCENE_INFO_MAX_LIMIT = 200
 

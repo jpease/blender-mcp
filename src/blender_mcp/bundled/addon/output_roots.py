@@ -21,6 +21,10 @@ from collections.abc import Iterable, Mapping
 # Colon-separated (os.pathsep) list of directories a deployment wants offered
 # first - e.g. a container's mounted output volume.
 OUTPUT_ROOTS_ENV_VAR = "BLENDERMCP_OUTPUT_ROOTS"
+# The same format, naming the directories .blend file commands are *confined*
+# to. Separate because a canon library mount is read-only: folding it into
+# "where renders may be written" would be wrong. Falls back to the output roots.
+FILE_ROOTS_ENV_VAR = "BLENDERMCP_FILE_ROOTS"
 
 
 def configured_roots(environ: Mapping[str, str] | None = None) -> list[str]:
@@ -62,3 +66,27 @@ def writable_roots(candidates: Iterable[str | None]) -> list[str]:
         seen.add(path)
         roots.append(path)
     return roots
+
+
+def configured_file_roots(environ: Mapping[str, str] | None = None) -> list[str]:
+    """
+    Read the roots `.blend` file commands are enforced against.
+
+    This is the enforcing read path; everything above is advisory. It reads
+    only the deployment's variables and never the default candidates
+    `writable_roots` is given (`~`, temp dirs), because deriving a containment
+    boundary from those would make it the whole home directory. A variable that
+    is unset or holds only blanks counts as unset. An empty result means no
+    boundary is enforced - see `file_paths` for why that is the default.
+
+    Args:
+        environ: Mapping to read from; defaults to the real environment.
+
+    Returns:
+        list[str]: `BLENDERMCP_FILE_ROOTS` entries, else `BLENDERMCP_OUTPUT_ROOTS`
+        entries, as given (canonicalize before comparing).
+
+    """
+    source = os.environ if environ is None else environ
+    file_roots = configured_roots({OUTPUT_ROOTS_ENV_VAR: source.get(FILE_ROOTS_ENV_VAR, "")})
+    return file_roots or configured_roots(source)

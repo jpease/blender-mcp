@@ -233,6 +233,12 @@ class AddonHandshake:
     # refusals from a broken addon. An addon that predates it omits it, and the
     # default is the safe reading: not indeterminate.
     session_indeterminate: bool = False
+    # The roots the addon confines .blend file commands to, canonical, and
+    # whether any are enforced. Distinct from `writable_output_roots`, which is
+    # advisory. An addon that predates them omits both, and the defaults are
+    # truthful for it: such an addon enforces nothing.
+    file_roots: list[str] = field(default_factory=list)
+    file_roots_enforced: bool = False
 
     def session_marker(self) -> tuple[str | None, int | None]:
         """
@@ -852,6 +858,8 @@ def handshake_addon(blender_connection) -> AddonHandshake:
             # `is True`, not `bool(...)`: the payload is untrusted, and a
             # non-empty string or a non-zero int is not the addon saying yes.
             session_indeterminate=info.get("session_indeterminate") is True,
+            file_roots=normalized_session_text_list(info.get("file_roots")),
+            file_roots_enforced=info.get("file_roots_enforced") is True,
         )
     except Exception as e:
         msg = str(e).lower()

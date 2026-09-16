@@ -205,3 +205,13 @@ def test_get_addon_status_reports_a_healthy_session_as_determinate(monkeypatch: 
     payload = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]
 
     assert payload["session_indeterminate"] is False
+
+
+def test_get_addon_status_reports_the_file_path_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Permissive-when-unset is only acceptable if the agent can read which mode it is in."""
+    _install_handshake(monkeypatch, _handshake(file_roots=["/canon"], file_roots_enforced=True))
+
+    payload = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]
+
+    assert payload["file_roots"] == ["/canon"]
+    assert payload["file_roots_enforced"] is True

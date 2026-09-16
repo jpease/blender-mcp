@@ -28,8 +28,8 @@ that had already been lost once (see the closed item under "Known failures / blo
 | | |
 |---|---|
 | Branch | `main`, **unpushed**. `origin/main` is still at `523f427`. |
-| Last commit | **Task 4** (after `1f3619f`, the decision-13 amendment). Before it, **`2c1d678` — Task 3**, committed at **88.75/100 against a 90 gate** (below it; see the closing note at the end of this file). Task 2 closed after four cycles; Task 1 at 94/100. |
-| Next task | **Task 5** (filesystem trust boundary). Task 4 is done and committed; read its section at the end of this file. Historical note for Task 4, kept: Task 3 is **done and committed**. Read its closing note first — it says why it took six cycles and what §06's gate-driven amendment changes. **Task 4 must not assume "the epoch moved ⇒ a `load_post` fired"**: three sites move it (see T3-18/19). `_SESSION_SWAP_COMMANDS` is landed and single-sourced; Task 4 adds `_DATABLOCK_REPLACING_COMMANDS` as a **separate** constant and must not merge them. |
+| Last commit | **Task 5**, after Task 4 (`76f782d`) and the decision-13 amendment (`1f3619f`). Before it, **`2c1d678` — Task 3**, committed at **88.75/100 against a 90 gate** (below it; see the closing note at the end of this file). Task 2 closed after four cycles; Task 1 at 94/100. |
+| Next task | **Task 6** (file-lifecycle handlers). Tasks 4 and 5 are done and committed; read their sections at the end of this file, and Task 5's "Obligations on Task 6" before writing a handler. Historical note for Task 4, kept: Task 3 is **done and committed**. Read its closing note first — it says why it took six cycles and what §06's gate-driven amendment changes. **Task 4 must not assume "the epoch moved ⇒ a `load_post` fired"**: three sites move it (see T3-18/19). `_SESSION_SWAP_COMMANDS` is landed and single-sourced; Task 4 adds `_DATABLOCK_REPLACING_COMMANDS` as a **separate** constant and must not merge them. |
 | Working tree | Clean apart from `uv.lock`, which stays unstaged permanently (§03 incidental churn). |
 | Blender | **5.2.2 LTS** at `/opt/homebrew/bin/blender`. Every API fact re-verified against it; see "5.2.2 re-verification". |
 | Review loop | **Changed again 2026-09-16 for Tasks 4-10** (decision 13, handoff §06's 2026-09-16 amendment): findings triaged as bug / hardening / record-keeping; only bugs and automatically-critical items block; at most two cycles, then ask the user; scores recorded, not gated. Hardening goes to the backlog under decision 13. Tasks 1-3 ran under earlier rules. |
@@ -173,6 +173,9 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 
 
 | 12 | **Tasks 4-10 run gate-driven review cycles instead of a fixed four** (user decision, 2026-09-15). Stop when >=90/100 with every dimension >=80% and zero automatically-critical items; minimum two cycles, maximum four. Repairs are triaged into gate-blocking (fix now) and residual (recorded with an owner). Cycle 1 runs all four critic lenses; from cycle 2 only the lenses that failed their gate plus Critic 4. Three standing pre-checks added: grep for a recorded ruling before accepting a pushback, grep for sibling instances of a defect class before calling a repair done, and name the committed instrument behind every factual docstring claim. Full text in handoff §06's dated amendment. | Measured on Task 3, which ran the original rule: cycle 1 **46/100**, cycle 2 **62.5/100**, ~4.5 h of agent wall time across 13 Opus runs before the third repair round. The remaining gap was concentrated in known defects, not unknown ones. The three pre-checks each address a failure that cost Task 3 a full cycle: a recorded Task 2 ruling overruled and approved on a plausible-but-wrong equivalence argument; `_failure_note` hardened while its sibling `_library_summary` kept the identical three defects; and four false docstring claims. | **The cheap direction is being wrong about the cycle *count*, not about the gates** - every hard gate is unchanged, so a task that needs four cycles still gets them, and the stop condition is the rubric itself rather than a number. The real risk is triage: a finding filed as a residual that was in fact gate-blocking. Mitigated by requiring every residual to carry an owner and a cost, which is the same discipline the phase already applies to deferred work. If the change is wrong, the symptom is a later task's critic re-finding something an earlier task filed as a residual - at which point restore the fixed count and say so here. |
+| 14 | **Task 5: unset file roots mean permissive, and the mode is published.** `file_roots_enforced` (bool) and `file_roots` (realpath'd list) in `get_addon_info`, `AddonHandshake` (defaulted fields) and `get_addon_status`. | The local artist case is a GUI Blender on a loopback socket; deny-by-default bricks it. A pooled/container deployment sets the variable. | An operator who forgets the variable gets no containment - visible as `file_roots_enforced: false`, which is why it is published. |
+| 15 | **Task 5: `BLENDERMCP_FILE_ROOTS`, falling back to `BLENDERMCP_OUTPUT_ROOTS` when unset or blank; enforced roots come only from these variables, never from the advisory defaults** (`~`, tempdir, the open blend's directory). `writable_output_roots` is unchanged and still advisory. | A canon mount can be read-only, so "where I may read a .blend" differs from "where I may write a render"; and deriving enforcement from the defaults would make the home directory the boundary (Task 1's flag). Covered by a test and a revert row. | `BLENDERMCP_FILE_ROOTS=""` intended as deny-all falls back instead - visible in the handshake. |
+| 16 | **Task 5: two real `.blend` fixtures committed** (`tests/fixtures/blend/empty_zstd.blend`, `empty_gzip.blend`, 168 K) despite the precedent of generating fixtures. | Criterion 3 requires magic-byte acceptance against real files; Python 3.13 has no zstd module to build one at test time, and a generator would need Blender in the default suite. The uncompressed case is derived from the gzip fixture. | Repo grows 168 K; bytes are build-specific but only the header is asserted. |
 | 13 | **Tasks 4-10: findings are triaged by kind, at most two cycles, and the score is recorded but no longer gates** (user decision, 2026-09-16; supersedes decision 12's stop condition and cycle rules, keeps its three pre-checks). Bugs and automatically-critical items are fixed before commit; hardening goes to the hardening backlog below for Task 8 to prioritise, implemented after Phase 2 unless pulled in; record-keeping is fixed once at commit after a code freeze. Cycle 2 only if cycle 1 had blocking repairs, re-running only those lenses plus a regression check on the repairs; anything still blocking after cycle 2 stops and asks the user. Full text in handoff §06's 2026-09-16 amendment. | Task 3 cycle-1 tree (stash `5e9d482`) compared with `2c1d678`: real bugs (T3-1 wrong-file `success`, T3-5 Save Copy path) were fixed in cycle 2, ~2 of ~15¾ hours; hardening against a hostile peer earned ~20-25 of the 42.75 points gained and most of the hours; record-keeping ~5. Three defects were introduced by hardening repairs (T3-12 verified: no `settimeout(0` in `5e9d482`, present at `2983041` `server_core.py:819`; T3-16; T3-24). The trust-boundary 16/20 floor, not defect risk, drove cycles 3-6. | **A hardening finding misclassified as hardening when it is a real bug ships that bug.** Mitigated by the definition: anything producing a wrong result, data loss, hang or dropped healthy connection for a single local user is a bug, and §07's automatically-critical list is unchanged. The other cost is accepted deliberately: until Task 8's backlog is implemented, the addon is not hardened against a hostile local socket peer - the same posture the loopback-only, unauthenticated socket already has. |
 
 ### Hardening backlog (decision 13) — owner: Task 8 to prioritise
@@ -183,6 +186,14 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | 4 | **An unflagged `lib.reload()` inside a transaction still destroys the library's contents** (probe case C: linked 4 -> 0). No call exists in `src/`; the Task 7 reload commands bypass the transaction. | A future handler that forgets `replacing_library_contents()` loses linked contents on a later raise. Candidate fix: `_new_datablocks` skips linked ids whose Library predates the transaction — trade-off: a failed link into an already-linked library then leaks its new ids. | Critic 1, implementer |
 | 4 | **`_on_load_post` invalidates before updating epoch / `load_in_flight`**; if invalidation ever raised, Blender swallows it and the epoch would not move (Critic 2 E6, with `invalidate` patched to raise). Unreachable: invalidation only assigns attributes. | Stale-stamped commands could run against a new file. Fix: move the call last or `try/finally`; revert-matrix row pins current order. | Critic 2 |
 | 4 | **Probe scripts leave fixture `.blend` files in the OS temp dir.** | Temp-dir clutter on a developer machine. | Critic 3 |
+| 5 | **Sanitizer's structural pass leaves a relative tail** for `, ` / `: ` / `; ` in a directory name, a space in the last component, or `')` / `'>` / `"?` inside a quoted name (real 5.2.2 messages; e.g. `<path>, John/polyhaven/nodir/x.blend@`). Never an absolute path. Closed whenever the caller passes `known_paths`. | Directory-name fragments reach a client. Mitigated by Task 6/7 passing known paths (obligation below). | Critic 3 cycle 2 |
+| 5 | **Unusual path forms not detected**: `file:///...`, `path:/...`, `{/...}`, backtick-quoted. No real Blender shape produces them. | An absolute path in a hypothetical future message. Fix: widen the bare-path lookbehind. | Critic 3 |
+| 5 | **`known_paths` are replaced as plain substrings** with no absolute/min-length check (`['o']` mangles text; `/tmp` vs `/private/tmp` gives `<path>>`). Callers pass validated paths today. | Garbled messages from a careless caller. Fix: ignore non-absolute known paths. | Critic 3 cycle 2 |
+| 5 | **`_has_ancestor_directory` trusts device/inode numbers**; FUSE/SMB mounts that fake or reuse inodes could match a non-root ancestor. No reproduction. | Containment accepted outside the root on such a mount. Fix: require a casefold name match before samestat. | Critic 3 cycle 2 |
+| 5 | **Handshake does a second main-thread stat walk** (`realpath` of configured file roots, memoized) beside `_writable_output_roots()`'s; a dead NFS/automount root stalls the first handshake. Extends the existing recorded risk. | Drain loop blocked for a mount timeout. | Critics 1+2 |
+| 5 | **`sanitize_blender_error` output is not routed through `text_hygiene` control-character stripping.** | Blender error text with control characters reaches a client. | Critic 4 |
+| 5 | **A symlink swapped between validation and Blender's open** (TOCTOU). | Validation bypass by a local attacker with write access inside a root. | Implementer |
+| 5 | **No positive resolve test with a space in a directory name.** | Coverage gap; `os.path` handles spaces. | Critics 1+2 |
 
 ## Tasks
 | # | Task | Tier | Status | Commit | Notes |
@@ -191,7 +202,7 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | 2 | Decide the reentrancy strategy by experiment | Opus | **Done** | `969df10` (rule), `9608561` (evidence + spec), `807ef52` (`use_scripts` gap), `c54b8b6` (cycle 1+2 repairs), + the re-score repair commit | Decision rule committed **before** the spike existed, so the branch could not be picked after seeing the result. **Decided: synchronous validate-then-swap, answer after the swap** — the callback survives, all four pre-registered conditions met, **18/18** swaps, no intermittency. Async-job-with-polling rejected; its premise is false. **Six rig runs** on 5.2.2 (see the per-run tally). Findings with downstream teeth: the scene-gated capability set follows the swapped file; `bpy.context.window` is `None` for the rest of the swapping tick but operators still run and it recovers by the next tick; the ordering hazard is demonstrated on both sides of the drain budget; `bpy.data.is_dirty` is a usable pre-swap guard and unsaved work is otherwise destroyed silently; five failure modes yielding three distinct path-leaking error texts, flagged for Task 5 (**not** the different "five error shapes" of Finding 5, which spans open/save/reload). No production code changed; spike deleted. |
 | 3 | Drain-loop file-swap barrier, session epoch, failure handlers | Opus | **Done — committed at 88.75/100 measured, below the 90 gate. See the closing note.** | this commit | Protocol 31 **asserted, not bumped** (decision 2). Barrier is snapshot **+** enqueue-epoch stamp; `session_indeterminate` latch on a `load_pre` positive signal; allowlist hygiene on both sides of the socket. 24 decisions, 15 residuals with owners. |
 | 4 | Make rollback survive a file swap, track `libraries` | Opus | **Done — one cycle, no blocking findings** (decision 13) | this commit | `_DATABLOCK_REPLACING_COMMANDS` bypass, `Transaction.invalidate()` via `load_post` and a flagged `blend_import_post`, `ObjectState.invalidate()`, `libraries` tracked and removed last. See "Task 4" at the end of this file. |
-| 5 | The filesystem trust boundary | Opus | Not started | — | Promotes `output_roots.py`, landed here. |
+| 5 | The filesystem trust boundary | Opus | **Done — two cycles; blocking findings repaired** (decision 13) | this commit | `file_paths.py` (`resolve_blend_path`, `enforce_roots`, `sanitize_blender_error`), `BLENDERMCP_FILE_ROOTS`, policy in the handshake, Poly Haven guarded. See "Task 5" at the end of this file. |
 | 6 | Addon file-lifecycle handlers | Opus | Not started | — | **Inherits from Task 2:** `open_shot` must refuse when `bpy.data.is_dirty` unless the caller passes an explicit discard flag (unsaved work is otherwise destroyed silently — measured); `wm.open_mainfile` must pass `use_scripts=False` explicitly; the post-swap half runs with `bpy.context.window` at `None` but an inherited context still works. |
 | 7 | Addon linking handlers | Opus | Not started | — | |
 | 8 | Socket authentication — design deliverable | Opus | Not started | — | |
@@ -3174,3 +3185,131 @@ Protocol stays 31/31; `tests/test_addon_manager.py` 52 passed (Critic 4).
   orphaned-backup sentence is marked as inference (case B holds no geometry backup); this section.
 
 **Wall time:** implementer ~24 min, four parallel critics ~10 min, reviewer verification and record ~15 min.
+
+---
+
+## Task 5 — the filesystem trust boundary
+
+Run under decision 13. **Two cycles.** Cycle 1 (four lenses in parallel) found three blocking bugs, all in
+Critic 3's lens; one repair round by the same implementer; cycle 2 re-ran Critic 3 only, which confirmed each
+closed and found no new bug. Decisions 14-16 above.
+
+### What landed
+
+- `src/blender_mcp/bundled/addon/file_paths.py` (bpy-free, asserted by AST test): `resolve_blend_path(raw, *,
+  must_exist)` (non-string/empty/NUL refused, unexpanded `//` refused, `~` then `abspath` then `realpath`,
+  case-insensitive `.blend` with trailing dot/space refused, three magic prefixes `BLENDER` / zstd / gzip `\x1f\x8b`),
+  `enforce_roots(path, roots)` (`commonpath` on realpath'd forms, then a same-directory `samestat` fallback for
+  case-insensitive volumes; the message names the policy, never a path), `sanitize_blender_error(exc,
+  known_paths=())` (known paths and their `@` forms replaced longest-first, then structural detection; `LI`
+  prefix stripped from reload messages).
+- `output_roots.py`: `FILE_ROOTS_ENV_VAR`, `configured_file_roots`. `server_core.py`: `_file_path_policy`,
+  memoized `_canonical_file_roots`. Handshake + `get_addon_status`: `file_roots`, `file_roots_enforced`.
+- `handlers/polyhaven.py`: `_validated_download` holds a downloaded `.blend` to its own download directory and
+  the magic check before `libraries.load`; six `{e}` error sites routed through the sanitizer.
+- README: both env vars, permissive-when-unset, overwrite rule (documented; enforced by Task 6), `use_scripts`
+  policy. `rg use_scripts src/blender_mcp/server/` → nothing.
+- Protocol stays **31/31** (decision 2 precedent).
+
+### Obligations on Task 6 (and 7)
+
+1. Every `except` around `open_mainfile` / `save_*` / `libraries.load` / `lib.reload()` calls
+   `sanitize_blender_error(exc, known_paths=(raw, canonical))` — structural detection alone leaves relative
+   tails (backlog row).
+2. Refuse a `//` path when `bpy.data.filepath == ""`: measured, `bpy.path.abspath('//shot.blend')` then returns
+   `'shot.blend'` and `'//../escape.blend'` returns `'../escape.blend'` — relative to the process CWD.
+3. `SHOT_MODE_BYTE_CEILING` headroom is **1 B** (203,093 / 203,094). Any tool-docstring growth before Task 9
+   trips the gate.
+4. Enforce the overwrite rule with an `os.path.exists` pre-check; `use_scripts=False` explicitly; the
+   `use_scripts_auto_execute` preference check.
+
+### Step 6 — five real shapes, reproduced by the reviewer on Blender 5.2.2
+
+`/opt/homebrew/bin/blender --background --factory-startup --python scripts/blender_probes/file_path_error_shapes.py`,
+exit 0 (plain work dir shown; the same run repeats every shape under `fp shapes o'brien …`, all clean):
+
+```
+[2 open EMPTY PATH (process cwd)]
+  RAW:       'Error: File format is not supported in file "/Users/jpease/Developer/github/jpease/blender-mcp"\n'
+  SANITIZED: 'Error: File format is not supported in file "<path>"'
+[1 open missing]
+  RAW:       'Error: Cannot read file "/var/folders/.../fp_shapes_p21hfrz9/missing.blend": No such file or directory\n'
+  SANITIZED: 'Error: Cannot read file "<path>": No such file or directory'
+[2 open directory | non-blend | corrupt magic]
+  SANITIZED: 'Error: File format is not supported in file "<path>"'
+[3 open truncated]
+  RAW:       'Error: Loading "/var/.../truncated.blend" failed: Failed to read blend file \'/var/.../truncated.blend\': Missing DNA block'
+  SANITIZED: 'Error: Loading "<path>" failed: Failed to read blend file \'<path>\': Missing DNA block'
+[4 save unwritable]
+  RAW:       'Error: Cannot open file /var/.../no/such/dir/x.blend@ for writing: No such file or directory\n'
+  SANITIZED: 'Error: Cannot open file <path> for writing: No such file or directory'
+[5 library reload]
+  RAW:       "Error: Trying to reload library 'LIgood.blend' from invalid path '/var/.../gone.blend'\n"
+  SANITIZED: "Error: Trying to reload library 'good.blend' from invalid path '<path>'"
+=== the committed fixtures open, and carry the header their names claim ===
+  empty_zstd.blend: header=b'(\xb5/\xfd'   open -> ['FINISHED']
+  empty_gzip.blend: header=b'\x1f\x8b\x08\x00'   open -> ['FINISHED']
+```
+
+Critic 3 additionally captured four unlisted shapes, all clean: `libraries.load` missing file (`OSError`, bare
+path), `libraries.load` on a truncated file, `images.load` (`Cannot read '<abs>'`), save onto a directory. In
+cycle 2 it re-ran both captures after the repairs, including real `Smith, John` and `it') x` directories.
+
+### The three cycle-1 bugs and their repairs
+
+| Finding | Evidence | Repair | Revert rows |
+|---|---|---|---|
+| **F1** bare-path detection swallowed the cause: `...x.blend@ for writing: Input/output error` → `<path> error` | Critic 3, `os.strerror` scan | stop a bare path at a word ending `:`/`;`/`,`; keep closing punctuation; `known_paths` substitution first | 7 new, 4 re-anchored, each fails 1-12 |
+| **F2** case-variant spelling of an in-root file refused on APFS | Critic 3 `res.py` | `samestat` ancestor fallback after `commonpath` | 1 new; two canonicalization rows gained `also=NO_SAME_DIRECTORY_FALLBACK` because the fallback made them survive |
+| **F6** six Poly Haven sites returned `{e!s}`; `images.load` embeds `<abs>` | Critic 3 capture | all six through the sanitizer | 6, one per site, each fails 1 |
+
+Every repair test was seen failing first (10 failed / 54 passed before the fixes).
+
+### Falsifiability
+
+Initial Step 2 against a permissive stub: **42 failed, 12 passed** (the 12 are positive cases a permissive stub
+accepts). `scripts/revert_matrix.py --only "task 5"`: **63 rows, all fail as required, 0 survivors, 0 uncovered**;
+`check_revert_anchors.py` **322/322** after the commit-time comment edits. Selected counts:
+
+| Revert | Failed |
+|---|---|
+| realpath → abspath | 5 |
+| commonpath → startswith | 1 |
+| magic narrowed to `BLENDER` | 3 |
+| superseded gzip `\x1f\x8b\x08\x08` | 1 |
+| superseded 12-byte `BLENDER17-01` | 1 |
+| sanitizer bypassed | 12 |
+| single replace (`count=1`) | 2 |
+
+Independently re-applied by Critic 4 (six rows, all failed as named) and by Critic 3 in cycle 2 (four mutations
+of the repairs plus six Poly Haven site reverts). **Measured survivor, documented:** dropping only the `abspath`
+wrapper fails nothing, because CPython's `realpath` absolutizes on its own; the combined row covers it and the
+docstring says so.
+
+### Gates (reviewer)
+
+| Check | Value | Before |
+|---|---|---|
+| pytest | **1092 passed** | 1015 |
+| `ruff check .` | 9,832 | 9,832 |
+| `ruff format --check .` | 12 unformatted | 12 |
+| basedpyright | 71 / 4 | 71 / 4 |
+| `all` | 285 tools / **1,181,037 B** (+14) | 1,181,023 |
+| `shot` | 53 tools / **203,093 B** (+14), ceiling 203,094 unchanged | 203,079 |
+| existing test lines removed | 0 | — |
+
+The +14 B is the two new `get_addon_status` keys, paid partly by trimming its docstring (the `warning` field's
+"non-None if odd" gloss was dropped — a small loss of client-facing explanation).
+
+### Scores (recorded, not gated)
+
+| Dimension | Cycle 1 | Cycle 2 |
+|---|---|---|
+| Data durability | 29/30 | — (not re-run) |
+| Concurrency and liveness | 24/25 | — |
+| Filesystem and trust boundary | 16/20 | **17/20** |
+| Evidence | 7/15 (record not yet written; by design) | — |
+| Code quality | 8/10 | — |
+
+**Wall time:** implementer ~23 min + ~6 min repair; cycle-1 critics ~10 min in parallel; cycle-2 critic ~5 min;
+reviewer ~20 min.

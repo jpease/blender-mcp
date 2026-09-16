@@ -6,10 +6,39 @@ from contextlib import suppress
 
 import bpy
 from ..constants import REQ_HEADERS
+from ..file_paths import enforce_roots, resolve_blend_path, sanitize_blender_error
 from ..network import download_file, get_json
 
 _MAX_IMAGE_BYTES = 512 * 1024 * 1024
 _MAX_MODEL_FILE_BYTES = 2 * 1024 * 1024 * 1024
+
+
+def _validated_download(path: str, download_dir: str) -> str:
+    """
+    Check a downloaded `.blend` before Blender parses it.
+
+    The response is untrusted and `libraries.load` reads the file, so it must be
+    a real `.blend` inside the directory the handler created. That directory,
+    not the deployment's file roots, is the boundary: the file is the handler's
+    own temp artefact, not a path a caller named.
+
+    Args:
+        path: Where the download was written.
+        download_dir: The temp directory the handler created for it.
+
+    Returns:
+        str: The canonical path to load.
+
+    Raises:
+        ValueError: If the file is not a `.blend` or resolves outside the directory.
+
+    """
+    blend_path = resolve_blend_path(path, must_exist=True)
+    try:
+        enforce_roots(blend_path, [download_dir])
+    except ValueError:
+        raise ValueError("downloaded file resolves outside its download directory") from None
+    return blend_path
 
 
 class PolyhavenHandlersMixin:
@@ -37,7 +66,7 @@ class PolyhavenHandlersMixin:
                 )
             }
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": sanitize_blender_error(e)}
 
     def list_polyhaven_assets(self, asset_type=None, categories=None, limit=20, offset=0):
         """
@@ -86,7 +115,7 @@ class PolyhavenHandlersMixin:
                 "next_offset": next_offset if truncated else None,
             }
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": sanitize_blender_error(e)}
 
     def import_polyhaven_asset(self, asset_id, asset_type, resolution="1k", file_format=None):
         try:
@@ -156,7 +185,7 @@ class PolyhavenHandlersMixin:
                             "world": configured["world"],
                         }
                     except Exception as e:
-                        return {"error": f"Failed to set up HDRI in Blender: {e!s}"}
+                        return {"error": f"Failed to set up HDRI in Blender: {sanitize_blender_error(e)}"}
                     finally:
                         with suppress(FileNotFoundError):
                             os.remove(partial_path)
@@ -292,7 +321,7 @@ class PolyhavenHandlersMixin:
                     }
 
                 except Exception as e:
-                    return {"error": f"Failed to process textures: {e!s}"}
+                    return {"error": f"Failed to process textures: {sanitize_blender_error(e)}"}
 
             elif asset_type == "models":
                 # For models, prefer glTF format if available
@@ -358,8 +387,8 @@ class PolyhavenHandlersMixin:
                         elif file_format == "obj":
                             operator_result = bpy.ops.wm.obj_import(filepath=main_file_path)
                         elif file_format == "blend":
-                            # For blend files, we need to append or link
-                            with bpy.data.libraries.load(main_file_path, link=False) as (data_from, data_to):
+                            validated = _validated_download(main_file_path, temp_dir)
+                            with bpy.data.libraries.load(validated, link=False) as (data_from, data_to):
                                 data_to.objects = data_from.objects
 
                             # Link the objects to the scene
@@ -381,7 +410,8 @@ class PolyhavenHandlersMixin:
                             "imported_objects": imported_objects,
                         }
                     except Exception as e:
-                        return {"error": f"Failed to import model: {e!s}"}
+                        # Blender's and the OS's error text name the temp file's absolute path.
+                        return {"error": f"Failed to import model: {sanitize_blender_error(e)}"}
                     finally:
                         # Clean up temporary directory
                         with suppress(Exception):
@@ -393,7 +423,7 @@ class PolyhavenHandlersMixin:
                 return {"error": f"Unsupported asset type: {asset_type}"}
 
         except Exception as e:
-            return {"error": f"Failed to download asset: {e!s}"}
+            return {"error": f"Failed to download asset: {sanitize_blender_error(e)}"}
 
     def apply_polyhaven_texture(
         self,

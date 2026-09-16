@@ -66,6 +66,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 RIG = ROOT / "scripts/blender_rig.py"
 ADDON_MANAGER = ROOT / "src/blender_mcp/addon_manager.py"
 ADDON_OUTPUT_ROOTS = ROOT / "src/blender_mcp/bundled/addon/output_roots.py"
+ADDON_FILE_PATHS = ROOT / "src/blender_mcp/bundled/addon/file_paths.py"
+ADDON_POLYHAVEN = ROOT / "src/blender_mcp/bundled/addon/handlers/polyhaven.py"
 ADDON_SERVER_CORE = ROOT / "src/blender_mcp/bundled/addon/server_core.py"
 SERVER_CORE_TOOL = ROOT / "src/blender_mcp/server/tools/core.py"
 SERVER_CONNECTION = ROOT / "src/blender_mcp/server/connection.py"
@@ -95,6 +97,8 @@ DOCKER_START = ROOT / "docker/blender/start_server.py"
 RIGT = "tests/test_blender_rig.py"
 DOCKT = "tests/test_docker_rig.py"
 ROOTST = "tests/test_output_roots.py"
+FPT = "tests/test_file_paths.py"
+PHT = "tests/test_polyhaven_blend_guard.py"
 CORET = "tests/server/tools/test_core.py"
 CLIT = "tests/server/test_cli_transport.py"
 AMT = "tests/test_addon_manager.py"
@@ -137,8 +141,9 @@ NFKC_BACKSLASH_LIB = (
 )
 
 # The files added outright by a Phase 2 task; every node they collect must be
-# accounted for. Task 1 added the first five; Task 3 added `test_session_state.py`.
-NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT)
+# accounted for. Task 1 added the first five; Task 3 added `test_session_state.py`;
+# Task 5 added the last two.
+NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, PHT)
 # Nodes added to files that already existed. **Not optional bookkeeping:**
 # `coverage_gaps()` subtracts the rows below from *this* universe, so a task that
 # adds nodes here without listing them gets a "0 uncovered" that is true of the
@@ -266,6 +271,12 @@ NEW_NODES_IN_EXISTING_FILES = (
     # --- Task 4: the Step 1 / 1b reproductions, kept as regression guards ---
     f"{MUTT}::test_regression_guard_a_transaction_unaware_of_a_file_swap_removes_the_whole_new_file",
     f"{MUTT}::test_regression_guard_a_transaction_unaware_of_a_library_reload_removes_the_reloaded_contents",
+    # --- Task 5: the file path policy crosses the handshake ---
+    f"{AMT}::test_handshake_surfaces_the_file_path_policy",
+    f"{AMT}::test_handshake_reads_an_addon_that_omits_the_file_path_policy_as_permissive",
+    f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[file_roots]",
+    f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[file_roots_enforced]",
+    f"{AMT}::test_a_hostile_element_inside_a_list_field_is_dropped_not_published[file_roots]",
 )
 
 # Nodes no single revert can break on their own, with the reason. Keeping these
@@ -410,6 +421,17 @@ def _bare_connect(port: int) -> bool:
     except OSError:
         return False
 '''
+
+# Appended by the two canonicalization rows. Task 5's cycle-1 repair added a
+# device/inode containment check for case-folding volumes, which independently
+# accepts the positive "root through a symlink" and "trailing separator" cases,
+# so reverting canonicalization alone leaves those nodes passing (measured). The
+# redefinition disables that second defence alongside the reverted one.
+NO_SAME_DIRECTORY_FALLBACK = """
+
+def _has_ancestor_directory(candidate, root):
+    return False
+"""
 
 REVERTS: list[Revert] = [
     # --- which Blender, and which configuration, the rig launches ---
@@ -2700,6 +2722,532 @@ REVERTS: list[Revert] = [
             f"{MUTT}::test_regression_guard_a_transaction_unaware_of_a_file_swap_removes_the_whole_new_file",
             f"{MUTT}::test_regression_guard_a_transaction_unaware_of_a_library_reload_removes_the_reloaded_contents",
         ),
+    ),
+    # --- Task 5: the filesystem trust boundary ---
+    Revert(
+        "task 5: file_paths imports bpy",
+        ADDON_FILE_PATHS,
+        None,
+        "\nimport bpy\n",
+        (f"{FPT}::test_file_paths_imports_no_bpy",),
+    ),
+    Revert(
+        "task 5: a non-string path reaches the string handling",
+        ADDON_FILE_PATHS,
+        '    if not isinstance(raw, str):\n        raise ValueError("path must be a string")\n',
+        "",
+        tuple(
+            f"{FPT}::test_a_non_string_path_is_refused[{case}]"
+            for case in ("None", "7", "b'shot.blend'", "['shot.blend']", "PosixPath('shot.blend')")
+        ),
+    ),
+    Revert(
+        "task 5: an empty or blank path is not refused (Blender opens the process CWD)",
+        ADDON_FILE_PATHS,
+        '    if not raw.strip():\n        raise ValueError("path must not be empty")\n',
+        "",
+        (f"{FPT}::test_an_empty_path_is_refused", f"{FPT}::test_a_whitespace_only_path_is_refused"),
+    ),
+    Revert(
+        "task 5: a NUL byte is not refused",
+        ADDON_FILE_PATHS,
+        '    if "\\x00" in raw:\n        raise ValueError("path must not contain a NUL byte")\n',
+        "",
+        (f"{FPT}::test_a_nul_byte_is_refused",),
+    ),
+    Revert(
+        "task 5: an unexpanded Blender-relative prefix is resolved as a POSIX path",
+        ADDON_FILE_PATHS,
+        "    if raw.startswith(BLENDER_RELATIVE_PREFIX):",
+        "    if False:",
+        (f"{FPT}::test_an_unexpanded_blender_relative_prefix_is_refused",),
+    ),
+    Revert(
+        "task 5: the .blend suffix is not checked",
+        ADDON_FILE_PATHS,
+        "    if not (_has_blend_suffix(raw) and _has_blend_suffix(resolved)):",
+        "    if False:",
+        (
+            f"{FPT}::test_a_non_blend_extension_is_refused",
+            f"{FPT}::test_a_trailing_dot_after_the_blend_suffix_is_refused",
+            f"{FPT}::test_a_trailing_space_after_the_blend_suffix_is_refused",
+        ),
+    ),
+    Revert(
+        "task 5: trailing dots and spaces are stripped before the suffix is compared",
+        ADDON_FILE_PATHS,
+        "    leaf = os.path.basename(path)\n",
+        '    leaf = os.path.basename(path).rstrip(". ")\n',
+        (
+            f"{FPT}::test_a_trailing_dot_after_the_blend_suffix_is_refused",
+            f"{FPT}::test_a_trailing_space_after_the_blend_suffix_is_refused",
+        ),
+    ),
+    Revert(
+        "task 5: the .blend suffix is compared case-sensitively",
+        ADDON_FILE_PATHS,
+        "    return leaf.lower().endswith(BLEND_SUFFIX)",
+        "    return leaf.endswith(BLEND_SUFFIX)",
+        (f"{FPT}::test_the_blend_suffix_is_matched_case_insensitively",),
+    ),
+    Revert(
+        "task 5: realpath reverted to abspath, symlinks compared by name (plus the same-directory fallback)",
+        ADDON_FILE_PATHS,
+        "    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))",
+        "    return os.path.abspath(os.path.expanduser(path))",
+        (
+            f"{FPT}::test_a_symlink_inside_a_root_pointing_outside_it_is_refused",
+            f"{FPT}::test_a_symlinked_parent_directory_is_refused",
+            f"{FPT}::test_a_root_reached_through_a_symlink_still_contains_its_files",
+            f"{FPT}::test_blenders_relative_form_resolves_inside_the_blend_directory",
+            f"{PHT}::test_a_downloaded_blend_resolving_outside_its_download_directory_is_never_loaded",
+        ),
+        also=NO_SAME_DIRECTORY_FALLBACK,
+    ),
+    Revert(
+        "task 5: no abspath or realpath, relative and `..` paths compared as typed (plus the same-directory fallback)",
+        ADDON_FILE_PATHS,
+        "    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))",
+        "    return os.path.expanduser(path)",
+        (
+            f"{FPT}::test_a_bare_relative_path_comes_out_absolute",
+            f"{FPT}::test_dotdot_traversal_is_normalised_before_the_containment_check",
+            f"{FPT}::test_a_relative_form_climbing_out_of_the_blend_directory_is_normalised",
+            f"{FPT}::test_a_path_inside_a_root_is_accepted_even_when_the_root_has_a_trailing_separator",
+        ),
+        also=NO_SAME_DIRECTORY_FALLBACK,
+    ),
+    Revert(
+        "task 5: ~ is not expanded, so it names a directory under the process CWD",
+        ADDON_FILE_PATHS,
+        "    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))",
+        "    return os.path.realpath(os.path.abspath(path))",
+        (f"{FPT}::test_tilde_expands_to_the_home_directory",),
+    ),
+    Revert(
+        "task 5: containment by string prefix (the /output-evil bug)",
+        ADDON_FILE_PATHS,
+        "            if os.path.commonpath((canonical_root, candidate)) == canonical_root:",
+        "            if candidate.startswith(canonical_root):",
+        (f"{FPT}::test_a_sibling_directory_sharing_the_roots_prefix_is_refused",),
+    ),
+    Revert(
+        "task 5: no configured roots refuses everything instead of enforcing nothing",
+        ADDON_FILE_PATHS,
+        "    if not roots:\n        return\n",
+        "",
+        (f"{FPT}::test_no_configured_roots_enforces_nothing",),
+    ),
+    Revert(
+        "task 5: the containment refusal echoes the resolved path",
+        ADDON_FILE_PATHS,
+        '        "path is outside the allowed file roots',
+        '        f"path {candidate} is outside the allowed file roots',
+        (
+            f"{FPT}::test_the_containment_refusal_names_the_policy_not_a_path",
+            f"{FPT}::test_a_sibling_directory_sharing_the_roots_prefix_is_refused",
+            f"{FPT}::test_dotdot_traversal_is_normalised_before_the_containment_check",
+            f"{FPT}::test_a_symlink_inside_a_root_pointing_outside_it_is_refused",
+        ),
+    ),
+    Revert(
+        "task 5: a directory is read as a missing file",
+        ADDON_FILE_PATHS,
+        (
+            "    if os.path.isdir(path):\n"
+            '        raise ValueError("path is a directory, not a .blend file")\n'
+            "    if not os.path.isfile(path):"
+        ),
+        "    if not os.path.isfile(path):",
+        (f"{FPT}::test_a_directory_where_a_file_is_expected_is_refused",),
+    ),
+    Revert(
+        "task 5: a directory is accepted as a save target",
+        ADDON_FILE_PATHS,
+        (
+            "    if os.path.isdir(path):\n"
+            '        raise ValueError("path is a directory, not a .blend file")\n'
+            "    directory = os.path.dirname(path)"
+        ),
+        "    directory = os.path.dirname(path)",
+        (f"{FPT}::test_a_directory_where_a_save_target_is_expected_is_refused",),
+    ),
+    Revert(
+        "task 5: a missing file is not refused before it is opened",
+        ADDON_FILE_PATHS,
+        '    if not os.path.isfile(path):\n        raise ValueError("file does not exist")\n',
+        "",
+        (f"{FPT}::test_a_missing_file_is_refused",),
+    ),
+    Revert(
+        "task 5: the magic-byte check is skipped",
+        ADDON_FILE_PATHS,
+        "    if not header.startswith(BLEND_MAGIC_PREFIXES):",
+        "    if False:",
+        (
+            f"{FPT}::test_a_file_whose_magic_bytes_are_not_a_blend_is_refused",
+            f"{PHT}::test_a_downloaded_blend_whose_header_is_not_a_blend_is_never_loaded",
+        ),
+    ),
+    Revert(
+        "task 5: an unreadable file's OSError text (and its path) reaches the refusal",
+        ADDON_FILE_PATHS,
+        '        raise ValueError("file could not be read") from exc',
+        '        raise ValueError(f"file could not be read: {exc}") from exc',
+        (f"{FPT}::test_an_unreadable_file_is_refused_without_naming_it",),
+    ),
+    Revert(
+        "task 5: a save target's missing directory is not refused",
+        ADDON_FILE_PATHS,
+        '    if not os.path.isdir(directory):\n        raise ValueError("target directory does not exist")\n',
+        "",
+        (f"{FPT}::test_a_save_target_whose_directory_does_not_exist_is_refused",),
+    ),
+    Revert(
+        "task 5: a save target's read-only directory is not refused",
+        ADDON_FILE_PATHS,
+        '    if not os.access(directory, os.W_OK):\n        raise ValueError("target directory is not writable")\n',
+        "",
+        (f"{FPT}::test_a_save_target_in_a_read_only_directory_is_refused",),
+    ),
+    Revert(
+        "task 5: the magic check accepts only b'BLENDER', rejecting every compressed .blend",
+        ADDON_FILE_PATHS,
+        "BLEND_MAGIC_PREFIXES = (BLEND_MAGIC_UNCOMPRESSED, BLEND_MAGIC_ZSTD, BLEND_MAGIC_GZIP)",
+        "BLEND_MAGIC_PREFIXES = (BLEND_MAGIC_UNCOMPRESSED,)",
+        (
+            f"{FPT}::test_a_zstd_compressed_blend_is_accepted",
+            f"{FPT}::test_a_gzip_blend_written_without_an_fname_is_accepted",
+            f"{PHT}::test_a_valid_downloaded_blend_is_still_imported",
+        ),
+    ),
+    Revert(
+        "task 5 (Fix 6): the superseded 4-byte gzip constant, pinning the FNAME flag",
+        ADDON_FILE_PATHS,
+        r'BLEND_MAGIC_GZIP = b"\x1f\x8b"',
+        r'BLEND_MAGIC_GZIP = b"\x1f\x8b\x08\x08"',
+        (f"{FPT}::test_a_gzip_blend_written_without_an_fname_is_accepted",),
+    ),
+    Revert(
+        "task 5 (Fix 6): the superseded 12-byte BLENDER17-01 constant, pinning 5.x's header",
+        ADDON_FILE_PATHS,
+        'BLEND_MAGIC_UNCOMPRESSED = b"BLENDER"',
+        'BLEND_MAGIC_UNCOMPRESSED = b"BLENDER17-01"',
+        (f"{FPT}::test_a_pre_5x_blend_header_is_accepted",),
+    ),
+    Revert(
+        "task 5: the header read is shorter than the longest prefix",
+        ADDON_FILE_PATHS,
+        "handle.read(max(len(prefix) for prefix in BLEND_MAGIC_PREFIXES))",
+        "handle.read(len(BLEND_MAGIC_GZIP))",
+        (
+            f"{FPT}::test_an_uncompressed_blend_is_accepted",
+            f"{FPT}::test_a_zstd_compressed_blend_is_accepted",
+            f"{FPT}::test_a_pre_5x_blend_header_is_accepted",
+        ),
+    ),
+    Revert(
+        "task 5: the sanitizer is bypassed and Blender's text goes out raw",
+        ADDON_FILE_PATHS,
+        "    text = _PATH_IN_TEXT.sub(_placeholder_for, text)",
+        "    text = raw",
+        (
+            f"{FPT}::test_sanitizer_removes_the_path_from_a_missing_file_error",
+            f"{FPT}::test_sanitizer_keeps_the_cause_when_nothing_follows_the_path",
+            f"{FPT}::test_sanitizer_removes_the_process_cwd_from_the_empty_path_shape",
+            f"{FPT}::test_sanitizer_removes_every_occurrence_of_the_path",
+            f"{FPT}::test_sanitizer_removes_derived_temp_write_path",
+            f"{FPT}::test_sanitizer_removes_the_path_from_a_library_reload_error",
+            f"{FPT}::test_sanitizer_does_not_present_the_id_code_as_part_of_the_library_name",
+            f"{FPT}::test_sanitizer_removes_quoted_paths_containing_a_space_and_an_apostrophe",
+            f"{FPT}::test_sanitizer_removes_an_unquoted_path_containing_a_space",
+            f"{FPT}::test_sanitizer_removes_windows_drive_and_unc_paths",
+            f"{FPT}::test_sanitizer_removes_home_relative_paths",
+            f"{PHT}::test_a_failed_blend_load_reports_no_absolute_path",
+        ),
+    ),
+    Revert(
+        "task 5: the sanitizer replaces only the first path (shape 3 ships its second copy)",
+        ADDON_FILE_PATHS,
+        "    text = _PATH_IN_TEXT.sub(_placeholder_for, text)",
+        "    text = _PATH_IN_TEXT.sub(_placeholder_for, text, count=1)",
+        (
+            f"{FPT}::test_sanitizer_removes_every_occurrence_of_the_path",
+            f"{FPT}::test_sanitizer_removes_quoted_paths_containing_a_space_and_an_apostrophe",
+        ),
+    ),
+    Revert(
+        "task 5: only quoted paths are detected (shape 4's bare derived `<abs>@` survives)",
+        ADDON_FILE_PATHS,
+        "(?P<bare>{_PATH_START}",
+        "(?P<bare>(?!){_PATH_START}",
+        (
+            f"{FPT}::test_sanitizer_removes_derived_temp_write_path",
+            f"{FPT}::test_sanitizer_removes_an_unquoted_path_containing_a_space",
+            f"{FPT}::test_sanitizer_removes_home_relative_paths",
+        ),
+    ),
+    Revert(
+        "task 5: a bare path stops at its first space",
+        ADDON_FILE_PATHS,
+        r"(?:(?:\s+\S*[^\s:;,])*?\s+\S*[/\\]\S*?{_TRAILING})*)",
+        r")",
+        (f"{FPT}::test_sanitizer_removes_an_unquoted_path_containing_a_space",),
+    ),
+    Revert(
+        "task 5: a quoted path ends at the first matching quote, even an apostrophe inside it",
+        ADDON_FILE_PATHS,
+        r"(?P=quote)(?=$|[\s:;,.?!)\]>])",
+        "(?P=quote)",
+        (f"{FPT}::test_sanitizer_removes_quoted_paths_containing_a_space_and_an_apostrophe",),
+    ),
+    Revert(
+        "task 5: only POSIX-rooted paths are detected",
+        ADDON_FILE_PATHS,
+        r'_PATH_START = r"(?:/|\\\\|~[\w.-]*[/\\]|[A-Za-z]:[\\/])"',
+        '_PATH_START = r"(?:/)"',
+        (
+            f"{FPT}::test_sanitizer_removes_windows_drive_and_unc_paths",
+            f"{FPT}::test_sanitizer_removes_home_relative_paths",
+        ),
+    ),
+    Revert(
+        "task 5: a bare path may start mid-word, so `and/or` is cut",
+        ADDON_FILE_PATHS,
+        r"""(?<![^\s"'(\[=,])""",
+        "",
+        (f"{FPT}::test_sanitizer_leaves_text_without_a_path_alone",),
+    ),
+    Revert(
+        "task 5: the reload shape's LI type code is presented as part of the library name",
+        ADDON_FILE_PATHS,
+        '    return _LIBRARY_ID_NAME.sub(r"\\1", text)',
+        "    return text",
+        (f"{FPT}::test_sanitizer_does_not_present_the_id_code_as_part_of_the_library_name",),
+    ),
+    Revert(
+        "task 5: an exception with no text sanitizes to an empty error",
+        ADDON_FILE_PATHS,
+        "    if not raw:\n        return type(exc).__name__\n",
+        "",
+        (f"{FPT}::test_sanitizer_names_the_exception_type_when_it_carries_no_text",),
+    ),
+    Revert(
+        "task 5: Poly Haven loads the download without checking it is a .blend",
+        ADDON_POLYHAVEN,
+        "    blend_path = resolve_blend_path(path, must_exist=True)",
+        "    blend_path = path",
+        (f"{PHT}::test_a_downloaded_blend_whose_header_is_not_a_blend_is_never_loaded",),
+    ),
+    Revert(
+        "task 5: Poly Haven does not contain the download to its own directory",
+        ADDON_POLYHAVEN,
+        "        enforce_roots(blend_path, [download_dir])",
+        "        enforce_roots(blend_path, [])",
+        (f"{PHT}::test_a_downloaded_blend_resolving_outside_its_download_directory_is_never_loaded",),
+    ),
+    Revert(
+        "task 5: Poly Haven's download is held to the deployment's file roots, breaking the import",
+        ADDON_POLYHAVEN,
+        "        enforce_roots(blend_path, [download_dir])",
+        "        enforce_roots(blend_path, configured_file_roots())",
+        (f"{PHT}::test_a_valid_downloaded_blend_is_still_imported",),
+        also="\nfrom ..output_roots import configured_file_roots\n",
+    ),
+    Revert(
+        "task 5: Poly Haven's import error reaches the client unsanitized",
+        ADDON_POLYHAVEN,
+        '{"error": f"Failed to import model: {sanitize_blender_error(e)}"}',
+        '{"error": f"Failed to import model: {e!s}"}',
+        (f"{PHT}::test_a_failed_blend_load_reports_no_absolute_path",),
+    ),
+    Revert(
+        "task 5: file roots ignore their own variable when the output roots are set",
+        ADDON_OUTPUT_ROOTS,
+        "    return file_roots or configured_roots(source)",
+        "    return configured_roots(source) or file_roots",
+        (f"{ROOTST}::test_configured_file_roots_read_their_own_variable_first",),
+    ),
+    Revert(
+        "task 5: file roots do not fall back to the output roots",
+        ADDON_OUTPUT_ROOTS,
+        "    return file_roots or configured_roots(source)",
+        "    return file_roots",
+        (
+            f"{ROOTST}::test_configured_file_roots_fall_back_to_the_output_roots",
+            f"{ROOTST}::test_a_blank_file_roots_variable_counts_as_unset",
+        ),
+    ),
+    Revert(
+        "task 5: a blank file-roots variable counts as set, so the deployment silently goes permissive",
+        ADDON_OUTPUT_ROOTS,
+        "    return file_roots or configured_roots(source)",
+        "    return file_roots if FILE_ROOTS_ENV_VAR in source else configured_roots(source)",
+        (f"{ROOTST}::test_a_blank_file_roots_variable_counts_as_unset",),
+    ),
+    Revert(
+        "task 5: the enforced roots borrow the advisory home-directory default",
+        ADDON_OUTPUT_ROOTS,
+        "    return file_roots or configured_roots(source)",
+        '    return file_roots or configured_roots(source) or [os.path.expanduser("~")]',
+        (f"{ROOTST}::test_configured_file_roots_never_include_the_advisory_defaults",),
+    ),
+    Revert(
+        "task 5: the handshake publishes the configured roots un-canonicalized",
+        ADDON_SERVER_CORE,
+        "    return tuple(dict.fromkeys(canonical_path(root) for root in roots))",
+        "    return tuple(dict.fromkeys(roots))",
+        (f"{ROOTST}::test_get_addon_info_publishes_enforced_file_roots_in_canonical_form",),
+    ),
+    Revert(
+        "task 5: the handshake publishes the advisory writable roots as the enforced ones",
+        ADDON_SERVER_CORE,
+        "        roots = list(_canonical_file_roots(tuple(configured_file_roots())))",
+        "        roots = BlenderMCPServer._writable_output_roots()",
+        (f"{ROOTST}::test_get_addon_info_publishes_a_permissive_policy_when_no_roots_are_configured",),
+    ),
+    Revert(
+        "task 5: the handshake never reports the policy as enforced",
+        ADDON_SERVER_CORE,
+        '"file_roots_enforced": bool(roots)',
+        '"file_roots_enforced": False',
+        (f"{ROOTST}::test_get_addon_info_publishes_enforced_file_roots_in_canonical_form",),
+    ),
+    Revert(
+        "task 5: the server drops the addon's file roots",
+        ADDON_MANAGER,
+        '            file_roots=normalized_session_text_list(info.get("file_roots")),',
+        "            file_roots=[],",
+        (f"{AMT}::test_handshake_surfaces_the_file_path_policy",),
+    ),
+    Revert(
+        "task 5: the file roots cross the server boundary unnormalized",
+        ADDON_MANAGER,
+        '            file_roots=normalized_session_text_list(info.get("file_roots")),',
+        '            file_roots=list(info.get("file_roots") or []),',
+        (
+            f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[file_roots]",
+            f"{AMT}::test_a_hostile_element_inside_a_list_field_is_dropped_not_published[file_roots]",
+        ),
+    ),
+    Revert(
+        "task 5: file_roots_enforced carries the payload itself rather than a verdict about it",
+        ADDON_MANAGER,
+        '            file_roots_enforced=info.get("file_roots_enforced") is True,',
+        '            file_roots_enforced=info.get("file_roots_enforced"),',
+        (
+            f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[file_roots_enforced]",
+            f"{AMT}::test_handshake_reads_an_addon_that_omits_the_file_path_policy_as_permissive",
+        ),
+    ),
+    Revert(
+        "task 5: get_addon_status hardcodes the policy as unenforced",
+        SERVER_CORE_TOOL,
+        '            "file_roots_enforced": result.file_roots_enforced,',
+        '            "file_roots_enforced": False,',
+        (f"{CORET}::test_get_addon_status_reports_the_file_path_policy",),
+    ),
+    Revert(
+        "task 5: the file-policy keys go undocumented",
+        SERVER_CORE_TOOL,
+        '"file_roots"/"file_roots_enforced"',
+        "file roots and whether enforced",
+        (f"{CORET}::test_get_addon_status_documents_every_key_it_returns",),
+    ),
+    # --- Task 5 cycle-1 repairs: cause text, known paths, case-folding volumes, Poly Haven siblings ---
+    Revert(
+        "task 5 F1: a bare path extends across a word ending in ':' into the cause",
+        ADDON_FILE_PATHS,
+        r"(?:(?:\s+\S*[^\s:;,])*?",
+        r"(?:(?:\s+\S+)*?",
+        (f"{FPT}::test_sanitizer_keeps_an_errno_text_that_contains_a_slash",),
+    ),
+    Revert(
+        "task 5 F1: a lone '/' is taken for a path",
+        ADDON_FILE_PATHS,
+        "{_PATH_START}(?=\\S)",
+        "{_PATH_START}",
+        (f"{FPT}::test_sanitizer_keeps_an_errno_text_that_contains_a_slash",),
+    ),
+    Revert(
+        "task 5 F1: a bare path swallows the punctuation that closes it",
+        ADDON_FILE_PATHS,
+        r"(?=\S)\S*?{_TRAILING}",
+        r"(?=\S)\S*",
+        (f"{FPT}::test_sanitizer_leaves_punctuation_after_a_bare_path",),
+    ),
+    Revert(
+        "task 5 F7: a quoted path closed by '?', ')' or '>' is not recognised as quoted",
+        ADDON_FILE_PATHS,
+        r"[\s:;,.?!)\]>])",
+        r"[\s:;,.)\]])",
+        (f"{FPT}::test_sanitizer_keeps_punctuation_closing_a_quoted_path",),
+    ),
+    Revert(
+        "task 5 F3: known paths are ignored",
+        ADDON_FILE_PATHS,
+        "        text = text.replace(known, PATH_PLACEHOLDER)",
+        "        pass",
+        (
+            f"{FPT}::test_sanitizer_replaces_a_known_path_whole_even_with_a_space_in_its_leaf",
+            f"{FPT}::test_sanitizer_replaces_the_derived_temp_name_of_a_known_path",
+        ),
+    ),
+    Revert(
+        "task 5 F3: a known path's derived '@' temp name is not known",
+        ADDON_FILE_PATHS,
+        '    return usable | {f"{path}@" for path in usable}',
+        "    return usable",
+        (f"{FPT}::test_sanitizer_replaces_the_derived_temp_name_of_a_known_path",),
+    ),
+    Revert(
+        "task 5 F3: known paths replaced shortest-first, leaving '<path>@'",
+        ADDON_FILE_PATHS,
+        "key=len, reverse=True)",
+        "key=len)",
+        (f"{FPT}::test_sanitizer_replaces_the_derived_temp_name_of_a_known_path",),
+    ),
+    Revert(
+        "task 5 F2: containment compares spellings only, refusing a case variant on APFS",
+        ADDON_FILE_PATHS,
+        "        if _has_ancestor_directory(candidate, canonical_root):\n            return\n",
+        "",
+        (f"{FPT}::test_a_root_spelled_in_another_case_still_contains_its_files",),
+    ),
+    Revert(
+        "task 5 F6: the HDRI setup error goes out raw",
+        ADDON_POLYHAVEN,
+        "Failed to set up HDRI in Blender: {sanitize_blender_error(e)}",
+        "Failed to set up HDRI in Blender: {e!s}",
+        (f"{PHT}::test_a_failed_hdri_setup_reports_no_absolute_path",),
+    ),
+    Revert(
+        "task 5 F6: the texture processing error goes out raw",
+        ADDON_POLYHAVEN,
+        "Failed to process textures: {sanitize_blender_error(e)}",
+        "Failed to process textures: {e!s}",
+        (f"{PHT}::test_a_failed_texture_load_reports_no_absolute_path",),
+    ),
+    Revert(
+        "task 5 F6: the asset import's outer error goes out raw",
+        ADDON_POLYHAVEN,
+        "Failed to download asset: {sanitize_blender_error(e)}",
+        "Failed to download asset: {e!s}",
+        (f"{PHT}::test_a_failure_before_any_download_reports_no_absolute_path[import_polyhaven_asset-arguments0]",),
+    ),
+    Revert(
+        "task 5 F6: the categories error goes out raw",
+        ADDON_POLYHAVEN,
+        '            return {"error": sanitize_blender_error(e)}\n\n    def list_polyhaven_assets',
+        '            return {"error": str(e)}\n\n    def list_polyhaven_assets',
+        (f"{PHT}::test_a_failure_before_any_download_reports_no_absolute_path[get_polyhaven_categories-arguments1]",),
+    ),
+    Revert(
+        "task 5 F6: the asset listing error goes out raw",
+        ADDON_POLYHAVEN,
+        '            return {"error": sanitize_blender_error(e)}\n\n    def import_polyhaven_asset',
+        '            return {"error": str(e)}\n\n    def import_polyhaven_asset',
+        (f"{PHT}::test_a_failure_before_any_download_reports_no_absolute_path[list_polyhaven_assets-arguments2]",),
     ),
 ]
 

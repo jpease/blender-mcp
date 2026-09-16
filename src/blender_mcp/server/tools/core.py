@@ -64,10 +64,10 @@ async def get_addon_status(ctx: Context) -> dict:
 
     Returns:
         "up_to_date" (bool), "protocol_version"/"expected_protocol_version", "addon_version", "capabilities",
-        "blender_version", "writable_output_roots" (empty when none), "current_filepath",
-        "session_id"/"session_epoch" (compare the *pair*; re-read capabilities when either moves),
-        "session_indeterminate" (true: a swap was aborted, most commands are refused, do not save over the
-        open file), "source", "warning" (non-None if odd), "update_command", "after_install".
+        "blender_version", "writable_output_roots" (empty when none), "file_roots"/"file_roots_enforced" (false:
+        paths unconfined), "current_filepath", "session_id"/"session_epoch" (re-read capabilities if the pair
+        moves), "session_indeterminate" (true: a swap aborted; most commands refused, don't save over the file),
+        "source", "warning", "update_command", "after_install".
 
     Raises:
         ToolError: If the operation cannot be completed.
@@ -86,6 +86,8 @@ async def get_addon_status(ctx: Context) -> dict:
             "capabilities": result.capabilities,
             "blender_version": result.blender_version,
             "writable_output_roots": result.writable_output_roots,
+            "file_roots": result.file_roots,
+            "file_roots_enforced": result.file_roots_enforced,
             "current_filepath": result.current_filepath,
             # Both halves, because the epoch is only comparable within one
             # session_id: the addon's counter restarts at 0 with the process, so

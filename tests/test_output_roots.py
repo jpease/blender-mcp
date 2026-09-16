@@ -156,3 +156,76 @@ def test_get_addon_info_reports_roots_without_any_configuration(monkeypatch: pyt
 
     # The temp directory is always writable, so the list is never empty.
     assert server.get_addon_info()["writable_output_roots"]
+
+
+# ---------------------------------------------------------------------------
+# The enforcing read path (plan Task 5)
+# ---------------------------------------------------------------------------
+
+
+def test_configured_file_roots_read_their_own_variable_first() -> None:
+    """A read-only canon mount can be a file root without becoming an output root."""
+    output_roots = _load_output_roots()
+    environ = {output_roots.FILE_ROOTS_ENV_VAR: "/canon", output_roots.OUTPUT_ROOTS_ENV_VAR: "/output"}
+
+    assert output_roots.configured_file_roots(environ) == ["/canon"]
+
+
+def test_configured_file_roots_fall_back_to_the_output_roots() -> None:
+    """A deployment that set only the output roots is still enforced, against those."""
+    output_roots = _load_output_roots()
+    environ = {output_roots.OUTPUT_ROOTS_ENV_VAR: os.pathsep.join(["/output", "/renders"])}
+
+    assert output_roots.configured_file_roots(environ) == ["/output", "/renders"]
+
+
+def test_a_blank_file_roots_variable_counts_as_unset() -> None:
+    """`BLENDERMCP_FILE_ROOTS=""` is how compose spells "not set"; it must not mean "no roots, permissive"."""
+    output_roots = _load_output_roots()
+    environ = {output_roots.FILE_ROOTS_ENV_VAR: f" {os.pathsep} ", output_roots.OUTPUT_ROOTS_ENV_VAR: "/output"}
+
+    assert output_roots.configured_file_roots(environ) == ["/output"]
+
+
+def test_configured_file_roots_never_include_the_advisory_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With nothing configured the enforced set is empty, not `~` and the temp dir."""
+    output_roots = _load_output_roots()
+    monkeypatch.delenv(output_roots.FILE_ROOTS_ENV_VAR, raising=False)
+    monkeypatch.delenv(output_roots.OUTPUT_ROOTS_ENV_VAR, raising=False)
+
+    assert output_roots.configured_file_roots() == []
+
+
+def test_get_addon_info_publishes_enforced_file_roots_in_canonical_form(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A symlinked mount is published under the name containment is decided on."""
+    real = tmp_path / "real_canon"
+    real.mkdir()
+    (tmp_path / "canon").symlink_to(real, target_is_directory=True)
+    output_roots = _load_output_roots()
+    monkeypatch.setenv(output_roots.FILE_ROOTS_ENV_VAR, str(tmp_path / "canon"))
+
+    addon, _bpy = _load_addon(monkeypatch, data={"filepath": ""})
+    server_core = sys.modules[f"{addon.__name__}.server_core"]
+    info = server_core.BlenderMCPServer().get_addon_info()
+
+    assert info["file_roots"] == [os.path.realpath(real)]
+    assert info["file_roots_enforced"] is True
+
+
+def test_get_addon_info_publishes_a_permissive_policy_when_no_roots_are_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The advisory list is non-empty on every install; the enforced one must not borrow from it."""
+    output_roots = _load_output_roots()
+    monkeypatch.delenv(output_roots.FILE_ROOTS_ENV_VAR, raising=False)
+    monkeypatch.delenv(output_roots.OUTPUT_ROOTS_ENV_VAR, raising=False)
+
+    addon, _bpy = _load_addon(monkeypatch, data={"filepath": ""})
+    server_core = sys.modules[f"{addon.__name__}.server_core"]
+    info = server_core.BlenderMCPServer().get_addon_info()
+
+    assert info["writable_output_roots"]
+    assert info["file_roots"] == []
+    assert info["file_roots_enforced"] is False
