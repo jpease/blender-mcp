@@ -404,7 +404,7 @@ sides of the swap and the next queued command is answered.)*
 > the load is not deferred. What replaces it is a measurement rather than a prediction.
 
 **Security.** `open_shot` and `save_shot` add arbitrary-path read and overwrite to a socket
-with **no authentication** (§10 Q8) — currently the dominant risk for a pooled deployment,
+with **no authentication** (§4.8, §10 Q8) — currently the dominant risk for a pooled deployment,
 and not addressed by the link/append allowlist, which does not cover them. They also add a
 **disclosure channel**: every `wm.open_mainfile` failure shape measured embeds the full
 absolute path in its `RuntimeError` text, and the drain loop returns that text to the client
@@ -519,6 +519,228 @@ which `server_core.py:383-385` forbids.
 **The plugin is disposable; the server is the asset.** The hosted path brings a different
 runtime with its own loop and prompts, so anything enforced only in the plugin is lost — which
 is why §4.3's guard lives in the addon.
+
+### 4.8 Socket trust boundary
+
+*Written against `f24e01e`. Every `file:line` below is at that revision; Phase 2 Task 7 moves
+`server_core.py`, so re-derive by the greps in
+`docs/superpowers/plans/phase-4-socket-authentication-work-item.md` before relying on one.
+Implementation is Phase 4 (§8); this section is the design it builds.*
+
+**Two sockets, and this section's mechanism covers one.** The addon's socket (TCP 9876,
+newline-delimited JSON) is what an MCP server process drives. The MCP server's own HTTP
+transport (`BLENDERMCP_TRANSPORT=http`) is a second, outer door onto the same commands, loopback-only
+by policy and equally unauthenticated. Authenticating the addon socket changes nothing for a
+party that can reach the HTTP endpoint; that endpoint's authentication belongs to the hosted
+front end (Phase 5), and until then its bind is its only control.
+
+**What is authenticated today: nothing, at any of the three stages.**
+
+| Stage | Function (`server_core.py`) | Check today |
+|---|---|---|
+| Accept | `_server_loop` (`:346-374`) — `accept()`, one daemon thread per peer, no cap on their number | None. It reads no bytes, so it can see only the peer address — and loopback binding already is the address check |
+| Frame | `handle_client` (`:1506-1587`) splits on `\n` and hands each line to `_decode_and_queue_frame` (`:1449-1504`) | Shape only (`id` / `type` / `params`); any well-shaped frame is queued. A line that is not JSON is discarded, **not** fatal, so JSON lines inside a foreign protocol's payload still queue |
+| Execute | `drain_command_queue` (`:376`) → `_execute_and_answer` (`:637`) → `execute_command_internal` (`:2049`), main thread | None; up to 299 entries from `_build_command_handlers()` (some gated on Scene flags), plus the early-return built-ins `ping` and `get_nd_status` — `get_polyhaven_status` is both a built-in and a table entry (`:1681`) |
+
+The one control is shape: the addon binds `localhost` (every in-tree construction —
+`__init__.py:108`, `ui.py:91`, `docker/blender/start_server.py:16`, `scripts/blender_rig.py:188` —
+passes `port` only), and compose publishes `127.0.0.1:8000` and not 9876.
+
+**Threat model — who reaches the addon socket, and what they get after Phase 2.**
+
+| Deployment | Who can connect to 9876 | Who can reach the same commands another way |
+|---|---|---|
+| **Local workstation** | Every local process of every OS user. A browser request to loopback is plausible — the framing above would queue a JSON line in its body — but no browser was measured | stdio launch: only the launching client |
+| **Docker rig** | Processes inside the container | Anyone on the host who can reach `127.0.0.1:8000`, unauthenticated (PHASE2_TASK_STATE decision 10) |
+| **Hosted warm pool** (Phase 5, unbuilt; outside Phase 2's intended deployments — see the hostile-`.blend` entry) | Every process in the container's network namespace: the job's MCP server, anything a previous job left running in a reused instance, and co-tenants if namespaces are shared | The router in front of the HTTP transport |
+
+What a connected peer can do, by command:
+
+- **Read.** `open_shot` (any `.blend` under Task 5's roots, anywhere when unset); Task 7's
+  `link_canon_library` (same roots, when landed); `load_texture_image` and
+  `inspect_render_output` (any image path — `enforce_roots` has two callers,
+  `handlers/file_lifecycle.py` and `handlers/polyhaven.py`). `get_addon_info` publishes
+  `current_filepath` absolute, plus `file_roots` and `writable_output_roots`.
+- **Write or overwrite.** `save_shot` (roots; `confirm_overwrite`); `render_scene`,
+  `save_texture_image`, `get_viewport_screenshot(filepath=…)`, `export_cloth_simulation`,
+  `export_liquid_simulation`, `export_rigid_body_animation` — **no roots**. A confirm flag is
+  set by the caller, so it is not a control against one.
+- **Destroy or repoint.** `reset_session(confirm=True)` and `open_shot(discard_unsaved=True)`
+  discard unsaved work; Task 7's `reload_library` / `relocate_library` / `unlink_libraries`
+  replace or repoint linked canon in place.
+- **Disrupt other clients.** A refused swap command discards every other process's queued
+  commands (measured; Task 6 hardening backlog).
+- **Reach the network.** The Poly Haven and Sketchfab import commands, when the scene's
+  `blendermcp_use_*` flags enable them.
+
+**Hostile `.blend` — its own entry, because authentication does not close it.** A `.blend` can
+carry Python that Blender runs on load. The threat: anyone who can cause `open_shot` to load a
+chosen file gets code execution inside Blender without `exec` or `eval` — an unauthenticated
+peer today, and **equally a legitimately authenticated client** (a prompt-injected agent, or a
+pool job handed a tenant's file). Authentication narrows who can *ask*; it does nothing about
+*what the file contains*. Blender has **two** trust switches, and they are not the same thing
+(measured on 5.2.2 by Phase 2 Task 7's critic): the preference
+`preferences.filepaths.use_scripts_auto_execute`, and the **session flag**
+`G.f & G_FLAG_SCRIPT_AUTOEXEC`, which is what actually gates a linked library's Python driver.
+Three routes set the flag while the preference reads `False`: launching with `-y` /
+`--enable-autoexec`; `open_mainfile` or `revert_mainfile` with `use_scripts=True` ("Reload
+Trusted") in a session started without `-y`; and the flag then **survives** `reset_session`'s
+`wm.read_homefile(use_empty=True, use_factory_startup=True)`. Under `-y`, a hostile library's
+driver ran after `link_canon_library`, `create_override` and `reload_library`. `bpy.app` exposes
+no reader for the flag — only `autoexec_fail`, `autoexec_fail_quiet` and
+`autoexec_fail_message`, and `autoexec_fail` turns True only after a driver was blocked. The
+controls, in the places they live:
+
+| # | Control | Owner | Kind |
+|---|---|---|---|
+| 1 | `use_scripts` appears in no tool or command schema | Phase 2 Task 5, requirement 1 (criterion 6) | Static |
+| 2 | Every `wm.open_mainfile` passes `use_scripts=False` explicitly (`file_lifecycle.py:546`) — this **clears** the session flag, so for `open_shot` it is the **full** control | Phase 2 Task 6, criterion 5 | Runtime; automatically critical if missed |
+| 3 | `preferences.filepaths.use_scripts_auto_execute` is read before the load, and the load **refuses** when it is on or unreadable (`_refuse_scripts_auto_execute`, `:240`; called at `:542`; Task 7 adds it to the linking commands and Poly Haven's import) | Phase 2 Task 6, Step 4b / criterion 6; ruled refuse in decision 18 | Runtime judgement, **partial**: it catches the preference, not the session flag |
+| 4 | Detect the session flag (a canary scripted driver, `__import__('math').floor(1.5)`, evaluating `1.0` when scripts run and `0.0` when blocked) and refuse | **Phase 4, P1 for pooled or untrusted deployments** (work item Task 9) | Runtime; not built |
+
+**Intended deployments, and the accepted gap (user decision, 2026-09-16).** Phase 2 targets two
+trusted shapes: **fully local**, and **fronted by an authenticating gateway on a private
+network**. In both, MCP loads follow Blender's own trust: control 3 stays as the default-state
+refusal, and a session whose flag an operator set (`-y`, Reload Trusted) runs library drivers
+through `link_canon_library`, `create_override`, `reload_library` and Poly Haven's import —
+accepted and recorded, not closed. The Docker rig and the warm pool are outside these shapes
+until control 4 exists. Re-assigning the preference to `False` does clear the flag, and is
+rejected as the fix: it dirties preferences and silently revokes a trust the user granted.
+
+Content provenance (§4.1's `content_digest`, Phase 3) is what closes *which* files get loaded at
+all. Beyond the session flag, three things stay open. **Poly Haven's model import** loads a
+downloaded `.blend` (`handlers/polyhaven.py:391` at `f24e01e`, `libraries.load(link=False)`);
+it is **closed for the preference** by Task 7, and the session-flag gap above applies — it is
+the one load whose bytes come from the network. Blender's `.blend` parser itself runs on
+untrusted bytes, which no control here addresses; process isolation is the only containment.
+And the capability set follows the file: `blendermcp_use_polyhaven` / `_sketchfab` / `_nd` are
+Scene properties (`__init__.py:59-82`), so an opened file can enable network-import commands,
+and `_get_config_value` (`server_core.py:181`) reads a Scene-level Sketchfab key when
+preferences carry none.
+
+**What Task 5 closed, and what it did not.** Roots are **containment**: they bound *where* a
+`.blend` command may read or write, for whoever sends it. They are not **authorization**: an
+unauthenticated peer drives everything inside the roots, and with two callers of `enforce_roots`
+the image and export commands above are not bounded by them at all. Authentication decides *who* may send; neither decides what
+an authenticated client is allowed to do. There is no per-client scope in this design — one
+authenticated client may run every command — which is sound only while one Blender process
+serves one tenant.
+
+**Mechanisms evaluated.** Constraints: N server processes against one addon (README's
+multiple-process configuration, "Tool Bundles"); macOS, Linux and Windows; vendor-agnostic
+(§1); no arbitrary code execution (Decision #7); the handshake keeps working.
+
+| Mechanism | Verdict | Disqualifying constraint |
+|---|---|---|
+| **Shared secret, proven per connection** | **Chosen** | — |
+| Shared secret sent in the first frame | Rejected in favour of the proof | **Puts the credential in a frame.** No addon site at `f24e01e` logs raw inbound frames, but `connection.py:297` logs 200 raw bytes of a peer's frame on the server side, so the pattern exists here; a proof removes the class instead of auditing for it |
+| Unix domain socket + file permissions | Rejected | **Changes the transport** every existing client dials by `AF_INET` host/port (`connection.py:125`, `docker/blender/healthcheck.py:30`, `entrypoint.sh:129`, the rig). It authenticates a **uid**, which is not the tenant boundary in a pool where jobs share one — an objection that applies equally to the chosen file's `0600` mode, which is why the pool takes a fresh secret per job (below). Windows availability was not verified here, and the rejection does not rest on it |
+| Per-process tokens issued from the addon UI | Rejected | **Only the workstation has an operator at Blender's UI**: the Docker rig starts the addon from a script (`start_server.py`) and the warm pool is job-per-request (§1). N processes also means N manual issuances. Tokens persisted where the UI keeps its fields would sit in Scene data, which `save_shot` writes and `open_shot` replaces with a file's own values |
+| Mutual TLS | Rejected | **Buys nothing the chosen mechanism lacks, in any deployment this project supports**: the socket never leaves the host or container, so TLS's confidentiality protects a link nobody can observe without already out-privileging the key file — and the key file *is* a shared secret on disk, plus a CA, rotation and a certificate store per platform. Its one real advantage, channel binding against a relay, is recorded as a non-goal below |
+
+**Chosen: a per-user secret file, proven by HMAC challenge-response on each connection.**
+
+- **Where it attaches: `handle_client`, before `_decode_and_queue_frame` may queue anything.**
+  Not `_server_loop`: reading a frame there would let one silent peer stall every accept. Not
+  per-frame: a credential on every frame travels inside `command` through the queue into
+  `execute_command_internal` and `handler(**params)`, which puts it within reach of every
+  exception site in the leak audit below, and every frame then needs replay protection. A
+  per-connection flag lives in `handle_client`'s scope; the shared queue only ever receives
+  frames from connections that passed, so N processes authenticate independently.
+- **Exchange** (client speaks first; one response per request, so `connection.py`'s id matching
+  holds): `auth_hello{client_nonce}` → `{scheme, protocol_version, server_nonce, addon_proof}`;
+  the client verifies `addon_proof`, then `auth_proof{client_proof}` → success. Each proof is
+  HMAC-SHA256 over a role label and both nonces, compared with `hmac.compare_digest`; the role
+  labels stop one side's proof passing as the other's. **The secret never crosses the wire**,
+  so no frame, echo or frame log can contain it. The addon's proof stops a process squatting
+  on port 9876 while Blender is down from feeding forged responses into an agent's context.
+- **Pre-auth surface:** those two commands only, and `client_nonce` must be exactly 32 bytes
+  (64 hex characters); any other frame gets one error frame and the
+  connection closes. Pre-auth frames are capped far below `_MAX_MESSAGE_BYTES` (64 MiB), must
+  complete within a short deadline, and unauthenticated connections are counted and capped.
+  No lockout: a 256-bit secret makes guessing moot, and a lockout would be a denial-of-service
+  lever.
+- **The secret.** A file, path overridable by `BLENDERMCP_SOCKET_SECRET_FILE`, default under the
+  user's config directory. The addon creates it (`O_CREAT | O_EXCL`, mode `0600`) when absent,
+  and never rotates it while present. The server re-reads it on every `connect()`. On POSIX a
+  file readable by group or other, not owned by the effective uid (`st_uid == geteuid()`), reached
+  through a symlink (`O_NOFOLLOW`), or shorter than 32 bytes is refused. Creation writes a temp
+  file in the same directory and publishes it atomically (`os.link`, which fails if a winner
+  exists), so no reader sees an empty file. **In a pool, each job gets a fresh secret**: a
+  per-user file outlives the job, and a process left behind by a previous job would otherwise
+  authenticate into the next one. **Never a Scene property** (`open_shot` would
+  let a file supply it, `save_shot` would write it out) and never through `_get_config_value`,
+  whose Scene tier outranks the environment. Not a raw environment variable either: an env var
+  is visible to `docker inspect`, and Docker and Kubernetes secrets can both mount as files.
+- **Handshake and capability gate.** Authentication completes inside
+  `BlenderConnection.connect()`, *before* `_maybe_handshake_addon` — and it has to live there,
+  because `send_command_locked` (`connection.py:227`) reconnects silently through `connect()`.
+  `get_addon_info` is unchanged apart from a published `socket_auth_enforced`, under the next
+  unused protocol number (32 is spoken for by the inline image transport, decision 5). The
+  capability gate (`connection.py:214`) is a client-side convenience that fails open on an empty
+  list; it is not a control and is not asked to be one. `handshake_addon` classifies a message
+  containing `unknown command` or `get_addon_info` as *addon outdated* (`addon_manager.py:866`),
+  so the refusal text must match neither.
+
+**Degradation, and the unset-secret asymmetry — resolved differently from Task 5, deliberately.**
+Task 5 is permissive when unset because the right roots cannot be derived without the
+operator: deriving them makes `~` the boundary (decision 15). A secret *can* be derived without
+the operator: on a workstation both processes run as the artist, and in the Docker rig one
+entrypoint starts both (`entrypoint.sh:167`, `:196`) as one user — so a generated file enforces
+with no configuration. The pool must be built the same way, or set the path explicitly. So
+**absent means generate, and enforce.** Permissive is an explicit `BLENDERMCP_SOCKET_AUTH=off`
+on the addon, read from the **process environment only** — never through `_get_config_value`,
+addon preferences or a Scene property, so no opened `.blend` can switch authentication off — published as `socket_auth_enforced: false` (Task 5's observability rule), logged
+as a warning, and refused outright alongside a non-loopback bind (decision 10's rule, applied
+here). What each party sees: a client without the secret gets one error frame naming
+`BLENDERMCP_SOCKET_SECRET_FILE` — never the secret, the proof or the file's contents — and is
+disconnected. A new server facing an addon that answers `Unknown command type: auth_hello`
+fails closed: it cannot tell an old addon from a squatter.
+
+**Non-goals.** A relay by a party that already occupies the address the client dials (channel
+binding — mTLS's one advantage); a local attacker who can read the user's files; authenticating
+the HTTP transport; per-command authorization.
+
+**The failure mode that matters most: the secret in a log or an error message.** Under this
+design the secret has two holders — the addon's loader and `BlenderConnection.connect()` — and
+the wire carries only nonces and single-connection proofs. The audit's job is to keep that true.
+Every site below is leak-capable (interpolated exception, `traceback.print_exc()`, or echoed peer
+text). The last column says whether a secret-bearing value can reach it once the mechanism is
+built correctly; each "No" is a property a Phase 4 test must assert, not assume.
+`traceback.print_exc()` prints the exception text and its chain plus source lines, not frame
+locals, so the carrier is always an exception message.
+
+| Site (`f24e01e`) | Construct | Carries today | Secret-reachable under §4.8 |
+|---|---|---|---|
+| `server_core.py:252` | `print(f"Failed to start server: {e!s}")` | Any exception in `start()` | **Yes, if the loader raises there** — loader errors must be constant text naming the variable |
+| `server_core.py:1578`, `:1581` | `print(f"…{e!s}")` around the whole receive loop | recv errors; anything `_decode_and_queue_frame` raises | **Yes** — the auth step runs inside this `try` |
+| `server_core.py:366`, `:369` | `print(f"…{e!s}")` in `_server_loop` | `accept()` errors | No — nothing there touches the secret |
+| `server_core.py:501-502`, `:560-561`, `:697-699`, `:1343-1344`, `:1603-1605`, `:2086-2088`, `:2511-2513` | `{e!s}` and/or `traceback.print_exc()`; `:699`, `:1605`, `:2088`, `:2513` also return `str(e)` **to the client** | Dispatch, handler, timer-handoff and serialization exceptions, including Task 5's absolute paths | No, **by construction** — only authenticated connections queue, and the secret never enters `command`. A per-frame credential would put it in reach of the five that see `command` |
+| `handlers/file_lifecycle.py:480`, `transaction.py:209` | `print(f"…{exc!s}")` / `{e!s}` | Swap-report and `undo_push` failures | No, by construction (as above) |
+| `connection.py:130` | `logger.error(f"Failed to connect to Blender: {e!s}")` | Any exception inside `connect()`'s `try` (`:124-132`), which returns `False` rather than raising | **Yes** — the client side of the exchange runs there |
+| `server/app.py:54` | `logger.warning(f"Could not connect to Blender on startup: {e!s}")` | The exception `get_blender_connection` raises when `connect()` fails — constant text today | **Yes, if** the exchange's failure text is ever raised out of the connect path instead of the constant |
+| Tool layer: 47 `raise ToolError(f"…{e}")` sites at `f24e01e` (`git grep -nE 'ToolError\(f".*\{(e\|exc\|err)(!s\|!r)?\}' -- src/blender_mcp/server/tools`; e.g. `tools/mesh.py:72`, `tools/core.py:117`) | Exception text interpolated into a tool error | Connection and addon errors, **into the agent's context** | **Yes, on the same condition** — the channel that reaches the model |
+| `connection.py:302`, `:305` | `{e!s}` logged, then re-raised | Send/receive errors | No — `connect()` is called at `:227`, before the `try` at `:232`, and swallows its own exceptions |
+| `connection.py:290`, `:292`; `:294`, `:298` | `{e!s}` | Socket / JSON errors | No — OS and decoder text |
+| `connection.py:271`, `:277`, `:297` | Addon `message`, ad-hoc failure text, and 200 raw response bytes, logged | Peer-supplied text | No while the addon never echoes a proof or a nonce; the addon's refusal text is constant |
+| `connection.py:333`; `addon_manager.py:900` | `{e}`; `:900` publishes it through `get_addon_status` | Handshake exceptions | No — the handshake runs only after `connect()` has succeeded |
+
+**Cited earlier as audit targets, and measured not leak-capable**, recorded so the correction
+survives: `server_core.py:1472` `print(f"Discarding malformed message: {e!s}")` — its exceptions
+are `json.JSONDecodeError`, whose text is a message and a position, and `UnicodeDecodeError`,
+whose text names one byte value and a position (measured on CPython 3.13.15, the project venv; a secret is never
+on the wire under this design regardless). `:775` is a constant string; `:1467` and `:1557`
+interpolate only a length; `connection.py:234` logs the command type, request id and a
+*count* of params, and `:239` is constant. `addon_manager.py:185` / `:191`, listed in an earlier
+draft of this section, are in `check_addon_status_on_startup`, which scans addon folders and never
+connects.
+
+The class is wider than the table: across the addon `git grep` finds 14 `print(f"…{e…}")` sites
+(`server_core.py` 12, `file_lifecycle.py` 1, `transaction.py` 1) and 10 `traceback.print_exc()`
+calls (`server_core.py` 8, one of which is inside a comment; `handlers/sketchfab.py` 2). The
+audit covers the class through a test that plants a known secret, drives every failure path of
+the exchange, and asserts the secret's bytes are absent from captured stdout, logs, every
+frame, and every MCP tool result (`ToolError` text and payloads) — not by listing instances.
 
 ## 5. Delivery contract
 
@@ -729,8 +951,13 @@ Ordered by damage, not by how easy they are to answer.
    particles, compositor trees, geometry-node inputs.
 7. **How is `mode` carried and defaulted?** Blender has no file-level property; a two-scene
    file has two modes; new/foreign/hand-edited files have no defined default.
-8. **Socket authentication.** None exists. Dominant risk once pooled and multi-tenant, and
-   `open_shot`/`save_shot` widen it to arbitrary-path read and overwrite.
+8. **Socket authentication.** Designed in §4.8, built in Phase 4
+   (`docs/superpowers/plans/phase-4-socket-authentication-work-item.md`): a per-user secret
+   file proven by HMAC challenge-response per connection, enforced unless explicitly turned
+   off. Still open after it: the MCP HTTP transport's own authentication (Phase 5), per-command
+   authorization, and the hostile-`.blend` risk, which authentication does not close — including
+   Blender's session auto-exec flag, which the preference check does not see and which Phase 4
+   must detect for pooled or untrusted deployments (§4.8).
 9. **Does USD `assetInfo` + Ar replace §4.1** rather than sit downstream of it? Answer before
    building §4.1 twice.
 10. **What are the cost envelopes?** Tokens per shot, container-minutes for `audit_episode`
@@ -760,8 +987,8 @@ Three adversarial reviews (2026-09-11). Full text in git history of the supersed
 | R2 | Consolidation saves 6.2%, not 97%; precedent was type erasure | **Resolved** — §4.6 |
 | R2 | Phases depended on four subsystems with zero code | **Resolved** — §4.5, Phase 2 |
 | R2 | `content_digest` never defined | **Resolved** — §4.1 |
-| R2 | Poly Haven loads network `.blend` (`handlers/polyhaven.py:362`) | **Open** — live vulnerability, §10 Q8 |
-| R2 | Socket has no authentication | **Open** — §10 Q8 |
+| R2 | Poly Haven loads network `.blend` (`handlers/polyhaven.py:391` at `f24e01e`) | **Partly** — path and header validated (Phase 2 Task 5), preference refusal added (Task 7); the session auto-exec flag still runs drivers under `-y` or Reload Trusted (§4.8, §10 Q8) |
+| R2 | Socket has no authentication | **Partly** — mechanism designed in §4.8, unbuilt (Phase 4); HTTP transport and hostile `.blend` remain §10 Q8 |
 | R2 | USD caveat backwards | **Resolved** — §5 |
 | R3 | Ladder scored against a rejected ceiling; rung 3 misdescribed (5 tools, not 4) | **Resolved** — §4.6 re-derived, tools named |
 | R3 | "Writes to linked data persist" was false — they are non-durable but render-affecting | **Resolved** — §2.1, §4.3 |
