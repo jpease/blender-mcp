@@ -480,8 +480,8 @@ class BlenderMCPServer(
                 processed += 1
                 continue
 
-            # Membership, not just name: `open_shot` and `reset_session` are not
-            # dispatchable until Task 6, and a barrier that fires for a command
+            # Membership, not just name: `open_shot` and `reset_session` were not
+            # dispatchable before Task 6, and a barrier that fires for a command
             # the addon cannot run lets one 40-byte frame discard up to
             # `_MAX_QUEUED_COMMANDS` commands belonging to *other* server
             # processes. An undispatchable name falls through to the ordinary
@@ -510,6 +510,8 @@ class BlenderMCPServer(
 
             self._execute_and_answer(command, client)
             processed += 1
+            if command.get("type") in self._TICK_ENDING_COMMANDS:
+                break
 
     def _replace_this_dying_timer(self) -> None:
         """
@@ -826,6 +828,11 @@ class BlenderMCPServer(
 
         The rejections go out in the `finally`, and *after* the swap, so the
         epoch they name is the one that is current once the outcome is known.
+        **A refused swap discards the queue too.** The drain happens before the
+        handler runs, so an `open_shot` that its own validation refuses (before
+        `load_pre`, nothing loaded) still answers every command queued behind it,
+        from every process, with a rejection. Recorded as a Task 6 backlog item
+        (a pre-flight validation split), not fixed.
 
         **The abort guard is one positive condition, and it used to be three
         negative ones.** The `try` spans the pre-swap drain as well as the swap,
@@ -1613,6 +1620,9 @@ class BlenderMCPServer(
             "list_scene_objects": self.list_scene_objects,
             "get_addon_info": self.get_addon_info,
             "get_session_info": self.get_session_info,
+            "open_shot": self.open_shot,
+            "save_shot": self.save_shot,
+            "reset_session": self.reset_session,
             "get_object_info": self.get_object_info,
             "get_mesh_data": self.get_mesh_data,
             "inspect_animation": self.inspect_animation,
@@ -1996,7 +2006,7 @@ class BlenderMCPServer(
     # tick runs (see _run_session_swap), and _run_handler keeps it out of
     # mutation_transaction.
     #
-    # Task 6 implements these; the constant lands here because Task 3's barrier
+    # Task 6 implemented these; the constant lives here because Task 3's barrier
     # and Task 4's transaction invalidation have to agree on one definition of
     # "the session was swapped", and two copies would eventually disagree.
     #
@@ -2024,6 +2034,17 @@ class BlenderMCPServer(
     # not read-only. `link_canon_library` is deliberately absent: its new
     # datablocks are the request's own and a failed link must roll them back.
     _DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries"})
+
+    # Commands after which the drain loop ends its tick, without the barrier.
+    # Blender clears `is_dirty` for a save only when it processes the save's
+    # notifier, after the timer tick returns; an edit run later in the same tick
+    # is marked dirty and then silently un-marked, so `open_shot`'s unsaved-work
+    # guard let it be destroyed (reproduced live, Task 6 cycle 1,
+    # `scripts/rig_scenarios/scenario_file_lifecycle.py`). The queue behind a
+    # save is left in place and runs next tick. Deliberately not
+    # `_SESSION_SWAP_COMMANDS`: a save replaces no datablock, so nothing queued
+    # behind it is discarded (T3-3).
+    _TICK_ENDING_COMMANDS = frozenset({"save_shot"})
 
     def execute_command_internal(self, command):
         """

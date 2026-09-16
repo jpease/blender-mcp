@@ -28,8 +28,8 @@ that had already been lost once (see the closed item under "Known failures / blo
 | | |
 |---|---|
 | Branch | `main`, **unpushed**. `origin/main` is still at `523f427`. |
-| Last commit | **Task 5**, after Task 4 (`76f782d`) and the decision-13 amendment (`1f3619f`). Before it, **`2c1d678` — Task 3**, committed at **88.75/100 against a 90 gate** (below it; see the closing note at the end of this file). Task 2 closed after four cycles; Task 1 at 94/100. |
-| Next task | **Task 6** (file-lifecycle handlers). Tasks 4 and 5 are done and committed; read their sections at the end of this file, and Task 5's "Obligations on Task 6" before writing a handler. Historical note for Task 4, kept: Task 3 is **done and committed**. Read its closing note first — it says why it took six cycles and what §06's gate-driven amendment changes. **Task 4 must not assume "the epoch moved ⇒ a `load_post` fired"**: three sites move it (see T3-18/19). `_SESSION_SWAP_COMMANDS` is landed and single-sourced; Task 4 adds `_DATABLOCK_REPLACING_COMMANDS` as a **separate** constant and must not merge them. |
+| Last commit | **Task 6**, after Task 5 (`fcad04f`), Task 4 (`76f782d`) and the decision-13 amendment (`1f3619f`). Before it, **`2c1d678` — Task 3**, committed at **88.75/100 against a 90 gate** (below it; see the closing note at the end of this file). Task 2 closed after four cycles; Task 1 at 94/100. |
+| Next task | **Task 7** (linking handlers). Tasks 4-6 are done and committed; read their sections at the end of this file (Task 5's obligations apply to Task 7's `lib.reload()` / `libraries.load` error paths too). Historical note for Task 4, kept: Task 3 is **done and committed**. Read its closing note first — it says why it took six cycles and what §06's gate-driven amendment changes. **Task 4 must not assume "the epoch moved ⇒ a `load_post` fired"**: three sites move it (see T3-18/19). `_SESSION_SWAP_COMMANDS` is landed and single-sourced; Task 4 adds `_DATABLOCK_REPLACING_COMMANDS` as a **separate** constant and must not merge them. |
 | Working tree | Clean apart from `uv.lock`, which stays unstaged permanently (§03 incidental churn). |
 | Blender | **5.2.2 LTS** at `/opt/homebrew/bin/blender`. Every API fact re-verified against it; see "5.2.2 re-verification". |
 | Review loop | **Changed again 2026-09-16 for Tasks 4-10** (decision 13, handoff §06's 2026-09-16 amendment): findings triaged as bug / hardening / record-keeping; only bugs and automatically-critical items block; at most two cycles, then ask the user; scores recorded, not gated. Hardening goes to the backlog under decision 13. Tasks 1-3 ran under earlier rules. |
@@ -176,6 +176,12 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | 14 | **Task 5: unset file roots mean permissive, and the mode is published.** `file_roots_enforced` (bool) and `file_roots` (realpath'd list) in `get_addon_info`, `AddonHandshake` (defaulted fields) and `get_addon_status`. | The local artist case is a GUI Blender on a loopback socket; deny-by-default bricks it. A pooled/container deployment sets the variable. | An operator who forgets the variable gets no containment - visible as `file_roots_enforced: false`, which is why it is published. |
 | 15 | **Task 5: `BLENDERMCP_FILE_ROOTS`, falling back to `BLENDERMCP_OUTPUT_ROOTS` when unset or blank; enforced roots come only from these variables, never from the advisory defaults** (`~`, tempdir, the open blend's directory). `writable_output_roots` is unchanged and still advisory. | A canon mount can be read-only, so "where I may read a .blend" differs from "where I may write a render"; and deriving enforcement from the defaults would make the home directory the boundary (Task 1's flag). Covered by a test and a revert row. | `BLENDERMCP_FILE_ROOTS=""` intended as deny-all falls back instead - visible in the handshake. |
 | 16 | **Task 5: two real `.blend` fixtures committed** (`tests/fixtures/blend/empty_zstd.blend`, `empty_gzip.blend`, 168 K) despite the precedent of generating fixtures. | Criterion 3 requires magic-byte acceptance against real files; Python 3.13 has no zstd module to build one at test time, and a generator would need Blender in the default suite. The uncompressed case is derived from the gzip fixture. | Repo grows 168 K; bytes are build-specific but only the header is asserted. |
+| 17 | **Task 6: `reset_session` uses `wm.read_homefile(use_empty=True, use_factory_startup=True, load_ui=False)`, not the plan's `wm.read_factory_settings`.** | Measured by `scripts/blender_probes/reset_operator_side_effects.py` on 5.2.2 (reproduced by Critic 4): `read_factory_settings` → `addon still enabled = False`, events `['unregister', "load_pre('')", "load_post('')"]`, and it resets preferences; `read_homefile` → addon still enabled, events `["load_pre('')", "load_post('')"]`, preferences untouched. The plan's operator would unregister the MCP addon from inside its own command. Critic 1 confirmed `userpref.blend` / `recent-files.txt` hashes unchanged and nothing of the old file survives; Critic 3 confirmed an app template's startup script does not run. | The user's own startup file is ignored on reset (deliberate: the reset is identical on every machine). |
+| 18 | **Task 6: `open_shot` refuses when `preferences.filepaths.use_scripts_auto_execute` is on, and when it cannot be read** (the plan's recommendation). | Stricter than Task 5's permissive-when-unset because the default here is *safe* (measured `False`) and a `True` means someone changed it, whereas Task 5's default is merely unconfigured. `use_scripts=False` is passed anyway, so refusing costs nothing `open_shot` needs. Critic 3 built a `.blend` with a registered text block and a Python driver: neither ran through `open_shot` with the preference default, on, or Blender launched with `-y`. | An artist with the preference on must turn it off to use `open_shot`. |
+| 19 | **Task 6: `open_shot(..., discard_unsaved=False)` refuses a dirty session; `reset_session(confirm=True)` alone discards, and reports `discarded_unsaved_changes`.** | Task 2 measured that an open silently destroys unsaved work. For reset, discarding is the command's only effect, so `confirm` is the discard flag. | An agent passing `confirm=true` by reflex loses unsaved work. |
+| 20 | **Task 6: an in-place `save_shot()` also requires `confirm_overwrite=True`**, and a confirmed overwrite also rotates Blender's `.blend1` backup (documented). Roots are checked before file checks, for open, save-as and in-place save. | One uniform `os.path.exists` guard; an in-place save replaces the copy on disk, which may hold someone else's later save. Roots-first stops existence probing outside roots. | One extra flag per checkpoint save. |
+| 21 | **Task 6: `save_shot` ends the drain tick** (`server_core._TICK_ENDING_COMMANDS`, separate from `_SESSION_SWAP_COMMANDS`, which it must not join — T3-3). | Critic 1, live GUI rig: Blender clears `is_dirty` *after* the tick, so `[save_shot, set_object_transform]` pipelined in one tick left the edit reported clean and a later `open_shot` without `discard_unsaved` destroyed it (automatically critical). With the tick ending, the edit runs next tick and stays dirty; reproduced fixed by the reviewer and by the cycle-2 critic three times. A transaction-count fallback was rejected: `save_shot`'s own transaction commits after `save_post`, so it would false-refuse a clean session. `save_shot`'s result no longer carries `is_dirty` (it was stale for the same reason). | Throughput (backlog row). |
+| 22 | **Task 6: `relative_remap=False` stays the explicit default, and a save to a different directory warns with a count of Blender-relative external file paths that will not resolve** (`bpy.utils.blend_paths(absolute=False, packed=False, local=True)`, minus libraries whose every user is indirect). Refuses when `<target>@` already exists or cannot be checked. | Critic 1 measured `//` library links, and the cycle-2 critic `//` image paths, silently missing after save-to-another-directory. Critic 3 measured a planted `<target>@` symlink redirecting the save outside the roots (automatically critical). The cycle-3 critic verified counts for images, sounds, clips, volumes, direct/indirect/override/instanced libraries, packed images excluded. | A spurious warning in two edge cases (backlog); a legitimate save refused after a crashed save left `x.blend@` (message says so). |
 | 13 | **Tasks 4-10: findings are triaged by kind, at most two cycles, and the score is recorded but no longer gates** (user decision, 2026-09-16; supersedes decision 12's stop condition and cycle rules, keeps its three pre-checks). Bugs and automatically-critical items are fixed before commit; hardening goes to the hardening backlog below for Task 8 to prioritise, implemented after Phase 2 unless pulled in; record-keeping is fixed once at commit after a code freeze. Cycle 2 only if cycle 1 had blocking repairs, re-running only those lenses plus a regression check on the repairs; anything still blocking after cycle 2 stops and asks the user. Full text in handoff §06's 2026-09-16 amendment. | Task 3 cycle-1 tree (stash `5e9d482`) compared with `2c1d678`: real bugs (T3-1 wrong-file `success`, T3-5 Save Copy path) were fixed in cycle 2, ~2 of ~15¾ hours; hardening against a hostile peer earned ~20-25 of the 42.75 points gained and most of the hours; record-keeping ~5. Three defects were introduced by hardening repairs (T3-12 verified: no `settimeout(0` in `5e9d482`, present at `2983041` `server_core.py:819`; T3-16; T3-24). The trust-boundary 16/20 floor, not defect risk, drove cycles 3-6. | **A hardening finding misclassified as hardening when it is a real bug ships that bug.** Mitigated by the definition: anything producing a wrong result, data loss, hang or dropped healthy connection for a single local user is a bug, and §07's automatically-critical list is unchanged. The other cost is accepted deliberately: until Task 8's backlog is implemented, the addon is not hardened against a hostile local socket peer - the same posture the loopback-only, unauthenticated socket already has. |
 
 ### Hardening backlog (decision 13) — owner: Task 8 to prioritise
@@ -194,6 +200,15 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | 5 | **`sanitize_blender_error` output is not routed through `text_hygiene` control-character stripping.** | Blender error text with control characters reaches a client. | Critic 4 |
 | 5 | **A symlink swapped between validation and Blender's open** (TOCTOU). | Validation bypass by a local attacker with write access inside a root. | Implementer |
 | 5 | **No positive resolve test with a space in a directory name.** | Coverage gap; `os.path` handles spaces. | Critics 1+2 |
+| 6 | **A refused swap command discards every other process's queued commands** (`_run_session_swap` classifies by name before the handler refuses; measured live: a dirty-session `open_shot` refusal answered another connection's `create_primitive` with "Discarded without running"). No data lost; the discarded commands are answered and can be resent. Only reachable with more than one MCP process. | Spurious resends for other clients; a hostile peer can force it with `{"type":"reset_session"}`. Fix: a handler pre-flight run before `_drain_queue_into`, answering a refusal without draining. Deliberately not done: it rewrites Task 3's drain path, where repairs regressed three times. | Critic 2 |
+| 6 | **Every `save_shot` ends the drain tick, including one refused before the operator.** Order and exactly-once hold; throughput cost only (a save flood holds everyone to ~20 commands/s). | Throughput. Fix: end the tick only when the operator ran. | Cycle-2 critic |
+| 6 | **TOCTOU between `os.path.exists` / `os.lstat(<target>@)` and the save operator** — a local writer inside a root can race a file or symlink in. Blender opens `@` without `O_NOFOLLOW`; not closable from Python. | Overwrite or redirected write by someone already able to write inside a root. | Critics 1, 3 |
+| 6 | **A save by something other than `save_shot`** (e.g. another add-on's timer) followed by an edit in the same main-thread pass leaves `is_dirty` falsely clear; a later `open_shot` then destroys the edit (measured via a graft). GUI Ctrl+S and Save Copy are not affected. Documented in `open_shot`'s docstring. | Lost edit, but only via a third-party save path. | Cycle-2 critic |
+| 6 | **`_unresolvable_relative_paths` runs outside any `try`**; if `bpy.utils.blend_paths` ever raised, the save would be refused for the sake of a warning. Could not be made to raise. Plus two false-positive warning cases (case-differing directory spelling; a zero-user direct library). | A refused save or a spurious warning; never a missed break. | Cycle-3 critic |
+| 6 | **`scene_name` goes through `client_safe_text`, not the leaf allowlist.** File-author text, not machine layout. | Low. | Critic 3 |
+| 6 | **No headless test drives the real Task 6 handlers through `_drain_batch`** — only the GUI rig does. | Coverage gap for CI without a GUI Blender. | Critic 2 |
+| 6 | **T3-7 (same-path re-open during the handler gap) classified**: a real but narrow stale-capabilities result for a single local user; no data loss or hang. Not fixed: the cheap fix breaks `test_re_enabling_on_the_same_file_does_not_move_the_marker`, and handlers are detached during the gap, so a proper fix needs a marker stored in the database. | Stale capability gate until the next swap. | Implementer |
+| 6 | **`client_safe_leaf`'s `isdir` oracle**: with roots enforced, `open_shot` now checks roots first so probing stops there; with roots unset, `resolve_blend_path`'s "does not exist" / "is a directory" remain an existence oracle. | One bit per probe on an unconfigured desktop install. | Implementer |
 
 ## Tasks
 | # | Task | Tier | Status | Commit | Notes |
@@ -203,7 +218,7 @@ in the tree. Only the unformatted count is gated, and only that count should be 
 | 3 | Drain-loop file-swap barrier, session epoch, failure handlers | Opus | **Done — committed at 88.75/100 measured, below the 90 gate. See the closing note.** | this commit | Protocol 31 **asserted, not bumped** (decision 2). Barrier is snapshot **+** enqueue-epoch stamp; `session_indeterminate` latch on a `load_pre` positive signal; allowlist hygiene on both sides of the socket. 24 decisions, 15 residuals with owners. |
 | 4 | Make rollback survive a file swap, track `libraries` | Opus | **Done — one cycle, no blocking findings** (decision 13) | this commit | `_DATABLOCK_REPLACING_COMMANDS` bypass, `Transaction.invalidate()` via `load_post` and a flagged `blend_import_post`, `ObjectState.invalidate()`, `libraries` tracked and removed last. See "Task 4" at the end of this file. |
 | 5 | The filesystem trust boundary | Opus | **Done — two cycles; blocking findings repaired** (decision 13) | this commit | `file_paths.py` (`resolve_blend_path`, `enforce_roots`, `sanitize_blender_error`), `BLENDERMCP_FILE_ROOTS`, policy in the handshake, Poly Haven guarded. See "Task 5" at the end of this file. |
-| 6 | Addon file-lifecycle handlers | Opus | Not started | — | **Inherits from Task 2:** `open_shot` must refuse when `bpy.data.is_dirty` unless the caller passes an explicit discard flag (unsaved work is otherwise destroyed silently — measured); `wm.open_mainfile` must pass `use_scripts=False` explicitly; the post-swap half runs with `bpy.context.window` at `None` but an inherited context still works. |
+| 6 | Addon file-lifecycle handlers | Opus | **Done — three cycles** (user approved a third, 2026-09-16) | this commit | `open_shot`, `save_shot`, `reset_session` in the existing mixin; decisions 17-22; see "Task 6" at the end of this file. Original note: **Inherits from Task 2:** `open_shot` must refuse when `bpy.data.is_dirty` unless the caller passes an explicit discard flag (unsaved work is otherwise destroyed silently — measured); `wm.open_mainfile` must pass `use_scripts=False` explicitly; the post-swap half runs with `bpy.context.window` at `None` but an inherited context still works. |
 | 7 | Addon linking handlers | Opus | Not started | — | |
 | 8 | Socket authentication — design deliverable | Opus | Not started | — | |
 | 9 | Server-side MCP tools, bundle placement, payload ceiling | Sonnet | Not started | — | Inherits `shot` at **203,079 B**, **15 B** below its unchanged ceiling (measured 2026-09-15; the earlier 203,087 was cycle 2's figure and missed repair R20's further 8 B). |
@@ -3313,3 +3328,150 @@ The +14 B is the two new `get_addon_status` keys, paid partly by trimming its do
 
 **Wall time:** implementer ~23 min + ~6 min repair; cycle-1 critics ~10 min in parallel; cycle-2 critic ~5 min;
 reviewer ~20 min.
+
+---
+
+## Task 6 — `open_shot`, `save_shot`, `reset_session`
+
+Run under decision 13, **three cycles**: cycle 1 found five blocking bugs; cycle 2 found two more (one a
+revert-surviving branch, one an incomplete repair); the user chose a third cycle over committing with them open
+or fixing without review. Cycle 3 found none. Decisions 17-22 above; nine backlog rows.
+
+### What landed
+
+`handlers/file_lifecycle.py` (the Task 3 mixin, extended — `git log` shows one prior commit):
+
+- **`open_shot(filepath, *, load_ui=False, discard_unsaved=False)`** — bool checks, `//` refused in an unsaved
+  session, roots before file checks, `resolve_blend_path`, dirty refusal, `use_scripts_auto_execute` refusal,
+  then `wm.open_mainfile(filepath=<canonical>, load_ui=..., use_scripts=False)`; `RuntimeError` sanitized with
+  `known_paths`. Reports `session_epoch`, `scene_name`, `object_count`, `libraries`, `capabilities_changed`,
+  `rehandshake_required`. Cites decision 11.
+- **`save_shot(filepath=None, *, compress=False, relative_remap=False, confirm_overwrite=False)`** — roots,
+  `os.path.exists` pre-check (explicit and in place), `os.lstat(<target>@)` refusal, writable parent,
+  explicit `compress` / `relative_remap` on every call, relative-path warning.
+- **`reset_session(*, confirm=False)`** — decision 17's operator.
+- `server_core.py`: three dispatch entries; `_TICK_ENDING_COMMANDS`. Protocol 31/31; catalog unchanged (no MCP
+  tool — Task 9).
+
+### Step 1 — operator defaults on 5.2.2 (`scripts/blender_probes/file_lifecycle_operator_defaults.py`)
+
+`open_mainfile`: `load_ui` True, `use_scripts` False. `save_mainfile`: `compress` False, `relative_remap` False,
+`check_existing` True. `save_as_mainfile`: `compress` False, **`relative_remap` True**, `copy` False.
+`read_factory_settings`: `use_empty` False. Preferences: `use_scripts_auto_execute` False,
+`use_file_compression` True.
+
+### Step 2b / 5 — real Blender, reproduced by the reviewer after the last repair
+
+`/opt/homebrew/bin/blender --background --factory-startup --python scripts/blender_probes/file_lifecycle_handlers_real_blender.py`, exit 0:
+
+```
+[save_shot(filepath=existing)] ValueError -> 'the target .blend already exists; pass confirm_overwrite=true to replace it'
+bytes+mtime before=('5865fb0183cf794b', 1789590023443135203) after=('5865fb0183cf794b', 1789590023443135203) unchanged=True
+[save_shot() in place, unconfirmed] ValueError -> (same)   unchanged=True
+saved exists=True header=b'BLENDER17-01' fixture header=b'(\xb5/\xfd...'      # uncompressed from a zstd fixture
+epoch 2 -> 5 across 3 swaps (2 opens, 1 reset)
+[open missing]            RAW 'Error: Cannot read file "/var/.../missing.blend": No such file or directory'   -> 'file does not exist'
+[open directory|non-blend] RAW 'Error: File format is not supported in file "/var/..."'                      -> 'path must name a file ending in .blend'
+[open corrupt magic]      -> 'file is not a .blend file (unrecognised header)'
+[open empty path]         RAW '... in file "/Users/jpease/Developer/github/jpease/blender-mcp"'              -> 'path must not be empty'
+[open_shot truncated to 64 B] -> 'open_shot failed: Error: Loading "<path>" failed: Failed to read blend file \'<path>\': Missing DNA block'
+[save_as read-only dir]   RAW 'Error: Cannot open file /var/.../readonly/x.blend@ for writing: Permission denied'
+                          client form 'save_shot failed: Error: Cannot open file <path> for writing: Permission denied'
+[open_shot with the preference ON]  ValueError -> "open_shot refuses to load while Blender's preferences.filepaths.use_scripts_auto_execute is on ..."
+[open_shot with the preference OFF] OK
+projA libraries: [('//libs/lib.blend', False)]
+[save_shot(projB/shot) remap off] warnings: ['1 external file path (images, libraries, etc.) is Blender-relative and will not resolve from the new directory, ...']
+projB libraries after reopen: [('//libs/lib.blend', True)]            # is_missing - the warning was right
+projC libraries after reopen: [('//../projA/libs/lib.blend', False)]  # remap on: resolves, no warning
+libraries: []  blend_paths: ['//textures/t2.png']
+[save_shot(projB/image_shot) remap off] warnings: ['1 external file path (images, libraries, etc.) ...']
+libraries (relative?, leaf, indirect by users_id): [(False, 'lib1.blend', False), (True, 'lib2.blend', True)]
+[save_shot(projB/indirect_shot) remap off] -> no warnings
+projB libraries after reopen (leaf, missing): [('lib1.blend', False), ('lib2.blend', False)]
+[save_shot(root/fresh.blend)] ValueError -> "a temporary save file (the target name followed by '@') already exists beside the target, possibly left by an interrupted save; remove it, then retry"
+```
+
+`is_dirty` does not become True under `--background`; the dirty refusals are evidenced by the GUI rig.
+
+### Step 6 — live GUI rig, reproduced by the reviewer after the cycle-1 repairs
+
+```
+/opt/homebrew/bin/blender --background --factory-startup --python scripts/rig_scenarios/make_fixture.py -- <W>/fixture.blend
+.venv/bin/python scripts/blender_rig.py --work-dir <W>/rig --scenario scripts/rig_scenarios/scenario_file_lifecycle.py --blend fixture=<W>/fixture.blend
+```
+
+```
+RIG: blender_version = 5.2.2 LTS, protocol = 31
+RIG: advertised ['open_shot', 'save_shot', 'reset_session', 'get_session_info']; file_roots_enforced = True
+RIG: refused (use_scripts parameter): FileLifecycleHandlersMixin.open_shot() got an unexpected keyword argument 'use_scripts'
+RIG: refused (outside the roots): path is outside the allowed file roots (BLENDERMCP_FILE_ROOTS); see file_roots in get_addon_status
+RIG: refused (// in an unsaved session): a Blender-relative path (one starting with a double slash) is relative to the open .blend, and this session has never been saved; pass an absolute path
+RIG: refused (unsaved work): the open session has unsaved changes that opening a file would destroy; save_shot first, or pass discard_unsaved=true
+RIG: open_shot result = {"session_id": "7213d4fd...", "session_epoch": 1, ...}
+RIG: behind the swap: Discarded without running: a session file swap was attempted while this command was queued, ... The session epoch is now 1 ...
+RIG: save_shot wrote t6_saved.blend, header=b'BLENDER', result={... "saved_in_place": false, ...}
+RIG: refused (overwrite without confirm): the target .blend already exists; pass confirm_overwrite=true to replace it
+RIG: refused (in-place save without confirm): the target .blend already exists; pass confirm_overwrite=true to replace it
+RIG: bytes+mtime unchanged after both refusals: ('ac15600e7b5d633c', 1789589176764482507)
+RIG: after [save, edit] pipelined: later poll is_dirty = True
+RIG: refused (edit pipelined behind a save): the open session has unsaved changes that opening a file would destroy; save_shot first, or pass discard_unsaved=true
+RIG: refused (reset without confirm): reset_session discards the open file and any unsaved work; pass confirm=true
+RIG: reset_session epoch 1 -> 2, addon still serving
+RIG PASSED
+```
+
+The cycle-2 repairs changed no drain or swap path; the reviewer re-ran the `--background` probe above after them.
+Critic 2 additionally ran a two-connection rig scenario (RIG PASSED) and the cycle-2 critic three
+`[save_shot, set_object_transform, get_session_info]` + `open_shot` rounds, all refused.
+
+### Bugs found by review and their repairs
+
+| Cycle | Finding | Evidence | Repair |
+|---|---|---|---|
+| 1 | **Auto-critical:** edit pipelined after `save_shot` in one tick reported clean, then destroyed by `open_shot` without `discard_unsaved` | Critic 1 live rig: cube back at 0,0,0 | decision 21 |
+| 1 | `save_shot` result `is_dirty: true` after a successful save | Critic 1 live rig | field removed |
+| 1 | `//` library links silently broken by save-to-another-directory | Critic 1 probe | decision 22 warning |
+| 1 | **Auto-critical:** planted `<target>@` symlink → save writes outside roots, no confirmation | Critic 3 `tempsym.py`: victim became `BLENDER17-01v050` | `lstat(<target>@)` refusal |
+| 2 | **Auto-critical:** the `lstat` `OSError` branch survived its revert (65 passed) | cycle-2 trust critic mutation | EACCES / ENAMETOOLONG tests; revert row fails 4 |
+| 2 | Warning counted only libraries; `//` images silently broken | cycle-2 durability critic probe | `blend_paths(local=True)` minus indirect libraries |
+
+TDD: Step 3 **38 failed, 13 passed** before implementation (the 13 were refusals "Unknown command type" also
+satisfied; each has a revert row). Cycle-1 repairs 9 failed / 3 passed first; cycle-2 repairs 8 failed first.
+Three tests were written after their implementation; each fails under its revert row.
+
+### Falsifiability
+
+`scripts/revert_matrix.py --only "task 6"`: **all rows fail as required, 0 survivors, 0 uncovered**, run by
+Critic 4 (33 rows, cycle 1) and the cycle-3 critic (after all repairs); `check_revert_anchors.py` **365/365**.
+Selected: `use_scripts` inherited 1; `use_scripts` exposed 1; no overwrite pre-check 3; `relative_remap`
+inherited 2; `compress` inherited 2; roots not enforced 3; preference not checked 2; `read_factory_settings`
+used 3; commands unregistered 4; tick not ended after a save 1; `@` not checked 6; `lstat` OSError reads as clear 4.
+
+### Gates (reviewer, final tree)
+
+| Check | Value | Before |
+|---|---|---|
+| pytest | **1164 passed** | 1092 |
+| `ruff check .` | 9,832 | 9,832 |
+| `ruff format --check .` | 12 unformatted | 12 |
+| basedpyright | 71 / 4 | 71 / 4 |
+| `all` / `shot` | 1,181,037 B / 203,093 B | unchanged |
+| existing test lines removed | 0 | — |
+
+### Scores (recorded, not gated)
+
+| Dimension | C1 | C2 | C3 |
+|---|---|---|---|
+| Data durability | 16/30 | 24/30 | **28/30** |
+| Concurrency and liveness | 20/25 | 23/25 | — |
+| Filesystem and trust boundary | 18/20 | 17/20 | **19/20** |
+| Evidence | 14/15 | — | — |
+| Code quality | 10/10 | — | — |
+
+**Process note.** Two of cycle 2's findings were introduced or left incomplete by cycle 1's repairs — an
+untested branch in a new guard, and a warning scoped to the one case the finding named rather than the class
+("relative external paths"). Both are the recurring shapes Task 3 recorded: a repair is new code, and a fix for
+an instance must be checked against its class.
+
+**Wall time:** implementer ~25 min + two repair rounds ~13 min; critics ~8 min (C1, parallel), ~7 min (C2), ~5
+min (C3); reviewer ~25 min. About 1 h 40 min end to end.

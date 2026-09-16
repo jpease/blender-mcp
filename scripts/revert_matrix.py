@@ -99,6 +99,7 @@ DOCKT = "tests/test_docker_rig.py"
 ROOTST = "tests/test_output_roots.py"
 FPT = "tests/test_file_paths.py"
 PHT = "tests/test_polyhaven_blend_guard.py"
+FLT = "tests/test_file_lifecycle_handlers.py"
 CORET = "tests/server/tools/test_core.py"
 CLIT = "tests/server/test_cli_transport.py"
 AMT = "tests/test_addon_manager.py"
@@ -142,8 +143,8 @@ NFKC_BACKSLASH_LIB = (
 
 # The files added outright by a Phase 2 task; every node they collect must be
 # accounted for. Task 1 added the first five; Task 3 added `test_session_state.py`;
-# Task 5 added the last two.
-NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, PHT)
+# Task 5 added the next two; Task 6 added the last.
+NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, PHT, FLT)
 # Nodes added to files that already existed. **Not optional bookkeeping:**
 # `coverage_gaps()` subtracts the rows below from *this* universe, so a task that
 # adds nodes here without listing them gets a "0 uncovered" that is true of the
@@ -1446,10 +1447,9 @@ REVERTS: list[Revert] = [
         (
             "            self._execute_and_answer(command, client)\n"
             "            processed += 1\n"
-            "\n"
-            "    def _replace_this_dying_timer"
+            '            if command.get("type") in self._TICK_ENDING_COMMANDS:'
         ),
-        "            processed += 1\n\n    def _replace_this_dying_timer",
+        '            processed += 1\n            if command.get("type") in self._TICK_ENDING_COMMANDS:',
         (
             f"{THREADT}::test_a_command_that_arrives_after_the_swap_is_serviced_normally",
             f"{THREADT}::test_a_command_queued_after_the_swap_is_serviced_normally_under_the_stamp",
@@ -3248,6 +3248,417 @@ REVERTS: list[Revert] = [
         '            return {"error": sanitize_blender_error(e)}\n\n    def import_polyhaven_asset',
         '            return {"error": str(e)}\n\n    def import_polyhaven_asset',
         (f"{PHT}::test_a_failure_before_any_download_reports_no_absolute_path[list_polyhaven_assets-arguments2]",),
+    ),
+    # --- Task 6: open_shot, save_shot, reset_session ---
+    Revert(
+        "task 6: open_mainfile inherits use_scripts instead of passing False",
+        ADDON_FILE_LIFECYCLE,
+        "bpy.ops.wm.open_mainfile(filepath=canonical, load_ui=load_ui, use_scripts=False)",
+        "bpy.ops.wm.open_mainfile(filepath=canonical, load_ui=load_ui)",
+        (f"{FLT}::test_open_shot_passes_use_scripts_false_explicitly",),
+    ),
+    Revert(
+        "task 6: open_mainfile inherits load_ui (the operator default is True)",
+        ADDON_FILE_LIFECYCLE,
+        "bpy.ops.wm.open_mainfile(filepath=canonical, load_ui=load_ui, use_scripts=False)",
+        "bpy.ops.wm.open_mainfile(filepath=canonical, use_scripts=False)",
+        (f"{FLT}::test_open_shot_passes_load_ui_false_explicitly_by_default",),
+    ),
+    Revert(
+        "task 6: use_scripts exposed as an open_shot parameter",
+        ADDON_FILE_LIFECYCLE,
+        "self, filepath: object, load_ui: object = False, discard_unsaved: object = False\n",
+        "self, filepath: object, load_ui: object = False, discard_unsaved: object = False, "
+        "use_scripts: object = False\n",
+        (f"{FLT}::test_no_file_command_takes_a_use_scripts_parameter",),
+    ),
+    Revert(
+        "task 6: a server-side tool schema names use_scripts",
+        SERVER_CORE_TOOL,
+        None,
+        "\n# use_scripts\n",
+        (f"{FLT}::test_use_scripts_appears_in_no_server_side_schema",),
+    ),
+    Revert(
+        "task 6: open_shot destroys unsaved work without asking",
+        ADDON_FILE_LIFECYCLE,
+        "        if dirty and not discard_unsaved:\n",
+        "        if False:\n",
+        (f"{FLT}::test_open_shot_refuses_a_dirty_session_without_discard_unsaved",),
+    ),
+    Revert(
+        "task 6: discard_unsaved is ignored, so a dirty session can never be replaced",
+        ADDON_FILE_LIFECYCLE,
+        "        if dirty and not discard_unsaved:\n",
+        "        if dirty:\n",
+        (f"{FLT}::test_open_shot_opens_a_dirty_session_when_discard_unsaved_is_true",),
+    ),
+    Revert(
+        "task 6: use_scripts_auto_execute is not checked before the load",
+        ADDON_FILE_LIFECYCLE,
+        "        _refuse_scripts_auto_execute()\n",
+        "",
+        (
+            f"{FLT}::test_open_shot_refuses_while_scripts_auto_execute_is_enabled",
+            f"{FLT}::test_open_shot_refuses_when_the_auto_execute_preference_cannot_be_read",
+        ),
+    ),
+    Revert(
+        "task 6: an unreadable auto-execute preference is read as off (fail open)",
+        ADDON_FILE_LIFECYCLE,
+        'if getattr(filepaths, "use_scripts_auto_execute", True) is not False:',
+        'if getattr(filepaths, "use_scripts_auto_execute", False) is True:',
+        (f"{FLT}::test_open_shot_refuses_when_the_auto_execute_preference_cannot_be_read",),
+    ),
+    Revert(
+        "task 6: the auto-execute check refuses whatever the preference says",
+        ADDON_FILE_LIFECYCLE,
+        'if getattr(filepaths, "use_scripts_auto_execute", True) is not False:',
+        "if True:",
+        (f"{FLT}::test_open_shot_proceeds_while_scripts_auto_execute_is_disabled",),
+    ),
+    Revert(
+        "task 6: resolve_blend_path skipped, the raw path reaches the operator",
+        ADDON_FILE_LIFECYCLE,
+        "    return resolve_blend_path(expanded, must_exist=must_exist)\n",
+        "    return str(expanded)\n",
+        (
+            *(
+                f"{FLT}::test_open_shot_validates_the_path_before_any_operator_runs[{case}]"
+                for case in ("missing", "directory", "non-blend", "bad-magic", "empty")
+            ),
+            f"{FLT}::test_each_file_command_is_answered_exactly_once_through_the_drain_loop[open refused]",
+        ),
+    ),
+    Revert(
+        "task 6: a // path in an unsaved session resolves against the process CWD",
+        ADDON_FILE_LIFECYCLE,
+        '    if not bpy.data.filepath:\n        raise ValueError(\n            "a Blender-relative',
+        '    if False:\n        raise ValueError(\n            "a Blender-relative',
+        (
+            f"{FLT}::test_open_shot_refuses_a_blender_relative_path_in_an_unsaved_session",
+            f"{FLT}::test_save_shot_refuses_a_blender_relative_path_in_an_unsaved_session",
+        ),
+    ),
+    Revert(
+        "task 6: a // path is never expanded",
+        ADDON_FILE_LIFECYCLE,
+        "    return bpy.path.abspath(raw)\n",
+        "    return raw\n",
+        (f"{FLT}::test_open_shot_expands_a_blender_relative_path_against_the_open_file",),
+    ),
+    Revert(
+        "task 6: file roots not enforced on open or save",
+        ADDON_FILE_LIFECYCLE,
+        "        enforce_roots(expanded, configured_file_roots())\n",
+        "        pass\n",
+        (
+            f"{FLT}::test_open_shot_enforces_the_configured_roots",
+            f"{FLT}::test_open_shot_refuses_outside_the_roots_before_saying_whether_the_file_exists",
+            f"{FLT}::test_save_shot_enforces_the_roots_for_an_explicit_target_and_for_the_open_file",
+        ),
+    ),
+    Revert(
+        "task 6: roots checked after the file checks, so existence leaks outside the roots",
+        ADDON_FILE_LIFECYCLE,
+        '    if isinstance(expanded, str) and expanded.strip() and "\\x00" not in expanded:\n'
+        "        enforce_roots(expanded, configured_file_roots())\n"
+        "    return resolve_blend_path(expanded, must_exist=must_exist)\n",
+        "    canonical = resolve_blend_path(expanded, must_exist=must_exist)\n"
+        "    enforce_roots(canonical, configured_file_roots())\n"
+        "    return canonical\n",
+        (f"{FLT}::test_open_shot_refuses_outside_the_roots_before_saying_whether_the_file_exists",),
+    ),
+    Revert(
+        "task 6: the in-place save target is not held to the roots",
+        ADDON_FILE_LIFECYCLE,
+        "        canonical = _checked_blend_path(requested, must_exist=False)\n",
+        "        canonical = str(requested) if in_place else _checked_blend_path(requested, must_exist=False)\n",
+        (f"{FLT}::test_save_shot_enforces_the_roots_for_an_explicit_target_and_for_the_open_file",),
+    ),
+    Revert(
+        "task 6: open_mainfile's RuntimeError reaches the client raw",
+        ADDON_FILE_LIFECYCLE,
+        'raise RuntimeError(_operator_failure_message("open_shot", exc, (filepath, canonical))) from exc',
+        "raise RuntimeError(str(exc)) from exc",
+        (
+            f"{FLT}::test_a_runtime_error_from_open_mainfile_is_a_clean_error_response",
+            f"{FLT}::test_each_file_command_is_answered_exactly_once_through_the_drain_loop[open raises]",
+        ),
+    ),
+    Revert(
+        "task 6: the sanitizer is not given the known paths (structural detection only)",
+        ADDON_FILE_LIFECYCLE,
+        "sanitize_blender_error(exc, known_paths=known)",
+        "sanitize_blender_error(exc)",
+        (f"{FLT}::test_the_known_path_closes_what_structural_detection_leaves_behind",),
+    ),
+    Revert(
+        "task 6: a save operator's RuntimeError reaches the client raw",
+        ADDON_FILE_LIFECYCLE,
+        'raise RuntimeError(_operator_failure_message("save_shot", exc, (requested, canonical))) from exc',
+        "raise RuntimeError(str(exc)) from exc",
+        (
+            f"{FLT}::test_a_runtime_error_from_a_save_operator_is_a_clean_error_response[save_as_mainfile]",
+            f"{FLT}::test_a_runtime_error_from_a_save_operator_is_a_clean_error_response[save_mainfile]",
+            f"{FLT}::test_each_file_command_is_answered_exactly_once_through_the_drain_loop[save raises]",
+        ),
+    ),
+    Revert(
+        "task 6: the reset operator's RuntimeError reaches the client raw",
+        ADDON_FILE_LIFECYCLE,
+        'raise RuntimeError(_operator_failure_message("reset_session", exc, (previous,))) from exc',
+        "raise RuntimeError(str(exc)) from exc",
+        (
+            f"{FLT}::test_a_runtime_error_from_the_reset_operator_is_a_clean_error_response",
+            f"{FLT}::test_each_file_command_is_answered_exactly_once_through_the_drain_loop[reset raises]",
+        ),
+    ),
+    Revert(
+        "task 6: a swap result does not tell the client to re-handshake",
+        ADDON_FILE_LIFECYCLE,
+        '            "rehandshake_required": True,\n',
+        '            "rehandshake_required": False,\n',
+        (
+            f"{FLT}::test_open_shot_reports_the_new_session_and_asks_for_a_rehandshake",
+            f"{FLT}::test_reset_session_reads_the_empty_factory_startup_file_and_never_factory_settings",
+            f"{FLT}::test_a_swap_that_landed_is_still_reported_as_a_success_when_its_report_fails",
+        ),
+    ),
+    Revert(
+        "task 6: capabilities_changed is hard-coded False",
+        ADDON_FILE_LIFECYCLE,
+        'report["capabilities_changed"] = self._capability_names() != capabilities_before',
+        'report["capabilities_changed"] = False',
+        (f"{FLT}::test_open_shot_reports_that_the_capability_set_followed_the_file",),
+    ),
+    Revert(
+        "task 6: a failing post-swap report turns a landed swap into an error",
+        ADDON_FILE_LIFECYCLE,
+        '        except Exception as exc:\n            print(f"BlenderMCP: the swap completed',
+        '        except ZeroDivisionError as exc:\n            print(f"BlenderMCP: the swap completed',
+        (f"{FLT}::test_a_swap_that_landed_is_still_reported_as_a_success_when_its_report_fails",),
+    ),
+    Revert(
+        "task 6: flags are coerced with bool(), so the string 'true' confirms",
+        ADDON_FILE_LIFECYCLE,
+        "    if not isinstance(value, bool):\n"
+        '        raise ValueError(f"{name} must be true or false")\n'
+        "    return value\n",
+        "    return bool(value)\n",
+        tuple(
+            f"{FLT}::test_a_flag_that_is_not_a_real_bool_is_refused[{case}]"
+            for case in (
+                "open_shot-load_ui",
+                "open_shot-discard_unsaved",
+                "save_shot-compress",
+                "save_shot-relative_remap",
+                "save_shot-confirm_overwrite",
+                "reset_session-confirm",
+            )
+        ),
+    ),
+    Revert(
+        "task 6: save inherits relative_remap (save_as_mainfile's default is True)",
+        ADDON_FILE_LIFECYCLE,
+        "operator(filepath=canonical, compress=compress, relative_remap=relative_remap)",
+        "operator(filepath=canonical, compress=compress)",
+        (
+            f"{FLT}::test_save_shot_passes_compress_and_relative_remap_false_explicitly",
+            f"{FLT}::test_save_shot_in_place_uses_save_mainfile_with_explicit_arguments",
+        ),
+    ),
+    Revert(
+        "task 6: save inherits compress (use_file_compression wins at factory settings)",
+        ADDON_FILE_LIFECYCLE,
+        "operator(filepath=canonical, compress=compress, relative_remap=relative_remap)",
+        "operator(filepath=canonical, relative_remap=relative_remap)",
+        (
+            f"{FLT}::test_save_shot_passes_compress_and_relative_remap_false_explicitly",
+            f"{FLT}::test_save_shot_in_place_uses_save_mainfile_with_explicit_arguments",
+        ),
+    ),
+    Revert(
+        "task 6: an explicit compress / relative_remap opt-in is dropped",
+        ADDON_FILE_LIFECYCLE,
+        "operator(filepath=canonical, compress=compress, relative_remap=relative_remap)",
+        "operator(filepath=canonical, compress=False, relative_remap=False)",
+        (f"{FLT}::test_save_shot_forwards_an_explicit_opt_in",),
+    ),
+    Revert(
+        "task 6: no overwrite pre-check, check_existing left to guard (it does not)",
+        ADDON_FILE_LIFECYCLE,
+        "        if exists and not confirm_overwrite:\n",
+        "        if False:\n",
+        (
+            f"{FLT}::test_saving_over_an_existing_file_without_confirmation_calls_no_operator",
+            f"{FLT}::test_save_shot_in_place_needs_confirmation_because_it_overwrites_the_file_on_disk",
+            f"{FLT}::test_each_file_command_is_answered_exactly_once_through_the_drain_loop[save refused]",
+        ),
+    ),
+    Revert(
+        "task 6: confirm_overwrite is ignored, so an existing file can never be replaced",
+        ADDON_FILE_LIFECYCLE,
+        "        if exists and not confirm_overwrite:\n",
+        "        if exists:\n",
+        (
+            f"{FLT}::test_saving_over_an_existing_file_with_confirmation_writes_it",
+            f"{FLT}::test_save_shot_in_place_uses_save_mainfile_with_explicit_arguments",
+            f"{FLT}::test_a_runtime_error_from_a_save_operator_is_a_clean_error_response[save_mainfile]",
+        ),
+    ),
+    Revert(
+        "task 6: an in-place save on a never-saved session is not refused up front",
+        ADDON_FILE_LIFECYCLE,
+        "        if in_place and not bpy.data.filepath:\n",
+        "        if False:\n",
+        (f"{FLT}::test_save_shot_in_place_on_an_unsaved_session_is_refused_with_an_actionable_message",),
+    ),
+    Revert(
+        "task 6: an in-place save goes through save_as_mainfile",
+        ADDON_FILE_LIFECYCLE,
+        "operator = bpy.ops.wm.save_mainfile if in_place else bpy.ops.wm.save_as_mainfile",
+        "operator = bpy.ops.wm.save_as_mainfile",
+        (
+            f"{FLT}::test_save_shot_in_place_uses_save_mainfile_with_explicit_arguments",
+            f"{FLT}::test_a_runtime_error_from_a_save_operator_is_a_clean_error_response[save_mainfile]",
+        ),
+    ),
+    Revert(
+        "task 6: reset_session runs without confirm",
+        ADDON_FILE_LIFECYCLE,
+        '        if not _require_bool("confirm", confirm):\n',
+        '        if not _require_bool("confirm", True):\n',
+        (
+            f"{FLT}::test_reset_session_without_confirm_is_refused",
+            f"{FLT}::test_a_flag_that_is_not_a_real_bool_is_refused[reset_session-confirm]",
+            f"{FLT}::test_each_file_command_is_answered_exactly_once_through_the_drain_loop[reset refused]",
+        ),
+    ),
+    Revert(
+        "task 6: reset_session uses the plan's read_factory_settings (unregisters every add-on)",
+        ADDON_FILE_LIFECYCLE,
+        "bpy.ops.wm.read_homefile(use_empty=True, use_factory_startup=True, load_ui=False)",
+        "bpy.ops.wm.read_factory_settings(use_empty=True)",
+        (
+            f"{FLT}::test_reset_session_reads_the_empty_factory_startup_file_and_never_factory_settings",
+            f"{FLT}::test_a_runtime_error_from_the_reset_operator_is_a_clean_error_response",
+            f"{FLT}::test_each_file_command_is_answered_exactly_once_through_the_drain_loop[reset raises]",
+        ),
+    ),
+    Revert(
+        "task 6: the three commands are not in the dispatch table",
+        ADDON_SERVER_CORE,
+        '            "open_shot": self.open_shot,\n'
+        '            "save_shot": self.save_shot,\n'
+        '            "reset_session": self.reset_session,\n',
+        "",
+        (
+            f"{FLT}::test_the_file_commands_are_dispatchable_and_advertised_beside_get_session_info",
+            *(
+                f"{FLT}::test_each_file_command_is_answered_exactly_once_through_the_drain_loop[{case}]"
+                for case in ("open ok", "save ok", "reset ok")
+            ),
+        ),
+    ),
+    # --- Task 6 cycle-1 repairs ---
+    Revert(
+        "task 6 C1: the drain tick does not end after save_shot, so an edit behind it loses its dirty flag",
+        ADDON_SERVER_CORE,
+        '            if command.get("type") in self._TICK_ENDING_COMMANDS:\n                break\n',
+        "",
+        (f"{FLT}::test_the_drain_tick_ends_after_a_save_so_a_queued_edit_runs_after_blender_clears_the_dirty_flag",),
+    ),
+    Revert(
+        "task 6 C1: save_shot reports a same-tick is_dirty that Blender has not cleared yet",
+        ADDON_FILE_LIFECYCLE,
+        '            "relative_remap": relative_remap,\n            "session_id": session["session_id"],\n',
+        '            "relative_remap": relative_remap,\n'
+        '            "is_dirty": bool(bpy.data.is_dirty),\n'
+        '            "session_id": session["session_id"],\n',
+        (f"{FLT}::test_save_shot_does_not_report_a_dirty_flag_blender_has_not_cleared_yet",),
+    ),
+    Revert(
+        "task 6 C1: no warning for //-relative links a save to a new directory breaks",
+        ADDON_FILE_LIFECYCLE,
+        "        broken_links = _unresolvable_relative_paths(canonical, relative_remap)\n",
+        "        broken_links = 0\n",
+        (
+            f"{FLT}::test_saving_to_another_directory_warns_about_relative_links_that_will_not_resolve",
+            f"{FLT}::test_a_relative_image_path_counts_as_an_external_path_that_will_not_resolve",
+            f"{FLT}::test_an_indirect_library_is_not_counted_because_blender_rederives_it_from_its_parent",
+        ),
+    ),
+    Revert(
+        "task 6 C1: the relative-link warning ignores the directory and the remap flag",
+        ADDON_FILE_LIFECYCLE,
+        "    if relative_remap or not current:\n        return 0\n"
+        "    if os.path.dirname(canonical) == os.path.dirname(canonical_path(current)):\n        return 0\n",
+        "",
+        tuple(
+            f"{FLT}::test_no_relative_link_warning_when_the_links_still_resolve[{case}]"
+            for case in ("same directory", "relative_remap", "in place")
+        ),
+    ),
+    Revert(
+        "task 6 C1: a planted <target>@ is not checked, so the save follows it out of the roots",
+        ADDON_FILE_LIFECYCLE,
+        "        _refuse_a_leftover_temp_save(canonical)\n",
+        "",
+        tuple(
+            f"{FLT}::test_a_leftover_temp_save_name_beside_the_target_refuses_the_save[{place}-{kind}]"
+            for place in ("explicit", "in place")
+            for kind in ("file", "dangling symlink", "directory")
+        ),
+    ),
+    Revert(
+        "task 6 C1: the temp-name check uses exists(), which a dangling symlink passes",
+        ADDON_FILE_LIFECYCLE,
+        '        os.lstat(f"{canonical}@")\n    except FileNotFoundError:\n        return\n',
+        '        if not os.path.exists(f"{canonical}@"):\n'
+        "            return\n"
+        "    except FileNotFoundError:\n"
+        "        return\n",
+        tuple(
+            f"{FLT}::test_a_leftover_temp_save_name_beside_the_target_refuses_the_save[{place}-dangling symlink]"
+            for place in ("explicit", "in place")
+        ),
+    ),
+    # --- Task 6 cycle-2 repairs ---
+    Revert(
+        "task 6 C2: an lstat failure other than not-found reads as a clear temp name",
+        ADDON_FILE_LIFECYCLE,
+        "    except OSError as exc:\n        raise ValueError(\n",
+        "    except OSError as exc:\n        return\n        raise ValueError(\n",
+        tuple(
+            f"{FLT}::test_a_temp_save_name_that_cannot_be_checked_refuses_the_save[{place}-{errno_id}]"
+            for errno_id in ("EACCES", "ENAMETOOLONG")
+            for place in ("explicit", "in place")
+        ),
+    ),
+    Revert(
+        "task 6 C2: an occupied temp name is not said to be possibly left by an interrupted save",
+        ADDON_FILE_LIFECYCLE,
+        'already exists beside the target, possibly "\n        "left by an interrupted save;',
+        'already exists beside the target; "\n        "remove it now;',
+        (f"{FLT}::test_an_occupied_temp_save_name_says_it_may_be_left_by_an_interrupted_save",),
+    ),
+    Revert(
+        "task 6 C2: only libraries are counted, so a relative image path breaks with no warning",
+        ADDON_FILE_LIFECYCLE,
+        "        for path in bpy.utils.blend_paths(absolute=False, packed=False, local=True)\n",
+        "        for path in (library.filepath for library in bpy.data.libraries)\n",
+        (
+            f"{FLT}::test_a_relative_image_path_counts_as_an_external_path_that_will_not_resolve",
+            f"{FLT}::test_an_indirect_library_is_not_counted_because_blender_rederives_it_from_its_parent",
+        ),
+    ),
+    Revert(
+        "task 6 C2: indirect libraries are counted although they re-resolve from their parent",
+        ADDON_FILE_LIFECYCLE,
+        "for library in bpy.data.libraries if _is_indirect_library(library)",
+        "for library in bpy.data.libraries if False",
+        (f"{FLT}::test_an_indirect_library_is_not_counted_because_blender_rederives_it_from_its_parent",),
     ),
 ]
 
