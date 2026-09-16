@@ -3821,8 +3821,9 @@ Task 10 section). No container parity is claimed for Tasks 2-10.
 | 9 | `285280a` | 2 | 3 (evidence gaps) |
 | 10 | `bed8c3e` | 1 + verified repair | 1 |
 
-Tasks 4-10 took roughly 11 hours of session time in total, against ~15¾ hours for Task 3 alone, under
-decision 13's triage.
+Tasks 4-10 took about 5¾ hours of session wall time in total (prompt timestamps 11:40 → 17:21 MDT on
+2026-09-16, including the Task 3 retrospective and the decision-13 discussion), against ~15¾ hours for Task 3
+alone. Critic, implementer and reviewer work ran in parallel where files did not overlap.
 
 ### Open for the user
 
