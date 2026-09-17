@@ -96,6 +96,7 @@ async def save_shot(
     compress: bool = False,
     relative_remap: bool = False,
     confirm_overwrite: bool = False,
+    create_directories: bool = False,
 ) -> dict:
     """
     Write the open database to disk, uncompressed by default; refuses to replace a file unconfirmed.
@@ -111,11 +112,12 @@ async def save_shot(
         compress: Write a compressed .blend. Default False: canon publishes stay uncompressed.
         relative_remap: Rewrite linked-library paths relative to the new location.
         confirm_overwrite: Required whenever the target .blend already exists.
+        create_directories: Create the target's missing directories (inside the file roots).
 
     Returns:
-        filepath, saved_in_place, overwrote_existing, compress, relative_remap, session_id,
-        session_epoch, and warnings when relative external file paths will not resolve from a
-        new directory.
+        filepath, saved_in_place, overwrote_existing, created_directory, compress, relative_remap,
+        session_id, session_epoch, and warnings when relative external file paths will not resolve
+        from a new directory.
 
     """
     return await _call(
@@ -125,6 +127,7 @@ async def save_shot(
             "compress": compress,
             "relative_remap": relative_remap,
             "confirm_overwrite": confirm_overwrite,
+            "create_directories": create_directories,
         },
     )
 

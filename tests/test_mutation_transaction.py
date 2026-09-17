@@ -96,6 +96,16 @@ class FakeCollection:
     def __iter__(self):
         return iter(list(self._items))
 
+    def values(self) -> list:
+        """
+        List the datablocks, as `bpy_prop_collection.values` does.
+
+        Returns:
+            list: Every datablock, in allocation order.
+
+        """
+        return list(self._items)
+
     def __len__(self) -> int:
         return len(self._items)
 

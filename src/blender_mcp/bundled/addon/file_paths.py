@@ -21,7 +21,10 @@ client.
   (`~`, temp dirs), or the boundary would be the home directory.
 - *Overwrite.* Writing over an existing file needs an explicit
   `confirm_overwrite=True`, default False, as `handlers/rendering.py` does.
-  The save handler (plan Task 6) applies it; nothing here writes.
+  The save handler (plan Task 6) applies it; nothing here writes a file.
+- *Directories.* A save target's missing directory is refused unless the
+  caller opts in; `create_save_directory` then makes it, and only it, after the
+  roots have been enforced on the canonical target.
 - *Scripts.* `wm.open_mainfile(use_scripts=...)` runs Python embedded in a
   `.blend` on load. It is never a tool parameter, every call passes
   `use_scripts=False` explicitly, and
@@ -155,12 +158,14 @@ def _require_blend_file(path: str) -> None:
         raise ValueError("file is not a .blend file (unrecognised header)")
 
 
-def _require_save_target(path: str) -> None:
+def _require_save_target(path: str, *, create_directories: bool) -> None:
     """
-    Refuse a save target whose directory is missing or unwritable.
+    Refuse a save target whose directory is missing (unless it may be created) or unwritable.
 
     Args:
         path: A canonical path.
+        create_directories: True when the caller will create a missing directory
+            with `create_save_directory`; its writability is then Blender's to report.
 
     Raises:
         ValueError: With a message that names no path.
@@ -170,12 +175,14 @@ def _require_save_target(path: str) -> None:
         raise ValueError("path is a directory, not a .blend file")
     directory = os.path.dirname(path)
     if not os.path.isdir(directory):
-        raise ValueError("target directory does not exist")
+        if create_directories:
+            return
+        raise ValueError("target directory does not exist; pass create_directories=true to create it")
     if not os.access(directory, os.W_OK):
         raise ValueError("target directory is not writable")
 
 
-def resolve_blend_path(raw: object, *, must_exist: bool) -> str:
+def resolve_blend_path(raw: object, *, must_exist: bool, create_directories: bool = False) -> str:
     """
     Validate a caller-supplied `.blend` path and return its canonical form.
 
@@ -186,6 +193,8 @@ def resolve_blend_path(raw: object, *, must_exist: bool) -> str:
         raw: The path, already passed through `bpy.path.abspath` by the caller.
         must_exist: True to open or link (the file must exist and carry a
             `.blend` header); False to save (its directory must be writable).
+        create_directories: For a save, accept a directory that does not exist
+            yet; the caller creates it with `create_save_directory`.
 
     Returns:
         str: The canonical path, to check with `enforce_roots` and hand to Blender.
@@ -213,8 +222,38 @@ def resolve_blend_path(raw: object, *, must_exist: bool) -> str:
     if must_exist:
         _require_blend_file(resolved)
     else:
-        _require_save_target(resolved)
+        _require_save_target(resolved, create_directories=create_directories)
     return resolved
+
+
+def create_save_directory(path: str) -> bool:
+    """
+    Create a canonical save target's missing directory, with its missing parents.
+
+    Call it only with `resolve_blend_path`'s result after `enforce_roots`: the
+    path is symlink-free there, so every directory made is inside the root the
+    target was checked against.
+
+    Args:
+        path: The canonical `.blend` target.
+
+    Returns:
+        bool: True when a directory was created, False when it already existed.
+
+    Raises:
+        ValueError: When it cannot be created (a file is in the way, or a parent
+            is unwritable), with a message that names no path.
+
+    """
+    directory = os.path.dirname(path)
+    if os.path.isdir(directory):
+        return False
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError as exc:
+        # OSError's own text carries the path, so it is chained, not quoted.
+        raise ValueError("target directory could not be created") from exc
+    return True
 
 
 def enforce_roots(path: str, roots: Iterable[str]) -> None:

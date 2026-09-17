@@ -106,6 +106,7 @@ def test_save_shot_forwards_every_parameter(monkeypatch) -> None:
             compress=True,
             relative_remap=True,
             confirm_overwrite=True,
+            create_directories=True,
         )
     )
 
@@ -116,6 +117,7 @@ def test_save_shot_forwards_every_parameter(monkeypatch) -> None:
         "compress": True,
         "relative_remap": True,
         "confirm_overwrite": True,
+        "create_directories": True,
     }
 
 
@@ -132,6 +134,7 @@ def test_save_shot_default_filepath_is_none(monkeypatch) -> None:
         "compress": False,
         "relative_remap": False,
         "confirm_overwrite": False,
+        "create_directories": False,
     }
 
 

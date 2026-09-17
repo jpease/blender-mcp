@@ -738,6 +738,60 @@ def test_save_shot_enforces_the_roots_for_an_explicit_target_and_for_the_open_fi
     assert [name for name, _ in wm.calls] == ["save_as_mainfile"]
 
 
+def test_save_shot_refuses_a_missing_directory_unless_asked_to_create_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A canon/shots layout needs no pre-created directories, but only on an explicit opt-in."""
+    server, _bpy, wm = _server(monkeypatch)
+    target = tmp_path / "canon" / "shots" / "sh010.blend"
+
+    refused = _run(server, "save_shot", filepath=str(target))
+
+    assert refused["status"] == "error" and "create_directories=true" in refused["message"]
+    assert wm.calls == [] and not (tmp_path / "canon").exists()
+    _assert_no_absolute_path(refused["message"], target)
+
+    created = _run(server, "save_shot", filepath=str(target), create_directories=True)
+
+    assert created["status"] == "success", created
+    assert created["result"]["created_directory"] is True
+    assert target.is_file()
+    assert [name for name, _ in wm.calls] == ["save_as_mainfile"]
+
+
+def test_save_shot_creates_no_directory_outside_the_roots_or_on_a_refusal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Directories are made only after the roots and every other refusal have passed."""
+    inside = tmp_path / "inside"
+    inside.mkdir()
+    server, _bpy, wm = _server(monkeypatch)
+    monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(inside))
+
+    outside = _run(server, "save_shot", filepath=str(tmp_path / "outside" / "x.blend"), create_directories=True)
+    escape = _run(server, "save_shot", filepath=str(inside / ".." / "escape" / "x.blend"), create_directories=True)
+    not_bool = _run(server, "save_shot", filepath=str(inside / "shots" / "x.blend"), create_directories="yes")
+
+    for response in (outside, escape, not_bool):
+        assert response["status"] == "error", response
+    assert "BLENDERMCP_FILE_ROOTS" in outside["message"] and "BLENDERMCP_FILE_ROOTS" in escape["message"]
+    assert not (tmp_path / "outside").exists() and not (tmp_path / "escape").exists()
+    assert not (inside / "shots").exists()
+    assert wm.calls == []
+
+
+def test_save_shot_reports_no_created_directory_when_it_already_existed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`created_directory` is False when the opt-in had nothing to do."""
+    server, _bpy, _wm = _server(monkeypatch)
+
+    response = _run(server, "save_shot", filepath=str(tmp_path / "x.blend"), create_directories=True)
+
+    assert response["status"] == "success", response
+    assert response["result"]["created_directory"] is False
+
+
 def test_save_shot_refuses_a_blender_relative_path_in_an_unsaved_session(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

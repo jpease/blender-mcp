@@ -80,6 +80,9 @@ ADDON_FILE_LIFECYCLE = ROOT / "src/blender_mcp/bundled/addon/handlers/file_lifec
 ADDON_LINKING = ROOT / "src/blender_mcp/bundled/addon/handlers/linking.py"
 # Task 9: server-side tool wrappers and their registration/documentation surface.
 SERVER_FILE_LIFECYCLE_TOOL = ROOT / "src/blender_mcp/server/tools/file_lifecycle.py"
+# Post-Phase-2: `save_shot.create_directories` and name resolution after a library override.
+ADDON_OBJECT_LOOKUP = ROOT / "src/blender_mcp/bundled/addon/object_lookup.py"
+ADDON_SCENE = ROOT / "src/blender_mcp/bundled/addon/handlers/scene.py"
 SERVER_DOCUMENTATION = ROOT / "src/blender_mcp/server/tools/_documentation.py"
 SERVER_BUNDLES = ROOT / "src/blender_mcp/server/bundles.py"
 TEST_BUNDLES_FILE = ROOT / "tests/server/test_bundles.py"
@@ -113,6 +116,8 @@ CLIT = "tests/server/test_cli_transport.py"
 # handler tests Task 6 added) -- same subject, different layer.
 SFLT = "tests/server/tools/test_file_lifecycle.py"
 BUNT = "tests/server/test_bundles.py"
+OLT = "tests/test_object_lookup.py"
+SOIT = "tests/server/tools/test_scene_object_inspection.py"
 AMT = "tests/test_addon_manager.py"
 # Named because the node id plus its parameter is one character past the line
 # limit inline, and splitting the f-string is what `ruff format` joins back.
@@ -155,7 +160,7 @@ NFKC_BACKSLASH_LIB = (
 # The files added outright by a Phase 2 task; every node they collect must be
 # accounted for. Task 1 added the first five; Task 3 added `test_session_state.py`;
 # Task 5 added the next two; Task 6 added `FLT`; Task 7 added the last.
-NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, PHT, FLT, LKT, SFLT)
+NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, PHT, FLT, LKT, SFLT, OLT)
 # Nodes added to files that already existed. **Not optional bookkeeping:**
 # `coverage_gaps()` subtracts the rows below from *this* universe, so a task that
 # adds nodes here without listing them gets a "0 uncovered" that is true of the
@@ -163,6 +168,9 @@ NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, 
 # precisely the blind spot this harness was built to prevent. Task 1 added the
 # first two; the rest are Task 3's.
 NEW_NODES_IN_EXISTING_FILES = (
+    # --- Post-Phase-2: which object a name shared with an override resolves to ---
+    f"{SOIT}::test_object_name_lookups_resolve_to_the_override_even_when_the_linked_original_is_listed_first",
+    f"{SOIT}::test_get_object_info_says_whether_it_resolved_an_override_or_a_linked_object",
     f"{AMT}::test_handshake_surfaces_writable_output_roots",
     f"{AMT}::test_handshake_defaults_writable_output_roots_when_the_addon_omits_them",
     # --- Task 3: the handshake carries the session ---
@@ -2915,9 +2923,12 @@ REVERTS: list[Revert] = [
     Revert(
         "task 5: a save target's missing directory is not refused",
         ADDON_FILE_PATHS,
-        '    if not os.path.isdir(directory):\n        raise ValueError("target directory does not exist")\n',
-        "",
-        (f"{FPT}::test_a_save_target_whose_directory_does_not_exist_is_refused",),
+        '        raise ValueError("target directory does not exist; pass create_directories=true to create it")\n',
+        "        return\n",
+        (
+            f"{FPT}::test_a_save_target_whose_directory_does_not_exist_is_refused",
+            f"{FLT}::test_save_shot_refuses_a_missing_directory_unless_asked_to_create_it",
+        ),
     ),
     Revert(
         "task 5: a save target's read-only directory is not refused",
@@ -3336,7 +3347,7 @@ REVERTS: list[Revert] = [
     Revert(
         "task 6: resolve_blend_path skipped, the raw path reaches the operator",
         ADDON_FILE_LIFECYCLE,
-        "    return resolve_blend_path(expanded, must_exist=must_exist)\n",
+        "    return resolve_blend_path(expanded, must_exist=must_exist, create_directories=create_directories)\n",
         "    return str(expanded)\n",
         (
             *(
@@ -3372,6 +3383,7 @@ REVERTS: list[Revert] = [
             f"{FLT}::test_open_shot_enforces_the_configured_roots",
             f"{FLT}::test_open_shot_refuses_outside_the_roots_before_saying_whether_the_file_exists",
             f"{FLT}::test_save_shot_enforces_the_roots_for_an_explicit_target_and_for_the_open_file",
+            f"{FLT}::test_save_shot_creates_no_directory_outside_the_roots_or_on_a_refusal",
         ),
     ),
     Revert(
@@ -3379,8 +3391,8 @@ REVERTS: list[Revert] = [
         ADDON_FILE_LIFECYCLE,
         '    if isinstance(expanded, str) and expanded.strip() and "\\x00" not in expanded:\n'
         "        enforce_roots(expanded, configured_file_roots())\n"
-        "    return resolve_blend_path(expanded, must_exist=must_exist)\n",
-        "    canonical = resolve_blend_path(expanded, must_exist=must_exist)\n"
+        "    return resolve_blend_path(expanded, must_exist=must_exist, create_directories=create_directories)\n",
+        "    canonical = resolve_blend_path(expanded, must_exist=must_exist, create_directories=create_directories)\n"
         "    enforce_roots(canonical, configured_file_roots())\n"
         "    return canonical\n",
         (f"{FLT}::test_open_shot_refuses_outside_the_roots_before_saying_whether_the_file_exists",),
@@ -3388,8 +3400,12 @@ REVERTS: list[Revert] = [
     Revert(
         "task 6: the in-place save target is not held to the roots",
         ADDON_FILE_LIFECYCLE,
-        "        canonical = _checked_blend_path(requested, must_exist=False)\n",
-        "        canonical = str(requested) if in_place else _checked_blend_path(requested, must_exist=False)\n",
+        "        canonical = _checked_blend_path(requested, must_exist=False, create_directories=create_directories)\n",
+        "        canonical = (\n"
+        "            str(requested)\n"
+        "            if in_place\n"
+        "            else _checked_blend_path(requested, must_exist=False, create_directories=create_directories)\n"
+        "        )\n",
         (f"{FLT}::test_save_shot_enforces_the_roots_for_an_explicit_target_and_for_the_open_file",),
     ),
     Revert(
@@ -4553,14 +4569,14 @@ REVERTS: list[Revert] = [
     Revert(
         "task 9: the shot ceiling constant reverted to its pre-Task-9 value",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 217_718",
+        "SHOT_MODE_BYTE_CEILING = 218_068",
         "SHOT_MODE_BYTE_CEILING = 203_094",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
         "task 9: the default ceiling constant reverted to a value the new tools already exceed",
         TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 78_019",
+        "DEFAULT_MODE_BYTE_CEILING = 78_369",
         "DEFAULT_MODE_BYTE_CEILING = 63_394",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
@@ -4585,6 +4601,136 @@ REVERTS: list[Revert] = [
         "    elif name in _EXTERNAL_TOOLS:",
         "    elif name in _EXTERNAL_TOOLS:",
         (f"{BUNT}::test_file_lifecycle_tools_blend_file_prose_is_correct",),
+    ),
+    # --- Post-Phase-2: save_shot.create_directories ---
+    Revert(
+        "post-phase-2: save_shot ignores create_directories and never makes the directory",
+        ADDON_FILE_LIFECYCLE,
+        "        created_directory = create_save_directory(canonical)\n",
+        "        created_directory = False\n",
+        (f"{FLT}::test_save_shot_refuses_a_missing_directory_unless_asked_to_create_it",),
+    ),
+    Revert(
+        "post-phase-2: save_shot does not validate create_directories as a bool",
+        ADDON_FILE_LIFECYCLE,
+        '        create_directories = _require_bool("create_directories", create_directories)\n',
+        "",
+        (f"{FLT}::test_save_shot_creates_no_directory_outside_the_roots_or_on_a_refusal",),
+    ),
+    Revert(
+        "post-phase-2: resolving a save target creates its directory before any refusal has run",
+        ADDON_FILE_PATHS,
+        "        if create_directories:\n            return\n",
+        "        if create_directories:\n            os.makedirs(directory, exist_ok=True)\n            return\n",
+        (f"{FPT}::test_a_missing_save_directory_is_accepted_and_created_only_on_opt_in",),
+    ),
+    Revert(
+        "post-phase-2: create_save_directory reports a directory that already existed as created",
+        ADDON_FILE_PATHS,
+        "    if os.path.isdir(directory):\n        return False\n",
+        "    if os.path.isdir(directory):\n        return True\n",
+        (
+            f"{FPT}::test_a_missing_save_directory_is_accepted_and_created_only_on_opt_in",
+            f"{FLT}::test_save_shot_reports_no_created_directory_when_it_already_existed",
+        ),
+    ),
+    Revert(
+        "post-phase-2: a directory-creation OSError's text (and its path) reaches the refusal",
+        ADDON_FILE_PATHS,
+        '        raise ValueError("target directory could not be created") from exc',
+        '        raise ValueError(f"target directory could not be created: {exc}") from exc',
+        (f"{FPT}::test_a_save_directory_blocked_by_a_file_is_refused_without_naming_it",),
+    ),
+    Revert(
+        "post-phase-2: the save_shot tool drops create_directories",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        '            "create_directories": create_directories,\n',
+        "",
+        (
+            f"{SFLT}::test_save_shot_forwards_every_parameter",
+            f"{SFLT}::test_save_shot_default_filepath_is_none",
+        ),
+    ),
+    Revert(
+        "post-phase-2: the shot ceiling reverted to before create_directories and the override fields",
+        TEST_BUNDLES_FILE,
+        "SHOT_MODE_BYTE_CEILING = 218_068",
+        "SHOT_MODE_BYTE_CEILING = 217_718",
+        (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
+    ),
+    Revert(
+        "post-phase-2: the default ceiling reverted to before create_directories and the override fields",
+        TEST_BUNDLES_FILE,
+        "DEFAULT_MODE_BYTE_CEILING = 78_369",
+        "DEFAULT_MODE_BYTE_CEILING = 78_019",
+        (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
+    ),
+    # --- Post-Phase-2: one object per name after a library override ---
+    Revert(
+        "post-phase-2: find_object does not prefer the local object by its (name, None) key",
+        ADDON_OBJECT_LOOKUP,
+        "    local = objects.get((name, None))",
+        "    local = None",
+        (
+            f"{OLT}::test_the_local_override_wins_over_a_linked_original_listed_first",
+            f"{SOIT}::test_object_name_lookups_resolve_to_the_override_even_when_the_linked_original_is_listed_first",
+        ),
+    ),
+    Revert(
+        "post-phase-2: several linked objects with one name are guessed between",
+        ADDON_OBJECT_LOOKUP,
+        "    if len(matches) > 1:",
+        "    if False:",
+        (f"{OLT}::test_two_linked_objects_with_one_name_and_no_local_one_are_refused",),
+    ),
+    Revert(
+        "post-phase-2: the ambiguity refusal publishes library names unreduced",
+        ADDON_OBJECT_LOOKUP,
+        'client_safe_name_leaf(getattr(obj.library, "name", ""))',
+        'str(getattr(obj.library, "name", ""))',
+        (f"{OLT}::test_two_linked_objects_with_one_name_and_no_local_one_are_refused",),
+    ),
+    Revert(
+        "post-phase-2: a single linked object is not resolved",
+        ADDON_OBJECT_LOOKUP,
+        "    return matches[0] if matches else None",
+        "    return None",
+        (f"{OLT}::test_a_single_linked_object_is_returned_when_no_local_one_has_the_name",),
+    ),
+    Revert(
+        "post-phase-2: a missing name resolves to some other object",
+        ADDON_OBJECT_LOOKUP,
+        "    return matches[0] if matches else None",
+        "    return matches[0] if matches else next(iter(objects.values()), None)",
+        (f"{OLT}::test_a_missing_name_is_none",),
+    ),
+    Revert(
+        "post-phase-2: scene tools look objects up by Blender's list order",
+        ADDON_SCENE,
+        '    obj = find_object(bpy.data.objects, _required_name(name, "object_name"))',
+        '    obj = bpy.data.objects.get(_required_name(name, "object_name"))',
+        (f"{SOIT}::test_object_name_lookups_resolve_to_the_override_even_when_the_linked_original_is_listed_first",),
+    ),
+    Revert(
+        "post-phase-2: get_object_info looks its object up by Blender's list order",
+        ADDON_SERVER_CORE,
+        "        obj = find_object(bpy.data.objects, name)\n",
+        "        obj = bpy.data.objects.get(name)\n",
+        (f"{SOIT}::test_object_name_lookups_resolve_to_the_override_even_when_the_linked_original_is_listed_first",),
+    ),
+    Revert(
+        "post-phase-2: get_object_info does not say whether it read an override",
+        ADDON_SERVER_CORE,
+        '            "is_override": getattr(obj, "override_library", None) is not None,',
+        '            "is_override": False,',
+        (f"{SOIT}::test_get_object_info_says_whether_it_resolved_an_override_or_a_linked_object",),
+    ),
+    Revert(
+        "post-phase-2: get_object_info publishes a linked object's library name unreduced",
+        ADDON_SERVER_CORE,
+        '"library": client_safe_name_leaf(obj.library.name) if',
+        '"library": obj.library.name if',
+        (f"{SOIT}::test_get_object_info_says_whether_it_resolved_an_override_or_a_linked_object",),
     ),
 ]
 

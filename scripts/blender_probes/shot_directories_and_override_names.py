@@ -1,0 +1,171 @@
+"""
+Drive `save_shot(create_directories=...)` and `object_lookup.find_object` against real Blender (post-Phase-2).
+
+Two gaps an agent reported after the Phase 2 gate, measured here on the real
+handlers and the real `bpy.data.objects`:
+
+A. **Directories.** A `canon/shots/sh010.blend` target whose directories do not
+   exist: refused without the opt-in (nothing created), saved with it
+   (`created_directory` True, the file reopens), refused outside the configured
+   roots with nothing created, and `created_directory` False on a second save
+   into the now-existing directory.
+B. **Names after an override.** A canon `HeroCam` linked and overridden (Route C),
+   saved and reopened: `bpy.data.objects.get` order, the `(name, None)` key,
+   and what `find_object` and the scene tools' `_object` return. Then two
+   libraries that each link a
+   `Prop` with no local one: `find_object` refuses and names only leaves. A
+   missing name is None.
+
+From the repository root::
+
+    /opt/homebrew/bin/blender --background --factory-startup \
+        --python scripts/blender_probes/shot_directories_and_override_names.py
+"""
+
+import importlib
+import os
+import pathlib
+import sys
+import tempfile
+import types
+
+import bpy
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+ADDON_DIR = ROOT / "src/blender_mcp/bundled/addon"
+_PACKAGE = types.ModuleType("probe_addon")
+_PACKAGE.__path__ = [str(ADDON_DIR)]  # type: ignore[attr-defined]
+# `helpers` (imported by `handlers.scene`) reads the package's `ADDON_ID`; the
+# real `__init__` registers Blender classes, so only the constant is provided.
+_PACKAGE.ADDON_ID = "blender_mcp_probe"  # type: ignore[attr-defined]
+sys.modules["probe_addon"] = _PACKAGE
+file_lifecycle = importlib.import_module("probe_addon.handlers.file_lifecycle")
+object_lookup = importlib.import_module("probe_addon.object_lookup")
+scene_handlers = importlib.import_module("probe_addon.handlers.scene")
+
+FAILURES: list[str] = []
+
+
+def check(label: str, condition: bool) -> None:
+    """
+    Print one measured claim and remember it when it does not hold.
+
+    Args:
+        label: The claim.
+        condition: Whether it held.
+
+    """
+    print(f"  [{'ok' if condition else 'FAIL'}] {label}")
+    if not condition:
+        FAILURES.append(label)
+
+
+def refusal(call: object) -> str:
+    """
+    Run a call expected to be refused and return its message.
+
+    Args:
+        call: A zero-argument callable.
+
+    Returns:
+        str: The `ValueError` text, or `<not refused>`.
+
+    """
+    try:
+        call()  # type: ignore[operator]
+    except ValueError as exc:
+        return str(exc)
+    return "<not refused>"
+
+
+def canon(path: pathlib.Path, collection: str, *object_names: str) -> None:
+    """
+    Write a canon `.blend` holding one collection of empties.
+
+    Args:
+        path: Where to save it.
+        collection: The collection's name.
+        *object_names: The objects inside it.
+
+    """
+    bpy.ops.wm.read_homefile(use_empty=True, use_factory_startup=True)
+    target = bpy.data.collections.new(collection)
+    bpy.context.scene.collection.children.link(target)
+    for name in object_names:
+        target.objects.link(bpy.data.objects.new(name, None))
+    bpy.ops.wm.save_as_mainfile(filepath=str(path), compress=False, relative_remap=False)
+
+
+def section_a(work: pathlib.Path) -> None:
+    """Save into directories that do not exist yet."""
+    print("A. save_shot(create_directories)")
+    save = file_lifecycle.FileLifecycleHandlersMixin.save_shot
+    bpy.ops.wm.read_homefile(use_empty=True, use_factory_startup=True)
+    target = work / "project" / "canon" / "shots" / "sh010.blend"
+
+    message = refusal(lambda: save(filepath=str(target)))
+    check(f"refused without the opt-in: {message!r}", "create_directories=true" in message)
+    check("nothing was created by the refusal", not (work / "project").exists())
+
+    result = save(filepath=str(target), create_directories=True)
+    check(f"saved with the opt-in, created_directory={result['created_directory']}", result["created_directory"])
+    check("the saved file exists", target.is_file())
+    bpy.ops.wm.open_mainfile(filepath=str(target), use_scripts=False)
+    check("the saved file reopens", bpy.data.filepath == str(target.resolve()))
+
+    again = save(filepath=str(target.parent / "sh020.blend"), create_directories=True)
+    check("created_directory is False for an existing directory", again["created_directory"] is False)
+
+    os.environ["BLENDERMCP_FILE_ROOTS"] = str(work / "project")
+    try:
+        outside = work / "elsewhere" / "shots" / "x.blend"
+        message = refusal(lambda: save(filepath=str(outside), create_directories=True))
+        check(f"refused outside the roots: {message!r}", "BLENDERMCP_FILE_ROOTS" in message)
+        check("nothing was created outside the roots", not (work / "elsewhere").exists())
+    finally:
+        del os.environ["BLENDERMCP_FILE_ROOTS"]
+
+
+def section_b(work: pathlib.Path) -> None:
+    """Resolve names an override shares with its linked original."""
+    print("B. find_object after Route C")
+    canon_path = work / "canon.blend"
+    canon(canon_path, "CanonHero", "HeroCam")
+    bpy.ops.wm.read_homefile(use_empty=True, use_factory_startup=True)
+    # The stubs type libraries.load() as None; it is a context manager at runtime.
+    with bpy.data.libraries.load(str(canon_path), link=True) as (_source, linked):  # pyright: ignore[reportGeneralTypeIssues]
+        linked.collections = ["CanonHero"]
+    linked.collections[0].override_hierarchy_create(bpy.context.scene, bpy.context.view_layer)
+    shot = work / "shot.blend"
+    bpy.ops.wm.save_as_mainfile(filepath=str(shot), compress=False, relative_remap=False)
+    bpy.ops.wm.open_mainfile(filepath=str(shot), use_scripts=False)
+
+    order = [(obj.name, obj.library is not None) for obj in bpy.data.objects]
+    print(f"  bpy.data.objects order after reopen: {order}")
+    check("two objects are named HeroCam", [name for name, _ in order].count("HeroCam") == len(("override", "linked")))
+    resolved = object_lookup.find_object(bpy.data.objects, "HeroCam")
+    check("find_object returns the local override", resolved.library is None and resolved.override_library)
+    check("the scene tools' _object returns the same object", scene_handlers._object("HeroCam") == resolved)
+    check("a missing name is None", object_lookup.find_object(bpy.data.objects, "NoSuchObject") is None)
+    check("the (name, None) key of a missing name is None", bpy.data.objects.get(("NoSuchObject", None)) is None)  # pyright: ignore[reportArgumentType]
+
+    first, second = work / "a" / "canon.blend", work / "b" / "props.blend"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    canon(first, "PropsA", "Prop")
+    canon(second, "PropsB", "Prop")
+    bpy.ops.wm.read_homefile(use_empty=True, use_factory_startup=True)
+    for path in (first, second):
+        with bpy.data.libraries.load(str(path), link=True) as (_source, linked):  # pyright: ignore[reportGeneralTypeIssues]
+            linked.objects = ["Prop"]
+    message = refusal(lambda: object_lookup.find_object(bpy.data.objects, "Prop"))
+    check(f"two linked Props with no local one are refused: {message!r}", "more than one library" in message)
+    check("the refusal names no directory", str(work) not in message)
+
+
+with tempfile.TemporaryDirectory() as scratch:
+    section_a(pathlib.Path(scratch).resolve())
+    section_b(pathlib.Path(scratch).resolve())
+
+print(f"PROBE {'FAILED: ' + '; '.join(FAILURES) if FAILURES else 'PASSED'}")
+sys.exit(1 if FAILURES else 0)

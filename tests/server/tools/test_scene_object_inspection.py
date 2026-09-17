@@ -441,6 +441,56 @@ def test_get_object_info_syncs_from_editmode_before_reading(monkeypatch) -> None
     assert obj.editmode_sync_calls == 1
 
 
+def test_get_object_info_says_whether_it_resolved_an_override_or_a_linked_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After Route C a name has two objects; the result says which one was read."""
+    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    server = addon.BlenderMCPServer()
+    _new_empty_object(bpy, "local_obj")
+    override = _new_empty_object(bpy, "override_obj")
+    override.override_library = object()
+    linked = _new_empty_object(bpy, "linked_obj")
+    linked.library = types.SimpleNamespace(name="/studio/canon.blend")
+
+    local_info = server.get_object_info("local_obj")
+    override_info = server.get_object_info("override_obj")
+    linked_info = server.get_object_info("linked_obj")
+
+    assert (local_info["library"], local_info["is_override"]) == (None, False)
+    assert (override_info["library"], override_info["is_override"]) == (None, True)
+    assert (linked_info["library"], linked_info["is_override"]) == ("canon.blend", False)
+
+
+class _OverriddenShotObjects(dict):
+    """`bpy.data.objects` after Route C: two objects share a name; `(name, None)` is Blender's key for the local one."""
+
+    def get(self, key: object, default: object = None) -> object:
+        if isinstance(key, tuple):
+            name, filepath = key
+            matches = [obj for obj in self.values() if obj.name == name and getattr(obj, "library", None) is filepath]
+            return matches[0] if matches else default
+        return next((obj for obj in self.values() if obj.name == key), default)
+
+
+def test_object_name_lookups_resolve_to_the_override_even_when_the_linked_original_is_listed_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`get_object_info` and every scene tool's `_object` pick the override, not whichever Blender listed first."""
+    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    server = addon.BlenderMCPServer()
+    linked = _new_empty_object(bpy, "linked_key")
+    linked.name = "HeroCam"
+    linked.library = types.SimpleNamespace(name="canon.blend")
+    override = _new_empty_object(bpy, "override_key")
+    override.name = "HeroCam"
+    override.override_library = object()
+    bpy.data.objects = _OverriddenShotObjects(bpy.data.objects)
+
+    assert server.get_object_info("HeroCam")["is_override"] is True
+    assert sys.modules["blender_mcp_addon_inspection_test.handlers.scene"]._object("HeroCam") is override
+
+
 def test_get_object_info_reports_default_euler_rotation(monkeypatch) -> None:
     addon, bpy, _objects, _scene = _load_addon(monkeypatch)
     server = addon.BlenderMCPServer()

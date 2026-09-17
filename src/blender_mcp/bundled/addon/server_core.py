@@ -37,8 +37,10 @@ from .handlers.scene_physics import ScenePhysicsHandlersMixin
 from .handlers.sketchfab import SketchfabHandlersMixin
 from .handlers.viewport import ViewportHandlersMixin
 from .helpers import get_blendermcp_addon_preferences, get_mesh_object, paginate, sync_from_editmode
+from .object_lookup import find_object
 from .output_roots import configured_file_roots, configured_roots, writable_roots
 from .session import load_in_flight, mark_session_indeterminate, session_is_indeterminate, session_snapshot
+from .text_hygiene import client_safe_name_leaf
 from .transaction import mutation_transaction
 
 
@@ -2605,7 +2607,7 @@ class BlenderMCPServer(
                 "DYNAMIC_PAINT",
             }
         start, _end, _truncated, _next = paginate(0, offset, limit, 1000)
-        obj = bpy.data.objects.get(name)
+        obj = find_object(bpy.data.objects, name)
         if not obj:
             raise ValueError(f"Object not found: {name}")
         sync_from_editmode(obj)
@@ -2623,6 +2625,8 @@ class BlenderMCPServer(
         obj_info = {
             "name": obj.name,
             "type": obj.type,
+            "library": client_safe_name_leaf(obj.library.name) if getattr(obj, "library", None) else None,
+            "is_override": getattr(obj, "override_library", None) is not None,
             "location": [obj.location.x, obj.location.y, obj.location.z],
             "rotation_mode": obj.rotation_mode,
             "rotation": rotation,

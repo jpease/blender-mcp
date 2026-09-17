@@ -372,6 +372,30 @@ def test_a_save_target_whose_directory_does_not_exist_is_refused(tmp_path: Path)
     )
 
 
+def test_a_missing_save_directory_is_accepted_and_created_only_on_opt_in(tmp_path: Path) -> None:
+    """`create_directories` defers a missing directory to `create_save_directory`, which makes every level."""
+    module = _file_paths()
+    target = tmp_path / "canon" / "shots" / "sh010.blend"
+
+    resolved = module.resolve_blend_path(str(target), must_exist=False, create_directories=True)
+
+    assert not target.parent.exists(), "resolving must not create anything"
+    assert module.create_save_directory(resolved) is True
+    assert target.parent.is_dir()
+    assert module.create_save_directory(resolved) is False
+
+
+def test_a_save_directory_blocked_by_a_file_is_refused_without_naming_it(tmp_path: Path) -> None:
+    """A file where a directory must go is a clean refusal whose message names no path."""
+    (tmp_path / "canon").write_text("not a directory")
+    target = str(tmp_path / "canon" / "shots" / "sh010.blend")
+
+    with pytest.raises(ValueError, match="could not be created") as refusal:
+        _file_paths().create_save_directory(target)
+
+    assert str(tmp_path) not in str(refusal.value)
+
+
 def test_a_save_target_in_a_read_only_directory_is_refused(tmp_path: Path) -> None:
     """Existing is not enough for a save; the process must be able to write there."""
     locked = tmp_path / "locked"

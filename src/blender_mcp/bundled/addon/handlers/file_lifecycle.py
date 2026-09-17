@@ -34,6 +34,7 @@ import bpy
 from ..file_paths import (
     BLENDER_RELATIVE_PREFIX,
     canonical_path,
+    create_save_directory,
     enforce_roots,
     resolve_blend_path,
     sanitize_blender_error,
@@ -212,7 +213,7 @@ def _expand_blender_relative(raw: object) -> object:
     return bpy.path.abspath(raw)
 
 
-def _checked_blend_path(raw: object, *, must_exist: bool) -> str:
+def _checked_blend_path(raw: object, *, must_exist: bool, create_directories: bool = False) -> str:
     """
     Validate a `.blend` path: expand `//`, enforce the roots, then check the file.
 
@@ -226,6 +227,7 @@ def _checked_blend_path(raw: object, *, must_exist: bool) -> str:
     Args:
         raw: The path the client sent.
         must_exist: True to open, False to save.
+        create_directories: For a save, accept a missing target directory.
 
     Blender must be handed this canonical string, never the raw one: the raw
     form's `..` is resolved textually before symlinks, which is not the path the
@@ -239,7 +241,7 @@ def _checked_blend_path(raw: object, *, must_exist: bool) -> str:
     expanded = _expand_blender_relative(raw)
     if isinstance(expanded, str) and expanded.strip() and "\x00" not in expanded:
         enforce_roots(expanded, configured_file_roots())
-    return resolve_blend_path(expanded, must_exist=must_exist)
+    return resolve_blend_path(expanded, must_exist=must_exist, create_directories=create_directories)
 
 
 def _refuse_scripts_auto_execute(command: str = "open_shot") -> None:
@@ -574,6 +576,7 @@ class FileLifecycleHandlersMixin:
         compress: object = False,
         relative_remap: object = False,
         confirm_overwrite: object = False,
+        create_directories: object = False,
     ) -> dict[str, object]:
         """
         Write the open database to disk, refusing to replace an existing file unconfirmed.
@@ -603,10 +606,13 @@ class FileLifecycleHandlersMixin:
             confirm_overwrite: Required when the target already exists. A
                 confirmed overwrite also replaces an existing `.blend1` backup
                 when Blender's `save_version` keeps one (measured, cycle-1 critic).
+            create_directories: Create the target's missing directory and its
+                missing parents, inside the file roots. Created only once every
+                refusal has passed; a save Blender then fails leaves them in place.
 
         Returns:
             dict[str, object]: `filepath` (the open file after the save),
-            `saved_in_place`, `overwrote_existing`, `compress`, `relative_remap`,
+            `saved_in_place`, `overwrote_existing`, `created_directory`, `compress`, `relative_remap`,
             `session_id`, `session_epoch` (unchanged by a save), and `warnings`
             when `//`-relative external file paths (images, direct
             libraries) will not resolve from a new directory. **No `is_dirty`:** in the GUI Blender clears the flag
@@ -623,16 +629,18 @@ class FileLifecycleHandlersMixin:
         compress = _require_bool("compress", compress)
         relative_remap = _require_bool("relative_remap", relative_remap)
         confirm_overwrite = _require_bool("confirm_overwrite", confirm_overwrite)
+        create_directories = _require_bool("create_directories", create_directories)
         in_place = filepath is None
         if in_place and not bpy.data.filepath:
             raise ValueError("this session has never been saved, so it cannot be saved in place; pass a filepath")
         requested = bpy.data.filepath if in_place else filepath
-        canonical = _checked_blend_path(requested, must_exist=False)
+        canonical = _checked_blend_path(requested, must_exist=False, create_directories=create_directories)
         exists = os.path.exists(canonical)
         if exists and not confirm_overwrite:
             raise ValueError("the target .blend already exists; pass confirm_overwrite=true to replace it")
         _refuse_a_leftover_temp_save(canonical)
         broken_links = _unresolvable_relative_paths(canonical, relative_remap)
+        created_directory = create_save_directory(canonical)
         operator = bpy.ops.wm.save_mainfile if in_place else bpy.ops.wm.save_as_mainfile
         try:
             # Raises RuntimeError on every failure mode; never returns CANCELLED.
@@ -644,6 +652,7 @@ class FileLifecycleHandlersMixin:
             "filepath": session["current_filepath"],
             "saved_in_place": in_place,
             "overwrote_existing": exists,
+            "created_directory": created_directory,
             "compress": compress,
             "relative_remap": relative_remap,
             "session_id": session["session_id"],

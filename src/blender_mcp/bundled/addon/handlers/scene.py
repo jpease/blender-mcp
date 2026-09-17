@@ -9,6 +9,7 @@ import bpy
 import mathutils
 
 from ..helpers import apply_modifier, modifier_result, rotation_as_native_list
+from ..object_lookup import find_object
 
 _VALIDATE_SCENE_DOMAINS = ("scene", "camera", "lighting", "pbr", "cloth", "liquid")
 
@@ -153,7 +154,7 @@ def _required_name(value, label):
 
 
 def _object(name):
-    obj = bpy.data.objects.get(_required_name(name, "object_name"))
+    obj = find_object(bpy.data.objects, _required_name(name, "object_name"))
     if obj is None:
         raise ValueError(f"Object not found: {name}")
     return obj
