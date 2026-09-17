@@ -1,0 +1,94 @@
+exit: 0
+--- stdout ---
+<t>  blend            | Read blend: "<tmp>/fp_shapes_<rand>/truncated.blend"
+<t>  blend            | Read blend: "<tmp>/fp shapes o'brien <rand>/truncated.blend"
+<t>  blend            | Read blend: "<repo>/tests/fixtures/blend/empty_zstd.blend"
+<t>  blend            | Read blend: "<repo>/tests/fixtures/blend/empty_gzip.blend"
+=== BLENDER === <version>
+=== CWD === <repo>
+Error: File format is not supported in file "<repo>"
+[2 open EMPTY PATH (process cwd)]
+  RAW:       'Error: File format is not supported in file "<repo>"\n'
+  SANITIZED: 'Error: File format is not supported in file "<path>"'
+
+=== work dir '<tmp>/fp_shapes_<rand>' ===
+Info: Saved as "good.blend"
+Error: Cannot read file "<tmp>/fp_shapes_<rand>/missing.blend": No such file or directory
+[1 open missing]
+  RAW:       'Error: Cannot read file "<tmp>/fp_shapes_<rand>/missing.blend": No such file or directory\n'
+  SANITIZED: 'Error: Cannot read file "<path>": No such file or directory'
+Error: File format is not supported in file "<tmp>/fp_shapes_<rand>"
+[2 open directory]
+  RAW:       'Error: File format is not supported in file "<tmp>/fp_shapes_<rand>"\n'
+  SANITIZED: 'Error: File format is not supported in file "<path>"'
+Error: File format is not supported in file "<tmp>/fp_shapes_<rand>/plain.txt"
+[2 open non-blend]
+  RAW:       'Error: File format is not supported in file "<tmp>/fp_shapes_<rand>/plain.txt"\n'
+  SANITIZED: 'Error: File format is not supported in file "<path>"'
+Error: File format is not supported in file "<tmp>/fp_shapes_<rand>/corrupt.blend"
+[2 open corrupt magic]
+  RAW:       'Error: File format is not supported in file "<tmp>/fp_shapes_<rand>/corrupt.blend"\n'
+  SANITIZED: 'Error: File format is not supported in file "<path>"'
+Error: Loading "<tmp>/fp_shapes_<rand>/truncated.blend" failed: Failed to read blend file '<tmp>/fp_shapes_<rand>/truncated.blend': Missing DNA block
+[3 open truncated]
+  RAW:       'Error: Loading "<tmp>/fp_shapes_<rand>/truncated.blend" failed: Failed to read blend file \'<tmp>/fp_shapes_<rand>/truncated.blend\': Missing DNA block\n'
+  SANITIZED: 'Error: Loading "<path>" failed: Failed to read blend file \'<path>\': Missing DNA block'
+Error: Cannot open file <tmp>/fp_shapes_<rand>/no/such/dir/x.blend@ for writing: No such file or directory
+[4 save unwritable]
+  RAW:       'Error: Cannot open file <tmp>/fp_shapes_<rand>/no/such/dir/x.blend@ for writing: No such file or directory\n'
+  SANITIZED: 'Error: Cannot open file <path> for writing: No such file or directory'
+[5 library reload]
+  RAW:       "Error: Trying to reload library 'LIgood.blend' from invalid path '<tmp>/fp_shapes_<rand>/gone.blend'\n"
+  SANITIZED: "Error: Trying to reload library 'good.blend' from invalid path '<path>'"
+
+=== work dir "<tmp>/fp shapes o'brien <rand>" ===
+Info: Saved as "good.blend"
+Error: Cannot read file "<tmp>/fp shapes o'brien <rand>/missing.blend": No such file or directory
+[1 open missing]
+  RAW:       'Error: Cannot read file "<tmp>/fp shapes o\'brien <rand>/missing.blend": No such file or directory\n'
+  SANITIZED: 'Error: Cannot read file "<path>": No such file or directory'
+Error: File format is not supported in file "<tmp>/fp shapes o'brien <rand>"
+[2 open directory]
+  RAW:       'Error: File format is not supported in file "<tmp>/fp shapes o\'brien <rand>"\n'
+  SANITIZED: 'Error: File format is not supported in file "<path>"'
+Error: File format is not supported in file "<tmp>/fp shapes o'brien <rand>/plain.txt"
+[2 open non-blend]
+  RAW:       'Error: File format is not supported in file "<tmp>/fp shapes o\'brien <rand>/plain.txt"\n'
+  SANITIZED: 'Error: File format is not supported in file "<path>"'
+Error: File format is not supported in file "<tmp>/fp shapes o'brien <rand>/corrupt.blend"
+[2 open corrupt magic]
+  RAW:       'Error: File format is not supported in file "<tmp>/fp shapes o\'brien <rand>/corrupt.blend"\n'
+  SANITIZED: 'Error: File format is not supported in file "<path>"'
+Error: Loading "<tmp>/fp shapes o'brien <rand>/truncated.blend" failed: Failed to read blend file '<tmp>/fp shapes o'brien <rand>/truncated.blend': Missing DNA block
+[3 open truncated]
+  RAW:       'Error: Loading "<tmp>/fp shapes o\'brien <rand>/truncated.blend" failed: Failed to read blend file \'<tmp>/fp shapes o\'brien <rand>/truncated.blend\': Missing DNA block\n'
+  SANITIZED: 'Error: Loading "<path>" failed: Failed to read blend file \'<path>\': Missing DNA block'
+Error: Cannot open file <tmp>/fp shapes o'brien <rand>/no/such/dir/x.blend@ for writing: No such file or directory
+[4 save unwritable]
+  RAW:       "Error: Cannot open file <tmp>/fp shapes o'brien <rand>/no/such/dir/x.blend@ for writing: No such file or directory\n"
+  SANITIZED: 'Error: Cannot open file <path> for writing: No such file or directory'
+[5 library reload]
+  RAW:       "Error: Trying to reload library 'LIgood.blend' from invalid path '<tmp>/fp shapes o'brien <rand>/gone.blend'\n"
+  SANITIZED: "Error: Trying to reload library 'good.blend' from invalid path '<path>'"
+
+=== bpy.path.abspath on '//' forms ===
+  no file open: bpy.data.filepath=''
+    '//shot.blend'         -> 'shot.blend'
+    '//../escape.blend'    -> '../escape.blend'
+    'relative.blend'       -> 'relative.blend'
+Info: Saved as "shot.blend"
+  file open: bpy.data.filepath='<tmp>/fp_abspath_<rand>/fx/shot.blend'
+    '//shot.blend'         -> '<tmp>/fp_abspath_<rand>/fx/shot.blend'
+    '//../escape.blend'    -> '<tmp>/fp_abspath_<rand>/fx/../escape.blend'
+    'relative.blend'       -> 'relative.blend'
+
+=== the committed fixtures open, and carry the header their names claim ===
+  empty_zstd.blend: header=b'(\xb5/\xfd'
+    open -> ['FINISHED']
+  empty_gzip.blend: header=b'\x1f\x8b\x08\x00'
+    open -> ['FINISHED']
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

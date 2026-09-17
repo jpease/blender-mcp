@@ -1,0 +1,51 @@
+exit: 0
+--- stdout ---
+<t>  blend.readfile   | WARNING Append: ID 'MAHeroPaint' is already linked
+=== BLENDER === <version>
+Info: Saved as "canon.blend"
+
+=== libraries.load(link=True) ===
+  handlers fired: ['blend_import_pre', 'blend_import_post']
+  linked datablocks before/after: 0/4
+  session_uid changed: 0 of 0
+  new linked datablocks: ['collections/CanonHero', 'materials/HeroPaint', 'meshes/HeroMesh', 'objects/HeroBody']
+
+=== libraries.load(link=False) (append) ===
+  handlers fired: ['blend_import_pre', 'blend_import_post']
+  linked datablocks before/after: 0/0
+  session_uid changed: 0 of 0
+  local datablocks gained: 2
+
+=== lib.reload() ===
+  handlers fired: ['blend_import_pre', 'blend_import_post']
+  linked datablocks before/after: 4/4
+  session_uid changed: 4 of 4
+
+=== relocate: lib.filepath = <copy>; lib.reload() ===
+  handlers fired: ['blend_import_pre', 'blend_import_post']
+  linked datablocks before/after: 4/4
+  session_uid changed: 4 of 4
+
+  (failed reload raised RuntimeError; message withheld, it embeds the absolute path)
+
+=== failed lib.reload() (invalid path) ===
+  handlers fired: NONE
+  linked datablocks before/after: 4/4
+  session_uid changed: 0 of 4
+
+=== bpy.data.orphans_purge(...) -> 1 ===
+  handlers fired: NONE
+
+=== bpy.data.libraries.remove(lib): libraries 1 -> 0 ===
+  handlers fired: NONE
+  linked collections left: []
+
+handler argument shapes (event, *argument types): [('blend_import_post', 'BlendImportContext', 'NoneType'), ('blend_import_pre', 'BlendImportContext', 'NoneType')]
+
+blend_import_post is a list; len 1 -> 3 after appending twice
+  remove() of an absent callback raises ValueError
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

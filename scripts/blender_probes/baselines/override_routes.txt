@@ -1,0 +1,31 @@
+exit: 0
+--- stdout ---
+=== BLENDER === <version>
+Info: Saved as "canon.blend"
+
+=== override_create return value: local (non-overridable) vs linked ===
+  local collection  .override_create() -> None
+  LINKED object     .override_create() -> None
+  >>> the 'returns None' claim is TRUE on a linked object
+
+=== Route A: libraries.load(create_liboverrides=True) ===
+  objects: [('HeroBody', False, True)]
+  collections named CanonHero: 2
+
+=== Route B: override_hierarchy_create(scene, view_layer) ===
+  objects: [('HeroBody', True, True), ('HeroBody', False, False)]
+
+=== Route C: override_hierarchy_create(..., do_fully_editable=True)  [the route the linking handlers use] ===
+  objects:
+    name='HeroBody' uid=782 editable=True linked=False system_override=False
+    name='HeroBody' uid=779 editable=False linked=True system_override=None
+  collections:
+    name='CanonHero' uid=781 editable=True linked=False
+    name='CanonHero' uid=778 editable=False linked=True
+  >>> duplicate OBJECT names: True  (['HeroBody', 'HeroBody'])
+  >>> duplicate COLLECTION names: True  (['CanonHero', 'CanonHero'])
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

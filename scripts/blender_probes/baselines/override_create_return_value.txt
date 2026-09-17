@@ -1,0 +1,32 @@
+exit: 0
+--- stdout ---
+=== BLENDER === <version>
+Info: Saved as "canon.blend"
+
+=== state of the linked object before override_create ===
+  name              : HeroBody
+  library           : <bpy_struct, Library("canon.blend") at 0x<addr>>
+  is_editable       : False
+  is_library_indirect: True
+  override_library  : None
+  in view layer     : False
+
+=== did it actually DO anything? ===
+  returned                 : None
+  bpy.data.objects count   : 1 -> 1
+  new session_uids         : NONE
+    name='HeroBody' uid=387 linked=True override=False editable=False
+
+=== same call with remap_local_usages=True ===
+  returned=None  objects 1 -> 1
+
+=== and on the linked COLLECTION rather than the object ===
+  returned=bpy.data.collections['CanonHero']  collections 1 -> 2
+
+=== control: override_hierarchy_create's return value ===
+  override_hierarchy_create returned bpy.data.collections['CanonHero']
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

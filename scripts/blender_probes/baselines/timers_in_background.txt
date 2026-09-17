@@ -1,0 +1,11 @@
+exit: 0
+--- stdout ---
+=== BLENDER === <version>
+  registered; is_registered = True
+  after 3.0 s of --background: fires = 0
+  is_registered still = True
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

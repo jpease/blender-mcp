@@ -1,0 +1,69 @@
+exit: 0
+--- stdout ---
+<t>  blend            | Read blend: "<tmp>/t7_autoexec_<rand>/shot_False.blend"
+<t>  blend            | Read blend: "<tmp>/t7_autoexec_<rand>/shot_True.blend"
+=== BLENDER === <version>
+Info: Saved as "hostile_canon.blend"
+    (building the library)                       payloads that RAN: none
+
+=== use_scripts_auto_execute = False ===
+Info: Saved as "shot_False.blend"
+    preference after open: False
+    0. positive control (local driver)           payloads that RAN: none
+       (control removed)                         payloads that RAN: none
+    1a. libraries.load(link=True), no update     payloads that RAN: none
+    1b. ... after a depsgraph update             payloads that RAN: none
+    2a. lib.reload(), no update                  payloads that RAN: none
+    2b. ... after a depsgraph update             payloads that RAN: none
+    3a. Route C override, no update              payloads that RAN: none
+    3b. ... after a depsgraph update             payloads that RAN: none
+       (linked data removed)                     payloads that RAN: none
+    4a. libraries.load(link=False) append, no update payloads that RAN: none
+    4b. ... objects in the scene, after an update payloads that RAN: none
+    bpy.app.autoexec_fail: True
+
+=== use_scripts_auto_execute = True ===
+Info: Saved as "shot_True.blend"
+    preference after open: True
+    0. positive control (local driver)           payloads that RAN: ['local_driver']
+       (control removed)                         payloads that RAN: none
+    1a. libraries.load(link=True), no update     payloads that RAN: none
+    1b. ... after a depsgraph update             payloads that RAN: ['driver']
+    2a. lib.reload(), no update                  payloads that RAN: none
+    2b. ... after a depsgraph update             payloads that RAN: ['driver']
+    3a. Route C override, no update              payloads that RAN: none
+    3b. ... after a depsgraph update             payloads that RAN: ['driver']
+       (linked data removed)                     payloads that RAN: none
+    4a. libraries.load(link=False) append, no update payloads that RAN: none
+    4b. ... objects in the scene, after an update payloads that RAN: ['driver']
+    bpy.app.autoexec_fail: False
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---
+	BPY_driver_exec: restricted access disallows name '__import__', enable auto-execution to support
+
+Error in PyDriver: expression failed: (__import__('pathlib').Path(r'<tmp>/t7_autoexec_<rand>/marker_driver').touch(), 0)[1]
+For target: (type=Object, name="HeroBody", property=location, property_index=0)
+
+	BPY_driver_exec: restricted access disallows name '__import__', enable auto-execution to support
+
+Error in PyDriver: expression failed: (__import__('pathlib').Path(r'<tmp>/t7_autoexec_<rand>/marker_local_driver').touch(), 0)[1]
+For target: (type=Object, name="LocalControl", property=location, property_index=0)
+
+	BPY_driver_exec: restricted access disallows name '__import__', enable auto-execution to support
+
+Error in PyDriver: expression failed: (__import__('pathlib').Path(r'<tmp>/t7_autoexec_<rand>/marker_driver').touch(), 0)[1]
+For target: (type=Object, name="HeroBody", property=location, property_index=0)
+
+	BPY_driver_exec: restricted access disallows name '__import__', enable auto-execution to support
+
+Error in PyDriver: expression failed: (__import__('pathlib').Path(r'<tmp>/t7_autoexec_<rand>/marker_driver').touch(), 0)[1]
+For target: (type=Object, name="HeroBody", property=location, property_index=0)
+
+	BPY_driver_exec: restricted access disallows name '__import__', enable auto-execution to support
+
+Error in PyDriver: expression failed: (__import__('pathlib').Path(r'<tmp>/t7_autoexec_<rand>/marker_driver').touch(), 0)[1]
+For target: (type=Object, name="HeroBody.001", property=location, property_index=0)
+

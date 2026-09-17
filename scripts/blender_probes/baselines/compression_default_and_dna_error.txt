@@ -1,0 +1,41 @@
+exit: 0
+--- stdout ---
+<t>  blend            | Read blend: "<tmp>/api522c_<rand>/trunc64.blend"
+<t>  blend            | Read blend: "<tmp>/api522c_<rand>/trunc512.blend"
+<t>  blend            | Read blend: "<tmp>/api522c_<rand>/trunc4096.blend"
+<t>  blend            | Read blend: "<tmp>/api522c_<rand>/legacy_gzip.blend"
+=== BLENDER === <version>
+
+=== compress default on save_as_mainfile / save_mainfile ===
+  wm.save_as_mainfile.compress default = False
+  wm.save_mainfile.compress default = False
+  preferences.filepaths.use_file_compression = True
+
+=== headers actually written ===
+Info: Saved as "default.blend"
+  default (no compress arg)  -> b'(\xb5/\xfd\xa0A\x06\x01\x00%7\x00'
+Info: Saved as "compress=False.blend"
+  compress=False             -> b'BLENDER17-01'
+Info: Saved as "compress=True.blend"
+  compress=True              -> b'(\xb5/\xfd\xa0A\x06\x01\x00%7\x00'
+
+=== is error shape 3 (Missing DNA block) still reachable? ===
+Info: Saved as "uncompressed.blend"
+Error: Loading "<tmp>/api522c_<rand>/trunc64.blend" failed: Failed to read blend file '<tmp>/api522c_<rand>/trunc64.blend': Missing DNA block
+  truncated to    64 bytes (magic b'BLENDER'): Error: Loading "<tmp>/api522c_<rand>/trunc64.blend" failed: Failed to read blend file '<tmp>/api522c_<rand>/trunc64.blend': Missing DNA block
+
+Error: Loading "<tmp>/api522c_<rand>/trunc512.blend" failed: Failed to read blend file '<tmp>/api522c_<rand>/trunc512.blend': Missing DNA block
+  truncated to   512 bytes (magic b'BLENDER'): Error: Loading "<tmp>/api522c_<rand>/trunc512.blend" failed: Failed to read blend file '<tmp>/api522c_<rand>/trunc512.blend': Missing DNA block
+
+Error: Loading "<tmp>/api522c_<rand>/trunc4096.blend" failed: Failed to read blend file '<tmp>/api522c_<rand>/trunc4096.blend': Missing DNA block
+  truncated to  4096 bytes (magic b'BLENDER'): Error: Loading "<tmp>/api522c_<rand>/trunc4096.blend" failed: Failed to read blend file '<tmp>/api522c_<rand>/trunc4096.blend': Missing DNA block
+
+
+=== legacy gzip acceptance ===
+  gzip header = b'\x1f\x8b\x08\x08'
+  open gzip -> ['FINISHED']
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

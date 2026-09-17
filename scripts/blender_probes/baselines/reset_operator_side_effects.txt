@@ -1,0 +1,45 @@
+exit: 0
+--- stdout ---
+=== BLENDER === <version>
+wm.read_homefile properties: [('filepath', ''), ('load_ui', True), ('use_splash', False), ('use_factory_startup', False), ('use_factory_startup_app_template_only', False), ('app_template', 'Template'), ('use_empty', False)]
+
+=== wm.read_factory_settings(use_empty=True) ===
+  result                                  = ['FINISHED']
+  objects before -> after                 = 3 -> 0
+  bpy.data.filepath                       = ''
+  addon still enabled                     = False
+  events                                  = ['unregister', "load_pre('')", "load_post('')"]
+  load_post handler still attached        = True
+  use_scripts_auto_execute after (set True) = False
+
+=== wm.read_homefile(use_empty=True, use_factory_startup=True) ===
+  result                                  = ['FINISHED']
+  objects before -> after                 = 3 -> 0
+  bpy.data.filepath                       = ''
+  addon still enabled                     = True
+  events                                  = ["load_pre('')", "load_post('')"]
+  load_post handler still attached        = True
+  use_scripts_auto_execute after (set True) = True
+
+=== wm.read_homefile(use_empty=True) ===
+  result                                  = ['FINISHED']
+  objects before -> after                 = 3 -> 0
+  bpy.data.filepath                       = ''
+  addon still enabled                     = True
+  events                                  = ["load_pre('')", "load_post('')"]
+  load_post handler still attached        = True
+  use_scripts_auto_execute after (set True) = True
+
+=== production: wm.read_homefile(use_empty=True, use_factory_startup=True, load_ui=False) ===
+  result                                  = ['FINISHED']
+  objects before -> after                 = 3 -> 0
+  bpy.data.filepath                       = ''
+  addon still enabled                     = True
+  events                                  = ["load_pre('')", "load_post('')"]
+  load_post handler still attached        = True
+  use_scripts_auto_execute after (set True) = True
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

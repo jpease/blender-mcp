@@ -1,0 +1,67 @@
+exit: 0
+--- stdout ---
+=== BLENDER === <version>
+Info: Saved as "canon.blend"
+
+=== Route A, linked collection instanced in the scene first: True ===
+    COLLECTION 'CanonHero'  uid=389  library=False override_library=True  is_editable=True  is_system_override=False
+    COLLECTION 'CanonHero'  uid=386  library=True  override_library=False is_editable=False is_system_override=None
+    OBJECT     'HeroBody'   uid=387  library=True  override_library=False is_editable=False is_system_override=None
+    scene children: [('CanonHero', True, False)]
+    scene objects : []
+
+=== Route A, linked collection instanced in the scene first: False ===
+    COLLECTION 'CanonHero'  uid=519  library=False override_library=True  is_editable=True  is_system_override=False
+    COLLECTION 'CanonHero'  uid=516  library=True  override_library=False is_editable=False is_system_override=None
+    OBJECT     'HeroBody'   uid=517  library=True  override_library=False is_editable=False is_system_override=None
+    scene children: []
+    scene objects : []
+
+=== Route B, linked collection instanced in the scene first: True ===
+    returned: bpy.data.collections['CanonHero']
+    COLLECTION 'CanonHero'  uid=646  library=False override_library=True  is_editable=True  is_system_override=True
+    COLLECTION 'CanonHero'  uid=643  library=True  override_library=False is_editable=False is_system_override=None
+    OBJECT     'HeroBody'   uid=647  library=False override_library=True  is_editable=True  is_system_override=True
+    OBJECT     'HeroBody'   uid=644  library=True  override_library=False is_editable=False is_system_override=None
+    scene children: [('CanonHero', True, False), ('CanonHero', False, True)]
+    scene objects : []
+
+=== Route B, linked collection instanced in the scene first: False ===
+    returned: bpy.data.collections['CanonHero']
+    COLLECTION 'CanonHero'  uid=778  library=False override_library=True  is_editable=True  is_system_override=True
+    COLLECTION 'CanonHero'  uid=775  library=True  override_library=False is_editable=False is_system_override=None
+    OBJECT     'HeroBody'   uid=779  library=False override_library=True  is_editable=True  is_system_override=True
+    OBJECT     'HeroBody'   uid=776  library=True  override_library=False is_editable=False is_system_override=None
+    scene children: [('CanonHero', False, True)]
+    scene objects : []
+
+=== Route C, linked collection instanced in the scene first: True ===
+    returned: bpy.data.collections['CanonHero']
+    COLLECTION 'CanonHero'  uid=909  library=False override_library=True  is_editable=True  is_system_override=False
+    COLLECTION 'CanonHero'  uid=906  library=True  override_library=False is_editable=False is_system_override=None
+    OBJECT     'HeroBody'   uid=910  library=False override_library=True  is_editable=True  is_system_override=False
+    OBJECT     'HeroBody'   uid=907  library=True  override_library=False is_editable=False is_system_override=None
+    scene children: [('CanonHero', True, False), ('CanonHero', False, True)]
+    scene objects : []
+
+=== Route C, linked collection instanced in the scene first: False ===
+    returned: bpy.data.collections['CanonHero']
+    COLLECTION 'CanonHero'  uid=1041 library=False override_library=True  is_editable=True  is_system_override=False
+    COLLECTION 'CanonHero'  uid=1038 library=True  override_library=False is_editable=False is_system_override=None
+    OBJECT     'HeroBody'   uid=1042 library=False override_library=True  is_editable=True  is_system_override=False
+    OBJECT     'HeroBody'   uid=1039 library=True  override_library=False is_editable=False is_system_override=None
+    scene children: [('CanonHero', False, True)]
+    scene objects : []
+
+=== Route C edge cases ===
+    instanced in 'Chars', first call returned: bpy.data.collections['CanonHero']
+    'Chars' children: [('CanonHero', True, False), ('CanonHero', False, True)]
+    scene root children: ['Chars']
+    second call on the same linked collection returned: bpy.data.collections['CanonHero.001']
+    on the override collection returned: None
+    on a local collection returned: None
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

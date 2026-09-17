@@ -1,0 +1,33 @@
+exit: 0
+--- stdout ---
+=== BLENDER === <version>
+Info: Saved as "canon.blend"
+built canon library at <tmp>/api522d_<rand>/canon.blend
+
+=== libraries.load(link=True) ===
+  handlers fired: ['blend_import_pre', 'blend_import_post']
+
+=== Library.users_id (not in bl_rna.properties, but works) ===
+  'users_id' in bl_rna.properties -> False
+  'users_id' in dir(instance)     -> True
+  lib.users_id -> [bpy.data.collections['CanonHero'], bpy.data.meshes['HeroMesh'], bpy.data.objects['HeroBody']]
+
+  session_uids before reload: {'CanonHero': 386, 'HeroMesh': 388, 'HeroBody': 387}
+
+=== lib.reload() ===
+  handlers fired: ['blend_import_pre', 'blend_import_post']
+  session_uids after reload : {'CanonHero': 389, 'HeroMesh': 391, 'HeroBody': 390}
+  CHURNED: 3 of 3 datablocks got a fresh session_uid
+
+=== failed lib.reload() (invalid path) ===
+  RAISED RuntimeError: Error: Trying to reload library 'LIcanon.blend' from invalid path '<tmp>/api522d_<rand>/gone.blend'
+
+  handlers fired: NONE
+
+=== orphans_purge / libraries.remove fire nothing ===
+  orphans_purge -> 0; handlers fired: NONE
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

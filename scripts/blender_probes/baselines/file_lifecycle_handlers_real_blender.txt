@@ -1,0 +1,143 @@
+exit: 0
+--- stdout ---
+<t>  blend            | Read blend: "<real-tmp>/t6_handlers_<rand>/existing.blend"
+<t>  blend            | Read blend: "<real-tmp>/t6_handlers_<rand>/fixture.blend"
+<t>  blend            | Read blend: "<real-tmp>/t6_handlers_<rand>/saved.blend"
+<t>  blend            | Read blend: "<tmp>/t6_handlers_<rand>/truncated.blend"
+<t>  blend            | Read blend: "<real-tmp>/t6_handlers_<rand>/truncated.blend"
+<t>  blend            | Read blend: "<real-tmp>/t6_handlers_<rand>/fixture.blend"
+<t>  blend            | Read blend: "<real-tmp>/t6_handlers_<rand>/projA/shot.blend"
+<t>  blend            | Read blend: "<real-tmp>/t6_handlers_<rand>/projB/shot.blend"
+<t>  blend            | Read blend: "<real-tmp>/t6_handlers_<rand>/projA/shot.blend"
+<t>  blend            | Read blend: "<real-tmp>/t6_handlers_<rand>/projC/shot.blend"
+<t>  blend            | Read blend: "<real-tmp>/t6_handlers_<rand>/projA/image_shot.blend"
+<t>  blend            | Read blend: "<real-tmp>/t6_handlers_<rand>/projB/image_shot.blend"
+<t>  blend            | Read blend: "<real-tmp>/t6_handlers_<rand>/projA/indirect_shot.blend"
+<t>  blend            | Read blend: "<real-tmp>/t6_handlers_<rand>/projB/indirect_shot.blend"
+=== BLENDER === <version>
+=== use_file_compression = True  use_scripts_auto_execute = False
+
+=== A. an existing .blend is not overwritten without confirm_overwrite ===
+  [save_shot(filepath=existing)] ValueError -> 'the target .blend already exists; pass confirm_overwrite=true to replace it'
+  bytes+mtime before=('5865fb0183cf794b', <epoch>) after=('5865fb0183cf794b', <epoch>) unchanged=True
+  [open_shot(existing)] OK -> {'session_id': '<uid>', 'session_epoch': 1, 'filepath': '<real-tmp>/t6_handlers_<rand>/existing.blend', 'rehandshake_required': True, 'note': "The open database was replaced: session_epoch moved, and the addon's capabilities follow the file. Re-handshake (get_addon_info) before relying on a cached capability list.", 'discarded_unsaved_changes': False, 'scene_name': 'Scene', 'object_count': 0, 'libraries': [], 'capabilities_changed': False}
+  open file now existing.blend, is_dirty=False
+  [save_shot() in place, unconfirmed] ValueError -> 'the target .blend already exists; pass confirm_overwrite=true to replace it'
+  bytes+mtime before=('5865fb0183cf794b', <epoch>) after=('5865fb0183cf794b', <epoch>) unchanged=True
+
+=== B. round trip ===
+  [open_shot(fixture)] OK -> {'session_id': '<uid>', 'session_epoch': 3, 'filepath': '<real-tmp>/t6_handlers_<rand>/fixture.blend', 'rehandshake_required': True, 'note': "The open database was replaced: session_epoch moved, and the addon's capabilities follow the file. Re-handshake (get_addon_info) before relying on a cached capability list.", 'discarded_unsaved_changes': False, 'scene_name': 'Scene', 'object_count': 0, 'libraries': [], 'capabilities_changed': False}
+  after adding a mesh under --background: is_dirty=False
+Info: Saved as "saved.blend"
+  [save_shot(saved)] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/saved.blend', 'saved_in_place': False, 'overwrote_existing': False, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 3}
+  saved exists=True header=b'BLENDER17-01' fixture header=b'(\xb5/\xfd\xa0A\x06\x01\x00%7\x00'
+  [open_shot(saved)] OK -> {'session_id': '<uid>', 'session_epoch': 4, 'filepath': '<real-tmp>/t6_handlers_<rand>/saved.blend', 'rehandshake_required': True, 'note': "The open database was replaced: session_epoch moved, and the addon's capabilities follow the file. Re-handshake (get_addon_info) before relying on a cached capability list.", 'discarded_unsaved_changes': False, 'scene_name': 'Scene', 'object_count': 1, 'libraries': [], 'capabilities_changed': False}
+  reopened objects=['Suzanne']
+Info: Saved "saved.blend"
+  [save_shot() in place, confirmed] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/saved.blend', 'saved_in_place': True, 'overwrote_existing': True, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 4}
+  in-place header=b'BLENDER17-01'
+  [reset_session()] ValueError -> 'reset_session discards the open file and any unsaved work; pass confirm=true'
+  [reset_session(confirm=True)] OK -> {'session_id': '<uid>', 'session_epoch': 5, 'filepath': None, 'rehandshake_required': True, 'note': "The open database was replaced: session_epoch moved, and the addon's capabilities follow the file. Re-handshake (get_addon_info) before relying on a cached capability list.", 'discarded_unsaved_changes': False, 'scene_name': 'Scene', 'object_count': 0, 'libraries': [], 'capabilities_changed': False}
+  after reset: objects=0 filepath=''
+  epoch 2 -> 5 across 3 swaps (2 opens, 1 reset)
+
+=== C. failure modes: raw operator text, then what the client receives ===
+Info: Saved as "uncompressed.blend"
+Error: Cannot read file "<tmp>/t6_handlers_<rand>/missing.blend": No such file or directory
+  [open missing] RAW RuntimeError -> 'Error: Cannot read file "<tmp>/t6_handlers_<rand>/missing.blend": No such file or directory'
+  [open_shot missing] ValueError -> 'file does not exist'
+Error: File format is not supported in file "<tmp>/t6_handlers_<rand>"
+  [open directory] RAW RuntimeError -> 'Error: File format is not supported in file "<tmp>/t6_handlers_<rand>"'
+  [open_shot directory] ValueError -> 'path must name a file ending in .blend'
+Error: File format is not supported in file "<tmp>/t6_handlers_<rand>/notes.txt"
+  [open non-blend] RAW RuntimeError -> 'Error: File format is not supported in file "<tmp>/t6_handlers_<rand>/notes.txt"'
+  [open_shot non-blend] ValueError -> 'path must name a file ending in .blend'
+Error: File format is not supported in file "<tmp>/t6_handlers_<rand>/corrupt.blend"
+  [open corrupt magic] RAW RuntimeError -> 'Error: File format is not supported in file "<tmp>/t6_handlers_<rand>/corrupt.blend"'
+  [open_shot corrupt magic] ValueError -> 'file is not a .blend file (unrecognised header)'
+Error: File format is not supported in file "<repo>"
+  [open empty path] RAW RuntimeError -> 'Error: File format is not supported in file "<repo>"'
+  [open_shot empty path] ValueError -> 'path must not be empty'
+Error: Loading "<tmp>/t6_handlers_<rand>/truncated.blend" failed: Failed to read blend file '<tmp>/t6_handlers_<rand>/truncated.blend': Missing DNA block
+  [open truncated to 64 B] RAW RuntimeError -> 'Error: Loading "<tmp>/t6_handlers_<rand>/truncated.blend" failed: Failed to read blend file \'<tmp>/t6_handlers_<rand>/truncated.blend\': Missing DNA block'
+Error: Loading "<real-tmp>/t6_handlers_<rand>/truncated.blend" failed: Failed to read blend file '<real-tmp>/t6_handlers_<rand>/truncated.blend': Missing DNA block
+  [open_shot truncated to 64 B] RuntimeError -> 'open_shot failed: Error: Loading "<path>" failed: Failed to read blend file \'<path>\': Missing DNA block'
+Error: Cannot open file <tmp>/t6_handlers_<rand>/readonly/x.blend@ for writing: Permission denied
+  [save_as read-only dir] RAW RuntimeError -> 'Error: Cannot open file <tmp>/t6_handlers_<rand>/readonly/x.blend@ for writing: Permission denied'
+  client form of that text: 'save_shot failed: Error: Cannot open file <path> for writing: Permission denied'
+  [save_shot read-only dir] ValueError -> 'target directory is not writable'
+Info: Saved as "inplace.blend"
+Info: Saved as "inplace.blend"
+Error: Cannot open file <tmp>/t6_handlers_<rand>/inplace_ro/inplace.blend@ for writing: Permission denied
+  [save_mainfile read-only dir] RAW RuntimeError -> 'Error: Cannot open file <tmp>/t6_handlers_<rand>/inplace_ro/inplace.blend@ for writing: Permission denied'
+  [save_shot() in place, read-only dir] ValueError -> 'target directory is not writable'
+
+=== D. use_scripts_auto_execute ===
+  [open_shot with the preference ON] ValueError -> "open_shot refuses to load while Blender's preferences.filepaths.use_scripts_auto_execute is on (or unreadable), because a .blend could run embedded scripts; turn it off in Preferences > Save & Load, then retry"
+  [open_shot with the preference OFF] OK -> {'session_id': '<uid>', 'session_epoch': 9, 'filepath': '<real-tmp>/t6_handlers_<rand>/fixture.blend', 'rehandshake_required': True, 'note': "The open database was replaced: session_epoch moved, and the addon's capabilities follow the file. Re-handshake (get_addon_info) before relying on a cached capability list.", 'discarded_unsaved_changes': False, 'scene_name': 'Scene', 'object_count': 0, 'libraries': [], 'capabilities_changed': False}
+  current_filepath is absolute (deliberately, as a success field): True
+
+=== E. relative_remap=False and //-relative library links ===
+Info: Saved as "lib.blend"
+Info: Saved as "shot.blend"
+  linked objects: ['Camera', 'Cube', 'Light']
+Info: Saved "shot.blend"
+Info: Read library: '<real-tmp>/t6_handlers_<rand>/projA/libs/lib.blend', '//libs/lib.blend', parent '<direct>'
+  [open_shot(projA/shot)] OK -> '<real-tmp>/t6_handlers_<rand>/projA/shot.blend'
+  projA libraries: [('//libs/lib.blend', False)]
+Info: Saved as "shot.blend"
+  [save_shot(projB/shot) remap off] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/projB/shot.blend', 'saved_in_place': False, 'overwrote_existing': False, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 12, 'warnings': ['1 external file path (images, libraries, etc.) is Blender-relative and will not resolve from the new directory, because relative_remap is false; save again with relative_remap=true, or relink']}
+  open session still reports: [('//libs/lib.blend', False)]
+Info: Read library: '<real-tmp>/t6_handlers_<rand>/projB/libs/lib.blend', '//libs/lib.blend', parent '<direct>'
+Warning: Unable to open '<real-tmp>/t6_handlers_<rand>/projB/libs/lib.blend': No such file or directory
+Info: Cannot find lib '<real-tmp>/t6_handlers_<rand>/projB/libs/lib.blend'
+Info: LIB: Object: 'Camera' missing from '<real-tmp>/t6_handlers_<rand>/projB/libs/lib.blend', parent '<direct>'
+Info: LIB: Object: 'Cube' missing from '<real-tmp>/t6_handlers_<rand>/projB/libs/lib.blend', parent '<direct>'
+Info: LIB: Object: 'Light' missing from '<real-tmp>/t6_handlers_<rand>/projB/libs/lib.blend', parent '<direct>'
+Warning: 1 libraries and 3 linked data-blocks are missing (including 0 ObjectData), please check the Info and Outliner editors for details
+  [open_shot(projB/shot)] OK -> '<real-tmp>/t6_handlers_<rand>/projB/shot.blend'
+  projB libraries after reopen: [('//libs/lib.blend', True)]
+Info: Read library: '<real-tmp>/t6_handlers_<rand>/projA/libs/lib.blend', '//libs/lib.blend', parent '<direct>'
+  [open_shot(projA/shot)] OK -> '<real-tmp>/t6_handlers_<rand>/projA/shot.blend'
+Info: Saved as "shot.blend"
+  [save_shot(projC/shot) remap on] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/projC/shot.blend', 'saved_in_place': False, 'overwrote_existing': False, 'created_directory': False, 'compress': False, 'relative_remap': True, 'session_id': '<uid>', 'session_epoch': 14}
+Info: Read library: '<real-tmp>/t6_handlers_<rand>/projA/libs/lib.blend', '//../projA/libs/lib.blend', parent '<direct>'
+  [open_shot(projC/shot)] OK -> '<real-tmp>/t6_handlers_<rand>/projC/shot.blend'
+  projC libraries after reopen: [('//../projA/libs/lib.blend', False)]
+
+=== E2. a //-relative image with no library ===
+Info: Saved as "image_shot.blend"
+Info: Saved "image_shot.blend"
+  [open_shot(projA/image_shot)] OK -> '<real-tmp>/t6_handlers_<rand>/projA/image_shot.blend'
+  libraries: []  blend_paths: ['//textures/t2.png']
+Info: Saved as "image_shot.blend"
+  [save_shot(projB/image_shot) remap off] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/projB/image_shot.blend', 'saved_in_place': False, 'overwrote_existing': False, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 17, 'warnings': ['1 external file path (images, libraries, etc.) is Blender-relative and will not resolve from the new directory, because relative_remap is false; save again with relative_remap=true, or relink']}
+  [open_shot(projB/image_shot)] OK -> '<real-tmp>/t6_handlers_<rand>/projB/image_shot.blend'
+  projB image after reopen: [('//textures/t2.png', False)]
+
+=== E3. an indirect //-relative library behind an absolute direct link ===
+Info: Saved as "lib2.blend"
+Info: Saved as "lib1.blend"
+Info: Saved "lib1.blend"
+Info: Saved as "indirect_shot.blend"
+Info: Saved "indirect_shot.blend"
+Info: Read library: '<tmp>/t6_handlers_<rand>/projA/libs/lib1.blend', '<tmp>/t6_handlers_<rand>/projA/libs/lib1.blend', parent '<direct>'
+Info: Read library: '<tmp>/t6_handlers_<rand>/projA/libs/deep/lib2.blend', '//deep/lib2.blend', parent '<tmp>/t6_handlers_<rand>/projA/libs/lib1.blend'
+  [open_shot(projA/indirect_shot)] OK -> '<real-tmp>/t6_handlers_<rand>/projA/indirect_shot.blend'
+  libraries (relative?, leaf, indirect by users_id): [(False, 'lib1.blend', False), (True, 'lib2.blend', True)]
+  blend_paths(local=True), relative entries: ['//../../../../../../../..<tmp>/t6_handlers_<rand>/projA/libs/deep/lib2.blend']
+Info: Saved as "indirect_shot.blend"
+  [save_shot(projB/indirect_shot) remap off] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/projB/indirect_shot.blend', 'saved_in_place': False, 'overwrote_existing': False, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 22}
+Info: Read library: '<tmp>/t6_handlers_<rand>/projA/libs/lib1.blend', '<tmp>/t6_handlers_<rand>/projA/libs/lib1.blend', parent '<direct>'
+Info: Read library: '<tmp>/t6_handlers_<rand>/projA/libs/deep/lib2.blend', '//../../../../../../../..<tmp>/t6_handlers_<rand>/projA/libs/deep/lib2.blend', parent '<direct>'
+  [open_shot(projB/indirect_shot)] OK -> '<real-tmp>/t6_handlers_<rand>/projB/indirect_shot.blend'
+  projB libraries after reopen (leaf, missing): [('lib1.blend', False), ('lib2.blend', False)]
+
+=== F. a planted <target>@ symlink outside the roots ===
+  [save_shot(root/fresh.blend)] ValueError -> "a temporary save file (the target name followed by '@') already exists beside the target, possibly left by an interrupted save; remove it, then retry"
+  victim unchanged=True content='do not overwrite' fresh.blend exists=False
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

@@ -1,0 +1,157 @@
+exit: 0
+--- stdout ---
+<t>  blend            | Read blend: "<real-tmp>/t7_handlers_<rand>/shot_a.blend"
+<t>  blend            | Read blend: "<real-tmp>/t7_handlers_<rand>/shot_b.blend"
+<t>  blend.readfile   | WARNING Append: ID 'GRCanonHero' is already linked
+<t>  blend.readfile   | WARNING Append: ID 'GRCanonProp' is already linked
+<t>  blend            | Read blend: "<real-tmp>/t7_handlers_<rand>/shot_g.blend"
+<t>  blend.readfile   | WARNING Append: ID 'GRParent' is already linked
+<t>  blend.readfile   | WARNING Append: ID 'GRChild' is already linked
+<t>  blend.readfile   | WARNING Append: ID 'GRChild' is already linked
+<t>  blend.readfile   | WARNING Append: ID 'GRParent' is already linked
+<t>  blend            | Read blend: "<real-tmp>/t7_handlers_<rand>/shot_m_False.blend"
+<t>  blend            | Read blend: "<real-tmp>/t7_handlers_<rand>/shot_m_True.blend"
+=== BLENDER === <version>
+Info: Saved as "canon.blend"
+Info: Saved as "props.blend"
+  'id_type' on an ID: SCENE  batch_remove present: True
+
+=== A. link (instanced) -> create_override -> save_shot -> open_shot ===
+Info: Saved as "shot_a.blend"
+  link result: {'session_uid': 513, 'name': 'canon.blend', 'filepath': 'canon.blend', 'is_relative': False, 'is_missing': False, 'version': [5, 2, 45], 'needs_liboverride_resync': False, 'users': 1} [{'session_uid': 514, 'name': 'CanonHero', 'id_type': 'COLLECTION', 'is_library_indirect': False, 'is_missing': False}]
+  scene children after link: [('CanonHero', True)]
+  override: {'session_uid': 517, 'name': 'CanonHero', 'is_override': True, 'is_editable': True, 'is_system_override': False, 'reference_uid': 514, 'hierarchy_root_uid': 517}  replaced_instances: 1
+  override objects: [{'session_uid': 518, 'name': 'HeroBody', 'is_override': True, 'is_editable': True, 'is_system_override': False, 'reference_uid': 515, 'hierarchy_root_uid': 517}]
+  scene children after override: [('CanonHero', False)]
+Info: Saved "shot_a.blend"
+  [save_shot in place] OK
+Info: Read library: '<real-tmp>/t7_handlers_<rand>/canon.blend', '<real-tmp>/t7_handlers_<rand>/canon.blend', parent '<direct>'
+  [open_shot] OK
+  REOPENED list_libraries: [('canon.blend', False, [5, 2, 45], 3)]
+  REOPENED objects (name, uid, linked, is_editable, is_system_override): [('HeroBody', 548, False, True, False), ('HeroBody', 554, True, False, None)]
+  REOPENED collections: [('CanonHero', False, True), ('CanonHero', True, False)]
+
+=== B. link_canon_library(as_override=True) -> save_shot -> open_shot ===
+Info: Saved as "shot_b.blend"
+  overrides: [{'session_uid': 734, 'name': 'CanonHero', 'is_override': True, 'is_editable': True, 'is_system_override': False, 'reference_uid': 731, 'hierarchy_root_uid': 734}]
+Info: Saved "shot_b.blend"
+  [save_shot in place] OK
+Info: Read library: '<real-tmp>/t7_handlers_<rand>/canon.blend', '<real-tmp>/t7_handlers_<rand>/canon.blend', parent '<direct>'
+  [open_shot] OK
+  REOPENED libraries: [('canon.blend', False)]
+  REOPENED objects: [('HeroBody', 765, False, True, False), ('HeroBody', 771, True, False, None)]
+
+=== C. failures that carry a path ===
+Info: Saved as "shot_c.blend"
+  RAW absolute   : "Error: Trying to reload library 'LIgone_canon.blend' from invalid path '<real-tmp>/t7_handlers_<rand>/gone_canon.blend'\n"
+  [reload_library, absolute link] RuntimeError -> "reload_library failed: Error: Trying to reload library 'gone_canon.blend' from invalid path '<path>'"
+Info: Saved as "shot.blend"
+  relative link stored as: '//../../../../../../..<real-tmp>/t7_handlers_<rand>/Smith, John/canon.blend'
+  RAW relative   : "Error: Trying to reload library 'LIcanon.blend' from invalid path '<real-tmp>/t7_handlers_<rand>/Smith, John/canon.blend'\n"
+  [reload_library, // link in 'Smith, John'] RuntimeError -> "reload_library failed: Error: Trying to reload library 'canon.blend' from invalid path '<path>'"
+  [relocate_library to a missing file] ValueError -> 'file does not exist'
+  [relocate_library to a truncated .blend] RuntimeError -> "relocate_library failed: Error: Failed to read blend file '<path>': Missing DNA block"
+  filepath restored: True  is_missing: False
+  [reload_library after the restore] OK
+  datablocks after the restore: ['CanonHero', 'HeroBodyMesh', 'HeroBody']
+  [link_canon_library of a missing file] ValueError -> 'file does not exist'
+
+=== D. failed links through the real mutation_transaction ===
+Info: Saved as "shot_d.blend"
+  [absent name] LibraryFileNamesError -> "the library file does not contain: 'NoSuchHero'; nothing was linked"
+  libraries after: []
+  [failure after the link] RuntimeError -> "injected failure after linking bpy.data.collections['CanonHero']"
+  libraries after: []  collections: []
+
+=== E. unlink one of two libraries, with purge_orphans ===
+Info: Saved as "shot_e.blend"
+  before: OnlyUsedByTheOverride users = 1  UserScratchMaterial users = 0
+  [unlink without confirm] ValueError -> 'unlink_libraries removes each named library and every datablock linked from it; pass confirm=true'
+  report: {'removed_libraries': [{'session_uid': 1409, 'name': 'canon.blend', 'filepath': 'canon.blend', 'is_relative': False, 'is_missing': False}], 'already_removed_uids': [], 'removed_count': 5, 'removed_by_type': {'libraries': 1, 'collections': 1, 'objects': 2, 'meshes': 1}, 'removed_uids': [1409, 1410, 1411, 1412, 1418], 'removed_uids_truncated': False, 'purged_orphans': 1, 'purged_by_type': {'materials': 1}, 'other_libraries_removed': []}
+  unnamed library and its datablocks all alive: True
+  user's zero-user material alive: True UserScratchMaterial
+  orphaned material purged: True
+  libraries now: ['props.blend']
+
+=== F. use_scripts_auto_execute on ===
+  [link_canon_library] ValueError -> "link_canon_library refuses to load while Blender's preferences.filepaths.use_scripts_auto_execute is on (or unreadable), because a .blend could run embedded scripts; turn it off in Preferences > Save & Load, then retry"
+  [reload_library] ValueError -> "reload_library refuses to load while Blender's preferences.filepaths.use_scripts_auto_execute is on (or unreadable), because a .blend could run embedded scripts; turn it off in Preferences > Save & Load, then retry"
+
+=== G. failed multi-collection as_override link over a pre-existing placement ===
+Info: Saved as "canon_two.blend"
+Info: Saved as "shot_g.blend"
+Info: Saved "shot_g.blend"
+  [save_shot in place] OK
+  root before: [('CanonHero', 'L', 1), ('CanonProp', 'O', 1)]
+  [as_override link of both, transacted] ValueError -> "collection session_uid 1728 is already overridden by 'CanonProp' (session_uid 1733)"
+  root after : [('CanonHero', 'L', 1), ('CanonProp', 'O', 1)]
+Info: Saved "shot_g.blend"
+  [save_shot in place] OK
+Info: Read library: '<real-tmp>/t7_handlers_<rand>/canon_two.blend', '<real-tmp>/t7_handlers_<rand>/canon_two.blend', parent '<direct>'
+  [open_shot] OK
+  root REOPENED: [('CanonHero', 'L', 1), ('CanonProp', 'O', 1)]
+
+=== H. relocate to a file lacking the linked datablocks ===
+Info: Saved as "shot_h.blend"
+  [relocate_library to props.blend] OK
+  library is_missing: False
+  datablocks: [{'session_uid': 1959, 'name': 'CanonHero', 'id_type': 'COLLECTION', 'is_library_indirect': False, 'is_missing': True}]
+  warnings: ['1 datablock linked from this library is missing from its file; it is a placeholder until relinked']
+
+=== I. relocate of an indirect library ===
+Info: Saved as "mid.blend"
+Info: Saved as "shot_i.blend"
+  props.blend reached through mid.blend; indirect flags: [True, True, True]
+  [relocate_library of the indirect library] ValueError -> "that library is indirect - reached only through another library, which re-derives its path - so relocating it breaks the parent's link; relocate the parent library instead"
+
+=== J. a hostile Library.name in a failed reload ===
+Info: Saved as "shot_j.blend"
+  Library.name accepted: '/Users/victim/shots/canon.blend'
+  RAW: "Error: Trying to reload library 'LI/Users/victim/shots/canon.blend' from invalid path '<real-tmp>/t7_handlers_<rand>/moved_canon.blend'\n"
+  [reload_library] RuntimeError -> "reload_library failed: Error: Trying to reload library 'the requested file' from invalid path '<path>'"
+
+=== K. nested request: Parent contains Child ===
+Info: Saved as "nest.blend"
+Info: Saved as "shot_k_Parent_Child_False.blend"
+  [['Parent', 'Child'] as_override, placed first=False] ValueError -> "'Child' (session_uid 2723) is inside 'Parent', also requested; request only the outermost collection"
+    collections: []  ChildBody overrides: 0
+    root before: []  after: []
+Info: Saved as "shot_k_Parent_Child_True.blend"
+  [['Parent', 'Child'] as_override, placed first=True] ValueError -> "'Child' (session_uid 2874) is inside 'Parent', also requested; request only the outermost collection"
+    collections: [('Child', 'L'), ('Parent', 'L')]  ChildBody overrides: 0
+    root before: [('Parent', 'L'), ('Child', 'L')]  after: [('Parent', 'L'), ('Child', 'L')]
+Info: Saved as "shot_k_Child_Parent_False.blend"
+  [['Child', 'Parent'] as_override, placed first=False] ValueError -> "'Child' (session_uid 3026) is inside 'Parent', also requested; request only the outermost collection"
+    collections: []  ChildBody overrides: 0
+    root before: []  after: []
+Info: Saved as "shot_k_Child_Parent_True.blend"
+  [['Child', 'Parent'] as_override, placed first=True] ValueError -> "'Child' (session_uid 3177) is inside 'Parent', also requested; request only the outermost collection"
+    collections: [('Child', 'L'), ('Parent', 'L')]  ChildBody overrides: 0
+    root before: [('Child', 'L'), ('Parent', 'L')]  after: [('Child', 'L'), ('Parent', 'L')]
+
+=== L. a newline in a hostile Library.name ===
+Info: Saved as "shot_l.blend"
+  Library.name accepted: '/Users/victim/a\n/b.blend'
+  RAW: "Error: Trying to reload library 'LI/Users/victim/a\n/b.blend' from invalid path '<real-tmp>/t7_handlers_<rand>/moved_canon_l.blend'\n"
+  [reload_library] RuntimeError -> "reload_library failed: Error: Trying to reload library 'the requested file' from invalid path '<path>'"
+
+=== M. Child overridden first, then Parent ===
+Info: Saved as "shot_m_False.blend"
+  [create_override(Parent)] ValueError -> "collection session_uid 3487 contains a collection that is already overridden, by 'Child' (session_uid 3485); remove that override first, or override only the inner collection"
+Info: Saved "shot_m_False.blend"
+  [save_shot in place] OK
+Info: Read library: '<real-tmp>/t7_handlers_<rand>/nest.blend', '<real-tmp>/t7_handlers_<rand>/nest.blend', parent '<direct>'
+  [open_shot] OK
+    REOPENED collections: [('Child', 'O'), ('Child', 'L'), ('Parent', 'L')]  ChildBody overrides: 1  root: [('Child', 'O'), ('Parent', 'L')]
+Info: Saved as "shot_m_True.blend"
+  [link_canon_library(['Parent'], as_override=True)] ValueError -> "collection session_uid 3709 contains a collection that is already overridden, by 'Child' (session_uid 3707); remove that override first, or override only the inner collection"
+Info: Saved "shot_m_True.blend"
+  [save_shot in place] OK
+Info: Read library: '<real-tmp>/t7_handlers_<rand>/nest.blend', '<real-tmp>/t7_handlers_<rand>/nest.blend', parent '<direct>'
+  [open_shot] OK
+    REOPENED collections: [('Child', 'O'), ('Child', 'L')]  ChildBody overrides: 1  root: [('Child', 'O')]
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

@@ -1,0 +1,62 @@
+exit: 0
+--- stdout ---
+<t>  blend            | Read blend: "<tmp>/t7_lifecycle_<rand>/shot.blend"
+<t>  blend.readfile   | WARNING Append: ID 'OBHeroBody' is already linked
+=== BLENDER === <version>
+Info: Saved as "props.blend"
+Info: Saved as "canon.blend"
+
+=== A. an uninstanced linked collection across save/reopen ===
+  after link: [('canon.blend', 519, False), ('props.blend', 522, False)]
+Info: Saved as "shot.blend"
+  REOPENED  : []
+
+=== B. failed links ===
+  absent name returned: None  libraries: [('canon.blend', 677, False)]
+  raise inside the block -> refused inside the block  libraries: []
+  truncated .blend RAW OSError -> "Error: Failed to read blend file '<tmp>/t7_lifecycle_<rand>/truncated.blend': Missing DNA block\n"  libraries: []
+
+=== C. relative=True with no saved file ===
+  filepath is absolute: True  startswith //: False
+
+=== D1. remove the DIRECT library; the indirect one is not named ===
+  before: [('canon.blend', 1175, False), ('props.blend', 1178, False)]  indirect flags: [('canon.blend', [False, True, True]), ('props.blend', [True, True, True])]
+  after removing canon.blend: [('props.blend', 1178, False)]
+
+=== D2. remove the library after a Route C override, then purge ===
+  user's zero-user material users = 0
+  before remove: [('canon.blend', 1310, False), ('props.blend', 1313, False)]  objects: [('HeroBody', False, True), ('HeroBody', True, False), ('Crate', True, False)]
+  after remove : [('props.blend', 1313, False)]
+  objects      : [('Crate', 1317, True, False, 1)]
+  collections  : [('CanonHero', 1319, True, 1), ('Props', 1316, False, 1)]
+  meshes       : [('CrateMesh', True, 1)]
+  override collection still in the scene: True
+  orphans_purge(do_local_ids=False, do_linked_ids=True) -> 0
+  user's material survives linked-only purge: True
+  orphans_purge(do_local_ids=True, do_linked_ids=True) -> 1
+  user's material survives local purge: False
+
+=== E. relocate to a missing file, then restore ===
+  RAW RuntimeError -> "Error: Trying to reload library 'LIcanon.blend' from invalid path '<tmp>/t7_lifecycle_<rand>/gone.blend'\n"
+  after failed reload: name canon.blend is_missing False users_id [('CanonHero', 1447), ('HeroBodyMesh', 1451), ('HeroBody', 1448)]
+  restored: is_missing False users_id 3
+  reload after restore: is_missing False users_id 3
+
+=== F. relocate to a differently named file ===
+  name before: canon.blend  uid 1446
+  name after : canon.blend  uid 1446  filepath is renamed: True  users_id 3
+
+=== G. uid churn inside the two transacted commands ===
+  second link from the same file: libraries [('canon.blend', 1590, False), ('props.blend', 1593, False)]  churned: []
+  override_hierarchy_create churned: []
+
+=== H. batch_remove ===
+  'batch_remove' in bpy.data: True
+  materials after batch_remove([Drop]): ['Keep']  keep valid: Keep
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---
+<repo>/scripts/blender_probes/linking_datablock_lifecycle.py:81: UserWarning: load: '<tmp>/t7_lifecycle_<rand>/canon.blend' does not contain collections["NoSuchCollection"]
+  with bpy.data.libraries.load(path, link=True) as (_f, to):  # pyright: ignore[reportGeneralTypeIssues]  # libraries.load() is a context manager at runtime

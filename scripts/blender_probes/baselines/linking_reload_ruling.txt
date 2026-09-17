@@ -1,0 +1,42 @@
+exit: 0
+--- stdout ---
+=== BLENDER === <version>
+Info: Saved as "canon.blend"
+Info: Saved as "replacement.blend"
+
+=== A. is reload an RNA function? ===
+  'reload' in Library.bl_rna.functions: True
+  'reload' in dir(bpy.types.Library)  : False (the invalid check)
+
+=== B. lib.filepath = new; lib.reload() ===
+  before: canon.blend [('Collection', 'CanonHero', 514), ('Mesh', 'HeroBodyMesh', 516), ('Object', 'HeroBody', 515)]
+  after : canon.blend [('Collection', 'CanonHero', 517), ('Mesh', 'ReplacementBodyMesh', 521), ('Object', 'ReplacementBody', 520)]  is_missing False
+
+=== C. the operators ===
+Error: Not a library
+  lib_reload(library=name)                                   -> RuntimeError: 'Error: Not a library'
+                                                                libraries now: ['canon.blend']
+Error: Not a library
+  lib_reload(library=name, filepath=...)                     -> RuntimeError: 'Error: Not a library'
+                                                                libraries now: ['canon.blend']
+  lib_reload(library, directory, filename)                   -> returned {'FINISHED'}
+                                                                libraries now: ['canon.blend']
+  lib_reload(bogus library, directory, filename)             -> returned {'CANCELLED'}
+                                                                libraries now: ['canon.blend']
+Error: Not a library
+  lib_relocate(library=name, filepath=...)                   -> RuntimeError: 'Error: Not a library'
+                                                                libraries now: ['canon.blend']
+  lib_relocate(library, directory, filename)                 -> returned {'FINISHED'}
+                                                                libraries now: ['replacement.blend']
+
+=== D. raw reload() failure text for a missing file ===
+  absolute link to gone.blend                                -> RuntimeError: "Error: Trying to reload library 'LIcanon.blend' from invalid path '<tmp>/t7_reload_<rand>/gone.blend'"
+Info: Saved as "shot.blend"
+  relative link stored as: '//canon.blend'
+  relative link, file removed                                -> RuntimeError: "Error: Trying to reload library 'LIcanon.blend' from invalid path '<tmp>/t7_reload_<rand>/Smith, John/canon.blend'"
+  bpy.path.abspath(filepath): '<tmp>/t7_reload_<rand>/Smith, John/canon.blend'
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

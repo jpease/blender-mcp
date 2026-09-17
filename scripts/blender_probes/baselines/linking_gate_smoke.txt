@@ -1,0 +1,40 @@
+exit: 0
+--- stdout ---
+<t>  blend            | Read blend: "<tmp>/t7_gate_<rand>/shot_A.blend"
+<t>  blend            | Read blend: "<tmp>/t7_gate_<rand>/shot_C.blend"
+=== BLENDER === <version>
+Info: Saved as "canon_hero.blend"
+
+=== Route A ===
+  hierarchy_root = <bpy_struct, Collection("CanonHero") at 0x<addr>>
+  after override: libraries = [('canon_hero.blend', True, False)]
+  after override: COLLECTION 'CanonHero' uid=389 library=False override=True system=False
+  after override: COLLECTION 'CanonHero' uid=386 library=True override=False system=None
+  after override: OBJECT 'HeroBody' uid=387 library=True override=False editable=False system=None
+Info: Saved as "shot_A.blend"
+Info: Read library: '<tmp>/t7_gate_<rand>/canon_hero.blend', '<tmp>/t7_gate_<rand>/canon_hero.blend', parent '<direct>'
+  REOPENED: libraries = [('canon_hero.blend', True, False)]
+  REOPENED: COLLECTION 'CanonHero' uid=418 library=False override=True system=False
+  REOPENED: COLLECTION 'CanonHero' uid=422 library=True override=False system=None
+  REOPENED: OBJECT 'HeroBody' uid=423 library=True override=False editable=False system=None
+
+=== Route C ===
+  override_hierarchy_create returned bpy.data.collections['CanonHero'] uid 556
+  hierarchy_root = <bpy_struct, Collection("CanonHero") at 0x<addr>>
+  after override: libraries = [('canon_hero.blend', True, False)]
+  after override: COLLECTION 'CanonHero' uid=556 library=False override=True system=False
+  after override: COLLECTION 'CanonHero' uid=553 library=True override=False system=None
+  after override: OBJECT 'HeroBody' uid=557 library=False override=True editable=True system=False
+  after override: OBJECT 'HeroBody' uid=554 library=True override=False editable=False system=None
+Info: Saved as "shot_C.blend"
+Info: Read library: '<tmp>/t7_gate_<rand>/canon_hero.blend', '<tmp>/t7_gate_<rand>/canon_hero.blend', parent '<direct>'
+  REOPENED: libraries = [('canon_hero.blend', True, False)]
+  REOPENED: COLLECTION 'CanonHero' uid=586 library=False override=True system=False
+  REOPENED: COLLECTION 'CanonHero' uid=592 library=True override=False system=None
+  REOPENED: OBJECT 'HeroBody' uid=587 library=False override=True editable=True system=False
+  REOPENED: OBJECT 'HeroBody' uid=593 library=True override=False editable=False system=None
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

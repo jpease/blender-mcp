@@ -1,0 +1,50 @@
+exit: 0
+--- stdout ---
+=== BLENDER === <version>
+
+=== FACT 1: override methods exist on Collection and ID ===
+Collection.bl_rna.functions -> ['animation_data_clear', 'animation_data_create', 'asset_clear', 'asset_generate_preview', 'asset_mark', 'bl_system_properties_get', 'copy', 'evaluated_get', 'make_local', 'override_create', 'override_hierarchy_create', 'preview_ensure', 'rename', 'update_tag', 'user_clear', 'user_of_id', 'user_remap']
+ID.bl_rna.functions -> ['animation_data_clear', 'animation_data_create', 'asset_clear', 'asset_generate_preview', 'asset_mark', 'bl_system_properties_get', 'copy', 'evaluated_get', 'make_local', 'override_create', 'override_hierarchy_create', 'preview_ensure', 'rename', 'update_tag', 'user_clear', 'user_of_id', 'user_remap']
+Object.bl_rna.functions -> ['animation_data_clear', 'animation_data_create', 'asset_clear', 'asset_generate_preview', 'asset_mark', 'bl_system_properties_get', 'cache_release', 'calc_matrix_camera', 'camera_fit_coords', 'closest_point_on_mesh', 'convert_space', 'copy', 'crazyspace_displacement_to_deformed', 'crazyspace_displacement_to_original', 'crazyspace_eval', 'crazyspace_eval_clear', 'evaluated_get', 'find_armature', 'hide_get', 'hide_set', 'holdout_get', 'indirect_only_get', 'is_deform_modified', 'is_modified', 'local_view_get', 'local_view_set', 'make_local', 'override_create', 'override_hierarchy_create', 'preview_ensure', 'ray_cast', 'rename', 'select_get', 'select_set', 'shape_key_add', 'shape_key_clear', 'shape_key_remove', 'shape_keys_selected', 'to_curve', 'to_curve_clear', 'to_mesh', 'to_mesh_clear', 'update_from_editmode', 'update_tag', 'user_clear', 'user_of_id', 'user_remap', 'visible_get', 'visible_in_viewport_get']
+
+=== FACT 1b: signatures via __doc__ ===
+override_hierarchy_create.__doc__: Collection.override_hierarchy_create(scene, view_layer, reference=None, do_fully_editable=False)
+override_create.__doc__          : Collection.override_create(remap_local_usages=False)
+
+=== FACT: dir() on a TYPE object is blind (the methodology trap) ===
+'copy' in dir(bpy.types.Collection) -> False
+'copy' in dir(instance)            -> True
+
+=== FACT 5: Library.reload exists ===
+Library.bl_rna.functions -> ['animation_data_clear', 'animation_data_create', 'asset_clear', 'asset_generate_preview', 'asset_mark', 'bl_system_properties_get', 'copy', 'evaluated_get', 'make_local', 'override_create', 'override_hierarchy_create', 'preview_ensure', 'reload', 'rename', 'update_tag', 'user_clear', 'user_of_id', 'user_remap']
+
+=== FACT 9: bpy.app.handlers ===
+  load_pre: True
+  load_post: True
+  load_post_fail: True
+  save_pre: True
+  save_post: True
+  save_post_fail: True
+  blend_import_pre: True
+  blend_import_post: True
+  persistent: True
+
+=== FACT 8: operator defaults ===
+  wm.save_as_mainfile.relative_remap default = True
+  wm.save_mainfile.relative_remap default = False
+  wm.save_as_mainfile.check_existing default = True
+  wm.save_mainfile.check_existing default = True
+  wm.open_mainfile.use_scripts default = False
+  preferences.filepaths.use_scripts_auto_execute = False
+
+=== FACT 11: bpy.path.abspath does not normalise or absolutize ===
+  abspath('//../escape.blend') -> ../escape.blend
+  abspath('relative.blend')    -> relative.blend
+
+=== FACT 12: orphans_purge signature ===
+  .. method:: orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=False)
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

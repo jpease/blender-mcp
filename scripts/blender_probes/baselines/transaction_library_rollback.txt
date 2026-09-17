@@ -1,0 +1,48 @@
+exit: 0
+--- stdout ---
+<t>  blend            | Read blend: "<tmp>/t4_txn_<rand>/shot.blend"
+=== BLENDER === <version>
+Info: Saved as "canon.blend"
+Info: Saved as "shot.blend"
+
+=== A: a failed link inside mutation_transaction ===
+  inside: libraries = 1 linked = ['collections/CanonHero', 'materials/HeroPaint', 'meshes/HeroMesh', 'objects/HeroBody']
+  raised RuntimeError: linked collection not found
+  after rollback: libraries = 0 linked = []
+  pre-existing datablocks all present with the same session_uid: True
+  anything left that did not exist before: NOTHING
+  pre-existing datablocks removed: NONE
+
+=== B: lib.reload() inside replacing_library_contents, then a raise ===
+  transaction invalidated by blend_import_post: True
+  raised RollbackSkippedError; carries the warning: True
+  linked contents before/after: 4 / 4
+  replace flag cleared: True
+  local session_uids unchanged by the reload: True
+
+=== C: the same reload WITHOUT the flag (the hazard), then a raise ===
+  transaction invalidated: False
+  raised RuntimeError
+  linked contents before/after: 4 / 0
+
+=== D: open_mainfile inside a transaction holding a geometry backup, then a raise ===
+  backups captured: 1
+  session_uids surviving the load: 0 of 5
+  transaction invalidated by load_post: True ; states held: 0
+  raised RollbackSkippedError; carries the warning: True
+  loaded file intact after the failed command: True
+  active transaction cleared: True
+
+=== E: removing a Library first, then its linked datablocks ===
+  after libraries.remove: linked left = []
+  objects.remove(<freed>) raised ReferenceError: StructRNA of type Object has been removed
+  meshes.remove(<freed>) raised ReferenceError: StructRNA of type Mesh has been removed
+  materials.remove(<freed>) raised ReferenceError: StructRNA of type Material has been removed
+  collections.remove(<freed>) raised ReferenceError: StructRNA of type Collection has been removed
+
+probe completed
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

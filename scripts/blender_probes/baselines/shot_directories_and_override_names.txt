@@ -1,0 +1,43 @@
+exit: 0
+--- stdout ---
+<t>  blend            | Read blend: "<real-tmp>/tmp<rand>/project/canon/shots/sh010.blend"
+<t>  blend            | Read blend: "<real-tmp>/tmp<rand>/shot.blend"
+Blender <version> (hash <build>)
+A. save_shot(create_directories)
+  [ok] refused without the opt-in: 'target directory does not exist; pass create_directories=true to create it'
+  [ok] nothing was created by the refusal
+Info: Saved as "sh010.blend"
+  [ok] saved with the opt-in, created_directory=True
+  [ok] the saved file exists
+  [ok] the saved file reopens
+Info: Saved as "sh020.blend"
+  [ok] created_directory is False for an existing directory
+  [ok] refused outside the roots: 'path is outside the allowed file roots (BLENDERMCP_FILE_ROOTS); see file_roots in get_addon_status'
+  [ok] nothing was created outside the roots
+B. find_object after override_hierarchy_create
+Info: Saved as "canon.blend"
+Info: Saved as "shot.blend"
+Info: Read library: '<real-tmp>/tmp<rand>/canon.blend', '<real-tmp>/tmp<rand>/canon.blend', parent '<direct>'
+  bpy.data.objects order after reopen: [('HeroCam', False), ('HeroCam', True)]
+  [ok] two objects are named HeroCam
+  [ok] local IDs come before linked ones in Main
+  [ok] plain get(name) returns the local object
+  [ok] the (name, None) key returns the local object
+  [ok] find_object returns the local override
+  [ok] the scene tools' _object returns the same object
+  [ok] a missing name is None
+  [ok] the (name, None) key of a missing name is None
+Info: Saved as "zeta.blend"
+Info: Saved as "alpha.blend"
+  libraries: ['alpha.blend', 'zeta.blend']
+  plain get('Prop') picked: zeta.blend; first by name: alpha.blend
+  [ok] get(name) follows Main insertion order: the library linked first
+  [ok] get(name) does NOT follow library name order
+  [ok] a real Library reports id_type 'LIBRARY'
+  [ok] two linked Props with no local one are refused: "object name 'Prop' is linked from more than one library (2 of them: 'zeta.blend' (session_uid 945), 'alpha.blend' (session_uid 947)) and no local object has it; override the one to edit with create_override"
+  [ok] the refusal names no directory
+  [ok] the refusal reports the true total
+  [ok] the refusal carries each library's real session_uid
+PROBE PASSED
+
+--- stderr ---

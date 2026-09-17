@@ -1,0 +1,41 @@
+exit: 0
+--- stdout ---
+<t>  blend            | Read blend: "<tmp>/api522_<rand>/zstd.blend"
+=== BLENDER === <version>
+
+=== FACT 10 + error SHAPES 1-4: open/save failure discipline ===
+Error: Cannot read file "<tmp>/api522_<rand>/nope.blend": No such file or directory
+  [shape1 open missing] RAISED RuntimeError: Error: Cannot read file "<tmp>/api522_<rand>/nope.blend": No such file or directory
+
+Error: File format is not supported in file "<tmp>/api522_<rand>"
+  [shape2 open directory] RAISED RuntimeError: Error: File format is not supported in file "<tmp>/api522_<rand>"
+
+Error: File format is not supported in file "<tmp>/api522_<rand>/plain.txt"
+  [shape2 open non-blend] RAISED RuntimeError: Error: File format is not supported in file "<tmp>/api522_<rand>/plain.txt"
+
+Error: File format is not supported in file "<repo>"
+  [shape2 open EMPTY PATH] RAISED RuntimeError: Error: File format is not supported in file "<repo>"
+
+Info: Saved as "good.blend"
+Error: File format is not supported in file "<tmp>/api522_<rand>/trunc.blend"
+  [shape3 open truncated] RAISED RuntimeError: Error: File format is not supported in file "<tmp>/api522_<rand>/trunc.blend"
+
+Error: Cannot open file <tmp>/api522_<rand>/no/such/dir/x.blend@ for writing: No such file or directory
+  [shape4 save unwritable] RAISED RuntimeError: Error: Cannot open file <tmp>/api522_<rand>/no/such/dir/x.blend@ for writing: No such file or directory
+
+
+=== check_existing is inert: does save_as overwrite silently? ===
+Info: Saved as "victim.blend"
+  [save_as onto existing] RETURNED ['FINISHED']
+  victim size 27 -> <size>; overwritten = True
+
+=== FACT: the three .blend magic signatures ===
+  uncompressed header = b'(\xb5/\xfd\xa0A\x06\x01\x00%7\x00JG\x80\x11'
+Info: Saved as "zstd.blend"
+  compressed header   = b'(\xb5/\xfd\xa0A\x06\x01\x00%7\x00JG\x80\x11'
+  reopen compressed   -> ['FINISHED']
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

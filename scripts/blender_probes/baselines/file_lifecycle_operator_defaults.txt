@@ -1,0 +1,105 @@
+exit: 0
+--- stdout ---
+<t>  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'sort_method', 'default'
+<t>  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'sort_method', 'default'
+<t>  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'sort_method', 'default'
+=== BLENDER === <version>
+
+=== wm.open_mainfile ===
+  filepath                                 STRING   default=''
+  hide_props_region                        BOOLEAN  default=True
+  check_existing                           BOOLEAN  default=False
+  filter_blender                           BOOLEAN  default=True
+  filter_backup                            BOOLEAN  default=False
+  filter_image                             BOOLEAN  default=False
+  filter_movie                             BOOLEAN  default=False
+  filter_python                            BOOLEAN  default=False
+  filter_font                              BOOLEAN  default=False
+  filter_sound                             BOOLEAN  default=False
+  filter_text                              BOOLEAN  default=False
+  filter_archive                           BOOLEAN  default=False
+  filter_btx                               BOOLEAN  default=False
+  filter_alembic                           BOOLEAN  default=False
+  filter_usd                               BOOLEAN  default=False
+  filter_obj                               BOOLEAN  default=False
+  filter_volume                            BOOLEAN  default=False
+  filter_folder                            BOOLEAN  default=True
+  filter_blenlib                           BOOLEAN  default=False
+  filemode                                 INT      default=8
+  display_type                             ENUM     default='DEFAULT'
+  sort_method                              ENUM     default=''
+  load_ui                                  BOOLEAN  default=True
+  use_scripts                              BOOLEAN  default=False
+  display_file_selector                    BOOLEAN  default=True
+  state                                    INT      default=0
+
+=== wm.save_mainfile ===
+  filepath                                 STRING   default=''
+  hide_props_region                        BOOLEAN  default=True
+  check_existing                           BOOLEAN  default=True
+  filter_blender                           BOOLEAN  default=True
+  filter_backup                            BOOLEAN  default=False
+  filter_image                             BOOLEAN  default=False
+  filter_movie                             BOOLEAN  default=False
+  filter_python                            BOOLEAN  default=False
+  filter_font                              BOOLEAN  default=False
+  filter_sound                             BOOLEAN  default=False
+  filter_text                              BOOLEAN  default=False
+  filter_archive                           BOOLEAN  default=False
+  filter_btx                               BOOLEAN  default=False
+  filter_alembic                           BOOLEAN  default=False
+  filter_usd                               BOOLEAN  default=False
+  filter_obj                               BOOLEAN  default=False
+  filter_volume                            BOOLEAN  default=False
+  filter_folder                            BOOLEAN  default=True
+  filter_blenlib                           BOOLEAN  default=False
+  filemode                                 INT      default=8
+  display_type                             ENUM     default='DEFAULT'
+  sort_method                              ENUM     default=''
+  compress                                 BOOLEAN  default=False
+  relative_remap                           BOOLEAN  default=False
+  exit                                     BOOLEAN  default=False
+  incremental                              BOOLEAN  default=False
+  show_save_modified_images_dialog         BOOLEAN  default=False
+
+=== wm.save_as_mainfile ===
+  filepath                                 STRING   default=''
+  hide_props_region                        BOOLEAN  default=True
+  check_existing                           BOOLEAN  default=True
+  filter_blender                           BOOLEAN  default=True
+  filter_backup                            BOOLEAN  default=False
+  filter_image                             BOOLEAN  default=False
+  filter_movie                             BOOLEAN  default=False
+  filter_python                            BOOLEAN  default=False
+  filter_font                              BOOLEAN  default=False
+  filter_sound                             BOOLEAN  default=False
+  filter_text                              BOOLEAN  default=False
+  filter_archive                           BOOLEAN  default=False
+  filter_btx                               BOOLEAN  default=False
+  filter_alembic                           BOOLEAN  default=False
+  filter_usd                               BOOLEAN  default=False
+  filter_obj                               BOOLEAN  default=False
+  filter_volume                            BOOLEAN  default=False
+  filter_folder                            BOOLEAN  default=True
+  filter_blenlib                           BOOLEAN  default=False
+  filemode                                 INT      default=8
+  display_type                             ENUM     default='DEFAULT'
+  sort_method                              ENUM     default=''
+  compress                                 BOOLEAN  default=False
+  relative_remap                           BOOLEAN  default=True
+  copy                                     BOOLEAN  default=False
+  show_save_modified_images_dialog         BOOLEAN  default=False
+
+=== wm.read_factory_settings ===
+  use_factory_startup_app_template_only    BOOLEAN  default=False
+  app_template                             STRING   default='Template'
+  use_empty                                BOOLEAN  default=False
+
+=== preferences.filepaths ===
+  use_scripts_auto_execute = False
+  use_file_compression     = True
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

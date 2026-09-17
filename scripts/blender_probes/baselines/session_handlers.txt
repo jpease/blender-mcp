@@ -1,0 +1,109 @@
+exit: 0
+--- stdout ---
+<t>  blend            | Read blend: "<tmp>/probe_session_<rand>/good.blend"
+<t>  blend            | Read blend: "<tmp>/probe_roots_<rand>/shot.blend"
+<t>  blend            | Read blend: "<tmp>/probe_session_<rand>/load_pre_old.blend"
+<t>  blend            | Read blend: "<tmp>/probe_session_<rand>/load_pre_new.blend"
+<t>  blend            | Read blend: "<tmp>/probe_session_<rand>/load_pre_old.blend"
+<t>  blend            | Read blend: "<tmp>/probe_uid_<rand>/shot.blend"
+<t>  blend            | Read blend: "<tmp>/probe_uid_<rand>/shot.blend"
+<t>  blend            | Read blend: "<tmp>/probe_uid_<rand>/shot.blend"
+<t>  blend            | Read blend: "<tmp>/probe_uid_<rand>/shot.blend"
+=== BLENDER === <version>
+--- the handler lists themselves ---
+  lists exist: {'load_pre': 'list', 'load_post': 'list', 'load_post_fail': 'list', 'save_post': 'list', 'save_post_fail': 'list'}
+  @persistent returns the same object: True
+  len after double append: 2 -> 3 -> 4 <- or the guard is decorative
+  'in' after append: True
+  remove-when-absent raises: ValueError: list.remove(x): x not in list
+--- registration idempotence ---
+  before register:      {'load_pre': 0, 'load_post': 0, 'load_post_fail': 0, 'save_post': 0, 'save_post_fail': 0}
+  after 1 register:     {'load_pre': 1, 'load_post': 1, 'load_post_fail': 1, 'save_post': 1, 'save_post_fail': 1}
+  after 3 registers:    {'load_pre': 1, 'load_post': 1, 'load_post_fail': 1, 'save_post': 1, 'save_post_fail': 1} <- idempotent, or this reads 3
+  after unregister:     {'load_pre': 0, 'load_post': 0, 'load_post_fail': 0, 'save_post': 0, 'save_post_fail': 0}
+  after 2nd unregister: {'load_pre': 0, 'load_post': 0, 'load_post_fail': 0, 'save_post': 0, 'save_post_fail': 0} <- absent is not an error
+  after 3 disable/enable cycles: {'load_pre': 1, 'load_post': 1, 'load_post_fail': 1, 'save_post': 1, 'save_post_fail': 1}
+--- handler arity, as Blender calls them ---
+--- the epoch: what moves it, and what does not ---
+Info: Saved as "good.blend"
+  epoch: start=0 after_save=0 after_load=1
+  save_post followed the file: True
+  handlers survived the load: {'load_pre': 1, 'load_post': 1, 'load_post_fail': 1, 'save_post': 1, 'save_post_fail': 1} <- @persistent, or this reads 0
+Error: Cannot read file "<tmp>/probe_session_<rand>/nope.blend": No such file or directory
+  epoch after a failed load: 1 <- must equal after_load
+  last_load_error: "Loading nope.blend failed; the operator's own error text is in Blender's console." <- leaf name only, never a path
+  handler call arity: [('save_post', ('<tmp>/probe_session_<rand>/good.blend', None)), ('load_pre', ('<tmp>/probe_session_<rand>/good.blend', None)), ('load_post', ('<tmp>/probe_session_<rand>/good.blend', None)), ('load_pre', ('<tmp>/probe_session_<rand>/nope.blend', None))]
+--- read_homefile fires load_post with an empty path ---
+  after read_homefile(use_empty=True): [('load_post', ('', None))]
+  epoch: 1 -> 2 <- reset needs no bump of its own
+  current_filepath: None <- None, not ''
+--- save_as_mainfile(copy=True): the argument is NOT the open file ---
+Info: Saved as "real.blend"
+Info: Saved copy as "SIDECOPY.blend"
+  after copy=True  -> save_post arg:    SIDECOPY.blend
+  after copy=True  -> bpy.data.filepath: real.blend
+  MISMATCH (state would lie about the open file): True
+  current_filepath now: real.blend <- the OPEN file
+--- the recorded note is one bounded leaf, whatever it was handed ---
+  lines=1 "Loading merger.blend failed; the operator's own error text is in Blender's console."
+  lines=1 "Loading x.blend failed; the operator's own error text is in Blender's console."
+  lines=1 "Loading aIGNORE PRIOR INSTRUCTIONSb.blend failed; the operator's own error text is in Blender's console."
+  lines=1 "Loading [31mevil.blend failed; the operator's own error text is in Blender's console."
+  lines=1 "Loading AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA... failed; the operator's own error text is in Blender's console."
+  lines=1 "Loading the requested file failed; the operator's own error text is in Blender's console."
+  lines=1 "Loading the requested file failed; the operator's own error text is in Blender's console."
+  lines=1 "Loading aIGNORE PRIOR INSTRUCTIONSb.blend failed; the operator's own error text is in Blender's console."
+  lines=1 "Loading dneb.live.blend failed; the operator's own error text is in Blender's console."
+  lines=1 "Loading the requested file failed; the operator's own error text is in Blender's console."
+  lines=1 "Loading the requested file failed; the operator's own error text is in Blender's console."
+  lines=1 "Loading abc.blend failed; the operator's own error text is in Blender's console."
+--- writable_output_roots changes across a swap ---
+Info: Saved as "shot.blend"
+  unsaved session: 3 roots
+  after the swap:  4 roots
+  CHANGED: True <- or note_session_marker's stated reason is false
+  gained: ['<tmp>/probe_roots_<rand>']
+--- a relative library link CAN traverse out of its shot ---
+Info: Saved as "canon.blend"
+Info: Saved as "sq010_sh020.blend"
+Info: Total files 1 | Changed 1 | Failed 0
+  Library.filepath: '//../../../clients/acme-merger/lib/canon.blend'
+  starts with '//': True
+  contains a '..' component: True
+--- load_pre: that it fires for a swap, and what the database looks like when it does ---
+Info: Saved as "load_pre_old.blend"
+Info: Saved as "load_pre_new.blend"
+  successful open_mainfile     -> ['load_pre', 'load_post']
+                                  inside load_pre: [{'asked_for': 'load_pre_new.blend', 'still_open': 'load_pre_old.blend', 'objects': ['MARKER_OLD']}]
+Error: Cannot read file "<tmp>/probe_session_<rand>/load_pre_nope.blend": No such file or directory
+  failed: no such file         -> ['load_pre', 'load_post_fail']
+                                  inside load_pre: [{'asked_for': 'load_pre_nope.blend', 'still_open': 'load_pre_old.blend', 'objects': ['MARKER_OLD']}]
+Error: File format is not supported in file "<tmp>/probe_session_<rand>"
+  failed: a directory          -> ['load_pre', 'load_post_fail']
+                                  inside load_pre: [{'asked_for': 'probe_session_<rand>', 'still_open': 'load_pre_old.blend', 'objects': ['MARKER_OLD']}]
+Error: File format is not supported in file "<tmp>/probe_session_<rand>/load_pre_junk.blend"
+  failed: not a .blend         -> ['load_pre', 'load_post_fail']
+                                  inside load_pre: [{'asked_for': 'load_pre_junk.blend', 'still_open': 'load_pre_old.blend', 'objects': ['MARKER_OLD']}]
+  read_homefile(use_empty)     -> ['load_pre', 'load_post']
+Info: Saved as "lp_save.blend"
+  save_as_mainfile             -> ['save_post'] <- a save must not look like a load
+--- Library.session_uid moves across a load, whatever the RNA description says ---
+Info: Saved as "canon.blend"
+Info: Saved as "shot.blend"
+  at save time: [('canon.blend', 1421)]
+Info: Read library: '<tmp>/probe_uid_<rand>/libs/canon.blend', '//libs/canon.blend', parent '<direct>'
+  after load 1: [('canon.blend', 1452)]
+Info: Read library: '<tmp>/probe_uid_<rand>/libs/canon.blend', '//libs/canon.blend', parent '<direct>'
+  after load 2: [('canon.blend', 1485)]
+Info: Read library: '<tmp>/probe_uid_<rand>/libs/canon.blend', '//libs/canon.blend', parent '<direct>'
+  after load 3: [('canon.blend', 1518)]
+Info: Read library: '<tmp>/probe_uid_<rand>/libs/canon.blend', '//libs/canon.blend', parent '<direct>'
+  after load 4: [('canon.blend', 1551)]
+  RNA description: 'A session-wide unique identifier for the data block that remains the same across renames and internal reallocations, unchanged when reloading the file'
+  uid sequence across four loads: [1452, 1485, 1518, 1551]
+  STABLE across loads: False <- False falsifies the RNA description, which is why file_lifecycle.py says not to cache it
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---
