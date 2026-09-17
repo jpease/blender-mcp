@@ -230,3 +230,6 @@ package-lock.json
 
 # Generated output from the headless Blender Docker container
 docker/blender/output/
+
+# Local planning notes (superpowers plans/specs), not published
+docs/superpowers/
