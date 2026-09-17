@@ -82,6 +82,8 @@ ADDON_LINKING = ROOT / "src/blender_mcp/bundled/addon/handlers/linking.py"
 SERVER_FILE_LIFECYCLE_TOOL = ROOT / "src/blender_mcp/server/tools/file_lifecycle.py"
 # Post-Phase-2: `save_shot.create_directories` and name resolution after a library override.
 ADDON_OBJECT_LOOKUP = ROOT / "src/blender_mcp/bundled/addon/object_lookup.py"
+ADDON_CANDIDATES = ROOT / "src/blender_mcp/bundled/addon/candidates.py"
+SERVER_APP = ROOT / "src/blender_mcp/server/app.py"
 ADDON_SCENE = ROOT / "src/blender_mcp/bundled/addon/handlers/scene.py"
 SERVER_DOCUMENTATION = ROOT / "src/blender_mcp/server/tools/_documentation.py"
 SERVER_BUNDLES = ROOT / "src/blender_mcp/server/bundles.py"
@@ -117,6 +119,8 @@ CLIT = "tests/server/test_cli_transport.py"
 SFLT = "tests/server/tools/test_file_lifecycle.py"
 BUNT = "tests/server/test_bundles.py"
 OLT = "tests/test_object_lookup.py"
+CANDT = "tests/test_candidates.py"
+SIT = "tests/server/test_server_instructions.py"
 SOIT = "tests/server/tools/test_scene_object_inspection.py"
 AMT = "tests/test_addon_manager.py"
 # Named because the node id plus its parameter is one character past the line
@@ -160,7 +164,7 @@ NFKC_BACKSLASH_LIB = (
 # The files added outright by a Phase 2 task; every node they collect must be
 # accounted for. Task 1 added the first five; Task 3 added `test_session_state.py`;
 # Task 5 added the next two; Task 6 added `FLT`; Task 7 added the last.
-NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, PHT, FLT, LKT, SFLT, OLT)
+NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, PHT, FLT, LKT, SFLT, OLT, CANDT, SIT)
 # Nodes added to files that already existed. **Not optional bookkeeping:**
 # `coverage_gaps()` subtracts the rows below from *this* universe, so a task that
 # adds nodes here without listing them gets a "0 uncovered" that is true of the
@@ -4372,11 +4376,14 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "task 7 C3: a refusal's candidate list stats Library.name",
-        ADDON_LINKING,
+        # Moved from handlers/linking.py with `_display_name` (post-Phase-2: now
+        # `candidates.display_name`, imported by linking under its old name). The
+        # module sits at the addon root, so the import is `.` rather than `..`.
+        ADDON_CANDIDATES,
         "        return client_safe_name_leaf(name)\n",
         "        return client_safe_leaf(name)\n",
         (f"{LKT}::test_library_names_are_reduced_without_touching_the_filesystem",),
-        also="\nfrom ..text_hygiene import client_safe_leaf\n",
+        also="\nfrom .text_hygiene import client_safe_leaf\n",
     ),
     # --- Task 9: the ten server-side file-lifecycle/linking tools ---
     Revert(
@@ -4690,10 +4697,92 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "post-phase-2: the ambiguity refusal publishes library names unreduced",
+        ADDON_CANDIDATES,
+        '    return client_safe_name_leaf(getattr(library, "name", ""))\n',
+        '    return str(getattr(library, "name", ""))\n',
+        (
+            f"{OLT}::test_two_linked_objects_with_one_name_and_no_local_one_are_refused",
+            f"{CANDT}::test_describe_library_candidates_reduces_to_a_leaf_without_consulting_id_type",
+            f"{CANDT}::test_candidates_that_reduce_to_one_name_stay_distinguishable_by_uid",
+        ),
+    ),
+    # --- Post-Phase-2 decision: the refusal reuses linking's bounded candidate list ---
+    Revert(
+        "post-phase-2 candidates: the candidate list is unbounded again",
+        ADDON_CANDIDATES,
+        "MAX_CANDIDATES = 10\n",
+        "MAX_CANDIDATES = 10_000\n",
+        (
+            f"{CANDT}::test_the_list_is_bounded_and_reports_how_many_were_left_out",
+            f"{OLT}::test_the_ambiguity_refusal_is_bounded_however_many_libraries_link_the_name",
+        ),
+    ),
+    Revert(
+        "post-phase-2 candidates: entries lose their session_uid",
+        ADDON_CANDIDATES,
+        'f"{namer(d)!r} (session_uid {session_uid_of(d)})"',
+        'f"{namer(d)!r}"',
+        (
+            f"{CANDT}::test_a_non_library_name_is_published_not_blanked",
+            f"{CANDT}::test_describe_candidates_reduces_a_library_name_to_a_leaf_by_its_id_type",
+            f"{CANDT}::test_describe_library_candidates_reduces_to_a_leaf_without_consulting_id_type",
+            f"{CANDT}::test_candidates_that_reduce_to_one_name_stay_distinguishable_by_uid",
+            f"{OLT}::test_two_linked_objects_with_one_name_and_no_local_one_are_refused",
+        ),
+    ),
+    Revert(
+        "post-phase-2 candidates: the refusal drops its true total",
         ADDON_OBJECT_LOOKUP,
-        'client_safe_name_leaf(getattr(obj.library, "name", ""))',
-        'str(getattr(obj.library, "name", ""))',
-        (f"{OLT}::test_two_linked_objects_with_one_name_and_no_local_one_are_refused",),
+        'f"({len(matches)} of them: {describe_library_candidates(libraries)}) and no local object has it; "',
+        'f"({describe_library_candidates(libraries)}) and no local object has it; "',
+        (
+            f"{OLT}::test_two_linked_objects_with_one_name_and_no_local_one_are_refused",
+            f"{OLT}::test_the_ambiguity_refusal_is_bounded_however_many_libraries_link_the_name",
+        ),
+    ),
+    Revert(
+        "post-phase-2 candidates: the library describer trusts id_type instead of forcing the leaf rule",
+        ADDON_CANDIDATES,
+        "    return _describe(libraries, _library_leaf)\n",
+        "    return _describe(libraries, display_name)\n",
+        (
+            f"{CANDT}::test_describe_library_candidates_reduces_to_a_leaf_without_consulting_id_type",
+            f"{OLT}::test_two_linked_objects_with_one_name_and_no_local_one_are_refused",
+        ),
+    ),
+    Revert(
+        "post-phase-2 candidates: a name string reaches a namer that expects the datablock, blanking names",
+        ADDON_CANDIDATES,
+        'f"{namer(d)!r} (session_uid',
+        "f\"{namer(getattr(d, 'name', ''))!r} (session_uid",
+        (f"{CANDT}::test_a_non_library_name_is_published_not_blanked",),
+    ),
+    Revert(
+        "post-phase-2 candidates: display_name loses its library branch",
+        ADDON_CANDIDATES,
+        '    if getattr(datablock, "id_type", None) == "LIBRARY":\n',
+        "    if False:\n",
+        (f"{CANDT}::test_describe_candidates_reduces_a_library_name_to_a_leaf_by_its_id_type",),
+    ),
+    # --- Post-Phase-2 decision: the name-resolution rule is stated once, in the server instructions ---
+    Revert(
+        "post-phase-2 instructions: the object-name resolution rule is deleted from the instructions",
+        SERVER_APP,
+        "\n\nObject names after a library override: a name shared with the linked original resolves to the\n"
+        "editable override. A name linked from several libraries with no local object is refused with each\n"
+        "library's session_uid - override one with create_override.",
+        "",
+        (
+            f"{SIT}::test_the_instructions_state_how_an_overridden_name_resolves",
+            f"{SIT}::test_the_instructions_name_the_way_out_of_the_ambiguity_refusal",
+        ),
+    ),
+    Revert(
+        "post-phase-2 instructions: the instructions are written but never handed to FastMCP",
+        SERVER_APP,
+        "instructions=SERVER_INSTRUCTIONS)",
+        "instructions=None)",
+        (f"{SIT}::test_the_served_instructions_are_the_ones_stated_here",),
     ),
     Revert(
         "post-phase-2: a single linked object is not resolved",

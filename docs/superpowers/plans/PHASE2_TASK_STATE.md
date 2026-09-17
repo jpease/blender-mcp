@@ -3942,10 +3942,8 @@ docstring carrying the resolution rule. `library` documented as a library databl
 gained the new write primitive and lost "a save target's directory must exist". Bool-refusal table extended to
 `create_directories`.
 
-**Deliberately not fixed, with the reason.** The nine tools' own MCP docstrings do not state the new refusal
-mode (Critic 4 F6): one shared sentence across nine tools costs roughly 1 KB of catalog payload and another
-ceiling raise, and `get_object_info` — the tool an agent inspects with — does carry it. Offered to the user
-rather than taken silently.
+**Critic 4 F6, the refusal mode undocumented on nine tools — resolved by user decision; see "Stated once, in
+the server instructions" below.**
 
 ### The cycle-1 repair produced a SURVIVOR, and the harness now catches its class
 
@@ -3975,8 +3973,8 @@ Two fixes, both in the harness rather than only in the row:
 
 | Task | Finding | Cost if left | Found by |
 |---|---|---|---|
-| post-phase | **`find_object`'s ambiguity refusal is unbounded in the number of libraries**: 300 libraries measured at 4,633 B, and 19,933 B with long names, against `_MAX_MESSAGE_BYTES` of 64 MiB. `handlers/linking._candidates` is the committed sibling for this exact shape and caps at `_MAX_CANDIDATES = 10` with an `", and N more"` tail **and** reports each candidate's `session_uid`. Reusing it would close this and the next row together, and is the DRY answer. | A hostile or careless canon set inflates one refusal into an N-proportional injection into an agent's context — the channel `text_hygiene`'s per-name bound exists to close. Fix: reuse `_candidates`. | Critic 3 |
-| post-phase | **The refusal dedupes after sanitisation**, so 50 libraries whose names all reduce to `the requested file` collapse to one entry: a "more than one library" sentence listing one thing, with no uid to act on. | Unactionable refusal under a hostile `.blend`. Fix: report `len(matches)` and each uid, per the handoff's uid ruling. | Critic 3 |
+| post-phase | **PULLED IN — resolved (user decision, 2026-09-16; see "Pulled in" below).** ~~**`find_object`'s ambiguity refusal is unbounded in the number of libraries**~~: 300 libraries measured at 4,633 B, and 19,933 B with long names, against `_MAX_MESSAGE_BYTES` of 64 MiB. `handlers/linking._candidates` is the committed sibling for this exact shape and caps at `_MAX_CANDIDATES = 10` with an `", and N more"` tail **and** reports each candidate's `session_uid`. Reusing it would close this and the next row together, and is the DRY answer. | A hostile or careless canon set inflates one refusal into an N-proportional injection into an agent's context — the channel `text_hygiene`'s per-name bound exists to close. Fix: reuse `_candidates`. | Critic 3 |
+| post-phase | **PULLED IN — resolved with the row above.** ~~**The refusal dedupes after sanitisation**~~, so 50 libraries whose names all reduce to `the requested file` collapse to one entry: a "more than one library" sentence listing one thing, with no uid to act on. | Unactionable refusal under a hostile `.blend`. Fix: report `len(matches)` and each uid, per the handoff's uid ruling. | Critic 3 |
 | post-phase | **Every name miss now builds a full `objects.values()` list** where it was a hash lookup; only reached when the `(name, None)` key misses, so never in the override case. Precedent: `list_scene_objects` already sorts every scene object on the same thread. | Main-thread amplification on a pipelined flood of unknown names. Fix: scan only when a same-named linked object exists, or cap it. | Critics 2, 3 |
 | post-phase | **`"Object not found: {name}"` echoes the raw client string** in `server_core`, `handlers/scene` and twice in `helpers` — two lines from the name `find_object` sanitises. Pre-existing, adjacent to this change. | A newline or ESC in an attacker-chosen name reaches logs and an agent's context. Fix: all four through `client_safe_text` with the Phase 3 sweep. | Critic 3 |
 | post-phase | **`library` can carry the prose sentinel `the requested file`** in a machine-readable field when a library name has no admissible leaf; only degenerate or hostile names reach it (`キャラ.blend`, `héros.blend`, `canon.blend.001` all pass through). | A client parsing `library` sees prose. Fix: return None for an unnameable library, or document the third value. | Critic 4 |
@@ -3992,3 +3990,76 @@ above. The true remaining set is **106 direct `bpy.data.objects.get(`/`[` sites*
 `helpers.get_mesh_object` (41 callers, GitNexus impact **CRITICAL**) and `helpers.select_objects` are the
 load-bearing ones. Name-collision existence tests (`handlers/scene.py` around the collision checks) are **not**
 instances: "any object with this name" is the correct question there.
+
+### Pulled in — the refusal reuses linking's bounded candidate list (user decision, 2026-09-16)
+
+The user pulled in the first two hardening rows above. `handlers/linking.py`'s `_candidates`, `_display_name`,
+`_uid_of` and `_MAX_CANDIDATES` moved to a new `bpy`-free module, **`candidates.py`**, because `object_lookup`
+must stay importable without Blender and `linking.py` imports `bpy`. `linking.py` imports them back under their
+old private names, so its ~20 call sites and two revert-matrix anchors are untouched. The refusal is now
+bounded at 10, reports the true total, and carries each library's real `session_uid`:
+
+```
+object name 'Prop' is linked from more than one library (2 of them: 'zeta.blend' (session_uid 945),
+'alpha.blend' (session_uid 947)) and no local object has it; override the one to edit with create_override
+```
+
+That is real Blender 5.2.2 output from the probe, which now also asserts the total and that each uid is the
+library's real one. 300 libraries: 10 entries, `, and 290 more`, under 1,000 B (was 4,633 B unbounded).
+
+**The extraction nearly weakened path hygiene, and a stub is what showed it.** The first version routed the
+refusal through the shared `display_name`, which applies the leaf allowlist only when a datablock reports
+`id_type == 'LIBRARY'`. Real libraries do (measured on 5.2.2, and now asserted by the probe), but the unit
+test's stub library had no `id_type`, and the refusal published `'/studio/a/canon.blend'` verbatim. Production
+was never affected — but a security-relevant branch should not hang on a discriminator when the caller already
+knows the kind. So `candidates.describe_library_candidates` forces the leaf rule unconditionally, and
+`object_lookup` uses it; `describe_candidates` keeps `display_name` for `linking.py`'s mixed-kind callers.
+A second defect in the same refactor — passing the name *string* to a namer that expected the datablock,
+which would have blanked every name in `linking.py`'s refusals — was caught before any test ran, and
+`tests/test_candidates.py::test_a_non_library_name_is_published_not_blanked` now pins it with its own row.
+
+**Evidence.** pytest **1307 passed, 1 skipped** (+6: five in the new `tests/test_candidates.py`, one bound test
+in `tests/test_object_lookup.py`); ruff **9,832**, **12** unformatted, basedpyright **71/4** — all at baseline.
+Catalog unchanged at `shot` 218,061 / default 78,362 B: the change is addon-side only. Revert matrix **496
+rows**, 0 uncovered: 6 new `post-phase-2 candidates` rows, each failing as required; the
+`ambiguity refusal publishes library names unreduced` row re-pointed to `candidates._library_leaf`; and the
+Task 7 C3 row `a refusal's candidate list stats Library.name` re-pointed to `candidates.py`, its `also` import
+changed from `..text_hygiene` to `.text_hygiene` because the module sits at the addon root. All 13 rows over
+the moved code re-run individually and fail as required.
+
+**Full run, with this and the instructions change below together:** 496 rows, **0 survivors, 0 uncovered**;
+before-stamp quiet-verified (0.21), **after-stamp 3.51 — NOT quiet-box verified** (host busy again). The two
+instructions rows were written during that run and verified afterwards with `--only` — both fail as required,
+under load (4.44 / 5.96), which cannot credit them falsely because their nodes are string assertions with no
+timing. Total **498 rows, 0 uncovered**, anchors 498/498. pytest **1310 passed, 1 skipped**; ruff 9,832, 12
+unformatted, basedpyright 71/4, catalog 218,061 / 78,362 B — all at baseline. GitNexus `detect_changes`: 7
+files, 13 symbols, 0 affected processes, risk **low**. The quiet-box full re-run owed since the cycle-1 repair
+is **still owed**: neither full run tonight had a quiet after-stamp.
+
+### Stated once, in the server instructions (user decision, 2026-09-16)
+
+Critic 4 F6 asked for the resolution rule on all nine tools. **Measured** before deciding: a 182-character
+sentence adds **186 B per tool** to `tools/list`, and 7 of the nine are served in `shot` mode
+(`create_geometry_object` and `remove_scene_objects` live in scene-authoring) — **1,302 B** every session, and
+a second ceiling raise. Recommended instead, and accepted by the user: one sentence in `app.SERVER_INSTRUCTIONS`,
+beside the existing "inspect the scene before editing" paragraph, because the rule is cross-cutting (nine tools,
+`get_object_info`, and every lookup the Phase 3 sweep adds) and the instructions block is where this server
+already states cross-cutting conventions.
+
+- **Cost as shipped: 252 characters, once.** The recommendation estimated ~190 B from a shorter draft; the first
+  wording measured 290 and was tightened to 252 without dropping any clause. The estimate was wrong and is
+  corrected here rather than left standing.
+- **Not pinned by any ceiling.** `catalog_metrics.payload_report` measures `tools/list` only, so the block is
+  cheaper, not uncounted. Nothing else pinned the instructions text either, so
+  `tests/server/test_server_instructions.py` now does, comparing with line wraps collapsed so a re-flow cannot
+  break it, plus a test that the constant is what is actually handed to `FastMCP`.
+- **Client-dependent.** Claude Code surfaces server instructions to the model; a client that does not falls back
+  on the refusal itself, which after the `candidates` reuse is self-sufficient: total, library leaves, uids, and
+  the tool to call.
+- **Why not per-tool:** the common case needs no explanation (the name means the object the artist sees and can
+  edit), and the rare refusal documents itself at the moment it fires, which a tool description cannot do more
+  cheaply than an error message that costs nothing until then.
+
+Two revert rows pin it (`post-phase-2 instructions: ...`): deleting the paragraph, and writing the constant
+without handing it to `FastMCP`.
+

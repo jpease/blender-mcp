@@ -46,8 +46,15 @@ class _Objects:
         return list(self._objects)
 
 
+_LIBRARY_UIDS = iter(range(100, 10_000))
+
+
 def _obj(name: str, library: str | None = None, *, override: bool = False) -> types.SimpleNamespace:
-    lib = types.SimpleNamespace(name=library, filepath=f"//{library}") if library else None
+    lib = (
+        types.SimpleNamespace(name=library, filepath=f"//{library}", session_uid=next(_LIBRARY_UIDS))
+        if library
+        else None
+    )
     return types.SimpleNamespace(name=name, library=lib, override_library=object() if override else None)
 
 
@@ -67,14 +74,34 @@ def test_a_single_linked_object_is_returned_when_no_local_one_has_the_name() -> 
 
 
 def test_two_linked_objects_with_one_name_and_no_local_one_are_refused() -> None:
-    """Choosing between libraries would be a guess; the refusal names the libraries, not paths."""
-    objects = _Objects(_obj("Prop", "/studio/a/canon.blend"), _obj("Prop", "b.blend"))
+    """Choosing between libraries would be a guess; the refusal names each library by leaf and uid."""
+    first, second = _obj("Prop", "/studio/a/canon.blend"), _obj("Prop", "b.blend")
 
     with pytest.raises(ValueError, match="more than one library") as refusal:
-        _object_lookup().find_object(objects, "Prop")
+        _object_lookup().find_object(_Objects(first, second), "Prop")
 
-    assert "/studio" not in str(refusal.value)
-    assert "canon.blend" in str(refusal.value) and "b.blend" in str(refusal.value)
+    message = str(refusal.value)
+    assert "/studio" not in message
+    assert f"'canon.blend' (session_uid {first.library.session_uid})" in message
+    assert f"'b.blend' (session_uid {second.library.session_uid})" in message
+    assert "2 of them" in message
+
+
+def test_the_ambiguity_refusal_is_bounded_however_many_libraries_link_the_name() -> None:
+    """300 libraries once made a 19,933-byte refusal; the list now stops at ten with an honest total."""
+    objects = _Objects(*(_obj("HeroCam", f"lib{index:03d}.blend") for index in range(300)))
+    shown = load_addon_source_module("candidates.py", "addon_candidates_for_lookup").MAX_CANDIDATES
+    # Ten entries of ~30 B each plus the fixed prose; the unbounded join measured 4,633 B here.
+    ceiling_bytes = 1_000
+
+    with pytest.raises(ValueError) as refusal:
+        _object_lookup().find_object(objects, "HeroCam")
+
+    message = str(refusal.value)
+    assert "300 of them" in message
+    assert message.count("session_uid") == shown
+    assert f", and {300 - shown} more" in message
+    assert len(message.encode()) < ceiling_bytes
 
 
 def test_a_missing_name_is_none() -> None:

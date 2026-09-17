@@ -33,7 +33,8 @@ uid-based route back.
 Free of `bpy` so it is testable without Blender: callers pass `bpy.data.objects`.
 """
 
-from .text_hygiene import client_safe_name_leaf, client_safe_text
+from .candidates import describe_library_candidates
+from .text_hygiene import client_safe_text
 
 
 def find_object(objects: object, name: str) -> object | None:
@@ -50,7 +51,11 @@ def find_object(objects: object, name: str) -> object | None:
 
     Raises:
         ValueError: When no local object has the name and more than one linked
-            object does.
+            object does. The refusal names each candidate's library through
+            `candidates.describe_library_candidates`, so it is bounded, carries the
+            `session_uid` the client needs, and reports the true total: several
+            hostile library names all reduce to one display name, and a refusal
+            listing one thing twice is not actionable.
 
     """
     local = objects.get((name, None))  # type: ignore[attr-defined]
@@ -58,9 +63,10 @@ def find_object(objects: object, name: str) -> object | None:
         return local
     matches = [obj for obj in objects.values() if obj.name == name]  # type: ignore[attr-defined]
     if len(matches) > 1:
-        libraries = sorted({client_safe_name_leaf(getattr(obj.library, "name", "")) for obj in matches})
+        libraries = [obj.library for obj in matches]
         raise ValueError(
-            f"object name {client_safe_text(name)!r} is linked from more than one library ({', '.join(libraries)}) "
-            "and no local object has it; override the one to edit with create_override"
+            f"object name {client_safe_text(name)!r} is linked from more than one library "
+            f"({len(matches)} of them: {describe_library_candidates(libraries)}) and no local object has it; "
+            "override the one to edit with create_override"
         )
     return matches[0] if matches else None

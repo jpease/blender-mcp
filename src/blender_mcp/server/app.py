@@ -110,6 +110,10 @@ rather than assuming which object is active or selected. Prefer non-destructive 
 (live modifiers, ND) over apply=True/cleanup tools, which are irreversible from this
 server's perspective even though Blender's own undo history can still revert them
 locally.
+
+Object names after a library override: a name shared with the linked original resolves to the
+editable override. A name linked from several libraries with no local object is refused with each
+library's session_uid - override one with create_override.
 """.strip()
 
 # Create the MCP server with lifespan support

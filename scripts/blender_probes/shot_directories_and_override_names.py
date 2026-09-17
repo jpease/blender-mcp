@@ -12,9 +12,10 @@ A. **Directories.** A `canon/shots/sh010.blend` target whose directories do not
 B. **Names after an override.** A canon `HeroCam` linked and overridden (Route C),
    saved and reopened: `bpy.data.objects.get` order, the `(name, None)` key,
    and what `find_object` and the scene tools' `_object` return. Then two
-   libraries that each link a
-   `Prop` with no local one: `find_object` refuses and names only leaves. A
-   missing name is None.
+   libraries that each link a `Prop` with no local one: `find_object` refuses,
+   naming each library by leaf and real `session_uid` with the true total, and
+   `Library.id_type` is `'LIBRARY'` (what `candidates.display_name` branches on).
+   A missing name is None.
 
 From the repository root::
 
@@ -172,9 +173,17 @@ def section_b(work: pathlib.Path) -> None:
     print(f"  plain get('Prop') picked: {picked}; first by name: {sorted_first}")
     check("get(name) follows Main insertion order: the library linked first", picked == "zeta.blend")
     check("get(name) does NOT follow library name order", sorted_first == "alpha.blend" and picked != sorted_first)
+    # `candidates.display_name` takes the leaf branch only on this discriminator, and
+    # its docstring cites this check for it: the wrong branch publishes a path.
+    check("a real Library reports id_type 'LIBRARY'", all(lib.id_type == "LIBRARY" for lib in bpy.data.libraries))
     message = refusal(lambda: object_lookup.find_object(bpy.data.objects, "Prop"))
     check(f"two linked Props with no local one are refused: {message!r}", "more than one library" in message)
     check("the refusal names no directory", str(work) not in message)
+    check("the refusal reports the true total", "2 of them" in message)
+    check(
+        "the refusal carries each library's real session_uid",
+        all(f"(session_uid {lib.session_uid})" in message for lib in bpy.data.libraries),
+    )
 
 
 with tempfile.TemporaryDirectory() as scratch:

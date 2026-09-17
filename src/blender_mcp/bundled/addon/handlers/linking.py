@@ -49,6 +49,10 @@ from collections.abc import Iterable, Iterator
 
 import bpy
 
+from ..candidates import MAX_CANDIDATES as _MAX_CANDIDATES
+from ..candidates import describe_candidates as _candidates
+from ..candidates import display_name as _display_name
+from ..candidates import session_uid_of as _uid_of
 from ..file_paths import canonical_path
 from ..text_hygiene import client_safe_name_leaf, client_safe_text
 from ..transaction import replacing_library_contents
@@ -69,7 +73,6 @@ MAX_LISTED_DATABLOCKS = 100
 MAX_LINK_NAMES = 100
 MAX_UNLINK_UIDS = 100
 MAX_REPORTED_UIDS = 500
-_MAX_CANDIDATES = 10
 
 _RELOAD_NOTE = (
     "Every datablock linked from this library now has a new session_uid; references read before this call "
@@ -125,44 +128,6 @@ def _bounded_int(name: str, value: object, minimum: int, maximum: int | None) ->
         upper = f" and at most {maximum}" if maximum else ""
         raise ValueError(f"{name} must be an integer of at least {minimum}{upper}")
     return value
-
-
-def _display_name(datablock: object) -> str:
-    """
-    Reduce a datablock name for a client, holding a library's name to `_library_summary`'s leaf rule.
-
-    `Library.name` accepts a whole path (TASK_STATE T3-15), so it goes through
-    `client_safe_name_leaf` as it does in `_library_summary` (no filesystem call on
-    author-chosen text); any other ID name is
-    file-author text and goes through `client_safe_text`.
-
-    Args:
-        datablock: The datablock.
-
-    Returns:
-        str: The publishable name.
-
-    """
-    name = getattr(datablock, "name", "")
-    if getattr(datablock, "id_type", None) == "LIBRARY":
-        return client_safe_name_leaf(name)
-    return client_safe_text(name)
-
-
-def _candidates(datablocks: Iterable[object]) -> str:
-    """
-    Describe datablocks by name and uid, for a refusal that must let the client choose.
-
-    Args:
-        datablocks: The candidates.
-
-    Returns:
-        str: `'Name' (session_uid N)` entries, at most `_MAX_CANDIDATES` of them.
-
-    """
-    items = list(datablocks)
-    shown = ", ".join(f"{_display_name(d)!r} (session_uid {_uid_of(d)})" for d in items[:_MAX_CANDIDATES])
-    return shown if len(items) <= _MAX_CANDIDATES else f"{shown}, and {len(items) - _MAX_CANDIDATES} more"
 
 
 def _by_session_uid(datablocks: Iterable[object], uid: int, kind: str) -> object:
@@ -247,20 +212,6 @@ def _scene(scene_uid: object) -> object:
     if len(scenes) != 1:
         raise ValueError(f"the open file has {len(scenes)} scenes; pass scene_uid, one of: {_candidates(scenes)}")
     return scenes[0]
-
-
-def _uid_of(datablock: object) -> int | None:
-    """
-    Read a possibly-absent datablock's uid.
-
-    Args:
-        datablock: A datablock or None.
-
-    Returns:
-        int | None: Its `session_uid`.
-
-    """
-    return getattr(datablock, "session_uid", None) if datablock is not None else None
 
 
 def _linked_entry(datablock: object) -> dict[str, object]:
