@@ -18,10 +18,8 @@ def _validated_download(path: str, download_dir: str) -> str:
     """
     Check a downloaded `.blend` before Blender parses it.
 
-    The response is untrusted and `libraries.load` reads the file, so it must be
-    a real `.blend` inside the directory the handler created. That directory,
-    not the deployment's file roots, is the boundary: the file is the handler's
-    own temp artefact, not a path a caller named.
+    The download is untrusted. The boundary is the handler's own temp directory,
+    not the deployment's file roots, because no caller named this path.
 
     Args:
         path: Where the download was written.
@@ -389,8 +387,7 @@ class PolyhavenHandlersMixin:
                             operator_result = bpy.ops.wm.obj_import(filepath=main_file_path)
                         elif file_format == "blend":
                             validated = _validated_download(main_file_path, temp_dir)
-                            # An appended object's Python driver ran with this preference on
-                            # (scripts/blender_probes/linking_scripts_auto_execute.py, step 4).
+                            # An appended object's Python driver runs when this preference is on.
                             _refuse_scripts_auto_execute("import_polyhaven_asset")
                             with bpy.data.libraries.load(validated, link=False) as (data_from, data_to):
                                 data_to.objects = data_from.objects

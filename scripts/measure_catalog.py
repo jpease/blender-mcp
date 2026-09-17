@@ -1,8 +1,7 @@
 """
 Measure the advertised `tools/list` payload for a given BLENDER_MCP_TOOLSETS value.
 
-The measurement harness for the catalog-reduction work. See `bundles.py` for why this
-number is a bundle selection's permanent context cost rather than a startup cost.
+`bundles.py` explains why this size is a per-turn context cost for a client.
 
 Usage:
     python scripts/measure_catalog.py            # core only (the default process)
@@ -30,13 +29,9 @@ def _measure(selection: str) -> "PayloadReport":
     """
     Import this repo's `blender_mcp` with the given bundle selection and measure its catalog.
 
-    BLENDER_MCP_TOOLSETS must be set *before* `blender_mcp` is imported: importing the
-    package eagerly imports `.server`, which eagerly imports `.server.tools`, which reads
-    this environment variable at import time to decide which tool bundles to register.
-    Importing first and setting the variable afterwards silently measures core-only for
-    every selection. Doing this inside a function rather than at module scope keeps the
-    module import-safe, so importing it never mutates `sys.path` or the environment and
-    never parses a caller's `sys.argv`.
+    The package registers tools when imported, reading BLENDER_MCP_TOOLSETS then, so the
+    variable must be set first; otherwise every selection measures as core only. Done in a
+    function so importing this module changes neither `sys.path` nor the environment.
 
     Args:
         selection: The BLENDER_MCP_TOOLSETS value to measure; `""` means core only.
@@ -44,26 +39,22 @@ def _measure(selection: str) -> "PayloadReport":
     Returns:
         The payload report for the tools that selection advertises.
 
-    Two ValueErrors propagate rather than originate here: a misspelled bundle name raises
-    from `resolve_toolset_modules` during `import blender_mcp` (the selection is validated
-    at import time), and two tools sharing a name raise from `payload_report`.
+    A misspelled bundle name or two tools sharing a name raise ValueError from the import
+    or from `payload_report`.
 
     Raises:
         SystemExit: If called twice in one process, or if `blender_mcp` resolves to an
-            installed copy rather than this repo - a byte count measured against the wrong
-            source is worse than no number.
+            installed copy instead of this repo.
 
     """
-    # A second call in one process cannot work: `blender_mcp` reads the selection once, at
-    # import time, so re-importing is a no-op and this would confidently report the first
-    # selection's numbers under the second selection's name. Refuse rather than mislead.
+    # The selection is read once, at import, so a second call would report the first
+    # selection's numbers under the second one's name.
     if "blender_mcp" in sys.modules:
         raise SystemExit("refusing to measure: blender_mcp is already imported; run one selection per process")
 
     sys.path.insert(0, str(_SRC_ROOT))
-    # Spelled literally, not imported from `bundles.TOOLSETS_ENV_VAR`: importing that constant
-    # would import `blender_mcp`, which reads this variable at import time -- the very thing
-    # that has to happen after this assignment.
+    # Not imported from `bundles.TOOLSETS_ENV_VAR`: that import would load `blender_mcp`,
+    # which reads the variable, before it is set.
     os.environ["BLENDER_MCP_TOOLSETS"] = selection
 
     import blender_mcp  # ruff: ignore[import-outside-top-level]
@@ -79,18 +70,12 @@ def _measure(selection: str) -> "PayloadReport":
 
 def _git_revision() -> str:
     """
-    Identify the git revision this measurement was taken against.
-
-    A byte count without its revision is not reproducible: this project has already
-    published wrong numbers by measuring the right checkout at the wrong commit. Marks an
-    unclean working tree as dirty, since a number measured against uncommitted changes is
-    not the same fact as one measured at a clean commit.
+    Identify the git revision this measurement was taken against, so it can be reproduced.
 
     Returns:
-        A short revision like `270958a` or `270958a (dirty)`, or a message explaining why
-        no revision could be determined (git missing, or not a repository), rather than
-        raising. If `git status` fails after `rev-parse` succeeded, reports
-        `270958a (cleanliness unknown)` rather than silently claiming a clean tree.
+        A short revision like `270958a`, suffixed ` (dirty)` for uncommitted changes or
+        ` (cleanliness unknown)` if `git status` fails. Without git or a repository, a
+        message saying so instead of raising.
 
     """
     try:
@@ -120,11 +105,8 @@ def main() -> None:
     """
     Print a payload report for the tool selection named on the command line.
 
-    Reads the bundle selection from `sys.argv[1]`, imports the server with that selection
-    applied, lists the tools FastMCP would advertise, and prints the measured revision,
-    total size, a schema/description split, and the ten heaviest tools by wire bytes.
-    Propagates `_measure`'s ValueError for a misspelled bundle name, and `payload_report`'s
-    if two tools share a name.
+    Prints the revision, total size, the schema/description split, and the ten heaviest
+    tools by wire bytes.
 
     """
     selection = sys.argv[1] if len(sys.argv) > 1 else ""

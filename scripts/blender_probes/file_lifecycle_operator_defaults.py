@@ -1,13 +1,12 @@
 r"""
-Read the full RNA property lists, with defaults, of the three file-lifecycle operators Task 6 calls.
+Print every RNA property and default of the file operators the handlers call or avoid.
 
-Plan Task 6 Step 1: the defaults are read off the operator RNA, not off the
-docs, because the load-bearing facts here are defaults that differ from what a
-reader assumes (`save_as_mainfile.relative_remap` is True, `check_existing` is
-True and inert programmatically). It also prints the two preferences that
-override or widen an operator argument - `use_file_compression`, which beats a
-bare save's `compress` default, and `use_scripts_auto_execute`, which `open_shot`
-checks before a load - and `wm.read_factory_settings`, `reset_session`'s operator.
+Read from RNA rather than the docs, because several defaults surprise:
+`save_as_mainfile.relative_remap` is True, and `check_existing` is True but has
+no effect from Python. Also prints `use_file_compression`, which overrides a
+bare save's `compress` default, and `use_scripts_auto_execute`, which
+`open_shot` checks before a load. `wm.read_factory_settings` is included because
+`reset_session` avoids it: it also loads factory preferences.
 
 From the repository root::
 

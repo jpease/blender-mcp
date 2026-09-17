@@ -1,12 +1,11 @@
 # ruff: file-ignore[too-many-arguments, too-many-positional-arguments, unused-function-argument]
 """
-Typed tools for the ten file-lifecycle and linking addon commands (Phase 2 Task 9).
+Typed tools for the ten file-lifecycle and linking addon commands.
 
-One tool per `bundled/addon/handlers/file_lifecycle.py` / `linking.py` command, forwarding
-every parameter unchanged. Lives in `CORE_MODULES` (`bundles.py` ruling 1): both `shot` and
-`asset` need to open and save a file, and the disjointness test forbids a bundle shared by
-both modes. Kept under `../bundles.py` ruling 3's 15,000 B budget - see that module and
-`_documentation.py` for the hint registrations this module's tool names require.
+Each tool forwards its parameters unchanged to the addon command of the same name. The
+module is in `CORE_MODULES` because both `shot` and `asset` modes open and save files, and
+no bundle may belong to both. Its descriptions count toward the mode byte ceilings in
+`tests/server/test_bundles.py`, and `_documentation.py` registers hints for these tools.
 """
 
 import asyncio
@@ -27,8 +26,8 @@ async def _call(command: str, params: dict[str, object]) -> dict:
         params: JSON-serializable parameters, forwarded unchanged.
 
     Returns:
-        dict: The `ok()` envelope. Addon failures (`ValueError`/`RuntimeError`, already
-        sanitized of any filesystem path) propagate and FastMCP converts them to `ToolError`.
+        dict: The `ok()` envelope. Addon failures, already free of filesystem paths,
+        propagate and FastMCP turns them into `ToolError`.
 
     """
     result = await asyncio.to_thread(get_blender_connection().send_command, command, params)

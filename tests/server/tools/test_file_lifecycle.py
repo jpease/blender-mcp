@@ -1,14 +1,10 @@
 # ruff: file-ignore[import-private-name, missing-return-type-private-function, missing-type-function-argument, undocumented-public-function, yoda-conditions]
 """
-Regression coverage for the ten file-lifecycle/linking tools (Phase 2 Task 9).
+Regression coverage for the ten file-lifecycle and linking tools.
 
-Follows this repo's one pattern for MCP tool tests (handoff §08): a `RecordingConnection`
-stand-in monkeypatched onto the tool module's own `get_blender_connection` name, and calling
-the tool coroutine directly. `tests/conftest.py:stub_blender_connection` is not used here --
-it patches `_scene_shared.get_blender_connection`, and `_scene_shared` is documented as
-`scene.py`/`scene_authoring.py`-specific plumbing (see its module docstring); `file_lifecycle`
-is neither, so it keeps its own local `get_blender_connection` import and stub, exactly like
-`object_animation.py`, `scene_physics.py` and `rendering.py` already do.
+Tests patch the tool module's own `get_blender_connection` with a `_Connection` stand-in and
+call each tool coroutine directly. The `stub_blender_connection` fixture does not apply,
+because it patches only `_scene_shared`.
 """
 
 import asyncio
@@ -294,11 +290,8 @@ def test_save_shot_destructive_hint_is_explicit_not_schema_derived() -> None:
     """
     `save_shot` is explicitly in `_DESTRUCTIVE_TOOLS`, so the hint survives losing `confirm_overwrite`.
 
-    `_is_destructive`'s third mechanism (a `conditional_flags` name in the tool's own schema)
-    already marks `save_shot` destructive today, because its schema carries
-    `confirm_overwrite`. The explicit entry is belt-and-braces (TASK_STATE), and this test is
-    what makes that redundancy falsifiable on its own: called with a schema that has no
-    properties at all, `_is_destructive` must still return True for `save_shot` by name.
+    Its schema's `confirm_overwrite` would mark it destructive anyway, so the test passes an
+    empty schema to check the explicit entry alone.
     """
     assert _documentation._is_destructive("save_shot", {})
 
@@ -308,10 +301,8 @@ def test_addon_failure_reaches_the_client_as_a_tool_error_unchanged(monkeypatch,
     """
     An addon-raised failure propagates through `_call` unmodified and reaches the client as `ToolError`.
 
-    `file_lifecycle._call` adds no path or extra text of its own -- the sanitized message the
-    addon already built (see `file_lifecycle.py`'s and `linking.py`'s own docstrings) is the
-    whole of what the client sees, wrapped only by FastMCP's own `Tool.run` conversion, which
-    this test exercises for real rather than assuming it fires.
+    The addon has already removed paths from the message, so `_call` must add nothing. The
+    test runs FastMCP's own `Tool.run` conversion.
     """
     message = f"{tool_name} failed: a sanitized reason with no filesystem path"
     connection = _FailingConnection(ValueError(message))

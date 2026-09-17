@@ -1,20 +1,13 @@
 """
-Thin pytest entry point for the phase-2 gate scenario (plan Task 10, Step 1).
+Thin pytest entry point for the phase-2 gate scenario.
 
-The scenario body lives in `scripts/rig_scenarios/scenario_phase2_gate.py`, run
-through `scripts/blender_rig.py` against a live GUI Blender; this file shells
-out to that pair rather than reimplementing them, so there is one copy to
-drift. No `bpy` import happens at module scope - or anywhere in this file -
-because that would make even collecting this module fail outside Blender.
+Shells out to `scripts/blender_rig.py` running
+`scripts/rig_scenarios/scenario_phase2_gate.py` against a live GUI Blender, so the
+scenario has one copy. Imports no `bpy`, so collection works outside Blender.
 
-**This test needs a live GUI Blender and is not part of the default run.** The
-default `pytest` invocation must not launch Blender at all, so the gate is an
-explicit opt-in (`BLENDERMCP_LIVE_RIG=1`), checked at *collection* time with
-`pytest.skip(..., allow_module_level=True)` - which reports as `skipped` in the
-summary, distinct from a module `tests/blender_*_smoke.py` never collects
-because it imports `bpy` at module scope and its filename does not match
-`python_files`. "Not collected" is not an equivalent result here (Task 10
-acceptance criterion 5).
+Runs only with `BLENDERMCP_LIVE_RIG=1`, so the default run never launches Blender.
+The skip happens at collection time so the summary shows it, unlike the
+`tests/blender_*_smoke.py` files pytest never collects.
 """
 
 import os
@@ -40,10 +33,8 @@ def _live_rig_unavailable_reason() -> str | None:
     """
     Say why the live-Blender gate scenario cannot run here, or None if it can.
 
-    Checking the opt-in env var first, ahead of whether Blender is actually
-    installed, is deliberate: the default `pytest` run must not launch Blender
-    even on a machine that happens to have one, so the gate is "did you ask for
-    this", not "is it possible".
+    The opt-in env var is checked before whether Blender is installed: the
+    default `pytest` run must not launch Blender even on a machine that has one.
 
     Returns:
         str | None: A human-readable reason to skip, or None to run.
@@ -67,9 +58,8 @@ def test_phase2_gate_scenario_passes_against_a_live_blender(tmp_path: Path) -> N
     Build the two fixtures, run the gate scenario through the live rig, and assert it passed.
 
     Args:
-        tmp_path: Pytest's per-test scratch directory; the rig's own work dir
-            and the two fixtures it needs both live under it, so nothing
-            persists past the test.
+        tmp_path: Pytest's per-test scratch directory, holding the rig's work
+            dir and both fixtures.
 
     """
     canon = tmp_path / "canon.blend"

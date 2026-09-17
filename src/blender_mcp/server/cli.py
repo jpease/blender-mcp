@@ -1,28 +1,11 @@
 """
 `blender-mcp` CLI entrypoint: install-addon/addon-paths subcommands, or mcp.run().
 
-stdio is the default transport and the contract every existing MCP client
-configuration depends on. Streamable HTTP is opt-in, and the only supported HTTP
-deployment binds loopback: hosting this server for remote clients is explicitly
-not supported.
+stdio is the default, and every existing client configuration depends on it. Streamable
+HTTP is opt-in and supported only on loopback, reached remotely through an SSH tunnel.
 
-That is not caution for its own sake. This server exposes hundreds of tools that
-drive Blender and read and write files, and it has no authentication of any kind
-- none is implemented anywhere in this project. Its bind address is therefore
-the whole of its access control, which makes the address a security decision
-rather than a convenience setting, and makes widening it something the operator
-has to ask for twice (see `_resolve_http_host`).
-
-The supported shape is a server published on loopback - directly, or from a
-container whose port compose publishes onto the host's 127.0.0.1, which is what
-the Docker rig does - reached from another machine through an SSH tunnel, so
-that somebody else's authentication sits in front of it.
-
-A client that reaches the port from off-box and asks for it by its real address
-is answered `421 Misdirected Request`. For a loopback-only server that is the
-intended result and not a defect to be worked around. It is also not what keeps
-the server safe: see `_serve_http` for what FastMCP's `Host` check does and, more
-importantly, does not do.
+The server has no authentication, so its bind address is its only access control. Widening
+it takes two settings (see `_resolve_http_host`).
 """
 
 import logging
@@ -47,23 +30,15 @@ DEFAULT_HTTP_HOST = "127.0.0.1"
 DEFAULT_HTTP_PORT = 8000
 MAX_PORT = 65535
 
-# Hosts that reach no further than this machine, and so need no opt-in.
+# Need no opt-in.
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
-# Hosts that are not addresses at all but "every interface". Named because the
-# consequence is what matters: `0` and `::` widen the bind exactly as far as
-# `0.0.0.0` does, and an empty value does too - which is why `_resolve_http_host`
-# rejects an empty value outright instead of letting a default paper over it.
+# Every interface. An empty value binds every interface too; `_resolve_http_host` rejects it.
 WILDCARD_HOSTS = frozenset({"0", "0.0.0.0", "::"})
-# Spelled out rather than tested for mere presence, so that ALLOW_REMOTE=false
-# cannot read as consent.
+# Listed, not a presence check, so ALLOW_REMOTE=false is not consent.
 TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
-# An environment variable is unbounded, and a rejected one is quoted into a log.
+# A rejected value is quoted into the log, and its length is unbounded.
 MAX_ECHOED_CHARS = 40
-# A port is at most five digits. Anything longer is rejected before int() sees it,
-# because CPython caps string->int conversion at 4300 digits and raises its own
-# ValueError past that - one that names neither this variable nor a clip of its
-# value, defeating the whole point of validating here. Found by the revert matrix:
-# the test meant to pin the clipping passed on CPython's message instead of ours.
+# Checked before int(), which raises its own unhelpful error past 4300 digits.
 MAX_PORT_DIGITS = len(str(MAX_PORT))
 
 
@@ -72,12 +47,10 @@ class StdioConfig:
     """
     Serve stdio, the transport that has no address of its own.
 
-    Frozen because it is read once at startup and then acted on: a later
-    mutation would describe a server that is not the one running.
+    Frozen so the config cannot drift from the server actually running.
 
     Attributes:
-        transport: Always "stdio". Present as a literal discriminant so a config
-            can be dispatched on without an `isinstance` check.
+        transport: Always "stdio"; the discriminant `main` reads.
 
     """
 
@@ -89,14 +62,8 @@ class HttpConfig:
     """
     Serve streamable HTTP on one address that has already been validated.
 
-    `host` and `port` are required, which is the point of this class existing
-    separately from `StdioConfig`. The single config it replaced carried both as
-    `None`-defaulted fields, so "HTTP with no address" was constructible and had
-    to be excluded by an `assert` in `main`. `python -O` strips `assert`, and the
-    illegal state it was guarding is not harmless: `uvicorn.Config(host=None)`
-    binds every interface on both address families. Splitting by transport
-    deletes the state instead of checking for it, so the optimiser has nothing to
-    remove and the type checker narrows on `transport` without an assertion.
+    Separate from `StdioConfig` so HTTP without an address cannot be built:
+    `uvicorn.Config(host=None)` binds every interface.
 
     Attributes:
         host: Bind address, stripped and policy-checked by `transport_from_env`.
@@ -117,11 +84,6 @@ def _echoed(raw: str) -> str:
     """
     Quote an environment value for an error message, clipped to a sane length.
 
-    The value is quoted because a rejection that does not show what it rejected
-    sends the operator back to the shell to guess. It is clipped because nothing
-    bounds an environment variable's length, and a 5,000-character value should
-    not write 5,000 characters into the log on its way out.
-
     Args:
         raw: The offending value, exactly as it came from the environment.
 
@@ -137,14 +99,9 @@ def _parse_port(env: Mapping[str, str]) -> int:
     """
     Read the HTTP port, rejecting anything that is not plainly a port number.
 
-    Rejected here, before anything binds, so the operator sees the variable name
-    instead of a socket error from deep inside the server. `int()` alone is not
-    that check: it accepts PEP 515 underscores, a leading sign and any Unicode
-    decimal digit, so `8_000`, `+8000` and seven full-width digits (U+FF10 to
-    U+FF19) all become 8000, and the value in the config stops being the value
-    in use. `str.isdecimal()` does not narrow that on its own, because full-width
-    digits are decimal - hence the ASCII check beside it. Only padding is
-    forgiven, because shell and compose files add it routinely.
+    `int()` alone accepts `8_000`, `+8000` and full-width digits, so the configured text
+    would not be what the operator sees served. Full-width digits also pass `isdecimal()`,
+    hence the ASCII check. Surrounding whitespace is allowed.
 
     Args:
         env: The environment to read the port variable from.
@@ -167,10 +124,6 @@ def _parse_port(env: Mapping[str, str]) -> int:
 def _bind_reach(host: str) -> Literal["loopback", "wildcard", "remote"]:
     """
     Classify a bind address by who can reach the server through it.
-
-    Classification is explicit rather than incidental: the old code passed the
-    host straight to the socket layer, so "every interface" was something that
-    happened to certain spellings rather than a case anyone had decided about.
 
     Args:
         host: A stripped, non-empty host as the operator wrote it.
@@ -197,8 +150,8 @@ def _allows_remote(env: Mapping[str, str]) -> bool:
         env: The environment to read the opt-in variable from.
 
     Returns:
-        bool: True only for an affirmative value, so that an explicit `false` or
-            `0` leaves the bind closed rather than merely being present.
+        bool: True only for an affirmative value; an explicit `false` or `0`
+            leaves the bind closed.
 
     """
     return env.get(HTTP_ALLOW_REMOTE_ENV, "").strip().lower() in TRUTHY_VALUES
@@ -208,17 +161,10 @@ def _resolve_http_host(env: Mapping[str, str]) -> str:
     """
     Read the HTTP bind address, and refuse to widen it by accident.
 
-    Two accidents are refused. The first is an empty value: `env.get(name,
-    default)` falls back only when the key is *absent*, so a compose key with
-    nothing after the colon, a bare `-e BLENDERMCP_HTTP_HOST=`, or an unexpanded
-    `${MCP_HOST}` all produced `""` - which binds every interface while looking
-    like it asked for nothing. An empty value is a mistake rather than a choice,
-    so it is rejected even when remote binds are allowed.
-
-    The second is reaching past loopback at all. This server has no
-    authentication, so that is a decision about who may drive Blender, and it has
-    to be made in words: the host variable alone is not enough, the opt-in
-    variable must agree.
+    An empty value is refused even with the opt-in: the default applies only when the
+    variable is absent, so an empty compose key or unset `${VAR}` would bind every
+    interface. A non-loopback host also needs `BLENDERMCP_HTTP_ALLOW_REMOTE`, because
+    the server has no authentication.
 
     Args:
         env: The environment to read the host and opt-in variables from.
@@ -261,12 +207,8 @@ def _warn_about_ignored_http_settings(env: Mapping[str, str]) -> None:
     """
     Say so when HTTP settings are present but the transport was left at stdio.
 
-    `main` exits on a misspelt transport because a silent fall back to stdio
-    would leave the operator watching a port nothing will ever listen on. Setting
-    the host and port but forgetting the transport is the likelier version of
-    that mistake, and it used to be entirely silent. It is a warning and not an
-    error: these variables have no meaning under stdio, and stdio is the
-    transport almost every client asked for on purpose.
+    Otherwise an operator who forgot the transport waits on a port nothing listens on.
+    A warning, not an error, because the variables are harmless under stdio.
 
     Args:
         env: The environment to check for HTTP-only variables.
@@ -284,15 +226,11 @@ def transport_from_env(env: Mapping[str, str]) -> TransportConfig:
     """
     Choose the client transport: stdio by default, streamable HTTP on request.
 
-    stdio is the contract every existing MCP client configuration depends on, so
-    it stays the default and is chosen by the absence of any setting. HTTP is
-    opt-in, loopback-only, and validated in full here - address and port both -
-    so that a misconfiguration is reported by its variable name before anything
-    binds, rather than as an anonymous library error afterwards.
+    HTTP settings are validated here, before anything binds, so an error names the
+    variable rather than surfacing later as a library error.
 
     Args:
-        env: The environment to read, passed in rather than read from
-            `os.environ` so the choice can be tested without mutating a process.
+        env: The environment to read.
 
     Returns:
         TransportConfig: `StdioConfig`, or an `HttpConfig` carrying an address
@@ -313,10 +251,8 @@ def transport_from_env(env: Mapping[str, str]) -> TransportConfig:
 
 
 def _log_stdio_hint_when_interactive() -> None:
-    # When run by hand (stdin is a TTY) the server appears to "hang" while it
-    # silently waits for an MCP client; log a hint so that state is obvious.
-    # Launched by a client, stdin is a pipe so this is skipped, and logging goes
-    # to stderr, never to the stdio protocol on stdout.
+    # Run by hand, the server looks hung while it waits for a client. Logging goes to
+    # stderr, so it cannot corrupt the protocol on stdout.
     try:
         interactive = sys.stdin.isatty()
     except (AttributeError, OSError):
@@ -336,21 +272,10 @@ def _serve_http(host: str, port: int) -> None:
     """
     Serve streamable HTTP on an address the environment has already authorised.
 
-    Only the bind address is changed here. FastMCP decides its DNS-rebinding
-    protection inside `FastMCP.__init__`, keyed on the constructor's `host`, and
-    `app.py` builds `mcp` with no host at all - so the default 127.0.0.1 turns
-    the protection on, and rewriting `settings.host` afterwards genuinely cannot
-    turn it off. That is what lets the container bind 0.0.0.0 for Docker's port
-    forward without losing the check.
-
-    What that check is worth needs stating plainly, because it is easy to read as
-    more than it is. `Host` and `Origin` validation exists to stop a *browser*
-    being used as a confused deputy through DNS rebinding. It is not an access
-    control: `Host` is a header the client chooses, so any non-browser client
-    that sends `Host: 127.0.0.1` is served normally from anywhere on the network,
-    while an honest remote client asking by real address gets 421. Loopback
-    binding, not this check, is what makes the server unreachable, so none of
-    this makes a 0.0.0.0 bind safe.
+    FastMCP enables DNS-rebinding protection in its constructor, from the default
+    loopback host, so changing `settings.host` here keeps it on even for 0.0.0.0 in
+    Docker. That check is not access control: any non-browser client can send
+    `Host: 127.0.0.1`. Only a loopback bind keeps other machines out.
 
     Args:
         host: The bind address, already stripped and authorised.
@@ -361,8 +286,8 @@ def _serve_http(host: str, port: int) -> None:
     mcp.settings.port = port
     # Announced as an attempt, not as an outcome: mcp.run() blocks until the
     # server stops, so there is no later point at which to report a successful
-    # bind, and the previous wording left a log claiming to be serving an
-    # address the bind had in fact just failed to acquire.
+    # bind, and a bind that fails must not leave a log claiming to serve the
+    # address.
     logger.info(f"BlenderMCP starting streamable HTTP on http://{host}:{port}{mcp.settings.streamable_http_path}")
     mcp.run(transport="streamable-http")
 
@@ -388,15 +313,10 @@ def main() -> None:
     try:
         config = transport_from_env(os.environ)
     except ValueError as exc:
-        # Exit on the configuration itself rather than serving the default
-        # transport: a typo that silently fell back to stdio would leave the
-        # operator watching a port nothing will ever listen on.
+        # Not a stdio fallback: a typo would leave the operator waiting on a dead port.
         raise SystemExit(f"blender-mcp: {exc}") from exc
 
     if config.transport == "streamable-http":
-        # Narrowed by the literal discriminant, not by an assertion: an HTTP
-        # config cannot exist without an address, so there is nothing here for
-        # `python -O` to strip and nothing that can fail open.
         _serve_http(config.host, config.port)
         return
 

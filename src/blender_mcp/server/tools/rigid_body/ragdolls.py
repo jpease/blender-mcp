@@ -36,10 +36,8 @@ class RagdollJointSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     parent_bone_name: str = Field(min_length=1)
     child_bone_name: str = Field(min_length=1)
-    # A discriminated-union object keyed by "type": FIXED, POINT, HINGE, SLIDER, PISTON, GENERIC,
-    # GENERIC_SPRING, or MOTOR. Kept untyped here (validated below) rather than declared as
-    # RigidBodyConstraintSpec directly, which would serialize that whole union into
-    # create_ragdoll_rig's advertised JSON schema.
+    # Untyped and validated below, so the whole constraint union stays out of
+    # create_ragdoll_rig's advertised schema.
     configuration: dict[str, Any]
     constraint_name: str | None = None
     axis: Vector3 | None = None

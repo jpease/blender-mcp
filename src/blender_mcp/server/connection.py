@@ -29,22 +29,14 @@ DEFAULT_PORT = 9876
 _addon_handshake = None
 _addon_handshake_checked = False
 _addon_handshake_lock = threading.Lock()
-# Set when a response reports a `(session_id, session_epoch)` pair that differs
-# from the one the cached handshake was taken under. An `Event` rather than a
-# bool: it is written from whichever thread parsed the response and read from
-# whichever thread sends the next command, and its set/clear are atomic without
-# either of them reaching for `global`. See `note_session_marker`.
+# Set when a response reports a different session than the cached handshake. An
+# `Event` because different threads set and read it. See `note_session_marker`.
 _session_marker_stale = threading.Event()
-# The pair that set the flag, so a refresh can tell "the addon now reports what
-# I saw" from "the refresh failed and told me nothing". Without it a degraded
-# handshake - `session_epoch: None` - looked like a successful refresh. A
-# one-key holder rather than a bare name: it is written where the response is
-# parsed and read where the next command is gated, and mutating a container
-# needs no `global` in either place.
+# The last session pair observed or learned, for the refresh's failure log. A dict so
+# it can be updated without `global`.
 _OBSERVED_MARKER: dict[str, tuple[str | None, int | None] | None] = {"pending": None}
-# Re-entrancy guard for the refresh itself, thread-local so a refresh on one
-# connection cannot blind another connection's observation. See
-# `note_session_marker` for the double round trip it prevents.
+# Set during a refresh. Thread-local so one connection's refresh cannot hide another
+# connection's session change. See `note_session_marker`.
 _refreshing = threading.local()
 
 
@@ -205,11 +197,8 @@ class BlenderConnection:
             Exception: If the operation cannot be completed.
 
         """
-        # Not `get_last_handshake()`: that returns whatever was cached when this
-        # process first connected, and the addon's `capabilities` set follows
-        # the open `.blend`. If a swap has been observed since, the set is
-        # re-read here - before the gate consults it, and before the connection
-        # lock is taken, because the refresh sends a command of its own.
+        # Capabilities follow the open .blend, so re-read them after a swap. Done before
+        # taking the lock, because the refresh sends a command of its own.
         handshake = refresh_handshake_if_session_changed(self)
         if handshake and handshake.capabilities and command_type not in handshake.capabilities:
             raise Exception(
@@ -248,13 +237,9 @@ class BlenderConnection:
             response = json.loads(response_data.decode("utf-8"))
             logger.info(f"Response parsed, status: {response.get('status', 'unknown')}")
 
-            # Every response is a chance to notice the addon swapped its
-            # database: the addon stamps the pair onto *every* frame, so an
-            # artist doing File -> Open in Blender's own UI is observed on
-            # whatever command happens next rather than only on a barrier
-            # rejection or a handshake. Checked before the error branch below,
-            # because the barrier's rejection *is* an error and is the most
-            # direct notice there is.
+            # Every frame carries the session, so a File > Open in Blender's UI is noticed
+            # on the next command. Before the error branch, because the file-swap
+            # barrier's rejection is itself an error.
             note_session_marker(response, command_type)
 
             if response.get("id") != command["id"]:
@@ -407,12 +392,8 @@ def force_addon_handshake(blender: BlenderConnection) -> AddonHandshake | None:
     return _addon_handshake
 
 
-# Commands whose `result` nests the session fields. Frame level is read on every
-# response, because the addon stamps it there unconditionally; `result` level is
-# read only for the two commands that are *specified* to report it. Without this
-# gate, any handler returning a `result` that happens to contain a
-# `session_epoch` key tripped a re-handshake - a command shape, not a session
-# change, deciding when the process re-reads its capabilities.
+# Only these commands' `result` is read for session fields. Any other handler that
+# returned a `session_epoch` key would otherwise trigger a spurious re-handshake.
 _SESSION_REPORTING_COMMANDS = frozenset({"get_addon_info", "get_session_info"})
 
 
@@ -420,20 +401,9 @@ def _reported_session_marker(payload: object, command_type: str | None) -> tuple
     """
     Pull `(session_id, session_epoch)` out of a response, wherever the addon put it.
 
-    Two shapes carry it, and both matter. Every frame carries the pair at
-    **frame** level, including the file-swap barrier's rejection, whose command
-    never ran and has no `result` at all. `get_addon_info` and `get_session_info`
-    additionally nest it inside `result` like every other field they report.
-
-    **The pair is normalized through the same helpers the cached handshake was
-    parsed with**, and that is not cosmetic. `AddonHandshake.session_marker()`
-    holds `normalized_session_id` / `normalized_session_epoch` output; returning
-    the raw JSON values here meant a non-conforming peer's `"7"` or `7.0` could
-    never equal the cached `7`, so the stale flag re-armed on every single
-    response - one extra `get_addon_info` round trip per command, permanently.
-    A JSON-string epoch is the cheapest way to trigger it, and the socket is
-    unauthenticated;
-    `test_a_non_conforming_epoch_does_not_re_arm_the_flag_forever` drives one.
+    Every frame carries it at the top level; `get_addon_info` and `get_session_info` also
+    nest it in `result`. The pair is normalized as the cached handshake was, or a peer's
+    `"7"` would never equal the cached `7` and every command would re-handshake.
 
     Args:
         payload: A decoded response frame; any JSON value, since it came off the
@@ -463,64 +433,16 @@ def note_session_marker(payload: object, command_type: str | None = None) -> Non
     """
     Flag the cached handshake stale when the addon reports a different session.
 
-    `send_command` gates **every** command on `capabilities`, which is cached
-    once per process behind `_addon_handshake_checked` and was refreshed only by
-    an explicit `force_addon_handshake()`. That set is scene-gated - the Poly
-    Haven / Sketchfab / ND handlers are advertised only when this `.blend`'s
-    `blendermcp_use_*` flags say so - so it follows the swapped file, and
-    `writable_output_roots` changes across a swap as well, which decides where
-    files may be written. Before this, nothing noticed.
+    The cached capabilities and writable output roots depend on the open .blend. The
+    whole pair is compared because the epoch restarts at 0 when the addon reloads.
 
-    The **pair** is compared, not the counter. The addon's module state is
-    rebuilt at epoch 0 by a Blender restart or Reload Scripts, so epoch 1 ->
-    restart -> 0 -> one swap -> 1 reads as "unchanged" to a counter-only
-    comparison while being a different database in a different process.
+    The refresh's own response is ignored: it arrives while `_addon_handshake` still holds
+    the old value and would re-set the flag, costing a second round trip. The guard is a
+    plain bool, safe only because the refresh clears the flag first, so the nested gate
+    returns early.
 
-    **A refresh's own response is not read as news.** `force_addon_handshake`
-    calls `handshake_addon`, which sends `get_addon_info` through
-    `BlenderConnection.send_command` - the **gating** wrapper, not
-    `send_command_locked` (`addon_manager.py:739`; an earlier revision of this
-    sentence named the wrong one). So the refresh re-enters
-    `refresh_handshake_if_session_changed` on its way out, and its response lands
-    back here while `_addon_handshake` still holds the *pre*-refresh value - so
-    the comparison found a difference and re-set the flag that the refresh had
-    just cleared, and the next command paid for a second round trip::
-
-        after ping #1: wire = ['get_addon_info', 'ping'], stale = True
-        after ping #2: wire = [..., 'get_addon_info', 'ping'], stale = False
-        get_addon_info round trips for ONE swap: 2
-
-    `_refreshing` is set for the duration of the refresh, on that thread only,
-    which makes the inner call a no-op. It is thread-local rather than a module
-    flag so a refresh on one connection cannot blind another connection's
-    observation.
-
-    **What that re-entry costs, stated because the recursion is real rather than
-    hypothetical.** Going through the gating wrapper means
-    `refresh_handshake_if_session_changed` runs again inside the refresh. It is
-    bounded: the outer call clears `_session_marker_stale` before it sets
-    `_refreshing.active`, so the inner call returns at its first line without
-    sending anything. What it is **not** is reentrant - `_refreshing.active` is a
-    plain bool, so a nested refresh that did reach its `finally` would clear the
-    outer guard while the outer refresh was still in flight, and the outer
-    refresh's own response would then be read as news again. Nothing today
-    reaches that, because the inner call cannot get past the staleness check;
-    it holds by arithmetic on one flag, not by the flag being a counter.
-
-    **That suppression closed one re-arm loop and opened another**, and this
-    docstring previously read as though the class were closed. Because the
-    refresh's own response is skipped here, the pair it reports is recorded
-    nowhere by this function - so when the addon has moved *past* the epoch
-    observed above, `_OBSERVED_MARKER["pending"]` keeps naming an epoch that can
-    never come back and the flag re-arms on every command, permanently: 20 extra
-    round trips for 20 commands, measured. The recording is therefore done by
-    `refresh_handshake_if_session_changed`, which is the one place that holds the
-    refreshed handshake; see its docstring for the test that pins it.
-
-    Nothing is re-read here: this runs while a response is being parsed, with
-    the connection lock held, and a handshake sends a command of its own.
-    `refresh_handshake_if_session_changed` does the work, before the next
-    command is gated.
+    Only flags; the connection lock is held here, and a handshake sends a command of its
+    own. `refresh_handshake_if_session_changed` does the re-read.
 
     Args:
         payload: The decoded response frame.
@@ -542,34 +464,14 @@ def refresh_handshake_if_session_changed(blender: BlenderConnection) -> AddonHan
     """
     Re-read the handshake when a swap has been observed, then answer with it.
 
-    **The staleness signal survives a failed refresh.** Clearing the flag before
-    the refresh was right as far as it went - `force_addon_handshake` sends a
-    command, which re-enters `send_command` - but nothing re-set it when the
-    refresh did not produce a handshake at all, and `_maybe_handshake_addon`
-    swallows every exception. Worse, `handshake_addon`'s own fallback replaces a
-    good handshake with a degraded one whose `session_epoch` is None, so the
-    process then gated every subsequent command on a capability set belonging to
-    a file that was no longer open, permanently.
-    `test_a_refresh_that_fails_leaves_the_staleness_signal_standing` drives that
-    degraded handshake and asserts the signal survives it. Recursion is prevented
-    by `_refreshing`, a re-entrancy flag, rather than by discarding the signal.
+    The flag is cleared first, because the refresh's own command passes through this gate.
+    It is set again if the refresh yields no complete session pair: handshake failures
+    are swallowed into a degraded handshake, and dropping the signal would gate every later
+    command on the capabilities of a file no longer open.
 
-    **The test is "well-formed", not "equal to what was observed", and the
-    difference is a permanent retry loop.** Requiring equality assumed the addon
-    would still be at the epoch `note_session_marker` happened to see. It need
-    not be: two File -> Opens, a second server process against the same Blender
-    (documented in `README.md:85-89`), or one swap arriving inside the measured
-    4.6 s `open_mainfile` window all move it again first. `_refreshing` then
-    suppresses `note_session_marker` for the refresh's *own* response, so the
-    newer pair it just learned was recorded nowhere either, and `pending` named
-    an epoch the addon can never report again. Measured before the fix: **20
-    extra `get_addon_info` round trips for 20 commands**, with the warning above
-    logged 20 times, for the life of the process -
-    `test_a_refresh_that_learns_a_newer_session_than_the_one_observed_stops_retrying`
-    reproduces exactly that. A refreshed handshake carrying both halves of the
-    pair *is* the addon's current answer, so it is adopted as the observation
-    rather than compared against a stale one. Only a handshake with a missing
-    half - the degraded fallback - leaves the signal standing.
+    Any complete pair counts as success, not only the one observed. The addon may have
+    moved on since, and the refresh's own response is never observed, so waiting for the
+    old pair would re-handshake on every command.
 
     Args:
         blender: The connection to re-handshake over.

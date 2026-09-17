@@ -1,29 +1,22 @@
 r"""
-Measure what linking, unlinking and purging do to datablocks, so Task 7's handlers are built on facts.
+Print what linking, unlinking and purging do to datablocks, for choices the linking handlers make.
 
-Plan Task 7's handlers make choices this probe decides. Sections:
-
-A. **Persistence.** A linked collection nobody uses is not written: link without
-   instancing, save, reopen, and print whether the library survives.
-B. **A failed link.** Which requested-name failures still create a `Library`:
-   a name absent from the file, and a raise inside the `libraries.load` block.
-   Also the raw exception a truncated `.blend` (valid magic) raises.
-C. **`relative=True` in a never-saved session** - what `Library.filepath` holds.
-D. **Unlinking.** `libraries.remove` on a *direct* library whose file links an
-   *indirect* one: does the indirect library survive? And after a Route C
-   override: what the removal leaves (override ids, orphans), and what
-   `orphans_purge` removes - including an unrelated zero-user local datablock
-   the user made, which a scoped unlink must never touch.
-E. **Relocate failure.** Assign a missing `filepath` and `reload()`: the raised
-   exception, what the library's contents look like after, and whether
-   restoring the old `filepath` leaves a working library.
-F. **Relocate success.** `Library.name` before and after a data-API relocate
-   to a differently named file.
-G. **Which session_uids a transacted command churns.** A second link from an
-   already-linked library, and `override_hierarchy_create`: do the datablocks
-   that existed before keep their uids? If they did not, a rollback inside
-   `mutation_transaction` would read them as created and remove them.
-H. **`bpy.data.batch_remove`** exists and removes exactly the ids it is given.
+A. A collection linked but not instanced, saved and reopened: does its library survive?
+B. Which failed links still create a `Library`: a name absent from the file,
+   and a raise inside the `libraries.load` block. Also the raw exception from
+   linking a truncated `.blend` with valid magic.
+C. What `Library.filepath` holds after `relative=True` in a never-saved session.
+D. `libraries.remove` on a direct library whose file links an indirect one:
+   does the indirect library survive? Then, after a Route C override, what the
+   removal leaves and what `orphans_purge` removes, including an unrelated
+   zero-user local datablock that a scoped unlink must never touch.
+E. Relocate to a missing file and reload: the exception, the library's contents
+   after, and whether restoring `filepath` gives a working library again.
+F. `Library.name` before and after relocating to a differently named file.
+G. Whether a second link from the same library, or `override_hierarchy_create`,
+   changes the uids of datablocks that already existed. If so, a
+   `mutation_transaction` rollback would treat them as created and remove them.
+H. `bpy.data.batch_remove` exists and removes only the ids it is given.
 
 From the repository root::
 

@@ -58,18 +58,9 @@ _FILE_TOOLS = {
     "setup_liquid_shot",
     "render_scene",
 }
-# Phase 2 Task 9's five file-touching tools: each reads or writes a `.blend` file on disk.
-# The shared sentence below deliberately says no more than that: `reload_library` takes no
-# caller-supplied path at all (it re-reads the path already in the open file) and enforces no
-# file root (`linking.py`'s own docstring: "File roots are not enforced here"), so "at the
-# explicit caller-supplied path, subject to the configured file roots" is false for it -- an
-# earlier revision of this comment and sentence made exactly that claim for all five. Anything
-# tool-specific (roots for the other four, `confirm_overwrite` for `save_shot`) belongs in that
-# tool's own docstring, not this shared sentence. Kept separate from `_FILE_TOOLS` rather than
-# folded into it: that set's membership also selects `_tool_contract`'s effects prose ("it does
-# not save the .blend file"), which is false for `save_shot` and misleading for the other four
-# -- a set whose membership means two different things cannot be extended by a tool that needs
-# one and contradicts the other (plan Task 9 Step 4b's ruling).
+# Tools that read or write a .blend file. Their shared sentence says only that:
+# `reload_library` takes no path and enforces no file roots, so per-tool detail belongs in each
+# tool's docstring. Not part of `_FILE_TOOLS`, whose prose says the .blend file is not saved.
 _BLEND_FILE_TOOLS = {
     "open_shot",
     "save_shot",
@@ -140,13 +131,9 @@ _DESTRUCTIVE_TOOLS = {
     "set_skin_weights",
     "transfer_mesh_attributes",
     "transfer_skin_weights",
-    # Phase 2 Task 9. `reload_` and `reset_` match no prefix in _DESTRUCTIVE_PREFIXES, and
-    # `open_`/`relocate_`/`unlink_` don't either -- each needs an explicit entry or it ships
-    # destructiveHint=False. `save_shot` is already destructive via the `confirm_overwrite`
-    # conditional-flags mechanism below; the entry here is belt-and-braces (plan Task 9 Step
-    # 4), so the hint does not silently depend on that schema key surviving a later refactor.
-    # `link_canon_library` and `create_override` are deliberately NOT here: they add rather
-    # than destroy, the same precedent as `create_geometry_object`.
+    # File lifecycle and linking: no destructive prefix matches these. `save_shot` is also caught
+    # by its `confirm_overwrite` flag, but should not depend on that key. `link_canon_library`
+    # and `create_override` only add data, so they are not listed.
     "open_shot",
     "reset_session",
     "unlink_libraries",

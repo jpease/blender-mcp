@@ -1,9 +1,8 @@
 """
 `object_lookup.find_object`: one deterministic object per name after a library override.
 
-Blender 5.2.2 keys `bpy.data.objects` by `(name, library_filepath)` as well as by
-name, with `None` meaning local. The stub below models exactly that, so the rule
-is tested without relying on list order: the linked original is inserted first.
+The stub keys objects by name and by `(name, library_filepath)`, `None` meaning
+local, as Blender does, and lists the linked original first so order cannot decide.
 """
 
 from __future__ import annotations
@@ -74,7 +73,7 @@ def test_a_single_linked_object_is_returned_when_no_local_one_has_the_name() -> 
 
 
 def test_two_linked_objects_with_one_name_and_no_local_one_are_refused() -> None:
-    """Choosing between libraries would be a guess; the refusal names each library by leaf and uid."""
+    """Choosing a library would be a guess; the refusal names each by leaf and uid."""
     first, second = _obj("Prop", "/studio/a/canon.blend"), _obj("Prop", "b.blend")
 
     with pytest.raises(ValueError, match="more than one library") as refusal:
@@ -88,10 +87,10 @@ def test_two_linked_objects_with_one_name_and_no_local_one_are_refused() -> None
 
 
 def test_the_ambiguity_refusal_is_bounded_however_many_libraries_link_the_name() -> None:
-    """300 libraries once made a 19,933-byte refusal; the list now stops at ten with an honest total."""
+    """However many libraries share the name, the refusal lists `MAX_CANDIDATES` and counts the rest."""
     objects = _Objects(*(_obj("HeroCam", f"lib{index:03d}.blend") for index in range(300)))
     shown = load_addon_source_module("candidates.py", "addon_candidates_for_lookup").MAX_CANDIDATES
-    # Ten entries of ~30 B each plus the fixed prose; the unbounded join measured 4,633 B here.
+    # Ten entries of about 30 bytes each plus the fixed text.
     ceiling_bytes = 1_000
 
     with pytest.raises(ValueError) as refusal:

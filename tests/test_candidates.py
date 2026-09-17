@@ -1,11 +1,8 @@
 """
-`candidates`: the bounded, uid-carrying candidate list two refusals share.
+`candidates`: the candidate list is safe to publish.
 
-Extracted from `handlers/linking.py` when `object_lookup.find_object` needed the
-same refusal. The tests pin the three properties that make a candidate list safe
-to publish - each name reduced, the list bounded with an honest total, and a uid
-on every entry - plus the one that nearly shipped wrong during the extraction:
-a non-library datablock's name must survive, not be blanked.
+Each name is reduced, the list is bounded with a count of the rest, every entry
+carries a uid, and a non-library name survives.
 """
 
 from __future__ import annotations
@@ -31,7 +28,7 @@ def _datablock(name: str, uid: int, id_type: str | None = None) -> types.SimpleN
 
 
 def test_a_non_library_name_is_published_not_blanked() -> None:
-    """The extraction briefly passed a name string where a datablock was expected, blanking every name."""
+    """A name string passed where a datablock belongs would blank every name."""
     text = _candidates().describe_candidates([_datablock("HeroCam", 7, "OBJECT")])
 
     assert text == "'HeroCam' (session_uid 7)"
@@ -53,7 +50,7 @@ def test_describe_library_candidates_reduces_to_a_leaf_without_consulting_id_typ
 
 
 def test_the_list_is_bounded_and_reports_how_many_were_left_out() -> None:
-    """Twelve candidates show the first ten and an honest tail, never all twelve."""
+    """Past the cap, the list shows the first `MAX_CANDIDATES` and counts the rest."""
     module = _candidates()
     libraries = [_datablock(f"lib{index:02d}.blend", index) for index in range(12)]
 
@@ -65,7 +62,7 @@ def test_the_list_is_bounded_and_reports_how_many_were_left_out() -> None:
 
 
 def test_candidates_that_reduce_to_one_name_stay_distinguishable_by_uid() -> None:
-    """Hostile names all collapse to the sentinel; the uid is what still tells them apart."""
+    """Hostile names collapse to the sentinel; the uid still tells them apart."""
     libraries = [_datablock("../../secret/a:b", uid) for uid in (41, 42)]
 
     text = _candidates().describe_library_candidates(libraries)

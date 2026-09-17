@@ -1,39 +1,28 @@
 """
 The filesystem trust boundary for `.blend` paths that arrive over the socket.
 
-The socket is unauthenticated, so a command that opens, saves or links a
-`.blend` hands whoever can reach it arbitrary-path read and overwrite. This
-module is the one place that decides whether such a path is acceptable, and the
-one place that removes paths from Blender's own error text before it reaches a
-client.
+The socket is unauthenticated, so any command that opens, saves or links a
+`.blend` offers arbitrary-path read and overwrite. This module decides whether
+such a path is acceptable, and removes paths from Blender's error text before it
+reaches a client.
 
-**Policy.**
+- Roots: `BLENDERMCP_FILE_ROOTS` (os.pathsep-separated), or
+  `BLENDERMCP_OUTPUT_ROOTS` when that is unset or blank, names the directories file
+  commands may touch. With neither set, every path is allowed: a local artist's
+  Blender behind a loopback socket should just work, and a shared deployment sets
+  the variable. The handshake reports the mode (`file_roots`,
+  `file_roots_enforced`). Enforced roots never fall back to the advisory
+  `writable_output_roots` defaults, or the home directory would be a root.
+- Overwrite: writing over an existing file needs `confirm_overwrite=True`, which
+  the `save_shot` handler checks.
+- Directories: a save target's missing directory is refused unless the caller
+  opts in, and `create_save_directory` makes it only after the roots check.
+- Scripts: `wm.open_mainfile` can run Python embedded in a `.blend`. Every call
+  passes `use_scripts=False`, and the handler's `_refuse_scripts_auto_execute`
+  checks the auto-execute preference, which needs `bpy`.
 
-- *Roots.* `BLENDERMCP_FILE_ROOTS` (os.pathsep-separated) names the directories
-  file commands may touch; when it is unset or blank, `BLENDERMCP_OUTPUT_ROOTS`
-  is used instead (`output_roots.configured_file_roots`). **When neither yields
-  a root the boundary is permissive**: the local-artist case is a GUI Blender
-  on the user's own machine behind a loopback socket, and deny-by-default there
-  bricks ordinary use for no gain. A pooled or container deployment sets the
-  variable and gets enforcement. The handshake publishes which mode is active
-  (`file_roots`, `file_roots_enforced`) so the asymmetry is observable.
-  Enforced roots never come from the advisory `writable_output_roots` defaults
-  (`~`, temp dirs), or the boundary would be the home directory.
-- *Overwrite.* Writing over an existing file needs an explicit
-  `confirm_overwrite=True`, default False, as `handlers/rendering.py` does.
-  The save handler (plan Task 6) applies it; nothing here writes a file.
-- *Directories.* A save target's missing directory is refused unless the
-  caller opts in; `create_save_directory` then makes it, and only it, after the
-  roots have been enforced on the canonical target.
-- *Scripts.* `wm.open_mainfile(use_scripts=...)` runs Python embedded in a
-  `.blend` on load. It is never a tool parameter, every call passes
-  `use_scripts=False` explicitly, and
-  `preferences.filepaths.use_scripts_auto_execute` is part of the same
-  code-execution surface and must be checked before a load. That runtime check
-  needs `bpy`, so it lives in the handler (plan Task 6 Step 4b), not here.
-
-Free of `bpy` so it is testable without Blender: Blender's `//` prefix is
-expanded by the caller with `bpy.path.abspath` before `resolve_blend_path`.
+Free of `bpy` so it can be tested without Blender; the caller expands Blender's
+`//` prefix before `resolve_blend_path`.
 """
 
 import contextlib
@@ -44,10 +33,9 @@ from collections.abc import Iterable
 
 from .text_hygiene import client_safe_name_leaf
 
-# Each constant is a *prefix*, and the lengths are load-bearing: pinning more
-# bytes false-rejects valid files. `BLENDER` is what every header version
-# shares (5.x writes `BLENDER17-01v050`, older ones `BLENDER-v293`); gzip's FLG
-# byte (the 4th) varies, so only its two magic bytes are tested.
+# Prefixes, and their lengths matter: a longer prefix rejects valid files.
+# Every header version starts with `BLENDER`, and gzip's fourth byte varies, so
+# only its two magic bytes are checked.
 BLEND_MAGIC_UNCOMPRESSED = b"BLENDER"
 BLEND_MAGIC_ZSTD = b"\x28\xb5\x2f\xfd"
 BLEND_MAGIC_GZIP = b"\x1f\x8b"
@@ -61,18 +49,14 @@ PATH_PLACEHOLDER = "<path>"
 _PATH_START = r"(?:/|\\\\|~[\w.-]*[/\\]|[A-Za-z]:[\\/])"
 # Punctuation that may close a path without being part of it.
 _TRAILING = r"(?=[:;,?!)\]>]*(?:\s|$))"
-# One pass, so every occurrence is replaced and a quoted path is consumed
-# before its interior can be matched again. A quoted path ends at its quote
-# only when that quote ends a token, which keeps an apostrophe inside a
-# `'...'` path from cutting it short. A bare path takes later words while they
-# lead to a word containing a separator (a directory name with a space), but
-# never past a word ending in `:`, `;` or `,`: after that comes the cause, and
-# causes contain slashes too (`Input/output error`). Its trailing punctuation
-# is left as text. Structural detection alone leaves a relative tail when a
-# component contains a space in the last component, `, `, `: ` or `; ` in any
-# component, or `')` / `'>` / `"?` inside a quoted name (measured on real 5.2.2
-# messages); passing the known path to `sanitize_blender_error` closes all of
-# them, so every caller that knows its path must pass it.
+# One pass, so a quoted path is consumed before its interior can match again. A
+# quoted path ends only at a quote that ends a token, so an apostrophe inside it
+# does not cut it short. A bare path takes later words while they lead to one
+# containing a separator (a directory name with a space), but never past a word
+# ending in `:`, `;` or `,`, because the cause follows and may hold slashes too
+# (`Input/output error`). Detection alone misses some paths with spaces or
+# punctuation inside, so every caller that knows its path must pass it to
+# `sanitize_blender_error`.
 _PATH_IN_TEXT = re.compile(
     rf"""(?P<quote>["'])(?P<quoted>{_PATH_START}.*?)(?P=quote)(?=$|[\s:;,.?!)\]>])"""
     rf"""|(?<![^\s"'(\[=,])(?P<bare>{_PATH_START}(?=\S)\S*?{_TRAILING}"""
@@ -81,13 +65,10 @@ _PATH_IN_TEXT = re.compile(
 )
 # `Library.reload()` names the library by its raw ID name, type code included.
 _LIBRARY_ID_NAME = re.compile(r"(library ')LI")
-# Any quoted library name. Blender quotes one in at least a dozen messages
-# (`strings` on the 5.2.2 binary: reload, relocate, delete, "from library '%s'",
-# ...). A `.blend` author can set `Library.name` to an absolute path, and the
-# `LI` code in front of it stops the quoted-path detection from seeing a path, so
-# the name is reduced to its leaf before that detection runs. The quote closes
-# where a quoted path's does.
-# DOTALL: a name may hold a newline (measured, cycle 2), which would otherwise end the match early.
+# Any quoted library name, which many Blender messages include. A `.blend` author
+# can set `Library.name` to an absolute path, and the `LI` code in front hides it
+# from path detection, so the name is reduced to its leaf first. DOTALL because a
+# name may hold a newline.
 _QUOTED_LIBRARY_NAME = re.compile(
     r"(?P<lead>[Ll]ibrary ')(?P<code>LI)?(?P<name>.*?)(?='(?:$|[\s:;,.?!)\]>]))", re.DOTALL
 )
@@ -98,12 +79,8 @@ def canonical_path(path: str) -> str:
     Reduce a path to the one form containment is decided on.
 
     `expanduser` makes `~` mean home rather than a directory named `~`.
-    `abspath` mirrors `handlers/rendering.py`'s prior art for the bare relative
-    path `bpy.path.abspath` hands through unchanged; CPython 3.13's `realpath`
-    also absolutizes (measured: dropping `abspath` alone fails no test), so it
-    is the pipeline's stated order, not a second defence. `realpath` resolves
-    `..` (which `bpy.path.abspath('//../x')` preserves) and symlinks, which is
-    what stops a link inside a root from pointing outside it.
+    `realpath` resolves `..` and symlinks, so a link inside a root cannot point
+    outside it.
 
     Args:
         path: A path string, already expanded from Blender's `//` form.
@@ -119,7 +96,7 @@ def _has_blend_suffix(path: str) -> bool:
     """
     Report whether a path's leaf is a named `.blend`, case-insensitively.
 
-    A plain `endswith` also refuses `x.blend.` and `x.blend `, which Windows
+    The `endswith` test also refuses `x.blend.` and `x.blend `, which Windows
     and macOS resolve differently.
 
     Args:
@@ -186,8 +163,8 @@ def resolve_blend_path(raw: object, *, must_exist: bool, create_directories: boo
     """
     Validate a caller-supplied `.blend` path and return its canonical form.
 
-    Refusals name the reason and never a path: the caller knows what it sent,
-    and echoing a resolved form would disclose where a symlink or `~` led.
+    Refusals give the reason, never a path: echoing the resolved form would reveal
+    where a symlink or `~` led.
 
     Args:
         raw: The path, already passed through `bpy.path.abspath` by the caller.
@@ -199,10 +176,9 @@ def resolve_blend_path(raw: object, *, must_exist: bool, create_directories: boo
     Returns:
         str: The canonical path, to check with `enforce_roots` and hand to Blender.
 
-    Callers must refuse a `//` path when `bpy.data.filepath` is empty: then
-    `bpy.path.abspath('//x.blend')` returns the relative `'x.blend'` (measured,
-    `scripts/blender_probes/file_path_error_shapes.py`), which would resolve
-    against the process CWD. Plan Task 6 enforces it.
+    Callers must refuse a `//` path when no .blend is open: `bpy.path.abspath`
+    then leaves it relative, and it would resolve against the working directory.
+    `handlers/file_lifecycle._expand_blender_relative` does this.
 
     Raises:
         ValueError: If the path is refused.
@@ -230,17 +206,13 @@ def create_save_directory(path: str) -> bool:
     """
     Create a canonical save target's missing directory, with its missing parents.
 
-    Call it only with `resolve_blend_path`'s result after `enforce_roots`: the
-    path is symlink-free there, so every directory made is inside the root the
-    target was checked against **as it was checked**. A second local process that
-    swaps an existing ancestor for a symlink in between moves the creation out of
-    the root - the same time-of-check window the save path already carries for
-    `os.path.exists` and the `<target>@` check (recorded residual,
-    `PHASE2_TASK_STATE.md`), and out of scope for the trusted-deployment model.
+    Call it only with `resolve_blend_path`'s result, after `enforce_roots`. That
+    path is symlink-free, so every directory made is inside the root, unless
+    another local process swaps an ancestor for a symlink in between; trusted
+    deployments accept that window.
 
-    Runs on Blender's main thread inside the drain tick, so a dead NFS or automount
-    ancestor stalls every client for the mount timeout. That exposure is not new
-    here: `_require_save_target` stats the same directory before this is reached.
+    Runs on Blender's main thread, so a dead network mount stalls every client
+    until the mount times out.
 
     Args:
         path: The canonical `.blend` target.
@@ -268,12 +240,10 @@ def enforce_roots(path: str, roots: Iterable[str]) -> None:
     """
     Refuse a path outside every configured root; with no roots, allow all.
 
-    Containment is `os.path.commonpath` on canonical forms of both sides. A
-    string prefix test accepts `/output-evil` for root `/output`, and comparing
-    un-resolved forms lets a symlink inside a root point anywhere. The refusal
-    names the policy rather than the roots or the path: the roots are readable
-    from the handshake, and the path is what the caller must not learn more
-    about.
+    Uses `os.path.commonpath` on canonical forms: a string prefix test accepts
+    `/output-evil` for root `/output`, and unresolved forms let a symlink inside a
+    root point anywhere. The refusal names neither roots nor path, since the
+    handshake already reports the roots.
 
     Args:
         path: The path to check, normally `resolve_blend_path`'s result.
@@ -305,13 +275,10 @@ def _has_ancestor_directory(candidate: str, root: str) -> bool:
     """
     Report whether some ancestor of `candidate` is the same directory as `root`.
 
-    `realpath` does not fold case, so on a case-insensitive volume (default
-    APFS) `/X/output/x.blend` and root `/X/Output` differ by spelling while
-    naming one directory. Comparing device and inode answers that without
-    trusting spelling; both sides are already symlink-free, so it cannot admit
-    a link out of the root. It accepts any spelling of the same directory, not
-    only case variants (on APFS also the `/System/Volumes/Data` firmlink form),
-    and trusts the filesystem's inode numbers.
+    `realpath` does not fold case, so on a case-insensitive volume such as APFS
+    `/X/output/x.blend` and root `/X/Output` name one directory in two spellings.
+    Comparing device and inode settles it, and cannot admit a link out of the
+    root because both sides are already symlink-free.
 
     Args:
         candidate: A canonical path, which need not exist.
@@ -340,16 +307,11 @@ def sanitize_blender_error(exc: BaseException, known_paths: Iterable[str] = ()) 
     """
     Remove every filesystem path from an exception's text, keeping its cause.
 
-    Blender puts absolute paths in its own error text in at least five shapes:
-    quoted with `"` or `'`, bare, twice in one message, as a derived `<path>@`
-    temp name, and as the process CWD for an empty path. None of those is
-    guaranteed to equal what the caller sent, so paths are found structurally
-    and replaced with `<path>`; every other token is kept wherever it sits. Log
-    the raw text server-side if it is needed; return only this.
-
-    Paths the caller already holds are replaced first, whole, with their
-    derived `<path>@` form, because only they say where a name containing
-    spaces ends.
+    Blender's paths in error text may be quoted or bare, repeated, suffixed with
+    `@` for a temp file, or the working directory, and need not match what the
+    caller sent. So paths are found by shape and replaced with `<path>`. Paths the
+    caller knows are replaced first, whole, because only they show where a name
+    with spaces ends.
 
     Args:
         exc: The exception raised by an operator or data-API call.
@@ -375,9 +337,8 @@ def _leaf_library_name(match: re.Match[str]) -> str:
     """
     Reduce one quoted library name to an admissible leaf, without a filesystem call.
 
-    The leaf rule `_library_summary` publishes `Library.name` under (TASK_STATE
-    T3-15), through `text_hygiene.client_safe_name_leaf`, which does not stat
-    the attacker-chosen name. The `LI` code is kept for the final strip.
+    Uses the same leaf rule as `_library_summary`, which does not stat the
+    author-chosen name. The `LI` code is kept for the final strip.
 
     Args:
         match: A `_QUOTED_LIBRARY_NAME` match.

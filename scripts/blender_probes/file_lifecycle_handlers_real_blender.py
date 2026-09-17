@@ -1,35 +1,30 @@
 r"""
-Drive the real Task 6 handlers - `open_shot`, `save_shot`, `reset_session` - against real files in Blender.
+Run the real `open_shot`, `save_shot` and `reset_session` handlers against real files in Blender.
 
-Plan Task 6 Step 2b and Step 5. The handlers are the addon's own
-`handlers/file_lifecycle.py`, loaded with its real `session.py`, `file_paths.py`
-and `text_hygiene.py` (no socket server: the addon refuses to start one under
-`--background`). Sections:
+Loads the addon's modules directly, with no socket server: the addon will not
+start one under `--background`. Expected results by section:
 
-A. **Step 2b.** `save_shot` over an existing `.blend` without
-   `confirm_overwrite`: refused, and the file's bytes (SHA-256 and mtime) are
-   unchanged - including the in-place form, where the target is the open file.
-B. **Step 5 round trip.** Open a fixture, save it to a new path (header checked:
-   `compress=False` must beat `use_file_compression=True`), reopen it, save in
-   place with confirmation, reset, and confirm the scene is empty and the epoch
-   moved once per swap. It also prints `is_dirty` after an edit: under
-   `--background` it stays False, so the unsaved-work refusal is shown live by
-   `scripts/rig_scenarios/scenario_file_lifecycle.py`, not here.
-C. **Step 5 failure modes, raw operator text vs what the client gets.** Missing,
-   directory, non-`.blend`, corrupt magic and empty path through
-   `wm.open_mainfile`; the unwritable destination through both save operators;
-   a 64-byte truncated `.blend` (passes validation, fails in the operator).
-   Each prints the operator's own `RuntimeError`, then the handler's response.
-D. **Step 4b.** `use_scripts_auto_execute` on refuses the load; off allows it.
-E. **Cycle-1 repair.** A `//libs/lib.blend` link saved from `projA/` to `projB/`
-   with `relative_remap=False`: `save_shot` warns, the open session still reports
-   the library found, and the reopened file reports it missing; with
+A. `save_shot` onto an existing `.blend` without `confirm_overwrite`, including
+   the open file in place: refused, bytes and mtime unchanged.
+B. Open a fixture, save to a new path (the header shows `compress=False`
+   beating `use_file_compression`), reopen, save in place confirmed, reset: the
+   scene ends empty and the epoch moves once per swap. `is_dirty` stays False
+   under `--background`, so `scripts/rig_scenarios/scenario_file_lifecycle.py`
+   covers the unsaved-work refusal instead.
+C. Opens of a missing file, a directory, a non-`.blend`, corrupt magic, an empty
+   path and a 64-byte truncated `.blend`; both saves into a read-only
+   directory. Each prints the operator's raw `RuntimeError`, then what the
+   client receives.
+D. `open_shot` refuses to load while `use_scripts_auto_execute` is on.
+E. A `//libs/lib.blend` link saved from `projA/` to `projB/` with
+   `relative_remap=False`: `save_shot` warns, the open session still finds the
+   library, and the reopened file reports it missing. With
    `relative_remap=True` there is no warning and the link resolves.
-E2/E3. **Cycle-2 repair.** A `//textures/t2.png` image with no library warns
-   and is missing on reopen; an indirect `//` library linked through an
-   absolute direct link is not counted, and still resolves on reopen.
-F. **Cycle-1 repair.** With roots set, a `<target>@` symlink planted to a file
-   outside them: the save is refused and the outside file is unchanged.
+E2. A `//` image with no library also warns and is missing on reopen.
+E3. An indirect `//` library behind an absolute direct link is left out of the
+    warning count and still resolves on reopen.
+F. With file roots set, a `<target>@` symlink to a file outside them: the save
+   is refused and that file is unchanged.
 
 From the repository root::
 
@@ -54,8 +49,8 @@ import bpy
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 ADDON_DIR = ROOT / "src/blender_mcp/bundled/addon"
 FIXTURE = ROOT / "tests/fixtures/blend/empty_zstd.blend"
-# A bare parent package, so the handler module imports its siblings relatively
-# without executing the addon's `__init__.py` (which would register UI classes).
+# A bare parent package lets the handler import its siblings without running
+# the addon's `__init__.py`, which registers UI classes.
 _PACKAGE = types.ModuleType("probe_addon")
 _PACKAGE.__path__ = [str(ADDON_DIR)]  # type: ignore[attr-defined]
 sys.modules["probe_addon"] = _PACKAGE
@@ -151,7 +146,7 @@ print(
     prefs.use_scripts_auto_execute,
 )
 
-print("\n=== A. Step 2b: an existing .blend is not overwritten without confirm_overwrite ===")
+print("\n=== A. an existing .blend is not overwritten without confirm_overwrite ===")
 existing = work / "existing.blend"
 shutil.copyfile(FIXTURE, existing)
 before = digest(existing)
@@ -164,15 +159,14 @@ print(f"  open file now {pathlib.Path(bpy.data.filepath).name}, is_dirty={bpy.da
 attempt("save_shot() in place, unconfirmed", server.save_shot)
 print(f"  bytes+mtime before={before} after={digest(existing)} unchanged={before == digest(existing)}")
 
-print("\n=== B. Step 5 round trip ===")
+print("\n=== B. round trip ===")
 bpy.ops.wm.read_homefile(use_factory_startup=True)
 fixture_copy = work / "fixture.blend"
 shutil.copyfile(FIXTURE, fixture_copy)
 epoch = session.session_snapshot()["session_epoch"]
 attempt("open_shot(fixture)", lambda: server.open_shot(str(fixture_copy)))
 bpy.ops.mesh.primitive_monkey_add()
-# Under --background no undo step is pushed, and is_dirty stays False after an
-# edit (printed here, not assumed); the dirty refusal is evidenced by the GUI rig.
+# Printed, not assumed: under --background is_dirty stays False after an edit.
 print(f"  after adding a mesh under --background: is_dirty={bpy.data.is_dirty}")
 saved = work / "saved.blend"
 attempt("save_shot(saved)", lambda: server.save_shot(filepath=str(saved)))
@@ -186,7 +180,7 @@ attempt("reset_session(confirm=True)", lambda: server.reset_session(confirm=True
 print(f"  after reset: objects={len(bpy.data.objects)} filepath={bpy.data.filepath!r}")
 print(f"  epoch {epoch} -> {session.session_snapshot()['session_epoch']} across 3 swaps (2 opens, 1 reset)")
 
-print("\n=== C. Step 5 failure modes: raw operator text, then what the client receives ===")
+print("\n=== C. failure modes: raw operator text, then what the client receives ===")
 plain = work / "notes.txt"
 plain.write_text("hello", encoding="utf-8")
 corrupt = work / "corrupt.blend"
@@ -242,15 +236,15 @@ attempt("save_shot() in place, read-only dir", lambda: server.save_shot(confirm_
 readonly.chmod(stat.S_IRWXU)
 readonly_inplace.chmod(stat.S_IRWXU)
 
-print("\n=== D. Step 4b: use_scripts_auto_execute ===")
+print("\n=== D. use_scripts_auto_execute ===")
 bpy.ops.wm.read_homefile(use_factory_startup=True)
 prefs.use_scripts_auto_execute = True
 attempt("open_shot with the preference ON", lambda: server.open_shot(str(fixture_copy)))
 prefs.use_scripts_auto_execute = False
 attempt("open_shot with the preference OFF", lambda: server.open_shot(str(fixture_copy)))
-print("  current_filepath is absolute (T3-14 success field):", os.path.isabs(bpy.data.filepath))
+print("  current_filepath is absolute (deliberately, as a success field):", os.path.isabs(bpy.data.filepath))
 
-print("\n=== E. relative_remap=False and //-relative library links (cycle-1 repair) ===")
+print("\n=== E. relative_remap=False and //-relative library links ===")
 bpy.ops.wm.read_homefile(use_factory_startup=True)
 project_a, project_b, project_c = (work / name for name in ("projA", "projB", "projC"))
 for directory in (project_a / "libs", project_b, project_c):
@@ -294,7 +288,7 @@ attempt(
 attempt("open_shot(projC/shot)", lambda: server.open_shot(str(project_c / "shot.blend"))["filepath"])
 print("  projC libraries after reopen:", libraries_now())
 
-print("\n=== E2. a //-relative image with no library (cycle-2 repair) ===")
+print("\n=== E2. a //-relative image with no library ===")
 bpy.ops.wm.read_homefile(use_empty=True, use_factory_startup=True)
 (project_a / "textures").mkdir()
 texture = project_a / "textures" / "t2.png"
@@ -316,7 +310,7 @@ print(
     [(img.filepath, os.path.exists(bpy.path.abspath(img.filepath))) for img in bpy.data.images],
 )
 
-print("\n=== E3. an indirect //-relative library behind an absolute direct link (cycle-2 repair) ===")
+print("\n=== E3. an indirect //-relative library behind an absolute direct link ===")
 bpy.ops.wm.read_homefile(use_factory_startup=True)
 deep = project_a / "libs" / "deep"
 deep.mkdir()
@@ -368,7 +362,7 @@ print(
     [(pathlib.Path(path).name, missing) for path, missing in libraries_now()],
 )
 
-print("\n=== F. a planted <target>@ symlink outside the roots (cycle-1 repair) ===")
+print("\n=== F. a planted <target>@ symlink outside the roots ===")
 bpy.ops.wm.read_homefile(use_factory_startup=True)
 root = work / "root"
 outside = work / "outside"

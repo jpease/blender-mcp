@@ -1,17 +1,16 @@
 r"""
-Measure which file handlers fire, and which session_uids move, for every library operation.
+Print which file handlers fire, and which session_uids change, for each library operation.
 
-Plan Task 4 item 2a rests on this table: `lib.reload()` (and a relocate, which is
-a `filepath` assignment followed by the same reload) fires `blend_import_pre` /
-`blend_import_post` and **never** `load_post`, while giving every datablock linked
-from that library a fresh `session_uid`; `libraries.load()` fires the same two
-handlers; a failed reload fires nothing and moves nothing; `orphans_purge` and
-`libraries.remove` fire nothing at all. If `load_post` ever appears in a reload
-row, item 2a's shape is wrong and Task 4 must be re-planned rather than patched.
+Rollback across a library reload depends on this table. Expected:
+`lib.reload()` and a relocate (a `filepath` assignment, then reload) fire
+`blend_import_pre` and `blend_import_post` but never `load_post`, and give every
+datablock linked from the library a new session_uid. `libraries.load()` fires
+the same two handlers. A failed reload, `orphans_purge` and `libraries.remove`
+fire nothing, and a failed reload changes no uids. If `load_post` fires on a
+reload, the rollback design needs rethinking, not patching.
 
-The fixture is built here: a canon `.blend` holding one collection, one object,
-one mesh and one material, written to a temporary directory. From the repository
-root::
+Builds its own canon `.blend` (one collection, object, mesh and material) in a
+temporary directory. From the repository root::
 
     /opt/homebrew/bin/blender --background --factory-startup \
         --python scripts/blender_probes/library_replace_handlers.py
@@ -73,10 +72,7 @@ for event in _EVENTS:
 
 def _id_collection_names() -> list[str]:
     """
-    List the `bpy.data` ID collections, excluding the `all_ids` aggregate.
-
-    `all_ids` re-lists every datablock the per-type collections already hold, so
-    counting it would double every figure below.
+    List the `bpy.data` ID collections except `all_ids`, which would count every datablock twice.
 
     Returns:
         list[str]: Attribute names on `bpy.data`.
@@ -95,8 +91,8 @@ def linked_uids(library: bpy.types.Library) -> dict[str, int]:
     """
     Map every datablock linked from `library` to its current session_uid.
 
-    Enumerates every `bpy.data` ID collection rather than `Library.users_id`, so
-    an indirectly linked datablock (the mesh behind the object) is counted too.
+    Scans the `bpy.data` ID collections rather than `Library.users_id`, so the
+    indirectly linked mesh behind the object is counted too.
 
     Args:
         library: The library whose linked datablocks to read.
@@ -145,7 +141,7 @@ def report(label: str, before: dict[str, int], after: dict[str, int]) -> None:
     print(f"  linked datablocks before/after: {len(before)}/{len(after)}")
     print(f"  session_uid changed: {churned} of {len(before)}")
     if "load_post" in fired:
-        print("  !!! load_post FIRED - STOP: plan Task 4 item 2a's premise is false on this build")
+        print("  !!! load_post FIRED - STOP: the reload-rollback design's premise is false on this build")
 
 
 fired.clear()

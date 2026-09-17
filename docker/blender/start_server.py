@@ -1,9 +1,8 @@
 """
-Enable the BlenderMCP addon and start its socket server, no UI interaction needed.
+Enable the BlenderMCP addon and start its socket server without the UI.
 
-The socket keeps the addon's own loopback default: the MCP server runs beside
-Blender inside this container and is the only thing that connects to it, so the
-unauthenticated Blender protocol is never reachable from outside the container.
+The socket stays on loopback: its protocol has no authentication, and the only
+client is the MCP server inside this container.
 """
 
 import bpy

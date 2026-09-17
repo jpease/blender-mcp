@@ -1,28 +1,21 @@
 r"""
-Prove the addon keeps serving across a live `wm.open_mainfile`, for `scripts/blender_rig.py`.
+Check that the addon keeps serving across a live `wm.open_mainfile`; a `scripts/blender_rig.py` scenario.
 
-This is Phase 2 Task 1's Step 5 evidence, committed rather than left in a session
-scratchpad. It was lost that way once already: the transcripts in
-`docs/superpowers/plans/PHASE2_TASK_STATE.md` were recorded from a harness nobody
-could re-run, which is the opposite of what a reproducible transcript is for.
-
-Run it with the in-Blender half and a fixture, from the repository root::
+From the repository root::
 
     blender --background --factory-startup \
         --python scripts/rig_scenarios/make_fixture.py -- <work>/fixture.blend
-    .venv/bin/python scripts/blender_rig.py \\
-        --work-dir <work>/rig \\
-        --scenario scripts/rig_scenarios/scenario_timer_survives_file_swap.py \\
-        --blender-script scripts/rig_scenarios/in_blender_open_mainfile.py \\
+    .venv/bin/python scripts/blender_rig.py \
+        --work-dir <work>/rig \
+        --scenario scripts/rig_scenarios/scenario_timer_survives_file_swap.py \
+        --blender-script scripts/rig_scenarios/in_blender_open_mainfile.py \
         --blend fixture=<work>/fixture.blend
 
-It needs a GUI Blender: the addon refuses to start under `--background` and
-`bpy.app.timers` never fire there, so the drain loop that answers commands does
-not run. The scenario itself runs in the rig's process and never touches `bpy`;
-everything Blender must do of its own accord is in the `--blender-script`.
+Needs a GUI Blender: the addon's server refuses to start under `--background`. This
+scenario runs in the rig's process without `bpy`; the Blender side is the `--blender-script`.
 
-Checks all six items of Task 1 acceptance criterion 4. Fails by raising; a clean
-return is a pass.
+Checks ping and handshake before and after the load, the load itself, and which timers
+survive it. Fails by raising; a clean return is a pass.
 """
 
 import json
@@ -36,12 +29,10 @@ from blender_mcp.addon_manager import EXPECTED_ADDON_PROTOCOL_VERSION
 
 class Rig(Protocol):
     """
-    The part of `BlenderRig` a scenario is allowed to use.
+    The part of `BlenderRig` a scenario may use.
 
-    Declared as a Protocol rather than imported: `scripts/blender_rig.py` loads a
-    scenario by path, so the dependency runs that way round and importing the
-    concrete class here would invert it. It doubles as the scenario contract -
-    these three members are the whole of it.
+    A Protocol because the rig loads scenarios by path; importing the rig here would
+    reverse that dependency.
     """
 
     work_dir: Path
@@ -62,8 +53,7 @@ class Rig(Protocol):
         ...
 
 
-# Generous: a GUI Blender under load can take a while to reach its first tick,
-# and a false failure here would read as a broken addon rather than a slow host.
+# Generous, because a slow host would otherwise fail as if the addon were broken.
 DEADLINE_SECONDS = 120.0
 POLL_SECONDS = 0.25
 
@@ -80,8 +70,8 @@ def _await_file(path: Path, what: str) -> dict:
         dict: The decoded JSON document.
 
     Raises:
-        AssertionError: If the file never appeared within the deadline, which
-            means the in-Blender half never ran rather than that it disagreed.
+        AssertionError: If the file never appeared within the deadline, meaning
+            the in-Blender half never ran.
 
     """
     limit = time.monotonic() + DEADLINE_SECONDS
@@ -96,9 +86,7 @@ def _await_another_fire(heartbeat: Path, before: int) -> int:
     """
     Wait for the persistent timer's fire count to move past `before`.
 
-    Registration surviving the swap is not the claim worth making: a timer that
-    is still registered and never fires again would pass that check and fail the
-    phase. So the count is read from the heartbeat file until it moves.
+    A timer can stay registered after the swap and never fire again.
 
     Args:
         heartbeat: The heartbeat document the in-Blender half rewrites each fire.

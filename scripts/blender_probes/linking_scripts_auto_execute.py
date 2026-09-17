@@ -1,31 +1,25 @@
 r"""
-Measure whether linking, reloading or overriding a hostile `.blend` runs its Python (Spec Decision #7).
+Check that linking, reloading, overriding or appending a hostile `.blend` never runs its Python.
 
-A library file is built carrying two payloads, each of which writes its own
-marker file when it runs:
+Builds a library with two payloads that each write a marker file when run: a
+registered text block (`use_module=True`), linked explicitly, and a scripted
+driver on the object in `CanonHero`, whose expression needs script execution.
+Then, with `use_scripts_auto_execute` off (the control) and on, opens a fresh
+shot with the matching `use_scripts`, which sets the session's script-execution
+flag, and runs:
 
-(a) a registered text block (`use_module=True`), linked explicitly as a text;
-(b) a Python driver (a non-simple expression, so it needs script execution) on
-    the object inside collection `CanonHero`.
+0. A positive control: a local object with the same driver, after a depsgraph
+   update. It must run with the preference on and not off, or the "on" rows
+   prove nothing.
+1. `libraries.load(link=True)` of the collection and the text, then an update.
+2. `lib.reload()`, then an update.
+3. The Route C override, then an update.
+4. `libraries.load(link=False)`, an append as `handlers/polyhaven.py` does for a
+   downloaded `.blend`, with the objects linked into the scene, then an update.
 
-Then, once with `preferences.filepaths.use_scripts_auto_execute` False (the
-control) and once True, a fresh shot is opened with the matching `use_scripts`
-(which is what sets Blender's script-execution flag for the session), and:
-
-0. a **positive control**: a local object with the same driver, after a
-   depsgraph update - it must run with the preference on and not with it off,
-   or the "on" row proves nothing;
-1. `bpy.data.libraries.load(link=True)` of the collection and the text, then an update;
-2. `lib.reload()`, then an update;
-3. the Route C override, then an update;
-4. `bpy.data.libraries.load(link=False)` - an **append**, the way
-   `handlers/polyhaven.py` imports a downloaded `.blend` (every object, plus the
-   text) - with the objects linked into the scene, then an update.
-
-Each step prints which markers exist, then deletes them, so a marker is
-attributed to the step (and the update) that wrote it. The drivers are
-re-evaluated on every update, so a driver marker after step 2 or 3 means
-execution is still possible at that point, not necessarily caused by that call.
+Each step prints the markers present, then deletes them. Drivers re-evaluate on
+every update, so a driver marker after step 2 or 3 shows execution was still
+possible then, not that the call caused it.
 
 From the repository root::
 

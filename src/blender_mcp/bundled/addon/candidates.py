@@ -1,26 +1,17 @@
 """
 Describe several datablocks in one refusal, bounded, by name and `session_uid`.
 
-Extracted from `handlers/linking.py`, which held the only copy while
-`object_lookup.find_object` grew a second, weaker one: it applied the same name
-allowlist and dropped the bound, so a shot linking N libraries turned one
-refusal into an N-proportional string (measured at 19,933 B for 300 long names,
-post-Phase-2 critic 3). Both now share this.
-
-It lives here rather than in `handlers/linking.py` because `object_lookup` must
-stay importable without Blender, and that module imports `bpy`. Nothing here
-does: every field is read with `getattr`, so a plain stub exercises it.
-
-`MAX_CANDIDATES` bounds the *list*; `text_hygiene` bounds each *name*. Both are
-needed - the per-name bound alone still lets the count carry the payload.
+Without the bound, a refusal grows with the number of linked libraries. It lives
+apart from `handlers/linking.py`, which imports `bpy`, so `object_lookup` stays
+importable without Blender; fields are read with `getattr` so a stub works.
+`text_hygiene` bounds each name; `MAX_CANDIDATES` bounds how many.
 """
 
 from collections.abc import Callable, Iterable
 
 from .text_hygiene import client_safe_name_leaf, client_safe_text
 
-# Enough to choose from, few enough that the refusal cannot be a channel: the
-# exact total is reported beside the list, so nothing is hidden by the cap.
+# Enough to choose from; the tail still counts the rest, so the cap hides nothing.
 MAX_CANDIDATES = 10
 
 
@@ -28,13 +19,8 @@ def display_name(datablock: object) -> str:
     """
     Reduce a datablock name for a client, holding a library's name to the leaf rule.
 
-    `Library.name` accepts a whole path (TASK_STATE T3-15), so it goes through
-    `client_safe_name_leaf` as it does in `handlers/file_lifecycle._library_summary`
-    (no filesystem call on author-chosen text); any other ID name is file-author
-    text and goes through `client_safe_text`. The `id_type` discriminator is
-    `'LIBRARY'` on a real `bpy.types.Library`, measured on 5.2.2 by
-    `scripts/blender_probes/shot_directories_and_override_names.py` section B,
-    because taking the wrong branch here would publish a path unreduced.
+    `Library.name` can hold a whole path, which the other branch would publish
+    unreduced.
 
     Args:
         datablock: The datablock.
@@ -67,15 +53,9 @@ def describe_candidates(datablocks: Iterable[object]) -> str:
     """
     Describe datablocks by name and uid, for a refusal that must let the client choose.
 
-    The uid is what makes the list actionable: several candidates can reduce to
-    one display name - identically named objects do so by construction, and
-    hostile names all reduce to `text_hygiene`'s sentinel - and a refusal naming
-    one thing twice tells the client nothing to act on.
-
-    Names are reduced by `display_name`, which decides per datablock from
-    `id_type`. A caller that already knows its candidates are libraries should
-    use `describe_library_candidates` instead, so the leaf rule cannot be missed
-    by a datablock that does not report the discriminator.
+    The uid tells apart candidates whose names reduce to the same text, such as
+    hostile names that all become `text_hygiene`'s sentinel. For known libraries,
+    use `describe_library_candidates`, which does not trust `id_type`.
 
     Args:
         datablocks: The candidates.
@@ -92,13 +72,8 @@ def describe_library_candidates(libraries: Iterable[object]) -> str:
     """
     Describe libraries, holding every name to the leaf rule unconditionally.
 
-    Same bound, uid and total as `describe_candidates`, but the name reduction is
-    not conditional: `Library.name` can be an absolute path, a traversal or a
-    UNC path (TASK_STATE T3-15), and a caller that knows it holds libraries must
-    not publish one through the weaker branch because a stub or a future
-    datablock failed to report `id_type == 'LIBRARY'`. Chosen after the shared
-    helper's first use in `object_lookup` published `'/studio/a/canon.blend'`
-    verbatim against a stub that had no `id_type`.
+    A library that fails to report `id_type == 'LIBRARY'` would otherwise have its
+    name, possibly a full path, published whole.
 
     Args:
         libraries: The candidate libraries.

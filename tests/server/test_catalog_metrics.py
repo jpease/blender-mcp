@@ -88,9 +88,8 @@ def test_total_tokens_divides_bytes_by_the_documented_divisor() -> None:
     """
     `total_tokens` must apply the module's byte-per-token divisor.
 
-    The divisor is spelled literally rather than imported, so changing BYTES_PER_TOKEN fails
-    here and forces the comment above it - which calls 3.6 an unvalidated rule of thumb - to
-    be revisited alongside it.
+    Spelled literally, so changing BYTES_PER_TOKEN fails here and prompts a check of the caveat
+    beside it.
     """
     report = payload_report([_tool("a", "hello")])
     assert report.total_tokens == pytest.approx(report.total_bytes / 3.6)

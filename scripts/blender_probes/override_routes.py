@@ -65,7 +65,7 @@ print(
     [(o.name, o.is_editable, bool(o.override_library and o.override_library.is_system_override)) for o in objs],
 )
 
-print("\n=== Route C: override_hierarchy_create(..., do_fully_editable=True)  [Task 7 rules for this] ===")
+print("\n=== Route C: override_hierarchy_create(..., do_fully_editable=True)  [the route the linking handlers use] ===")
 linked = fresh_link()
 linked.override_hierarchy_create(bpy.context.scene, bpy.context.view_layer, do_fully_editable=True)
 print("  objects:")

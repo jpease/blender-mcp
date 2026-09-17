@@ -23,9 +23,8 @@ bl_info = {
 }
 
 # Keep in sync with blender_mcp.addon_manager.EXPECTED_ADDON_PROTOCOL_VERSION.
-# Bumped for the writable_output_roots handshake field. Nothing compares versions
-# to decide whether to read it: an addon at 30 simply omits the field, so the
-# server's parse defaults it to an empty list.
+# The server reads handshake fields without comparing versions, so an older
+# addon that omits writable_output_roots gets an empty list.
 ADDON_PROTOCOL_VERSION = 31
 
 from . import session  # ruff: ignore[module-import-not-at-top-of-file]
@@ -81,11 +80,9 @@ def register() -> None:
         default=False,
     )
 
-    # Before the server can accept a command: the session epoch it advertises
-    # has to be maintained from the first file load onwards, and these handlers
-    # are @persistent so they survive the loads they observe. Registration is
-    # idempotent, which matters because disable/enable is how users reload the
-    # addon and Blender's handler lists take duplicates without complaint.
+    # Before the server can start, so the session epoch counts every file load
+    # a client could see. Safe to repeat: enabling an already-enabled addon
+    # unregisters it first, so the handlers are gone before this runs again.
     session.register_handlers()
 
     # Register preferences class

@@ -1,17 +1,9 @@
 """
-Guards for the local GUI-Blender rig, `scripts/blender_rig.py`.
+Tests for the local GUI-Blender rig, `scripts/blender_rig.py`.
 
-The rig is the artefact every live-Blender transcript in this phase flows
-through, so a defect in it does not fail loudly - it produces a plausible
-transcript of the wrong thing. Its container sibling is protected by the static
-guards in `tests/test_docker_rig.py`; this module does the same job for the
-local rig, and adds behavioural coverage for the parts that decide *which*
-Blender the rig is talking to, *what* it is allowed to delete or overwrite, and
-whether it can hang or mislead instead of reporting.
-
-Nothing here launches Blender: these are the checks that must hold on a machine
-with no Blender at all, which is where the drift they catch would otherwise go
-unnoticed until a phase gate.
+A rig defect does not fail loudly: it produces a plausible transcript of the wrong
+thing. These tests cover which Blender the rig talks to, what it may delete or
+overwrite, and whether it can hang. None of them launches Blender.
 """
 
 import argparse
@@ -51,7 +43,7 @@ UNDECODABLE_THEN_NOISY = (
 
 def _load_rig() -> ModuleType:
     """
-    Import the rig from its path, since `scripts/` is deliberately not a package.
+    Import the rig from its path, since `scripts/` is not a package.
 
     Returns:
         ModuleType: The imported `blender_rig` module.
@@ -69,20 +61,16 @@ rig = _load_rig()
 
 def _addon_default_port() -> int:
     """
-    Read the addon's own default port out of its source rather than retyping it.
+    Read the addon's default port from its source, which imports `bpy` and so cannot be imported here.
 
-    This is the port a developer's live Blender is already listening on, and the
-    one the rig must not default to. Not importable from here - `server_core`
-    imports `bpy` - but a guard carrying its own copy of the number it exists to
-    diverge from cannot notice the number changing, which is the same drift
-    `tests/test_docker_rig.py` imports its environment variable names to avoid.
+    A retyped copy of the number would not notice it change.
 
     Returns:
         int: `BlenderMCPServer.__init__`'s default `port`.
 
     Raises:
-        AssertionError: If the addon no longer declares one, which would make
-            every assertion written against it vacuous.
+        AssertionError: If the addon no longer declares one, which would make every
+            assertion against it vacuous.
 
     """
     tree = ast.parse(ADDON_SERVER_CORE.read_text(encoding="utf-8"))
@@ -113,8 +101,8 @@ def _function_source(name: str) -> str:
         str: That function's source text.
 
     Raises:
-        AssertionError: If the rig no longer defines that function, which would
-            make every guard written against it silently vacuous.
+        AssertionError: If the rig no longer defines that function, which would make
+            every guard against it vacuous.
 
     """
     tree = ast.parse(RIG_SOURCE)
@@ -144,8 +132,8 @@ def _noisy_child(program: str, *, strict_decoding: bool = False) -> subprocess.P
 
     Args:
         program: The `-c` program to run.
-        strict_decoding: When True, decode the pipe the way Python does by
-            default, which is what turns one undecodable byte into a dead reader.
+        strict_decoding: When True, decode the pipe strictly, as Python does by
+            default, so one undecodable byte kills a reader.
 
     Returns:
         subprocess.Popen[str]: The running child.
@@ -160,16 +148,11 @@ def _noisy_child(program: str, *, strict_decoding: bool = False) -> subprocess.P
     )
 
 
-# --- which Blender, and which configuration, the rig actually launches ---
+# --- which Blender, and which configuration, the rig launches ---
 
 
 def test_blender_is_launched_with_factory_startup() -> None:
-    """
-    `--factory-startup` is what keeps the user's `userpref.blend` out of the run.
-
-    No environment variable does this: preferences are read from the user's
-    profile unless Blender is told to ignore them entirely.
-    """
+    """`--factory-startup` keeps the user's `userpref.blend` out of the run; no environment variable does."""
     assert "--factory-startup" in _function_source("_launch_blender"), (
         "the rig must launch Blender with --factory-startup, or it runs against the user's own preferences"
     )
@@ -179,10 +162,8 @@ def test_both_blender_user_resource_roots_point_at_the_work_dir(tmp_path: Path) 
     """
     `BLENDER_USER_SCRIPTS` alone redirects only scripts.
 
-    Measured against Blender 5.2.1: config, datafiles and extensions still
-    resolve under the user's own profile, so opening or saving a `.blend`
-    rewrites their `recent-files.txt`. `BLENDER_USER_RESOURCES` is what moves
-    the rest.
+    Config, datafiles and extensions would stay in the user's profile, so saving a
+    `.blend` would rewrite their `recent-files.txt`.
     """
     environment = rig._child_environment(tmp_path)
     assert environment["BLENDER_USER_RESOURCES"] == str(tmp_path)
@@ -191,27 +172,15 @@ def test_both_blender_user_resource_roots_point_at_the_work_dir(tmp_path: Path) 
 
 def test_the_launched_blender_is_pointed_at_the_work_dir_first(tmp_path: Path) -> None:
     """
-    `BLENDERMCP_OUTPUT_ROOTS` makes the work dir *lead* the advertised list.
+    `BLENDERMCP_OUTPUT_ROOTS` puts the work dir first in the advertised roots.
 
-    It does not make it the only entry, and the test is named for what it
-    checks: `server_core._writable_output_roots()` prepends the configured roots
-    and then appends `bpy.app.tempdir`, `tempfile.gettempdir()` and `~`, so the
-    user's home directory is still advertised. Narrowing the addon's own default
-    candidates is Task 5's decision. Unset, the work dir would not appear at all
-    and the first offered root would be a temp directory Blender deletes on exit.
+    Without it the first offered root would be a temp directory Blender deletes on exit.
     """
     assert rig._child_environment(tmp_path)["BLENDERMCP_OUTPUT_ROOTS"] == str(tmp_path)
 
 
 def test_blender_s_session_temp_dir_is_redirected_under_the_work_dir(tmp_path: Path) -> None:
-    """
-    `bpy.app.tempdir` follows `TMPDIR`, and nothing else the rig sets moves it.
-
-    Autosaves, `quit.blend` and render previews land there, so leaving it at the
-    user's `$TMPDIR` means the rig writes outside `--work-dir` on every run -
-    which the rig's own transcript printed, while its docstring claimed
-    otherwise.
-    """
+    """`TMPDIR` moves Blender's session temp dir, with its autosaves and `quit.blend`, under `--work-dir`."""
     assert rig._child_environment(tmp_path)["TMPDIR"] == str(tmp_path / "tmp")
 
 
@@ -219,12 +188,10 @@ def test_an_inherited_pythonpath_cannot_shadow_the_staged_addon(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    `PYTHONPATH=$PWD/src` makes Blender's Python resolve `blender_mcp` to the server package.
+    An inherited `PYTHONPATH` or `BLENDERMCP_*` value does not reach Blender.
 
-    The bootstrap's `from blender_mcp.server_core import ...` then imports the
-    wrong tree and fails inside Blender, where the rig would see only a timeout.
-    Inherited `BLENDERMCP_*` values are dropped for the same reason: they would
-    silently override the rig's own isolation.
+    `PYTHONPATH=$PWD/src` would make the bootstrap import the server package instead
+    of the staged addon, which the rig would see only as a timeout.
     """
     monkeypatch.setenv("PYTHONPATH", str(SRC_DIR))
     monkeypatch.setenv("BLENDERMCP_OUTPUT_ROOTS", "/somewhere/else")
@@ -237,12 +204,9 @@ def test_blender_system_and_python_home_variables_cannot_redirect_the_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    A denylist of `BLENDER_USER_*` let `BLENDER_SYSTEM_SCRIPTS` straight through.
+    Pruning by prefix drops `BLENDER_SYSTEM_*`, and `PYTHONHOME` and `PYTHONSTARTUP` go too.
 
-    That variable redirects Blender's *system* scripts tree - the same shadowing
-    hazard one prefix over from the one the rig already guarded. `PYTHONHOME`
-    and `PYTHONSTARTUP` are the matching pair on the Python side: either can
-    make the bootstrap's import resolve somewhere the rig never staged.
+    Each can make Blender or the bootstrap load code the rig never staged.
     """
     redirected = ("BLENDER_SYSTEM_SCRIPTS", "BLENDER_SYSTEM_DATAFILES", "PYTHONHOME", "PYTHONSTARTUP")
     for name in redirected:
@@ -259,11 +223,9 @@ def test_blender_system_and_python_home_variables_cannot_redirect_the_child(
 
 def test_the_rig_refuses_a_port_something_is_already_listening_on() -> None:
     """
-    The addon's own default port is where a developer's live Blender already sits.
+    The rig refuses a port that already has a listener, such as a developer's own Blender.
 
-    `SO_REUSEADDR` does not let a second process bind it on macOS, so a rig that
-    treats "a connect succeeded" as readiness would drive the user's real
-    session and report its answers as the rig's.
+    Otherwise it would drive that session and report its answers as the rig's.
     """
     with _listener() as occupied:
         port = occupied.getsockname()[1]
@@ -273,18 +235,15 @@ def test_the_rig_refuses_a_port_something_is_already_listening_on() -> None:
 
 
 def test_a_free_port_passes_the_preflight() -> None:
-    """A check that always refuses would be indistinguishable from one that works."""
+    """A check that always refuses would look the same as one that works."""
     rig._require_port_free(rig._choose_port(0))
 
 
 def test_the_default_port_is_an_unused_ephemeral_port() -> None:
     """
-    Defaulting to the addon's 9876 aims the rig at whatever is already there.
+    `--port` defaults to a free ephemeral port, not the addon's own.
 
-    Asking the kernel for a port instead means the common case - a developer
-    with Blender open - is not a collision at all. Asserted through the parser,
-    not by calling `_choose_port(0)` directly: the latter passes whatever
-    `--port`'s default becomes, which is the value actually at issue.
+    Checked through the parser, because `_choose_port(0)` passes whatever the default becomes.
     """
     parsed = rig._parse_arguments(["--work-dir", "/nonexistent", "--scenario", "/nonexistent/scenario.py"])
     assert parsed.port != ADDON_DEFAULT_PORT, "--port must not default to the addon's own port"
@@ -303,13 +262,10 @@ def test_an_explicit_port_is_honoured() -> None:
 
 def test_the_port_is_rechecked_immediately_before_blender_is_started() -> None:
     """
-    The pre-flight and Blender's own `bind()` are minutes apart on a cold start.
+    The port is checked again just before `Popen`.
 
-    Staging the addon and copying fixtures happen in between, so re-running the
-    check just before `Popen` is what keeps that window down to this process's
-    own scheduling rather than the whole of setup. It cannot close the window -
-    only Blender's `bind()` is authoritative - which is why the receipt carries
-    the port too.
+    Staging runs between the first check and Blender's bind, leaving time for something
+    to take the port.
     """
     launch = _function_source("_launch_blender")
     assert "_require_port_free(port)" in launch, "the launch must re-check the port it is about to hand Blender"
@@ -320,11 +276,10 @@ def test_the_port_is_rechecked_immediately_before_blender_is_started() -> None:
 
 def test_readiness_requires_a_ping_round_trip_not_a_bare_connect() -> None:
     """
-    `start()` binds and listens before the drain timer is registered.
+    Readiness needs a ping round trip, not a bare connect.
 
-    So the port accepts while nothing dequeues, and `--blender-script` arguments
-    run in that window. `docker/blender/healthcheck.py` states this same lesson
-    and round-trips a ping; the local rig has to match its sibling.
+    The port accepts before the drain timer is registered, and `--blender-script`s run in
+    that window.
     """
     readiness = _function_source("_wait_until_ready")
     assert "_ping_answers" in readiness, "readiness must go through the ping round-trip helper"
@@ -336,12 +291,9 @@ def test_readiness_requires_a_ping_round_trip_not_a_bare_connect() -> None:
 
 def test_the_readiness_receipt_must_carry_the_rig_s_own_nonce_and_port(tmp_path: Path) -> None:
     """
-    A bind failure inside Blender is only a `print`; something else can answer the port.
+    Readiness needs a receipt carrying this run's nonce and port.
 
-    Requiring a receipt the rig's own launch wrote turns that into a rig error
-    instead of a passing run against a stranger. The port is checked as well as
-    the nonce: the bootstrap has always recorded it, and it is what catches a
-    stale receipt this same run wrote for an earlier launch in a reused work dir.
+    A failed bind in Blender is only printed, so another process may be answering the port.
     """
     receipt = tmp_path / rig._RECEIPT_FILE_NAME
     assert rig._receipt_matches(receipt, "abc123", 49152) is False, "a missing receipt is not readiness"
@@ -357,11 +309,9 @@ def test_the_readiness_receipt_must_carry_the_rig_s_own_nonce_and_port(tmp_path:
 
 def test_a_startup_failure_names_a_bind_failure_the_addon_swallowed(tmp_path: Path) -> None:
     """
-    `BlenderMCPServer.start()` catches its own `OSError` and only prints it.
+    A readiness failure names a bind failure the addon only printed.
 
-    So a port taken between the pre-flight and Blender's `bind()` used to read
-    out as nothing more specific than "never answered a ping", with the real
-    cause - `Failed to start server: [Errno 48]` - buried in the log tail.
+    Otherwise it reads as a ping that never came back, with the cause buried in the log tail.
     """
     log_path = tmp_path / "blender.log"
     child = _noisy_child("print('Failed to start server: [Errno 48] Address already in use')")
@@ -378,13 +328,7 @@ def test_a_startup_failure_names_a_bind_failure_the_addon_swallowed(tmp_path: Pa
 
 
 def test_the_log_reader_is_joined_before_a_failure_quotes_its_log() -> None:
-    """
-    The most diagnostic lines are the last ones, and they arrive last.
-
-    Blender has reached EOF by the time `_wait_until_ready` notices it exited,
-    so the reader will finish; quoting the tail before joining it races the
-    thread for exactly the lines that explain the failure.
-    """
+    """Once Blender exits, its reader is joined before the log tail is quoted, so the tail has the last lines."""
     readiness = _function_source("_wait_until_ready")
     assert "drain.join" in readiness, "the reader must be joined once Blender has exited"
     assert readiness.index("drain.join") < readiness.index("_log_tail"), (
@@ -396,12 +340,7 @@ def test_the_log_reader_is_joined_before_a_failure_quotes_its_log() -> None:
 
 
 def test_a_populated_work_dir_the_rig_did_not_create_is_refused(tmp_path: Path) -> None:
-    """
-    The marker is the whole of the rig's claim to `--work-dir`; without it, it has none.
-
-    Everything else it writes is inside this directory, so this one check is
-    what stands between a mistyped `--work-dir` and somebody's data.
-    """
+    """A populated `--work-dir` without the rig's marker is someone's data, and is refused."""
     (tmp_path / "notes.txt").write_text("someone's own work\n", encoding="utf-8")
 
     with pytest.raises(rig.RigError):
@@ -412,12 +351,10 @@ def test_a_populated_work_dir_the_rig_did_not_create_is_refused(tmp_path: Path) 
 
 def test_a_work_dir_that_is_a_real_blender_resources_root_is_refused(tmp_path: Path) -> None:
     """
-    `~/Library/Application Support/Blender/5.2` has no `addons/` child.
+    A work dir shaped like a Blender resources root is refused.
 
-    The real one is `scripts/addons`, so a guard that looked only at `addons/`
-    waved that path through and then pointed `BLENDER_USER_RESOURCES` at the
-    user's genuine configuration - the isolation defeated through an input
-    rather than a missing environment variable.
+    `~/Library/Application Support/Blender/5.2` has no `addons/` child, so checking for
+    `addons/` alone would point `BLENDER_USER_RESOURCES` at the user's configuration.
     """
     for name in ("config", "datafiles", "extensions"):
         (tmp_path / name).mkdir()
@@ -431,14 +368,7 @@ def test_a_work_dir_that_is_a_real_blender_resources_root_is_refused(tmp_path: P
 
 
 def test_a_work_dir_holding_auto_executed_scripts_is_refused(tmp_path: Path) -> None:
-    """
-    `BLENDER_USER_SCRIPTS=<work-dir>` makes `<work-dir>/startup/` auto-execute.
-
-    Blender imports every `.py` there at launch and puts `modules/` on
-    `sys.path`, so a reused or mistargeted work dir injects code into the very
-    Blender the rig is about to trust - a code-execution surface opened by the
-    isolation mechanism itself, not by a caller-supplied `--python`.
-    """
+    """A work dir with a `startup/` tree is refused, since Blender runs every script there at launch."""
     (tmp_path / "startup").mkdir()
     (tmp_path / "startup" / "someone_elses.py").write_text("# runs inside Blender\n", encoding="utf-8")
 
@@ -449,12 +379,7 @@ def test_a_work_dir_holding_auto_executed_scripts_is_refused(tmp_path: Path) -> 
 
 
 def test_an_empty_or_rig_created_work_dir_is_claimed(tmp_path: Path) -> None:
-    """
-    Refusing everything would make the rig unusable, which is not a safety property.
-
-    A second run has to succeed against the `config/` and `datafiles/` trees
-    Blender itself wrote there during the first one.
-    """
+    """The rig claims an empty work dir, and re-adopts its own along with what Blender wrote there."""
     work_dir = tmp_path / "work"
 
     rig._claim_work_dir(work_dir)
@@ -468,15 +393,7 @@ def test_an_empty_or_rig_created_work_dir_is_claimed(tmp_path: Path) -> None:
 def test_a_symlinked_work_dir_is_resolved_before_anything_is_claimed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """
-    Resolution at the boundary is what makes the marker check the only guard needed.
-
-    `_claim_work_dir` used to carry an `is_symlink()` refusal that could never
-    fire, because `main()` resolves `--work-dir` first. The refusal is gone; the
-    resolution it was shadowing is load-bearing and is pinned here instead, since
-    without it the rig would report, log and advertise a path that is not the one
-    it is writing to.
-    """
+    """`main()` resolves a symlinked `--work-dir`, so the rig reports the path it actually writes to."""
     target = tmp_path / "real"
     target.mkdir()
     link = tmp_path / "link"
@@ -490,15 +407,7 @@ def test_a_symlinked_work_dir_is_resolved_before_anything_is_claimed(
 
 
 def test_a_symlinked_work_dir_is_claimed_through_to_the_directory_it_points_at(tmp_path: Path) -> None:
-    """
-    A link to a directory the rig may own is claimed, not refused.
-
-    Deliberate: an `is_symlink()` refusal here was unreachable in production and
-    read as a safety control while protecting nothing, and refusing links
-    outright would break the ordinary case of a scratch directory living on
-    another volume. The marker lands in the real directory, which is where every
-    subsequent write goes.
-    """
+    """A symlink to a directory the rig may own is claimed, so scratch space on another volume works."""
     target = tmp_path / "real"
     target.mkdir()
     link = tmp_path / "link"
@@ -510,13 +419,7 @@ def test_a_symlinked_work_dir_is_claimed_through_to_the_directory_it_points_at(t
 
 
 def test_foreign_data_behind_a_symlinked_work_dir_is_still_refused(tmp_path: Path) -> None:
-    """
-    The marker check reads through the link, so it protects the real directory.
-
-    This is the whole reason a blanket symlink refusal was not needed: a link
-    aimed at somebody's data is refused *because that data is there*, with the
-    same message and the same reasoning as if the path had been given directly.
-    """
+    """Data behind a symlinked work dir is refused by the marker check, which reads through the link."""
     target = tmp_path / "real"
     target.mkdir()
     (target / "IRREPLACEABLE.blend").write_bytes(b"BLENDER-somebody-elses-work")
@@ -534,11 +437,10 @@ def test_foreign_data_behind_a_symlinked_work_dir_is_still_refused(tmp_path: Pat
 
 def test_staging_refuses_to_delete_an_addons_directory_it_does_not_own(tmp_path: Path) -> None:
     """
-    `--work-dir` is exactly the shape of a real `BLENDER_USER_SCRIPTS` directory.
+    Staging will not delete an `addons/blender_mcp` the rig did not create.
 
-    Pointed at one, an unguarded `rmtree` deletes the user's installed addon and
-    any local edits. `addon_manager.install_addon` already sets the convention:
-    remove only what you can positively identify as yours.
+    Aimed at a real `BLENDER_USER_SCRIPTS` directory, it would delete the user's installed
+    addon and their edits.
     """
     victim = tmp_path / "addons" / "blender_mcp"
     victim.mkdir(parents=True)
@@ -551,13 +453,7 @@ def test_staging_refuses_to_delete_an_addons_directory_it_does_not_own(tmp_path:
 
 
 def test_an_addons_path_that_is_a_regular_file_is_refused(tmp_path: Path) -> None:
-    """
-    A regular file hits neither the symlink branch nor the `is_dir()` branch.
-
-    It is the one shape of `<work-dir>/addons` that reached `mkdir`/`rmtree`
-    directly, so the caller got an uncaught `OSError` instead of the rig's own
-    explanation of what it refused and why.
-    """
+    """An `addons` path that is a regular file gets the rig's own refusal, not a raw `OSError`."""
     (tmp_path / "addons").write_text("not a directory\n", encoding="utf-8")
 
     with pytest.raises(rig.RigError):
@@ -579,12 +475,9 @@ def test_staging_replaces_its_own_previous_stage(tmp_path: Path) -> None:
 
 def test_staging_leaves_other_add_ons_in_its_own_directory_alone(tmp_path: Path) -> None:
     """
-    The marker proves the rig created the directory, not that it wrote everything in it.
+    Restaging replaces only `blender_mcp`, keeping add-ons a user installed beside it.
 
-    One run writes the marker; the user then installs real add-ons through
-    Blender's UI into the same `BLENDER_USER_SCRIPTS` tree; a `rmtree` of the
-    whole `addons/` directory on the next run deletes them all, blessed by a
-    marker the rig wrote itself. Remove only `blender_mcp`.
+    The marker shows the rig created `addons/`, not everything in it.
     """
     rig._stage_addon(tmp_path)
     neighbour = tmp_path / "addons" / "some_other_addon"
@@ -599,12 +492,9 @@ def test_staging_leaves_other_add_ons_in_its_own_directory_alone(tmp_path: Path)
 
 def test_staging_refuses_a_symlinked_addons_directory(tmp_path: Path) -> None:
     """
-    A symlink makes `exists()` and `rmtree` disagree about what is being deleted.
+    Staging refuses a symlinked `addons/` directory.
 
-    The target deliberately carries the rig's own marker. Without it the marker
-    check refuses the directory first and this test passes whether or not the
-    symlink check exists at all - which is what it did, until the revert matrix
-    was extended to every node and caught it.
+    The link target carries the rig's marker, so only the symlink check can refuse it.
     """
     real = tmp_path / "elsewhere"
     real.mkdir()
@@ -619,12 +509,7 @@ def test_staging_refuses_a_symlinked_addons_directory(tmp_path: Path) -> None:
 
 
 def test_fixtures_are_copied_so_a_scenario_cannot_write_through_to_the_original(tmp_path: Path) -> None:
-    """
-    A scenario that calls a save command is handed a path, not a policy.
-
-    Handing over the caller's own `.blend` means the first save overwrites the
-    source fixture in place, which no later task could detect.
-    """
+    """Fixtures are copied, so a scenario's save cannot overwrite the caller's original."""
     source = tmp_path / "source.blend"
     source.write_bytes(b"BLENDER-original")
     work_dir = tmp_path / "work"
@@ -638,13 +523,7 @@ def test_fixtures_are_copied_so_a_scenario_cannot_write_through_to_the_original(
 
 
 def test_a_pre_placed_fixture_is_not_silently_overwritten(tmp_path: Path) -> None:
-    """
-    `<work-dir>/blends/<name>.blend` was `copy2`'d over whatever was already there.
-
-    The rig's marker guarded `addons/` and nothing else, so the one directory it
-    copies *user data* into had no provenance check at all - and the rig's
-    stated rule is that it deletes nothing under `--work-dir` it did not create.
-    """
+    """An unmarked `blends/` directory is refused, so a file already there is not overwritten."""
     work_dir = tmp_path / "work"
     rig._claim_work_dir(work_dir)
     (work_dir / "blends").mkdir()
@@ -674,12 +553,7 @@ def test_the_rig_replaces_a_fixture_copy_it_made_itself(tmp_path: Path) -> None:
 
 
 def test_a_symlinked_fixture_destination_is_not_written_through(tmp_path: Path) -> None:
-    """
-    `shutil.copy2` follows a destination symlink and writes through it.
-
-    That is the same hazard `_stage_addon` was hardened against, left open in
-    the function that copies the caller's own fixtures.
-    """
+    """`shutil.copy2` writes through a destination symlink, so staging a fixture refuses one."""
     work_dir = tmp_path / "work"
     rig._claim_work_dir(work_dir)
     blends = rig._rig_owned_subdirectory(work_dir, "blends")
@@ -696,7 +570,7 @@ def test_a_symlinked_fixture_destination_is_not_written_through(tmp_path: Path) 
 
 
 def test_two_fixtures_with_the_same_name_are_refused(tmp_path: Path) -> None:
-    """Both resolve to one filename, so the second silently became the first."""
+    """Both resolve to one filename, so the second would silently overwrite the first."""
     work_dir = tmp_path / "work"
     first = tmp_path / "first.blend"
     first.write_bytes(b"BLENDER-first")
@@ -716,13 +590,7 @@ def test_a_fixture_name_cannot_escape_the_work_dir() -> None:
 def test_importing_a_scenario_leaves_no_pycache_beside_the_caller_s_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """
-    `exec_module` writes `__pycache__/` next to the *caller's* scenario, not ours.
-
-    That is outside `--work-dir`, so it falsified the containment claim on every
-    run - `scripts/__pycache__/` in this repo is the same effect from this very
-    module. The container half already sets `PYTHONDONTWRITEBYTECODE=1`.
-    """
+    """Importing a scenario writes no `__pycache__/` beside it, outside `--work-dir`."""
     monkeypatch.setattr(sys, "dont_write_bytecode", False)
     scenario = tmp_path / "scenario.py"
     scenario.write_text("def run(rig):\n    return None\n", encoding="utf-8")
@@ -736,12 +604,7 @@ def test_importing_a_scenario_leaves_no_pycache_beside_the_caller_s_file(
 
 
 def test_a_scenario_that_never_returns_is_abandoned_at_its_deadline() -> None:
-    """
-    The rig's documented synchronization is "poll for a file", which waits forever.
-
-    A harness whose purpose is to demonstrate that Blender did not hang cannot
-    itself hang, or the evidence is a stuck process and no transcript.
-    """
+    """A scenario that never returns is abandoned at its deadline, so the rig cannot hang with it."""
     blocked = threading.Event()
     with pytest.raises(rig.RigError) as failure:
         rig._run_scenario_with_deadline(lambda _rig: blocked.wait(), None, 0.25)
@@ -763,11 +626,9 @@ def test_a_failing_scenario_still_reports_its_own_error() -> None:
 
 def test_an_abandoned_scenario_cannot_send_another_command(tmp_path: Path) -> None:
     """
-    The scenario thread is a daemon: it is abandoned at the deadline, never stopped.
+    An abandoned scenario cannot send another command.
 
-    So it keeps running while the rig prints its verdict and tears Blender down,
-    and `send()` had nothing to check. A command issued after `RIG FAILED` would
-    arrive at a Blender that is already being killed.
+    Its daemon thread keeps running while the rig tears Blender down.
     """
     abandoned = threading.Event()
     abandoned.set()
@@ -781,17 +642,9 @@ def test_an_abandoned_scenario_cannot_send_another_command(tmp_path: Path) -> No
 
 def test_a_command_that_never_came_back_is_reported_as_possibly_still_running(tmp_path: Path) -> None:
     """
-    A timed-out command is an unknown outcome, not a failure, and must read as one.
+    A timed-out command is reported as possibly still running, not as failed.
 
-    Measured against the real addon with a 0.5s command timeout: the rig raised
-    `TimeoutError: timed out`, and the command it had given up on then ran on
-    Blender's next main-thread tick and mutated the scene. Nothing cancels a
-    queued command, and its reply is lost in silence - a `sendall` to a
-    peer-closed TCP socket succeeds at the kernel level until the RST arrives, so
-    the addon's own "client disconnected" branch is usually never reached. An
-    operator told "failure" about a command that changed the scene draws exactly
-    the wrong conclusion, so the error has to name the command, the port and the
-    doubt, and it has to be a `RigError` as both docstrings promise.
+    Nothing cancels a queued command, so it can still change the scene after the rig gives up.
     """
     with _listener() as silent:
         port = silent.getsockname()[1]
@@ -809,15 +662,7 @@ def test_a_command_that_never_came_back_is_reported_as_possibly_still_running(tm
 
 
 def test_one_frame_is_bounded_as_a_whole_not_one_recv_at_a_time() -> None:
-    """
-    A socket timeout bounds one `recv`, so a dribbling peer reads for ever.
-
-    Measured: a peer sending one byte every 0.4s kept `_read_frame` reading for
-    3.2s against a 1.0s socket timeout, because every individual `recv` came
-    back inside the limit. A harness whose verdict is "Blender did not hang"
-    must not own a wait it cannot bound, so the frame carries a deadline of its
-    own and every `recv` gets only what is left of it.
-    """
+    """The deadline covers the whole frame, so a peer trickling bytes without a newline cannot outlast it."""
     dribbles, interval, budget = 20, 0.1, 0.3
     with _listener() as listener:
         port = listener.getsockname()[1]
@@ -845,13 +690,7 @@ def test_one_frame_is_bounded_as_a_whole_not_one_recv_at_a_time() -> None:
 
 
 def test_the_deadline_silences_the_scenario_it_could_not_stop(capsys: pytest.CaptureFixture[str]) -> None:
-    """
-    Stdout *is* the evidence artefact, so nothing may land in it after the verdict.
-
-    An abandoned scenario that keeps printing leaves `-->`/`<--` pairs below
-    `RIG FAILED`, or a `<--` with no matching `-->`, and a reader has no way to
-    tell which half of the transcript to believe.
-    """
+    """Nothing is printed after the deadline's verdict, since stdout is the transcript."""
     blocked = threading.Event()
     abandoned = threading.Event()
     under_test = rig.BlenderRig(Path("/nonexistent"), {}, 1, 1.0, abandoned)
@@ -869,13 +708,7 @@ def test_the_deadline_silences_the_scenario_it_could_not_stop(capsys: pytest.Cap
 def test_a_scenario_that_exits_the_process_is_not_reported_as_a_pass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """
-    `sys.exit(0)` in a scenario is a `SystemExit`, which is not an `Exception`.
-
-    Catching only `Exception` let it out of `main` untouched, so the rig exited
-    **0** having printed neither `RIG PASSED` nor `RIG FAILED`. The rig's exit
-    code is its verdict, and every task in this phase is gated on it.
-    """
+    """A scenario calling `sys.exit(0)` exits 1 with `RIG FAILED`, since the exit code is the verdict."""
 
     def _exit_cleanly(_arguments: argparse.Namespace, _work_dir: Path) -> None:
         raise SystemExit(0)
@@ -892,13 +725,9 @@ def test_a_scenario_that_exits_the_process_is_not_reported_as_a_pass(
 
 def test_the_process_is_never_waited_on_without_a_timeout() -> None:
     """
-    CPython's `Popen.__exit__` calls `self.wait()` with no timeout.
+    Teardown never waits on Blender without a timeout.
 
-    So `with _launch_blender(...) as blender:` turns the one teardown failure the
-    rig anticipates - a process that survived `SIGKILL` - into a permanent hang,
-    because that exception propagates into `__exit__`, which then waits forever
-    on exactly the process that just proved it will not die. Teardown is
-    explicit, in `try`/`finally`, for that reason.
+    `Popen.__exit__` waits with none, so a process that survived SIGKILL would hang the rig.
     """
     execute = _function_source("_execute")
     assert "with _launch_blender" not in execute and "with subprocess.Popen" not in execute, (
@@ -912,11 +741,9 @@ def test_the_process_is_never_waited_on_without_a_timeout() -> None:
 
 def test_blender_s_output_is_drained_to_a_log_instead_of_filling_the_pipe(tmp_path: Path) -> None:
     """
-    `stdout=PIPE` with no reader deadlocks Blender in `write()` on its main thread.
+    Blender's output is drained to the log.
 
-    That is the thread the drain loop runs on, so the rig's own logging would be
-    what stops commands being answered - and the log is also the only place a
-    bootstrap failure is visible.
+    An unread pipe would block Blender in `write()` on the main thread that answers commands.
     """
     log_path = tmp_path / "blender.log"
     child = _noisy_child("print('RIG: hello')\nfor i in range(5000): print('noise', i)")
@@ -935,13 +762,7 @@ def test_blender_s_output_is_drained_to_a_log_instead_of_filling_the_pipe(tmp_pa
 
 
 def test_blender_s_output_is_decoded_leniently() -> None:
-    """
-    Blender's output is not guaranteed UTF-8: native chatter, a crash dump, a path.
-
-    Under Python's default strict decoding one such byte raises inside the
-    reader, and the fallback below - which exists for everything this does not
-    cover - would then be doing the work on every ordinary run.
-    """
+    """The pipe decodes with `errors="replace"`, so non-UTF-8 output does not end the reader."""
     assert 'errors="replace"' in _function_source("_launch_blender"), (
         "the pipe must decode leniently, or one non-UTF-8 byte ends the reader"
     )
@@ -949,12 +770,9 @@ def test_blender_s_output_is_decoded_leniently() -> None:
 
 def test_the_log_reader_survives_output_it_cannot_decode(tmp_path: Path) -> None:
     """
-    A dead reader silently restores the deadlock draining exists to prevent.
+    The log reader keeps draining after an undecodable byte, and records the failure.
 
-    `_drain_output`'s own docstring said it "must never stop early"; one
-    undecodable byte ended the thread, the pipe then filled at ~64 KiB, and
-    Blender blocked in `write()` on its main thread with no diagnostic at all -
-    a failure that reads as "Blender hung".
+    A dead reader lets the pipe fill and deadlock Blender, which would look like Blender hanging.
     """
     log_path = tmp_path / "blender.log"
     child = _noisy_child(UNDECODABLE_THEN_NOISY, strict_decoding=True)
@@ -976,12 +794,7 @@ def test_the_log_reader_survives_output_it_cannot_decode(tmp_path: Path) -> None
 def test_the_log_reader_stops_echoing_once_the_scenario_is_abandoned(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """
-    Blender keeps printing while it is being torn down, long after the verdict.
-
-    Those lines still belong in the log - that is the evidence - but not in the
-    transcript below `RIG FAILED`.
-    """
+    """Once the scenario is abandoned, Blender's lines still reach the log but not the transcript."""
     log_path = tmp_path / "blender.log"
     abandoned = threading.Event()
     abandoned.set()
@@ -1000,12 +813,7 @@ def test_the_log_reader_stops_echoing_once_the_scenario_is_abandoned(
 
 
 def test_teardown_reports_the_rig_s_own_log_reader_dying(tmp_path: Path) -> None:
-    """
-    "Blender hung" is the wrong diagnosis when it was the rig's reader that died.
-
-    The reader keeps the pipe drained either way, so nothing hangs - but the log
-    is short and the run's failure has to name its real cause.
-    """
+    """Teardown blames the rig's own log reader when that reader died."""
     log_path = tmp_path / "blender.log"
     child = _noisy_child(UNDECODABLE_THEN_NOISY, strict_decoding=True)
     drain = rig._OutputDrain(child, log_path, threading.Event())
@@ -1021,11 +829,10 @@ def test_teardown_reports_the_rig_s_own_log_reader_dying(tmp_path: Path) -> None
 
 def test_teardown_reports_a_log_reader_that_outlived_blender(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    A Blender grandchild that inherited the pipe means no EOF ever arrives.
+    Teardown reports a reader still running after Blender exits.
 
-    The reader then sits in `readline` forever; closing the pipe under it raises
-    `ValueError` on a daemon thread and leaks the log handle, which is why
-    teardown reports it instead of proceeding as if the join had worked.
+    A grandchild holding the pipe means EOF never comes, and closing the pipe under the
+    reader would fail on its thread.
     """
     monkeypatch.setattr(rig, "_SHUTDOWN_GRACE_SECONDS", 0.5)
     log_path = tmp_path / "blender.log"
@@ -1052,14 +859,10 @@ def test_a_launched_blender_is_stopped_even_if_its_reader_cannot_be_constructed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    A Blender with nobody on its pipe is the one process the rig must never orphan.
+    A launched Blender is stopped even if its log reader cannot be constructed.
 
-    `_launch_blender` hands back a process whose output is already accumulating
-    in a pipe, so the statement that gives it a reader has to be inside the
-    `try` that guarantees teardown. Constructed outside it, a failure there -
-    "can't start new thread" is the realistic one - left a GUI Blender running
-    with an undrained pipe, which deadlocks it in `write()` at ~64 KiB: the
-    exact hazard the reader exists to prevent, caused by the reader's absence.
+    The reader is created inside the `try` that guarantees teardown, or a Blender with an
+    undrained pipe would be left running to deadlock.
     """
     work_dir = tmp_path / "work"
     scenario = tmp_path / "scenario.py"
@@ -1086,12 +889,10 @@ def test_a_launched_blender_is_stopped_even_if_its_reader_cannot_be_constructed(
 
 def test_teardown_tolerates_a_reader_that_never_started(tmp_path: Path) -> None:
     """
-    `Thread.join` on a thread that was never started raises `RuntimeError`.
+    Teardown tolerates a reader that never started.
 
-    It would be raised from teardown's own `finally`, after Blender had already
-    been terminated and before any diagnosis was built - so the run's reported
-    cause would be "cannot join thread before it is started" rather than the
-    "can't start new thread" that actually happened.
+    Joining an unstarted thread raises `RuntimeError`, which would hide why the reader
+    failed to start.
     """
     log_path = tmp_path / "blender.log"
     child = _noisy_child("print('RIG: nobody ever read this')")
@@ -1109,7 +910,7 @@ def test_teardown_tolerates_a_reader_that_never_started(tmp_path: Path) -> None:
 
 
 def test_failures_quote_the_tail_of_that_log(tmp_path: Path) -> None:
-    """A rig error with no Blender output in it is what made the last failure unreadable."""
+    """A rig error with no Blender output in it leaves the failure unreadable."""
     log_path = tmp_path / "blender.log"
     log_path.write_text("".join(f"line {index}\n" for index in range(200)), encoding="utf-8")
     tail = rig._log_tail(log_path)
@@ -1122,13 +923,7 @@ def test_failures_quote_the_tail_of_that_log(tmp_path: Path) -> None:
 
 
 def test_no_packaged_module_references_the_rig() -> None:
-    """
-    `scripts/` is not packaged and the rig executes an arbitrary scenario module.
-
-    That is acceptable only while nothing shipped can reach it: an import from
-    `src/` would put an arbitrary-code-execution path inside the distributed
-    package. Keep it true by test rather than by luck.
-    """
+    """No packaged module references the rig, which runs arbitrary scenario code."""
     offenders = [
         str(path.relative_to(REPO_ROOT))
         for path in SRC_DIR.rglob("*.py")
@@ -1139,12 +934,9 @@ def test_no_packaged_module_references_the_rig() -> None:
 
 def test_the_rig_is_not_importable_as_part_of_the_package() -> None:
     """
-    A `scripts/__init__.py`, or a packaging root outside `src/`, would ship the rig.
+    Neither a `scripts/__init__.py` nor a packaging root outside `src/` can ship the rig.
 
-    Both halves are checked against the files that decide it. An earlier version
-    of this test also compared `os.path.commonpath([RIG_PATH, SRC_DIR])` to the
-    repo root, which cannot fail: both constants are built from `__file__` and
-    the comparison never reads the packaging configuration the test is named for.
+    Both are read from the files that decide packaging, not inferred from paths.
     """
     assert not (REPO_ROOT / "scripts" / "__init__.py").exists()
 

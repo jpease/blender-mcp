@@ -159,7 +159,7 @@ def test_get_addon_info_reports_roots_without_any_configuration(monkeypatch: pyt
 
 
 # ---------------------------------------------------------------------------
-# The enforcing read path (plan Task 5)
+# The enforcing read path
 # ---------------------------------------------------------------------------
 
 

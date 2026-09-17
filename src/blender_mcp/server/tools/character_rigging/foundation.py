@@ -495,10 +495,8 @@ PoseConstraintSpec = Annotated[
     Field(discriminator="type"),
 ]
 
-# Validated inside add_pose_bone_constraint rather than declared as that tool's parameter
-# type: exposing PoseConstraintSpec directly would serialize this whole 13-variant
-# discriminated union into that one tool's advertised JSON schema on every client
-# connection, at a cost of several thousand tokens for detail most calls never touch.
+# Validated inside add_pose_bone_constraint, not declared as its parameter type, so the whole
+# union stays out of the tool schema every client carries in context.
 _pose_constraint_adapter = TypeAdapter(PoseConstraintSpec)
 
 

@@ -1,7 +1,7 @@
 r"""
-Prove the file-swap barrier and the session epoch against a live Blender, for Task 3 Step 7.
+Check the file-swap barrier and the session epoch against a live Blender.
 
-Run it with the in-Blender half and a fixture, from the repository root::
+From the repository root::
 
     /opt/homebrew/bin/blender --background --factory-startup \
         --python scripts/rig_scenarios/make_fixture.py -- <work>/fixture.blend
@@ -11,44 +11,18 @@ Run it with the in-Blender half and a fixture, from the repository root::
         --blender-script scripts/rig_scenarios/in_blender_open_shot_spike.py \
         --blend fixture=<work>/fixture.blend
 
-It needs a GUI Blender: the addon refuses to start under `--background` and
-`bpy.app.timers` never fire there, so the drain loop that carries the barrier
-never runs.
+Needs a GUI Blender: the addon's server refuses to start under `--background`.
 
-**Which layer this reaches.** The addon socket only. It shows `get_addon_info`
-and `get_session_info` carrying `session_epoch`, and it shows the barrier
-answering real sockets. It cannot show the *MCP tool* `get_addon_status`
-surfacing the epoch: that lives in `server/tools/core.py`, inside an MCP process
-this rig never starts. That half is covered by ordinary `pytest`
-(`tests/server/tools/test_core.py`), and reading this transcript as evidence for
-it would be a false claim about what was verified.
+This reaches the addon socket only. The MCP tool `get_addon_status` runs in an MCP
+process the rig never starts, so this transcript says nothing about it.
 
-**How the batch is put into one drain tick, and why not the obvious way.** The
-first version of this scenario opened one socket per command and wrote every
-frame before reading any reply - the recipe TASK_STATE records from Task 2's
-spike. **Measured, it does not hold the ordering this task needs**: on the first
-live run the swap landed but both siblings came back `status: success`, because
-four independent `handle_client` threads enqueue in whatever order they are
-scheduled and the 0.05 s drain timer can fire between two of them. That is a
-property of the harness, not of the barrier, and asserting through it would make
-this scenario intermittent.
+Asserted batches go down one connection in one `sendall`, and `handle_client`
+queues the frames in the order written. With a socket per command, client threads
+enqueue in scheduling order and a drain tick can fall between them, so the
+four-connection round asserts only that every command is answered once.
 
-So the asserted batch is written as four frames down **one** connection in a
-single `sendall`. `handle_client` splits its receive buffer on the newline
-terminator and queues every complete frame from one `recv` in order, so the
-batch reaches the queue in the order it was written and does so between drain
-ticks. The multi-connection round below is kept, but it asserts only what is
-true regardless of tick boundaries - that every command gets exactly one
-response. The cross-client ordering claim is evidenced headlessly instead, by
-`tests/server/test_threading.py::test_every_command_spanning_a_swap_is_answered_on_both_sockets`,
-where the queue can be filled directly and the precondition is guaranteed.
-
-**Every run carries a load stamp.** Several rounds here are wall-clock bounded -
-`MID_LOAD_STALL_SECONDS` is a deliberate 3 s stall the send is timed against,
-and every frame read has a 60 s ceiling - so `scripts/quiet_box.py` prints
-load-per-core before and after, exactly as `scripts/revert_matrix.py` does. A
-transcript from a contended box then says so in the transcript instead of being
-argued about later.
+Several rounds are wall-clock bounded, so `quiet_box` prints load per core before
+and after; a transcript from a busy machine shows it.
 
 Fails by raising; a clean return is a pass.
 """
@@ -63,18 +37,9 @@ import unicodedata
 from pathlib import Path
 from typing import Protocol
 
-# `blender_rig.py` loads this file through `spec_from_file_location` from an
-# arbitrary working directory, so `scripts/` is not reliably on `sys.path` here
-# and a plain `import quiet_box` would depend on how the rig itself happened to
-# be invoked. It is resolved from this file's own location instead.
-#
-# **`quiet_box.load_quiet_box` is deliberately not what does this**, and the
-# reason is worth a line rather than a puzzled reader: that function *is* the
-# general-purpose upward search, but it lives inside the module it would be
-# loading, so it cannot be the thing that bootstraps it. A scenario sits one
-# directory below `scripts/` and knows it, so the path is direct. Consumers that
-# already hold the module - `tests/test_quiet_box.py` is one - use
-# `load_quiet_box`, which is where it is covered.
+# The rig loads this file by path from any working directory, so `scripts/` may not
+# be on `sys.path`. `quiet_box.load_quiet_box` cannot load its own module, so the
+# path is resolved from this file.
 _QUIET_BOX_PATH = Path(__file__).resolve().parents[1] / "quiet_box.py"
 _QUIET_BOX_SPEC = importlib.util.spec_from_file_location("quiet_box_for_scenario", _QUIET_BOX_PATH)
 if _QUIET_BOX_SPEC is None or _QUIET_BOX_SPEC.loader is None:
@@ -85,10 +50,10 @@ _QUIET_BOX_SPEC.loader.exec_module(quiet_box)
 
 class Rig(Protocol):
     """
-    The part of `BlenderRig` a scenario is allowed to use.
+    The part of `BlenderRig` a scenario may use.
 
-    Declared as a Protocol rather than imported: `scripts/blender_rig.py` loads a
-    scenario by path, so the dependency runs that way round.
+    A Protocol because the rig loads scenarios by path; importing the rig here would
+    reverse that dependency.
     """
 
     work_dir: Path
@@ -128,7 +93,7 @@ def _read_frames(sock: socket.socket, expected: int) -> list[dict]:
 
     Raises:
         AssertionError: If Blender closed the connection before answering every
-            command, which is the hang this whole task exists to make impossible.
+            command.
 
     """
     sock.settimeout(BATCH_TIMEOUT_SECONDS)
@@ -170,7 +135,7 @@ def _echo(requests: list[dict], frames: list[dict]) -> dict[str, dict]:
 
 def _pipelined(port: int, requests: list[dict]) -> dict[str, dict]:
     """
-    Write a whole batch down one connection, so it queues in order and in one tick.
+    Write a whole batch down one connection, so it queues in the order written.
 
     Args:
         port: The addon's socket port.
@@ -209,32 +174,17 @@ def _across_connections(port: int, requests: list[dict]) -> dict[str, dict]:
             sock.close()
 
 
-# A path-shaped token: either separator family anywhere, or a drive letter.
-# An unaccompanied ":" is not one - the barrier's own message opens
-# "Discarded without running:" - so the drive-letter case is matched
-# structurally rather than by the colon alone.
-#
-# The previous version of this check asked only whether a whitespace-split token
-# started with "/" - the identical heuristic `tests/test_session_state.py` used,
-# so the repository had two independent checks sharing one blind spot. Every
-# hostile input in that file's `_HOSTILE_PATHS` table passed both.
+# A separator of either kind anywhere, or a leading drive letter. Not a bare ":",
+# which the barrier's own message contains.
 _PATH_SHAPED = re.compile(r"[/\\]|^[A-Za-z]:")
-# Not separators to any filesystem; read as one by every human, log viewer and
-# LLM downstream of this message. `\uff0f` in place of "/" renders as an
-# absolute path while satisfying `_PATH_SHAPED` completely.
+# Not separators to any filesystem, but read as one: `\uff0f` renders like "/"
+# and passes `_PATH_SHAPED`.
 _SEPARATOR_HOMOGLYPHS = ("\u2044", "\u2215", "\uff0f", "\uff3c", "\uff1a")
-# Every Unicode general category that must not reach a client, restated from the
-# threat rather than imported from `session.py`: a guard that borrows the
-# implementation's own set agrees with it even when it is wrong. Cc is the C0/C1
-# controls and DEL, Cf the bidi overrides and the zero-width set, Zl/Zp the two
-# line separators, Cs/Co/Cn the unencodable, font-defined and reserved.
-#
-# **This is the second of the two guards cycle 1's finding lives in.** The other
-# is `_NOTE_SHAPE` in `tests/test_session_state.py`. Both were ASCII-only, so
-# cycle 1's "two checks, one blind spot" had *moved* rather than closed: U+2028
-# produced a three-line "one-line" note, U+202E reversed a name, and U+FF0F
-# rendered as an absolute path, past both of them. They are widened together, in
-# one edit, for that reason.
+# Unicode categories that must not reach a client: controls, format characters
+# (bidi overrides, zero-width), line and paragraph separators, and surrogate,
+# private-use and unassigned code points. Written out rather than imported from the
+# addon, so a gap in its set cannot hide here too. `_NOTE_SHAPE` in
+# `tests/test_session_state.py` guards the same leak; widen both together.
 _UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 
 
@@ -242,12 +192,9 @@ def _assert_client_safe(label: str, message: str) -> None:
     """
     Assert a client-facing message is one line of safe text naming no path.
 
-    Asserted as a positive shape rather than as the absence of a leading "/":
-    a Windows path, a UNC path, an embedded newline and an ANSI escape all
-    satisfy "no token starts with /" while disclosing exactly what the check
-    exists to stop. The character check is a Unicode *category* lookup rather
-    than a code-point range, because every case that defeated the previous
-    ASCII range sits past the end of it.
+    Checking only for a leading "/" would pass Windows and UNC paths, newlines and
+    escape codes. Characters are checked by Unicode category because the harmful
+    ones are not all ASCII.
 
     Args:
         label: What the message is, for the failure text.
@@ -270,7 +217,7 @@ def _assert_client_safe(label: str, message: str) -> None:
 
 def _swap_batch(label: str, filepath: str) -> list[dict]:
     """
-    Build `[ping, open_shot, ping, ping]` with ids a transcript can be read by.
+    Build `[ping, open_shot, ping, ping]` with ids that label the transcript.
 
     Args:
         label: Prefix for the request ids.
@@ -295,8 +242,8 @@ def _assert_discarded(responses: dict[str, dict], label: str, epoch: int) -> Non
     Args:
         responses: The batch's replies.
         label: The batch's id prefix.
-        epoch: The epoch the addon is at now; the message must name it and must
-            not claim it moved.
+        epoch: The addon's current epoch, which the message must name without
+            claiming it changed.
 
     """
     for suffix in ("C-after", "D-after"):
@@ -320,10 +267,7 @@ def run(rig: Rig) -> None:
         rig: The `BlenderRig` the harness built, already serving.
 
     """
-    # Stamped before and after, like `scripts/revert_matrix.py`: several rounds
-    # below are wall-clock bounded (`MID_LOAD_STALL_SECONDS`, the 60 s frame
-    # timeouts), and a transcript from a contended box has to say so itself
-    # rather than be reconstructed from memory afterwards.
+    # Several rounds below are wall-clock bounded; the stamps show a busy machine.
     print(quiet_box.stamp("before"), flush=True)
     port = json.loads((rig.work_dir / RECEIPT_FILE_NAME).read_text(encoding="utf-8"))["port"]
     spike = json.loads((rig.work_dir / SPIKE_READY_FILE_NAME).read_text(encoding="utf-8"))
@@ -402,37 +346,21 @@ def _failed_swap_round(rig: Rig, port: int, before: dict) -> None:
     _assert_client_safe("last_load_error", str(diagnosed["last_load_error"]))
 
 
-# How long the spike stalls Blender's main thread before `open_mainfile` runs,
-# and how long this side waits before pushing a command into that window.
-# `wm.open_mainfile` was measured at 4.6 s on a 1.05 GB fixture; the rig's
-# fixture loads in milliseconds, so the window has to be created deliberately.
+# The spike stalls the main thread before the load, and this side sends into that
+# window. The rig's fixture loads in milliseconds, too fast to hit otherwise.
 MID_LOAD_STALL_SECONDS = 3.0
 MID_LOAD_SEND_AFTER_SECONDS = 1.0
 
 
 def _mid_load_round(rig: Rig, port: int) -> None:
     """
-    Push a command into the load itself - the window the pre-swap snapshot cannot see.
+    Send a command during the load, where the pre-swap queue snapshot cannot see it.
 
-    This is the case the enqueue-time stamp exists for, and nothing else in this
-    repository can observe it. The swap's own connection stalls Blender's main
-    thread inside `open_shot` **before** the operator runs, so the pre-swap
-    queue snapshot has already been taken and is empty. A *second* connection
-    then sends a `ping`, which is enqueued with the pre-swap epoch stamped on
-    it. `load_post` then moves the epoch, and the ping must come back rejected -
-    by the stamp, because the snapshot never saw it.
-
-    A second process would behave identically; a second connection is used
-    because it is the same code path (`handle_client` runs one thread per
-    connection, with no notion of which process opened it) and needs no second
-    Blender.
-
-    **On framing.** One `sendall` does not guarantee one `recv`, and nothing
-    here assumes it does: `_read_frames` accumulates bytes and splits on the
-    newline terminator until the expected number of complete frames has arrived,
-    so a frame split across two reads, or two frames in one read, are both
-    handled. What the ordering relies on is the *send* order plus the stall,
-    not the read granularity.
+    The swap stalls the main thread inside `open_shot` after the snapshot is taken.
+    A second connection then sends a `ping`, stamped with the old epoch; once
+    `load_post` moves the epoch, only the stamp can reject it. A second connection
+    takes the same path as a second server process, since `handle_client` runs one
+    thread per connection.
 
     Args:
         rig: The rig, for the fixture path and for single commands.
@@ -487,12 +415,11 @@ def _mid_load_round(rig: Rig, port: int) -> None:
 
 def _report_timer_after_raise(rig: Rig) -> None:
     """
-    Report what Blender does with a `bpy.app.timers` callback that raised.
+    Print whether Blender kept a timer callback that raised.
 
-    Reported rather than asserted: this measures Blender's behaviour, not this
-    repository's, and the answer decides how severe an escaping exception in
-    `drain_command_queue` is. If Blender unregisters the callback, one
-    `BaseException` kills the drain loop permanently and **every** client hangs.
+    Printed, not asserted, because it describes Blender, not this repository. If
+    Blender drops such a callback, the drain loop survives an escaping exception only
+    through `_replace_this_dying_timer`.
 
     Args:
         rig: The rig, for its work directory.
@@ -515,10 +442,9 @@ def _across_connection_round(rig: Rig, port: int) -> None:
     """
     Swap with four separate clients, asserting only what tick boundaries cannot change.
 
-    Every command gets exactly one response whatever order the client threads
-    enqueue in; how many the barrier discards depends on whether the batch
-    landed in one tick, so that number is printed rather than asserted. See the
-    module docstring.
+    Every command gets one response whatever order the client threads enqueue in.
+    How many the barrier discards depends on how those enqueues fall across ticks,
+    so that count is printed, not asserted.
 
     Args:
         rig: The rig, for the fixture path.

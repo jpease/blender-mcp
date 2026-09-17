@@ -1,28 +1,18 @@
-# Every tool takes `ctx` by convention so any of them can reach the FastMCP context without a
-# signature change; none here uses it. Tool signatures are deliberately flat rather than
-# wrapped in one nested object: a named top-level parameter is far easier for a model to fill
-# correctly, and that legibility is worth the extra advertised schema it costs.
+# Tools take `ctx` by convention, used or not. Parameters stay flat because a model fills named
+# top-level parameters more reliably, which is worth the extra schema bytes.
 # ruff: file-ignore[too-many-arguments, too-many-positional-arguments, unused-function-argument]
-# A tool docstring is wire payload sent to every client on every connection. `_documentation.py`
-# strips a `Raises:` section and discards it (so it costs no advertised bytes) and folds a
-# `Returns:` section into the shared envelope suffix it appends to every description (so it
-# refines rather than duplicates). Neither is written for these three tools because they raise
-# only the validation errors their summaries already state and return the unremarkable standard
-# envelope documented in envelope.py; add a `Returns:` only when `data` carries a shape worth
-# naming. The same file-ignore covers the `@model_validator` methods below, which pydantic
-# calls rather than any caller who could act on a Raises: section; each states its rule in its
-# one-line summary, while the module-level helpers they delegate to carry full Raises:.
+# Tool docstrings are sent to every client. These tools return the standard envelope and raise
+# only the errors their summaries state, so a `Returns:` or `Raises:` would add nothing. Add
+# `Returns:` only when `data` has a shape worth naming. Pydantic calls the validators, so no
+# caller could act on their `Raises:` either.
 # ruff: file-ignore[docstring-missing-exception, docstring-missing-returns]
 # pydantic's discriminated-union and `Annotated` forms defeat pyright's call/type-form checks.
 # pyright: reportCallIssue=false, reportInvalidTypeForm=false
 """
 Scene authoring and destructive scene operations.
 
-Split out of `scene.py` so a shot-assembly process does not advertise them. Geometry creation
-carries ten geometry kinds across sixteen nested models - by far the heaviest schema in the
-former core surface - that shot work never uses, and `reset_scene`/`remove_scene_objects` are
-destructive operations that a shot surface should not offer at all. Everything here stays
-reachable through the `scene-authoring` bundle.
+Kept apart from `scene.py`, in the `scene-authoring` bundle, so shot work does not carry the
+large geometry schema or offer destructive scene operations.
 """
 
 import asyncio
@@ -180,9 +170,8 @@ def _validate_attributes(attributes: list[GeometryAttribute], counts: dict[str, 
     """
     Validate attribute domains and value counts against the domains a geometry supports.
 
-    `GeometryAttribute` permits more domains than any single geometry type accepts, so each
-    geometry declares the domains it supports and their sizes here. Keying the size lookup on
-    the same mapping that defines the allowlist keeps the two rules from drifting apart.
+    `GeometryAttribute` allows more domains than any one geometry type accepts, so each caller
+    passes the domains it supports.
 
     Args:
         attributes: Attributes to validate.

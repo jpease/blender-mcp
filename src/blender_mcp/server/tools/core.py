@@ -89,17 +89,12 @@ async def get_addon_status(ctx: Context) -> dict:
             "file_roots": result.file_roots,
             "file_roots_enforced": result.file_roots_enforced,
             "current_filepath": result.current_filepath,
-            # Both halves, because the epoch is only comparable within one
-            # session_id: the addon's counter restarts at 0 with the process, so
-            # an agent told to "re-read capabilities when the epoch moves" and
-            # given only the counter walks straight into the ABA case the pair
-            # exists to close.
+            # Both halves: the epoch restarts at 0 with the addon, so it means
+            # nothing without its session_id.
             "session_id": result.session_id,
             "session_epoch": result.session_epoch,
-            # True means the addon aborted a file swap part-way and is refusing
-            # every command but this one, get_session_info and the swap
-            # commands. Without it those refusals are indistinguishable from a
-            # broken addon, and the open .blend must not be saved over.
+            # After an aborted file swap the addon refuses most commands and the
+            # open .blend must not be saved; without this it looks like a broken addon.
             "session_indeterminate": result.session_indeterminate,
             "source": result.source,
             "warning": result.warning,

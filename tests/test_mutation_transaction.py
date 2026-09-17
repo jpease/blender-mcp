@@ -194,9 +194,7 @@ def _load_addon(monkeypatch, *, data=None, use_global_undo=None):
     handlers.undo_post = []
     handlers.redo_post = []
     handlers.depsgraph_update_post = []
-    # The four file-lifecycle lists come from the one helper, not from four more
-    # hand-rolled assignments: this is the third of the three sites its own
-    # docstring says it has, and it was the one still hand-rolling them.
+    # Shared helper, so these lists cannot drift from the other stubs'.
     install_file_lifecycle_handler_lists(handlers)
 
     app = types.ModuleType("bpy.app")
@@ -522,7 +520,7 @@ def test_nd_mark_as_util_validates_all_names_before_mutating_any(monkeypatch) ->
 
 
 # ---------------------------------------------------------------------------
-# Task 4: a rollback that outlives the database it snapshotted
+# A rollback that outlives the database it snapshotted
 # ---------------------------------------------------------------------------
 
 
@@ -550,8 +548,8 @@ def _replace_whole_database(data: dict[str, FakeCollection]) -> dict[str, list[i
     """
     Model a file load: every tracked datablock is freed and the new file's take their place.
 
-    Each replacement gets a fresh `session_uid`, which is what a load does to
-    every datablock in the database - including ones with the same name.
+    A load gives every datablock a fresh `session_uid`, even one whose name is
+    unchanged.
 
     Args:
         data: The stub `bpy.data` collections, keyed by collection name.
@@ -573,7 +571,6 @@ def _reload_library_contents(data: dict[str, FakeCollection], library: FakeDatab
     """
     Model `lib.reload()`: every datablock linked from `library` comes back with a fresh `session_uid`.
 
-    Measured on 5.2.2 by `scripts/blender_probes/library_replace_handlers.py`.
     Local datablocks and the `Library` itself keep theirs.
 
     Args:
@@ -598,15 +595,12 @@ def test_regression_guard_a_transaction_unaware_of_a_file_swap_removes_the_whole
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    Task 4 Step 1's reproduction, kept as a guard on the mechanism the fix defends against.
+    Reproduce the file-swap hazard, as a guard on the harness.
 
-    `Transaction.begin()` snapshots the *pre-load* session_uids; a load gives
-    every datablock a fresh one; a raise then makes `_new_datablocks()` read the
-    whole new file as "created by this request". This passed against the
-    unmodified code and still passes: nothing here tells the transaction a swap
-    happened. It stays so that the tests proving the fix (a swap command
-    bypassing the transaction; `load_post` invalidating one) cannot pass on a
-    harness that never reproduced the hazard in the first place.
+    A load gives every datablock a fresh session_uid, so a rollback after it, with
+    the transaction told nothing, removes the whole new file. Without this guard
+    the tests of the defences could pass on a harness that never reproduces the
+    hazard.
 
     Raises:
         RuntimeError: Inside the transaction, to trigger the rollback.
@@ -630,14 +624,12 @@ def test_regression_guard_a_transaction_unaware_of_a_library_reload_removes_the_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    Task 4 Step 1b's reproduction: the reload shape, reachable by a command that is not a session swap.
+    Reproduce the reload hazard, reachable by a command that is not a session swap.
 
-    Only the datablocks linked from one library get fresh session_uids - the
-    shape `lib.reload()` produces - and a raise then removes exactly those,
-    while the local mesh beside them survives. Passed against the unmodified
-    code and still passes, for the same reason as the Step 1 guard above: the
-    transaction here is told nothing. `_DATABLOCK_REPLACING_COMMANDS` and the
-    replace-in-progress flag are what keep a real reload out of this shape.
+    Only datablocks linked from the reloaded library get fresh session_uids, so a
+    rollback removes exactly those and the local mesh survives. In the addon,
+    `_DATABLOCK_REPLACING_COMMANDS` and the replace-in-progress flag keep a real
+    reload out of this shape.
 
     Raises:
         RuntimeError: Inside the transaction, to trigger the rollback.

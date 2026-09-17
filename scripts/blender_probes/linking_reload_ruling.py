@@ -1,20 +1,18 @@
 r"""
-Confirm plan Task 7's `reload` ruling: the data API works, the operators are the awkward route (Step 2b).
+Check the linking handlers' reload choice: the `Library` data API works, and the operators are awkward.
 
-Sections:
-
-A. `reload` is in `bpy.types.Library.bl_rna.functions` (while `dir()` on the
-   type object, the invalid check, is printed beside it for the record).
-B. `lib.filepath = <new>; lib.reload()` end to end, with the datablock listing
-   (type, name, session_uid) before and after, against a replacement file whose
-   object has a different name, so the swap is visible.
-C. `wm.lib_reload` / `wm.lib_relocate` with the argument shapes an earlier plan
-   draft used and with `directory` + `filename`, plus a bogus library name:
-   each raw outcome, `RuntimeError` or a returned set.
+A. `reload` is in `Library.bl_rna.functions`, printed beside `dir()` on the type
+   object, which is the wrong check.
+B. `lib.filepath = <new>; lib.reload()` end to end, listing datablocks (type,
+   name, session_uid) before and after, against a replacement file whose object
+   has a different name so the swap shows.
+C. `wm.lib_reload` and `wm.lib_relocate` with `library` alone, plus `filepath`,
+   plus `directory` and `filename`, and with a bogus library name: each raw
+   outcome, `RuntimeError` or a returned set.
 D. The raw `reload()` failure text for a missing file, for an absolute link and
-   for a `//`-relative link in a saved shot inside a directory named
-   `Smith, John` - which path form Blender embeds decides what
-   `sanitize_blender_error`'s `known_paths` must contain.
+   for a `//` link in a shot under a directory named `Smith, John`. The path
+   form Blender embeds decides what `sanitize_blender_error`'s `known_paths`
+   must contain.
 
 From the repository root::
 

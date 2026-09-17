@@ -1,24 +1,19 @@
 r"""
-Build the phase-2 gate scenario's three `.blend` fixtures (plan Task 10, "What to build").
+Build the two `.blend` fixtures `scenario_phase2_gate.py` needs.
 
-Runs inside Blender, because it needs `bpy`. From the repository root::
+Runs inside Blender. From the repository root::
 
     /opt/homebrew/bin/blender --background --factory-startup \
         --python scripts/rig_scenarios/make_phase2_gate_fixtures.py -- \
         <work>/canon.blend <work>/shot.blend
 
-Two files, both saved with `compress=False, relative_remap=False` (the same
-trap `make_fixture.py` documents: `use_file_compression` is True at factory
-settings and wins over the operator's own default unless passed explicitly):
+Both pass `compress=False` explicitly, because the factory `use_file_compression`
+preference overrides the operator's default.
 
-- ``canon.blend`` -- a named collection ``CanonHero`` holding one mesh object
-  ``HeroBody``, standing in for a canon asset library. This is what
-  ``link_canon_library`` links *from*.
-- ``shot.blend`` -- an empty scene with no libraries, standing in for the shot
-  ``open_shot`` opens. It must be a distinct file from ``canon.blend``: the
-  scenario links the canon file *into* the scene this file opens, then saves
-  the result to a third path the scenario itself picks (the rig's work dir),
-  so only these two need to exist up front.
+- ``canon.blend`` -- collection ``CanonHero`` holding mesh object ``HeroBody``: the
+  canon library ``link_canon_library`` links from.
+- ``shot.blend`` -- an empty scene with no libraries, for ``open_shot`` to open. The
+  scenario links the canon into it and saves the result under the rig's work dir.
 """
 
 import sys

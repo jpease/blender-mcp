@@ -1,29 +1,18 @@
 """
-Tool bundle definitions used to select which domain modules a server process registers.
+Tool bundles: which domain modules a server process registers.
 
-Every MCP client connection receives the full `tools/list` response for whatever is
-registered on the process's `FastMCP` app, and the client then carries those definitions in
-the model's context on every turn -- so an advertised tool is permanent context occupancy,
-not a one-time startup cost. This module is the single statement of that cost model; other
-modules point here rather than restate it. With every bundle registered (295 tools, per
-`scripts/measure_catalog.py all`), that response alone can blow out a client's context
-before any real work starts. `BLENDER_MCP_TOOLSETS` lets a client config select a subset of
-domains per process instead.
+A client carries every advertised tool definition in the model's context on every turn, so
+each tool costs context for the whole session, not once at startup. With every bundle
+registered (295 tools, per `scripts/measure_catalog.py all`) that alone can fill a client's
+context. `BLENDER_MCP_TOOLSETS` selects a subset per process. A test parses the tool count
+above; get byte figures from `scripts/measure_catalog.py` instead, since they go stale.
 
-A module belongs in `CORE_MODULES` only if essentially every workflow needs it, or if a
-client cannot discover the scene without it. Everything else is a bundle. `file_lifecycle`
-(Phase 2 Task 9) joins core on that test: `shot` and `asset` both need to open and save a
-file, and the disjointness test forbids a bundle shared by both modes (see that module's
-docstring). `CORE_MODULES` is otherwise pre-split residue and has not been re-derived
-against that test: the seven animation tools still in core are its single heaviest block
-and the obvious next candidates. Byte figures
-belong in `scripts/measure_catalog.py`'s output, not in this prose - one quoted here drifts
-the moment a tool's description is edited, and only the tool count above is pinned by a test.
+A module belongs in `CORE_MODULES` only if nearly every workflow needs it or a client cannot
+inspect the scene without it. `file_lifecycle` is core because `shot` and `asset` both need
+to open and save files, and the two modes may not share a bundle.
 
-Two tiers select from this catalog. `BUNDLES` is the technical catalog: one domain, one name.
-`MODES` sits above it as a curated, artist-facing preset ("shot", "asset") that expands to a
-handful of bundles at once, because the add-on -- not a human -- is the client choosing the
-surface. `resolve_toolset_modules` accepts either kind of name, and freely mixes them.
+`BUNDLES` names one domain each. `MODES` are artist-facing presets that expand to several
+bundles. `resolve_toolset_modules` accepts both kinds of name, mixed.
 """
 
 from collections.abc import Iterable, Mapping
@@ -38,16 +27,12 @@ CORE_MODULES: tuple[str, ...] = (
     "file_lifecycle",
 )
 
-# Bundle name -> tool submodules under `blender_mcp.server.tools` it registers. A dotted entry
-# (e.g. "camera.core") names one submodule of a package rather than the whole package; the
-# package's own `__init__.py` must resolve it lazily (see `tools/_lazy_package.py`) or the
-# split is defeated -- importing any one submodule still runs the parent `__init__.py` first.
-# `core` is always included regardless of selection; it is not a selectable name.
+# A dotted entry names one submodule of a package. The package `__init__.py` must stay lazy
+# (see `tools/_lazy_package.py`), because importing a submodule runs it first.
 _BUNDLES_BASE: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "core-authoring": ("mesh", "model"),
-        # Six camera submodules total; `rigs` (construction) is reachable only via
-        # `camera-rigs`, the way a shot rarely needs to build a new rig.
+        # `rigs` is left to `camera-rigs`: a shot rarely builds a new rig.
         "camera": ("camera.animation", "camera.core", "camera.inspection", "camera.shots", "camera.targeting"),
         "camera-rigs": ("camera.rigs",),
         "scene-authoring": ("scene_authoring",),
@@ -57,15 +42,10 @@ _BUNDLES_BASE: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "geometry-nodes": ("geometry_nodes", "nd"),
         "character-rigging": ("character_rigging",),
         "retopology": ("retopology",),
-        # Four lighting submodules total; `construction` is reachable only via
-        # `lighting-construction`, the way presets replace it for most shots.
+        # `construction` is left to `lighting-construction`.
         "lighting": ("lighting.environment", "lighting.inspection", "lighting.rendering"),
-        # Carries `lighting.rendering` too, not just `lighting.construction`: `create_studio_lighting`
-        # calls `render_lighting_preview` directly (construction.py:13), so `lighting-construction`
-        # cannot actually function without it. Verified by measuring `BLENDER_MCP_TOOLSETS=lighting-
-        # construction` live rather than trusting the module list -- omitting `lighting.rendering` here
-        # would still transitively import and register it (Python imports the whole module `construction`
-        # imports from), just without saying so, which is the bug this line exists to avoid repeating.
+        # Lists `lighting.rendering` because `construction.py` imports it, so its tools register
+        # with this bundle anyway.
         "lighting-construction": ("lighting.construction", "lighting.rendering"),
         "texture": ("texture",),
         "rendering": ("rendering",),
@@ -73,11 +53,8 @@ _BUNDLES_BASE: Mapping[str, tuple[str, ...]] = MappingProxyType(
     }
 )
 
-# `texture-lighting` is the pre-Phase-1-Task-5 fused bundle name, kept as a deprecated alias so
-# an existing client config keeps working unchanged. Computed from the split bundles above
-# rather than hand-listed, so it cannot silently drift from the sum of the parts it replaces;
-# `ALL_MODULES` below dedupes the resulting repeat, which is the deliberate canary
-# `test_all_sentinel_selects_every_module` exists to catch, not a bug.
+# `texture-lighting` is a deprecated alias so existing client configs keep working. Built from
+# the split bundles so it cannot drift from them.
 BUNDLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         **_BUNDLES_BASE,
@@ -87,31 +64,14 @@ BUNDLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     }
 )
 
-# Public: `tools/__init__.py` and the bundle tests import the env var name so it is spelled
-# once. `scripts/measure_catalog.py` is the one deliberate exception -- see the comment
-# there for why it cannot import from this module. `ALL_SENTINEL` is exported alongside it
-# so the `all` check below and the error message it appears in cannot drift apart. Defined
-# before MODES because `_check_modes_are_well_formed` below needs ALL_SENTINEL to already exist.
+# Import these rather than respelling them. `scripts/measure_catalog.py` cannot; see why there.
 TOOLSETS_ENV_VAR = "BLENDER_MCP_TOOLSETS"
 ALL_SENTINEL = "all"
 
-# Artist-facing presets over BUNDLES. Selection is a human/config decision made once per MCP
-# client entry, before the server process starts (README.md "Tool Bundles": one entry per
-# mode/bundle set, `BLENDER_MCP_TOOLSETS` set on that entry) - not something the add-on or a
-# live session decides at runtime. Modes exist so that config wants one word for the surface an
-# artist is working in, not a comma list of bundles.
-# (docs/superpowers/specs/2026-09-11-episode-consistency-architecture-design.md Sec 4.3 defines
-# exactly these two working surfaces: `shot` assembles, animates, lights and renders; `asset`
-# authors or revises canon. Sec 4.7 is unrelated - it covers the addon's thread architecture, not
-# toolset selection.) A mode still resolves to modules through BUNDLES, so it adds no module of
-# its own and cannot move `all`'s tool count.
-#
-# The two modes are disjoint outside core (enforced by
-# `test_shot_and_asset_modes_share_only_the_core_surface`): `shot` takes `lighting`, not
-# `texture`, since assembling a shot does not author new materials; `asset` takes `texture`, not
-# `lighting`, since authoring canon does not light or render a specific shot. Neither takes the
-# construction-workflow bundles (`camera-rigs`, `lighting-construction`) -- both are opt-in
-# extras a mode can still compose with, e.g. `shot,camera-rigs`.
+# Artist-facing presets, chosen once per MCP client entry before the process starts. `shot`
+# assembles, animates, lights and renders; `asset` authors or revises canon. The modes must not
+# overlap outside core: assembling a shot authors no materials, and authoring canon lights no
+# shot. Construction bundles stay opt-in, e.g. `shot,camera-rigs`.
 MODES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "shot": ("camera", "lighting", "rendering"),
@@ -123,9 +83,6 @@ MODES: Mapping[str, tuple[str, ...]] = MappingProxyType(
 def _format_names(names: Iterable[str]) -> str:
     """
     Render names sorted and comma-joined for an error message, or `(none)` if there are none.
-
-    One definition so every "available names" or "offending names" clause in this module's
-    validation and error-message code stays formatted identically if the style is ever tweaked.
 
     Args:
         names: Names to render.
@@ -139,14 +96,11 @@ def _format_names(names: Iterable[str]) -> str:
 
 def _check_modes_are_well_formed() -> None:
     """
-    Validate MODES against BUNDLES and ALL_SENTINEL at import time, not only in tests.
+    Validate MODES against BUNDLES and ALL_SENTINEL at import time.
 
-    Raises rather than asserts so the check still fires under `python -O`. Run once, right
-    below both dicts, so a maintainer editing MODES gets one specific failure here instead of
-    a shadowed name silently winning inside `_expand_modes`, a bare `KeyError` surfacing later
-    out of `resolve_toolset_modules`, a mode silently unreachable because the sentinel branch
-    claims it first, or a repeated bundle within one mode's own tuple silently absorbed by
-    `_ordered_unique` downstream instead of flagged as the authoring typo it almost certainly is.
+    Raises rather than asserts so the check survives `python -O`. Otherwise a bad MODES edit
+    fails later and obscurely: a mode silently shadows a bundle, or a missing bundle surfaces
+    as a bare `KeyError`.
 
     Raises:
         ValueError: If a mode name collides with a bundle name or the `all` sentinel, a mode
@@ -174,9 +128,6 @@ def _ordered_unique(modules: Iterable[str]) -> tuple[str, ...]:
     """
     Drop duplicates while preserving first-seen order.
 
-    The single definition of how a selection is assembled, so the `all` sentinel and the
-    named-bundle path cannot diverge if two bundles ever name the same module.
-
     Args:
         modules: Module names, possibly with repeats.
 
@@ -194,14 +145,9 @@ ALL_MODULES: tuple[str, ...] = _ordered_unique(
 
 def _expand_modes(names: Iterable[str]) -> tuple[str, ...]:
     """
-    Replace each mode name with the bundle names it curates; pass bundle names through unchanged.
+    Replace each mode name with its bundle names; pass bundle names through unchanged.
 
-    Expanding modes here, ahead of the bundle lookup, is what lets `shot,retopology` compose: a
-    mode is resolved to bundles once, then treated exactly like a hand-picked bundle list.
-
-    Assumes every name is already a known mode or bundle: an unrecognized name falls through
-    `MODES.get`'s default and is returned as if it were a bundle name, so the caller must
-    validate first. `resolve_toolset_modules` is the only caller and does exactly that.
+    Does not validate: an unknown name comes back as if it were a bundle, so validate first.
 
     Args:
         names: Requested names, each either a mode or a bundle.
@@ -217,11 +163,9 @@ def resolve_toolset_modules(raw_value: str | None) -> tuple[str, ...]:
     """
     Resolve a raw `BLENDER_MCP_TOOLSETS` value into the tool submodules to import.
 
-    `core` modules are always included. An unset or empty value selects `core` only.
-    The sentinel `all` (any case; bundle and mode names themselves are case-sensitive) selects
-    every bundle, matching the pre-bundle behavior. A name may be a mode (`shot`, `asset`) or a
-    bundle, and the two lists never share a name, so a client can mix them freely, e.g.
-    `shot,retopology`.
+    `core` modules are always included; an unset or empty value selects only them. `all`, in
+    any case, selects every bundle; other names are case-sensitive. Modes and bundles can be
+    mixed, e.g. `shot,retopology`.
 
     Args:
         raw_value: The raw environment variable value, or None if unset.
@@ -236,8 +180,7 @@ def resolve_toolset_modules(raw_value: str | None) -> tuple[str, ...]:
     requested = [name.strip() for name in (raw_value or "").split(",") if name.strip()]
     if not requested:
         return CORE_MODULES
-    # Validate before the sentinel short-circuits, so `all,rendring` reports the typo
-    # instead of silently selecting everything.
+    # Before the `all` check, so `all,rendring` still reports the typo.
     known = set(BUNDLES) | set(MODES)
     unknown = sorted({name for name in requested if name not in known and name.lower() != ALL_SENTINEL})
     if unknown:

@@ -1,13 +1,13 @@
 """
-Probe timer persistence across a main-thread `wm.open_mainfile`, for the rig's Step 5.
+Probe which timers survive a main-thread `wm.open_mainfile`, for `scenario_timer_survives_file_swap.py`.
 
-Runs inside Blender as a `--blender-script`, after the rig's bootstrap has started
-the addon's socket server. Registers three timers: a `persistent=True` heartbeat, a
-`persistent=False` control that must *not* survive the swap, and a watcher that polls
-for the rig's `open_now.json` and then performs the swap from the main thread.
+Runs inside Blender as a `--blender-script`, after the rig's bootstrap starts the
+addon's socket server. Registers a persistent heartbeat, a non-persistent control, and
+a watcher that waits for the rig's `open_now.json`, opens the file from the main thread,
+and writes both sides of the load to `outcome.json`.
 
-The swap is a scripted operator call, deliberately not a queued socket command: what
-Task 2 decides about queued commands is a separate question this script does not ask.
+The load is a direct operator call, not a queued socket command, so this says nothing
+about queued commands across a swap.
 """
 
 import json
@@ -31,7 +31,7 @@ def _write_heartbeat() -> None:
 
 def _persistent_beat() -> float:
     """
-    Count one fire of the persistent timer; this one must survive the swap.
+    Count one fire of the persistent timer, which should survive the swap.
 
     Returns:
         float: The interval Blender should wait before calling again.
@@ -44,10 +44,9 @@ def _persistent_beat() -> float:
 
 def _volatile_beat() -> float:
     """
-    Count one fire of the control timer; Blender must drop this one on load.
+    Count one fire of the control timer, which Blender should drop on load.
 
-    It exists to make the persistent timer's survival mean something: if this one
-    survived too, the probe could not tell the two dispositions apart.
+    If this one survived too, the persistent timer surviving would prove nothing.
 
     Returns:
         float: The interval Blender should wait before calling again.
@@ -77,9 +76,8 @@ def _snapshot(prefix: str) -> dict:
         f"{prefix}_volatile_timer_registered": bpy.app.timers.is_registered(_volatile_beat),
         f"{prefix}_persistent_fires": _fires["persistent"],
         f"{prefix}_volatile_fires": _fires["volatile"],
-        # Always False, registered or not: `obj.method` builds a fresh bound method
-        # on every access and `is_registered` matches on identity. Recorded to keep
-        # the 5.2.1 finding under measurement rather than in prose.
+        # Always False, registered or not: each access builds a new bound method and
+        # `is_registered` matches by identity. Recorded so the outcome keeps checking it.
         f"{prefix}_drain_is_registered_fresh_bound_method": bpy.app.timers.is_registered(server.drain_command_queue),
     }
 
@@ -90,7 +88,7 @@ def _watch() -> float | None:
 
     Returns:
         float | None: The poll interval while waiting, or None once the swap has
-            been recorded, which unregisters this timer from the inside.
+            been recorded, which unregisters this timer.
 
     """
     if not OPEN_NOW.is_file():
@@ -99,7 +97,7 @@ def _watch() -> float | None:
     outcome = _snapshot("before")
     outcome["open_mainfile_result"] = sorted(bpy.ops.wm.open_mainfile(filepath=target, use_scripts=False))
     outcome.update(_snapshot("after"))
-    # Reached at all only if this callback's frame outlived the database swap.
+    # Reached only if this callback's frame outlived the database swap.
     outcome["callback_frame_survived_the_swap"] = True
     OUTCOME.write_text(json.dumps(outcome, indent=2), encoding="utf-8")
     print("RIG: in-Blender outcome written to", OUTCOME, flush=True)

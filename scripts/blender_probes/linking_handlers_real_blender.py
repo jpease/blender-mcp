@@ -1,53 +1,35 @@
 r"""
-Drive the real Task 7 handlers - `handlers/linking.py` - against real files in Blender (plan Task 7 Step 5).
+Run the real linking handlers in `handlers/linking.py` against real files in Blender.
 
-The handlers are the addon's own mixins, loaded with the real `session.py`,
-`transaction.py`, `file_paths.py` and `text_hygiene.py` (no socket server: the
-addon refuses to start one under `--background`). Sections:
+Loads the addon's modules directly, with no socket server: the addon will not
+start one under `--background`. Expected results by section:
 
-A. **The gate, two commands.** `link_canon_library` (instanced) ->
-   `create_override(collection_uid)` -> `save_shot(relative_remap=False)` ->
-   `open_shot`: the reopened library is `is_missing=False`, and an object inside
-   the override is `is_editable=True`, `is_system_override=False`. The linked
-   instance the override replaced is gone from the scene, and the linked
-   collection still survives the save.
-B. **The gate, one command.** `link_canon_library(as_override=True)` -> save -> reopen.
-C. **Criterion 8, captured.** A library whose file was deleted: the raw
-   `lib.reload()` text, then what `reload_library` returns - for an absolute
-   link and for a `//` link inside a directory named `Smith, John`. Then
-   `relocate_library` to a missing file (refused before Blender) and to a
-   truncated `.blend` that passes the magic check (Blender fails; the previous
-   path is restored and the library still works).
-D. **A failed link through the real `mutation_transaction`.** A name absent from
-   the file (refused inside `libraries.load`: no Library), and a failure
-   injected after a successful link (the transaction removes the Library).
-E. **Unlink.** Two libraries, a user's zero-user material, and a local material
-   used only by an override object; unlink one library with `purge_orphans`:
-   the other library and the user's material survive, the material the unlink
-   orphaned is purged, and the report counts by collection.
-F. **Scripts.** With `use_scripts_auto_execute` on, `link_canon_library` and
-   `reload_library` refuse.
-G. **Cycle-1 repair: a failed multi-collection override keeps a pre-existing placement.**
-   A saved shot already holds `CanonHero` instanced and `CanonProp` overridden;
-   `link_canon_library([CanonHero, CanonProp], as_override=True)` inside the real
-   transaction is refused, and the scene root is unchanged, also after save and reopen.
-H. **Cycle-1 repair: relocate to a file lacking the linked datablocks** reports
-   them missing, with a warning.
-I. **Cycle-1 repair: relocate of an indirect library** is refused.
-J. **Cycle-1 repair: a hostile `Library.name`** holding an absolute path never
-   reaches the client from a failed reload.
-K. **Cycle-2 repair: a nested request.** `nest.blend` holds `Parent` containing
-   `Child`. `link_canon_library([Parent, Child], as_override=True)` and
-   `[Child, Parent]`, each on a fresh shot and again with both already linked
-   and placed: overriding the parent overrides the child, so the request must
-   not build a second copy of it. Printed: the result or refusal, every
-   collection and `ChildBody` object with its override state, and the root.
-L. **Cycle-2 repair: a newline in a hostile `Library.name`** never lets its
-   directory reach the client.
-M. **Cycle-3 repair: an inner collection already overridden.** With `Child`
-   overridden first, `create_override(Parent)` and
-   `link_canon_library(["Parent"], as_override=True)` must be refused rather
-   than override `Child` a second time; the probe saves and reopens to show what
+A. Link (instanced), `create_override`, save with `relative_remap=False`, reopen:
+   the library is found, override objects are editable and not system
+   overrides, and the replaced instance is gone from the scene.
+B. The same in one command: `link_canon_library(as_override=True)`.
+C. Reloading a deleted library, linked absolute and as `//` under `Smith, John`:
+   the raw text, then the handler's response. `relocate_library` to a missing
+   file is refused before Blender; to a truncated `.blend`, Blender fails and
+   the previous path is restored and still works.
+D. In the real `mutation_transaction`, an absent name creates no Library, and a
+   failure injected after a successful link removes it.
+E. Unlinking one of two libraries with `purge_orphans` keeps the other library
+   and the user's zero-user material, purges a material only the override used,
+   and counts by collection.
+F. With `use_scripts_auto_execute` on, `link_canon_library` and `reload_library` refuse.
+G. Over a shot with `CanonHero` instanced and `CanonProp` overridden, an
+   `as_override` link of both is refused and the scene root is unchanged, also
+   after reopen.
+H. Relocating to a file without the linked datablocks reports them missing, with a warning.
+I. Relocating an indirect library is refused.
+J. A failed reload never sends the client an absolute path planted in `Library.name`.
+K. `Parent` contains `Child`, and overriding `Parent` overrides `Child` too, so an
+   `as_override` link of both, in either order, on a fresh shot or over placed
+   ones, must not build a second `Child`.
+L. A newline in a hostile `Library.name` never lets its directory reach the client.
+M. With `Child` already overridden, `create_override(Parent)` and an
+   `as_override` link of `Parent` are refused; saved and reopened to show what
    persists.
 
 From the repository root::
@@ -70,8 +52,8 @@ import bpy
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 ADDON_DIR = ROOT / "src/blender_mcp/bundled/addon"
-# A bare parent package, so the handler modules import their siblings relatively
-# without executing the addon's `__init__.py` (which would register UI classes).
+# A bare parent package lets the handlers import their siblings without running
+# the addon's `__init__.py`, which registers UI classes.
 _PACKAGE = types.ModuleType("probe_addon")
 _PACKAGE.__path__ = [str(ADDON_DIR)]  # type: ignore[attr-defined]
 sys.modules["probe_addon"] = _PACKAGE
@@ -216,7 +198,7 @@ attempt("open_shot", lambda: server.open_shot(str(shot)))
 print("  REOPENED libraries:", [(lib["name"], lib["is_missing"]) for lib in server.list_libraries()["libraries"]])
 print("  REOPENED objects:", override_objects_state())
 
-print("\n=== C. criterion 8: failures that carry a path ===")
+print("\n=== C. failures that carry a path ===")
 gone = work / "gone_canon.blend"
 shutil.copyfile(canon, gone)
 fresh_shot(work / "shot_c.blend")
@@ -323,8 +305,8 @@ scratch = bpy.data.materials.new("UserScratchMaterial")
 first = server.link_canon_library(str(canon), collections=["CanonHero"])
 second = server.link_canon_library(str(props), collections=["Props"])
 override_report = server.create_override(first["collections"][0]["session_uid"])
-# A local material used only by the override object, through an ID property: the unlink frees the
-# override object (measured), which leaves this material with no users - the one thing purge takes.
+# Used only by the override object, through an ID property. The unlink frees that
+# object, so this material is the one thing the purge should take.
 paint = bpy.data.materials.new("OnlyUsedByTheOverride")
 override_body = next(o for o in bpy.data.objects if o.session_uid == override_report["objects"][0]["session_uid"])
 override_body["paint"] = paint

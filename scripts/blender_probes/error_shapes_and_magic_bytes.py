@@ -1,4 +1,4 @@
-r"""Re-verify the handoff's 5.2.1 behavioural facts against 5.2.2: error shapes + magic bytes."""
+r"""Re-verify behavioural facts first measured on 5.2.1 against 5.2.2: error shapes + magic bytes."""
 
 import os
 import tempfile
@@ -15,9 +15,8 @@ def attempt(label: str, fn: Callable[[], set[str]]) -> None:
     """
     Run `fn`, reporting whether it raised or returned an operator status set.
 
-    The distinction is the point: these operators raise `RuntimeError` on every
-    failure mode and never return `{'CANCELLED'}`, so a handler that only checks
-    for CANCELLED reports success on every real failure.
+    These operators raise `RuntimeError` on failure instead of returning
+    `{'CANCELLED'}`, so a handler that checks only for CANCELLED misses failures.
 
     Args:
         label: Name for the case, printed with the outcome.

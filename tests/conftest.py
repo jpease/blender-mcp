@@ -19,10 +19,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ROOT_ADDON = REPO_ROOT / "src" / "blender_mcp" / "bundled" / "addon" / "__init__.py"
 
-# The `bpy.app.handlers` lists `addon/session.py` attaches to. Three test
-# modules build a `bpy` stub that has to carry them, and three independent
-# copies of this tuple is how one of them silently stops exercising a handler
-# after a fifth event is added.
+# The `bpy.app.handlers` lists `addon/session.py` attaches to, shared so every
+# test module's `bpy` stub picks up a newly added event.
 FILE_LIFECYCLE_HANDLER_LISTS = (
     "load_pre",
     "load_post",
@@ -37,12 +35,9 @@ def install_file_lifecycle_handler_lists(handlers: ModuleType) -> ModuleType:
     """
     Give a stub `bpy.app.handlers` the empty lists `session.py` binds to.
 
-    Measured against Blender 5.2.2 - the first five by
-    `scripts/blender_probes/session_handlers.py`, `blend_import_post` by
-    `scripts/blender_probes/library_replace_handlers.py`: each really is a plain
-    Python `list`, it accepts duplicate callbacks without complaint, and
-    `remove` raises when the callback is absent. A stub that gets any of that wrong would let the idempotence guard
-    in `session.register_handlers` pass while being useless in Blender.
+    In Blender each is a plain `list` that accepts duplicate callbacks and whose
+    `remove` raises for an absent one. A stub that differs could let the
+    idempotence guard in `session.register_handlers` pass here and fail in Blender.
 
     Args:
         handlers: The stub module standing in for `bpy.app.handlers`.
@@ -61,34 +56,24 @@ def load_addon_source_module(file_name: str, alias: str) -> ModuleType:
     """
     Load one `bpy`-free module out of the bundled addon, straight from its file.
 
-    The addon package cannot be imported outside Blender - `__init__.py` and
-    `server_core.py` both import `bpy` - but individual leaf modules such as
-    `output_roots.py` and `text_hygiene.py` are deliberately free of it. Loading
-    by path is what lets a test read the addon's own constants instead of
-    retyping them. Nothing is cached: each call re-executes the source, so a
-    test that mutates module state cannot leak into the next one.
+    The addon package imports `bpy`, but leaf modules such as `output_roots.py` do
+    not, so a test can read the addon's own constants instead of retyping them.
+    Each call re-executes the source, so module state cannot leak between tests.
 
-    **A throwaway parent package is registered for the duration of the load**,
-    with `__path__` pointing at the addon directory, so a module loaded this way
-    may use ordinary relative imports for its `bpy`-free siblings -
-    `session.py`'s `from .text_hygiene import client_safe_leaf` is the case that
-    needed it. Without the scaffolding that line raises "attempted relative
-    import with no known parent package", which would have forced the hygiene
-    rule to stay inside `session.py` for the convenience of this loader. Every
-    module the load registers is removed afterwards, so "nothing is cached"
-    still holds for siblings as well as for the module asked for.
+    A throwaway parent package is registered during the load so relative imports
+    of `bpy`-free siblings resolve; it and every module loaded under it are removed
+    afterwards.
 
     Args:
         file_name: The module's file name inside the addon package.
         alias: `sys.modules`-style name to execute it under. Distinct aliases
-            keep two suites' copies from being mistaken for one another.
+            keep two suites' copies apart.
 
     Returns:
         ModuleType: The freshly executed module.
 
     Raises:
-        AssertionError: If the addon no longer carries that module, which would
-            make every guard written against it compare against nothing.
+        AssertionError: If the file is not an importable module.
 
     """
     path = ROOT_ADDON.parent / file_name
@@ -137,10 +122,8 @@ def load_addon_package(monkeypatch, name):
     return addon
 
 
-# String target rather than an imported module, so monkeypatch resolves it lazily inside the
-# test that asks for the fixture. Importing the server here would import it for the whole
-# session at conftest load; as it stands an ambient BLENDER_MCP_TOOLSETS typo is confined to
-# the modules that already import the server rather than aborting collection outright.
+# A string target, resolved when the fixture runs. Importing the server here would import it
+# for the whole session, so a bad BLENDER_MCP_TOOLSETS would abort collection.
 _PATCH_TARGET = "blender_mcp.server.tools._scene_shared.get_blender_connection"
 
 
@@ -158,10 +141,9 @@ class RecordingConnection:
         Start with an empty recording.
 
         Args:
-            result: Reply to return from every command. When None, echoes back a
-                `changed_objects` entry named after the command's `name` parameter, or
-                `"Created"` for commands that take no `name`. That is the shape the
-                scene authoring tools expect.
+            result: Reply to return from every command. When None, echoes a
+                `changed_objects` entry named after the `name` parameter, or
+                `"Created"` when there is none, as the scene authoring tools expect.
 
         """
         self.calls: list[tuple[str, dict]] = []
@@ -195,10 +177,9 @@ def stub_blender_connection(monkeypatch: pytest.MonkeyPatch) -> StubFactory:
     """
     Route scene tool dispatch to a recording stub.
 
-    `scene` and `scene_authoring` both dispatch through `_scene_shared._call`, which resolves
-    `get_blender_connection` in `_scene_shared`'s namespace. Patching it there is what makes
-    one stub cover tools in either module; patching either tool module would silently miss.
-    Any module that starts dispatching through `_scene_shared` is covered automatically.
+    Patched in `_scene_shared`, whose `_call` resolves `get_blender_connection`,
+    so one stub covers every tool module that dispatches through it; patching a
+    tool module instead would miss.
 
     Returns:
         A factory taking an optional canned reply and returning the installed

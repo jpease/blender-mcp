@@ -1,23 +1,11 @@
 """
-Task 7's linking commands against a stub `bpy` that encodes measured Blender 5.2.2 behaviour.
+The linking commands against a stub `bpy` that copies Blender 5.2.2's behaviour.
 
-Every stub behaviour below is a measurement, not a guess, and names its probe:
-
-- `scripts/blender_probes/linking_override_routes.py`: `override_hierarchy_create`
-  returns the override collection, places it beside every instance of the
-  linked collection (or at the scene root when there is none), and leaves the
-  objects inside it system overrides unless `do_fully_editable=True`; on a local
-  or override collection it returns None rather than raising.
-- `scripts/blender_probes/linking_datablock_lifecycle.py`: a raise inside the
-  `libraries.load` block creates no `Library`, while an absent name still does;
-  `libraries.remove` frees the library's datablocks and the override objects of them (the override
-  collection survives);
-  a failed `reload()` leaves the contents as they were.
-- `scripts/blender_probes/linking_reload_ruling.py`: the raw text of a failed
-  `reload()`, including a `//` link in a directory named `Smith, John`.
-
-The Blender error strings are **captured, not written**: each was printed from a
-real exception by the probe named beside it.
+The stub's `override_hierarchy_create` places the override beside each instance
+(or at the scene root), makes system overrides unless `do_fully_editable=True`,
+and returns None for a local or override collection. A raise inside
+`libraries.load` creates no `Library`; `libraries.remove` frees the linked
+datablocks and their override objects. The error strings are Blender's own.
 """
 
 from __future__ import annotations
@@ -50,13 +38,13 @@ LINKING_COMMANDS = (
     "unlink_libraries",
 )
 
-# --- captured by scripts/blender_probes/linking_reload_ruling.py, Blender 5.2.2 LTS ---
+# --- Blender 5.2.2's text for a failed reload ---
 _RELOAD_WORK = "/var/folders/87/ykdcq2j525x7kkhl13f1lrm80000gn/T/t7_reload_4i12xuvn"
 RELOAD_ABSOLUTE = f"Error: Trying to reload library 'LIcanon.blend' from invalid path '{_RELOAD_WORK}/gone.blend'\n"
 RELOAD_RELATIVE_SMITH = (
     f"Error: Trying to reload library 'LIcanon.blend' from invalid path '{_RELOAD_WORK}/Smith, John/canon.blend'\n"
 )
-# --- captured by scripts/blender_probes/linking_datablock_lifecycle.py, Blender 5.2.2 LTS (an OSError) ---
+# --- Blender 5.2.2's text for a failed link (an OSError) ---
 _LIFECYCLE_WORK = "/var/folders/87/ykdcq2j525x7kkhl13f1lrm80000gn/T/t7_lifecycle_g5s7jxf0"
 LINK_TRUNCATED = f"Error: Failed to read blend file '{_LIFECYCLE_WORK}/truncated.blend': Missing DNA block\n"
 
@@ -238,8 +226,7 @@ class StubCollectionID(StubID):
             override.objects.link(copy)
             self.world.data["objects"].append(copy)
         self.world.data["collections"].append(override)
-        # Measured (section K of linking_handlers_real_blender.py): overriding a collection also overrides
-        # every linked collection inside it.
+        # Blender also overrides every linked collection inside it.
         for child in [child for child in self.children if child.library is not None]:
             nested = StubCollectionID(self.world, child.name)
             nested.override_library = StubOverride(child, override, system=system)
@@ -309,7 +296,7 @@ class StubLibrary(StubID):
         contents = self.world.files.get(self.filepath, {"collections": {}, "objects": []})
         for datablock in self.users_id:
             datablock.session_uid = next(_UID)
-            # Measured: a datablock the new file lacks stays as a placeholder with `ID.is_missing` True.
+            # A datablock the new file lacks stays as a placeholder with `ID.is_missing` True.
             datablock.is_missing = datablock.name not in {*contents["collections"], *contents["objects"]}
 
 
@@ -397,7 +384,7 @@ class StubLoad:
 
     def __exit__(self, exc_type: object, *_rest: object) -> None:
         """
-        Link what was requested; nothing at all when the block raised (measured).
+        Link what was requested; nothing at all when the block raised.
 
         Args:
             exc_type: The exception type leaving the block, if any.
@@ -682,7 +669,7 @@ def _server(monkeypatch: pytest.MonkeyPatch, *, filepath: str = "") -> tuple[obj
     bpy.data.filepath = filepath
     bpy.data.is_dirty = False
     bpy.data.batch_remove = world.batch_remove
-    # `all_ids` repeats every datablock under fixed type `ID` (measured on 5.2.2).
+    # `all_ids` repeats every datablock under fixed type `ID`, as in Blender.
     bpy.data.all_ids = AllIds(world)
     bpy.data.bl_rna = types.SimpleNamespace(
         properties=[
@@ -832,7 +819,7 @@ def test_link_enforces_the_file_roots(monkeypatch: pytest.MonkeyPatch, tmp_path:
 def test_link_refuses_a_name_absent_from_the_file_and_leaves_no_library(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """An absent name still creates a `Library` in Blender (measured); refusing inside the block creates none."""
+    """An absent name would still create a `Library`; refusing inside the block creates none."""
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
 
@@ -848,7 +835,7 @@ def test_link_refuses_a_name_absent_from_the_file_and_leaves_no_library(
 def test_a_link_that_fails_after_linking_rolls_its_library_back(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Criterion 7 against the real handler and transaction: nothing the failed request created survives."""
+    """Through the real handler and transaction, nothing the failed request created survives."""
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
     before = _uids(world)
@@ -862,7 +849,7 @@ def test_a_link_that_fails_after_linking_rolls_its_library_back(
 
 
 def test_link_instances_what_it_linked_so_a_save_keeps_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """An uninstanced linked collection is dropped on save (measured, lifecycle probe A)."""
+    """Blender drops an uninstanced linked collection on save."""
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
 
@@ -898,7 +885,7 @@ def test_link_names_default_to_none_and_are_not_shared_across_calls(
 
 
 def test_link_as_override_uses_route_c_not_create_liboverrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Route A's objects stay locked (measured); the override is a separate Route C call."""
+    """Route A's objects stay locked, so the override is a separate Route C call."""
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
 
@@ -916,7 +903,7 @@ def test_link_as_override_uses_route_c_not_create_liboverrides(monkeypatch: pyte
 
 
 def test_link_refuses_as_override_with_objects(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Route C is a collection-hierarchy call; an object request cannot be honoured, so it is refused up front."""
+    """Route C overrides collection hierarchies, so an object request is refused up front."""
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
 
@@ -927,7 +914,7 @@ def test_link_refuses_as_override_with_objects(monkeypatch: pytest.MonkeyPatch, 
 
 
 def test_link_refuses_relative_in_a_never_saved_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Blender silently stores an absolute path there (measured, lifecycle probe C)."""
+    """Blender would silently store an absolute path there."""
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
 
@@ -953,7 +940,7 @@ def test_link_flags_must_be_real_bools(monkeypatch: pytest.MonkeyPatch, tmp_path
 def test_a_blender_link_failure_reaches_the_client_without_its_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A truncated `.blend` passes Task 5's magic check and fails inside `libraries.load` with its path."""
+    """A truncated `.blend` passes the magic-byte check and fails inside `libraries.load` with its path."""
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
     world.load_errors[canonical] = OSError(LINK_TRUNCATED.replace(f"{_LIFECYCLE_WORK}/truncated.blend", canonical))
@@ -974,7 +961,7 @@ def test_a_blender_link_failure_reaches_the_client_without_its_path(
 def test_create_override_passes_do_fully_editable_true_explicitly(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The default is False and inheriting it silently produces system overrides (Route B)."""
+    """The default is False, which silently makes system overrides."""
     server, _bpy, world = _server(monkeypatch)
     _library, collection = _linked(server, world, _canon(tmp_path, world))
 
@@ -1054,7 +1041,7 @@ def test_create_override_refuses_a_uid_that_is_not_an_integer(
 def test_create_override_reports_same_named_linked_and_override_objects_distinguishably(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Finding 5(d): Route C leaves two `HeroBody` objects; the report tells them apart by uid and state."""
+    """Route C leaves two `HeroBody` objects; the report tells them apart by uid and state."""
     server, _bpy, world = _server(monkeypatch)
     _library, collection = _linked(server, world, _canon(tmp_path, world))
     linked_body = collection.objects[0]
@@ -1073,7 +1060,7 @@ def test_create_override_reports_same_named_linked_and_override_objects_distingu
 def test_create_override_replaces_the_linked_instance_it_overrides(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Route C adds the override beside the instance (measured), which would draw the asset twice."""
+    """Route C adds the override beside the instance, which would draw the asset twice."""
     server, _bpy, world = _server(monkeypatch)
     _library, collection = _linked(server, world, _canon(tmp_path, world))
 
@@ -1088,7 +1075,7 @@ def test_create_override_replaces_the_linked_instance_it_overrides(
 def test_create_override_that_blender_declines_is_an_error_and_rolls_back(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`override_hierarchy_create` returns None rather than raising (measured); that is not a success."""
+    """`override_hierarchy_create` returns None rather than raising; that is not a success."""
     server, _bpy, world = _server(monkeypatch)
     _library, collection = _linked(server, world, _canon(tmp_path, world))
     before = _uids(world)
@@ -1147,7 +1134,7 @@ def test_list_libraries_paginates_and_reports_what_a_reload_decision_needs(
     ids=["zero", "over-bound", "bool-limit", "string-limit", "negative-offset", "bool-offset"],
 )
 def test_list_libraries_bounds_its_page(monkeypatch: pytest.MonkeyPatch, params: dict[str, object]) -> None:
-    """Bounded inspection (CLAUDE.md)."""
+    """A limit that is zero, too large, a bool or a string is refused, as is a negative or bool offset."""
     server, _bpy, _world = _server(monkeypatch)
 
     assert _run(server, "list_libraries", **params)["status"] == "error"
@@ -1202,7 +1189,7 @@ def test_reload_library_uses_the_data_api_inside_the_replace_flag(
 
 
 def test_no_wm_lib_operator_exists_in_the_linking_module() -> None:
-    """Criterion 4: asserted over the source, not by inspection - `lib_reload` / `lib_relocate` are not called."""
+    """The module's AST holds no `lib_reload` / `lib_relocate` call."""
     tree = ast.parse(LINKING_SOURCE.read_text(encoding="utf-8"))
     attributes = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
 
@@ -1214,7 +1201,7 @@ def test_no_wm_lib_operator_exists_in_the_linking_module() -> None:
 def test_reload_failure_reaches_the_client_sanitized_from_a_captured_blender_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Criterion 8, absolute link: the cause and the library survive, the path does not."""
+    """A deleted file behind an absolute link: the cause and the library name survive, the path does not."""
     server, _bpy, world = _server(monkeypatch)
     library, _collection = _linked(server, world, _canon(tmp_path, world))
     library.filepath = f"{_RELOAD_WORK}/gone.blend"
@@ -1233,12 +1220,10 @@ def test_reload_failure_of_a_relative_link_under_a_comma_directory_is_sanitized(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """
-    Criterion 8, `//` link in `Smith, John`: the whole quoted path goes, comma and all, and the name stays.
+    A deleted file behind a `//` link in `Smith, John`: the whole quoted path goes, comma and all.
 
-    Blender embeds `bpy.path.abspath(filepath)`, never the stored `//` form
-    (measured, `linking_reload_ruling.py` section D). A revert that passes no
-    known paths survives this node - the quoted shape is removed structurally -
-    so the known paths are defence in depth for this shape, not its only guard.
+    Blender reports the expanded path, not the stored `//` form. The quoted shape
+    is also removed structurally, so this passes even without known paths.
     """
     server, bpy, world = _server(monkeypatch)
     library, _collection = _linked(server, world, _canon(tmp_path, world))
@@ -1256,11 +1241,7 @@ def test_reload_failure_of_a_relative_link_under_a_comma_directory_is_sanitized(
 def test_a_reload_failure_in_an_unsaved_session_still_names_the_library(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """
-    A `//` link expands to a bare `canon.blend` with no file open; replacing that as a known path would eat the name.
-
-    Only absolute known paths are handed to the sanitizer.
-    """
+    """With no file open a `//` link expands to a bare `canon.blend`, which must not be a known path."""
     server, _bpy, world = _server(monkeypatch)
     library, _collection = _linked(server, world, _canon(tmp_path, world))
     library.filepath = "//canon.blend"
@@ -1325,7 +1306,7 @@ def test_relocate_refuses_a_file_another_library_already_links(monkeypatch: pyte
 def test_a_failed_relocate_restores_the_previous_path_and_is_sanitized(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A failed reload leaves the contents intact (measured); the library must not be left pointing at the new file."""
+    """A failed reload leaves the contents intact, so the library must not be left pointing at the new file."""
     server, _bpy, world = _server(monkeypatch)
     library, _collection = _linked(server, world, _canon(tmp_path, world))
     previous = library.filepath
@@ -1373,7 +1354,7 @@ def test_unlink_refuses_without_a_real_confirmation(
 
 
 def test_unlink_never_touches_a_library_that_was_not_named(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Criterion 5: the unnamed library and every datablock it linked keep their uids."""
+    """The unnamed library and every datablock it linked keep their uids."""
     server, _bpy, world = _server(monkeypatch)
     named, _c1 = _linked(server, world, _canon(tmp_path, world, "a.blend"))
     kept, _c2 = _linked(server, world, _canon(tmp_path, world, "b.blend"))
@@ -1407,8 +1388,7 @@ def test_unlink_requires_an_explicit_bounded_uid_list(
     """
     Never "everything", never a coerced handle, never unbounded.
 
-    Each shape would reach the library if accepted: the library's uid is 1, so
-    `True` and `"1"` coerce to it, and the oversized list repeats it.
+    The library's uid is 1, so each shape would reach it if accepted.
     """
     server, _bpy, world = _server(monkeypatch)
     library, _collection = _linked(server, world, _canon(tmp_path, world))
@@ -1423,7 +1403,7 @@ def test_unlink_requires_an_explicit_bounded_uid_list(
 
 
 def test_unlink_reports_exactly_what_it_removed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The library, its linked datablocks and the override objects Blender freed with them (measured)."""
+    """The library, its linked datablocks and the override objects Blender freed with them."""
     server, _bpy, world = _server(monkeypatch)
     library, collection = _linked(server, world, _canon(tmp_path, world))
     _run(server, "create_override", collection_uid=collection.session_uid)
@@ -1459,7 +1439,7 @@ def test_unlink_refuses_an_indirect_library(monkeypatch: pytest.MonkeyPatch, tmp
 def test_unlink_purges_only_when_asked_and_only_what_it_orphaned(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`orphans_purge` would also delete the user's own zero-user datablock (measured, lifecycle probe D2)."""
+    """`orphans_purge` would also delete the user's own zero-user datablock."""
     server, _bpy, world = _server(monkeypatch)
     for purge in (False, True):
         library, _collection = _linked(server, world, _canon(tmp_path, world, f"lib{purge}.blend"))
@@ -1550,7 +1530,7 @@ def test_the_name_resolution_helper_refuses_ambiguity_listing_uids(
 def test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_does(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Criterion 7's both directions, against the real handlers rather than Task 4's lambdas."""
+    """Through the real handlers, only the link and the override enter a transaction."""
     server, _bpy, world = _server(monkeypatch)
     server_core = sys.modules[type(server).__module__]
     real_transaction = server_core.mutation_transaction
@@ -1587,7 +1567,7 @@ def test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_doe
 
 
 def test_no_linking_command_takes_a_datablock_name_as_a_handle(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Criterion 7a: every handle is a uid; `collections` / `objects` name contents of the library *file*."""
+    """Every handle is a uid; `collections` / `objects` name contents of the library *file*."""
     server, _bpy, _world = _server(monkeypatch)
     library_file_names = {("link_canon_library", "collections"), ("link_canon_library", "objects")}
     non_handles = {"filepath", "limit", "offset", "confirm", "purge_orphans", "as_override", "relative"}
@@ -1600,7 +1580,7 @@ def test_no_linking_command_takes_a_datablock_name_as_a_handle(monkeypatch: pyte
 
 
 def test_the_linking_commands_are_dispatchable_and_advertised(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Handshake parity; only `list_libraries` is read-only, the three replacing commands keep Task 4's routing."""
+    """Every linking command is advertised in the handshake and dispatchable; only `list_libraries` is read-only."""
     server, _bpy, _world = _server(monkeypatch)
     capabilities = server.get_addon_info()["capabilities"]  # type: ignore[attr-defined]
 
@@ -1612,7 +1592,7 @@ def test_the_linking_commands_are_dispatchable_and_advertised(monkeypatch: pytes
 
 
 # ---------------------------------------------------------------------------
-# script auto-execution (Spec Decision #7)
+# script auto-execution
 # ---------------------------------------------------------------------------
 
 
@@ -1633,7 +1613,7 @@ def _scripts_auto_execute(bpy: types.ModuleType, value: object) -> None:
 def test_link_refuses_while_scripts_auto_execute_is_on(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, value: object
 ) -> None:
-    """A linked library's Python driver ran with the preference on (measured); nothing is loaded."""
+    """Nothing is loaded while the preference is on or unreadable."""
     server, bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
     _scripts_auto_execute(bpy, value)
@@ -1647,7 +1627,7 @@ def test_link_refuses_while_scripts_auto_execute_is_on(
 
 
 def test_link_proceeds_while_scripts_auto_execute_is_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The factory default (False, measured) does not block a link."""
+    """The factory default, False, does not block a link."""
     server, bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
     _scripts_auto_execute(bpy, False)
@@ -1693,7 +1673,7 @@ def test_reload_and_relocate_proceed_while_scripts_auto_execute_is_off(
 
 
 # ---------------------------------------------------------------------------
-# cycle-1 repairs
+# override placement, missing datablocks, nesting and hostile names
 # ---------------------------------------------------------------------------
 
 
@@ -1717,9 +1697,8 @@ def test_a_refused_multi_collection_override_keeps_the_existing_placement(
     """
     Every collection is validated before the first override replaces an instance.
 
-    Reproduced on Blender 5.2.2 before the repair (`linking_handlers_real_blender.py`
-    section G): the root went from `CanonHero` linked plus `CanonProp` overridden
-    to `CanonProp` alone, and the loss survived a save.
+    Otherwise a refused second collection loses the first one's placement, and a
+    save keeps the loss.
     """
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
@@ -1751,7 +1730,7 @@ def test_a_later_override_failure_restores_the_instances_earlier_overrides_repla
     )
 
     assert response["status"] == "error"
-    # Re-linking appends: the placement comes back, its position among siblings may not.
+    # Re-linking appends, so sibling order may change.
     assert sorted(_root_uids(world)) == sorted(before)
 
 
@@ -1759,7 +1738,7 @@ def test_a_later_override_failure_restores_the_instances_earlier_overrides_repla
 def test_datablocks_the_file_no_longer_holds_are_reported_missing_with_a_warning(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str
 ) -> None:
-    """Measured on 5.2.2 (section H): the library reads `is_missing=False` while its collection is a placeholder."""
+    """The library reads `is_missing=False` while its collection is a placeholder, so the warning counts datablocks."""
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
     library, _collection = _linked(server, world, canonical)
@@ -1788,7 +1767,7 @@ def test_a_reload_that_finds_everything_carries_no_warning(monkeypatch: pytest.M
 
 
 def test_relocate_refuses_an_indirect_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Relocating a library reached through another left the parent's child missing (5.2.2); unlink refuses it too."""
+    """Relocating a library reached through another breaks the parent's link."""
     server, _bpy, world = _server(monkeypatch)
     library, _collection = _linked(server, world, _canon(tmp_path, world))
     for datablock in library.users_id:
@@ -1809,7 +1788,7 @@ def test_relocate_refuses_an_indirect_library(monkeypatch: pytest.MonkeyPatch, t
 def test_create_override_refuses_while_scripts_auto_execute_is_on(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, value: object
 ) -> None:
-    """Consistency with the loading commands (user decision, 2026-09-16)."""
+    """`create_override` refuses under the same check as the loading commands."""
     server, bpy, world = _server(monkeypatch)
     _library, collection = _linked(server, world, _canon(tmp_path, world))
     _scripts_auto_execute(bpy, value)
@@ -1837,16 +1816,14 @@ def test_a_nested_request_is_refused_before_it_overrides_a_collection_twice(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """
-    Each collection is re-checked just before its own override (cycle 2).
+    Each collection is re-checked just before its own override.
 
-    Measured on 5.2.2 before the repair (`linking_handlers_real_blender.py`
-    section K): `[Parent, Child]` overrode `Child` twice and drew its object
-    twice. The stub overrides a collection's children with it but does not model
-    Blender's choice of hierarchy root, so the `[Child, Parent]` order is
-    evidenced by the probe alone.
+    Otherwise `[Parent, Child]` overrides `Child` twice and draws its object twice.
+    The stub does not model Blender's choice of hierarchy root, so the
+    `[Child, Parent]` order is untested here.
     """
     server, _bpy, world = _server(monkeypatch)
-    # Cycle 3 refuses this request up front; switched off here so the re-check itself is what refuses.
+    # Disabled so the re-check, not the up-front refusal, is what refuses.
     monkeypatch.setattr(_linking_module(server), "_refuse_nested_requests", lambda _collections: None)
     canonical = _canon(tmp_path, world, "nest.blend")
     world.files[canonical] = {"collections": {"Parent": [], "Child": ["ChildBody"]}, "objects": ["ChildBody"]}
@@ -1866,11 +1843,7 @@ def test_a_nested_request_is_refused_before_it_overrides_a_collection_twice(
 def test_an_absolute_library_name_is_a_known_path_so_no_relative_tail_survives(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """
-    An apostrophe-space inside the name ends the quoted-name match early; the whole name is replaced first instead.
-
-    Constructed in shape 5's captured wording (`RELOAD_ABSOLUTE`) with a hostile name.
-    """
+    """An apostrophe-space in the name ends the quoted-name match early, so the whole name goes first."""
     server, _bpy, world = _server(monkeypatch)
     library, _collection = _linked(server, world, _canon(tmp_path, world))
     library.name = "/Users/o' brien/shots/canon.blend"
@@ -1921,7 +1894,7 @@ def test_overriding_a_parent_whose_inner_collection_is_already_overridden_is_ref
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, route: str
 ) -> None:
     """
-    Measured on 5.2.2 before the repair (section M): `Child` then `Parent` left two `ChildBody` overrides, persisted.
+    Overriding `Child` then `Parent` would leave two `ChildBody` overrides.
 
     The refusal names the existing override so the client can remove it or override only the child.
     """

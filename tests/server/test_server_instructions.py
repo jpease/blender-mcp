@@ -1,19 +1,14 @@
 """
 The server instructions carry the cross-cutting conventions no single tool owns.
 
-Object-name resolution after a library override spans nine object tools and
-`get_object_info`. It is stated once here rather than on each tool: measured
-post-Phase-2, a sentence on every tool costs 1,302 B of `shot`-mode catalog
-(186 B x the 7 tools served there) every session, against 252 chars once here, for
-a refusal that only fires when several libraries link one name and no local
-object has it. `payload_report` measures `tools/list` only, so nothing else pins
-this text: without this test the rule could be deleted and every gate stay green.
+How an object name resolves after a library override applies to many object tools. It is
+stated once here, because repeating it on each tool would grow every session's catalog. No
+payload check covers the instructions, so only these tests stop the rule being deleted.
 """
 
 from blender_mcp.server.app import SERVER_INSTRUCTIONS, mcp
 
-# Compared with line wraps collapsed, so re-flowing the paragraph cannot break a
-# test whose subject is what the sentence says, not where it breaks.
+# Whitespace collapsed, so re-flowing the paragraph cannot break these tests.
 _PROSE = " ".join(SERVER_INSTRUCTIONS.split())
 
 

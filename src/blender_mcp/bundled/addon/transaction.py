@@ -37,11 +37,9 @@ _TRACKED_COLLECTIONS = (
     "metaballs",
     "lattices",
     "grease_pencils",
-    # A failed `link_canon_library` must not leak the Library it created.
-    # `_remove_datablocks` removes these last: removing a Library frees every
-    # datablock linked from it, and a later `remove()` on one raises
-    # ReferenceError that `suppress` would hide (measured on 5.2.2 by
-    # `scripts/blender_probes/transaction_library_rollback.py`, cases A and E).
+    # So a failed `link_canon_library` does not leak its Library. Removed last:
+    # freeing a Library frees its linked datablocks, and a later `remove()` on
+    # one raises a ReferenceError that `suppress` would hide.
     "libraries",
 )
 
@@ -139,7 +137,7 @@ def _remove_datablocks(entries) -> None:
     object could reference an earlier one; everything else follows, also in
     reverse; libraries go last, because removing a Library frees the
     datablocks linked from it and those must already be gone. Each removal is
-    isolated so one failure doesn't stop the rest of the cleanup from running.
+    isolated so one failure does not stop the rest.
 
     Args:
         entries: (collection name, datablock) pairs, as returned by _new_datablocks().
@@ -243,14 +241,10 @@ class Transaction:
         """
         Disarm this transaction because the database it snapshotted was replaced.
 
-        A load or a library reload gives the replaced datablocks fresh
-        session_uids (measured on 5.2.2: a reload by
-        `scripts/blender_probes/library_replace_handlers.py`, a load by
-        `transaction_library_rollback.py` case D), so the snapshot would
-        classify the new contents as created by this request and a rollback
-        would remove them. The captured
-        object states may reference freed datablocks, so they are released
-        without being read or removed.
+        A load or library reload gives the replaced datablocks fresh
+        session_uids, so a rollback would take the new contents for this
+        request's and remove them. The captured object states may reference
+        freed datablocks, so they are released unread.
         """
         self.invalidated = True
         self._before_ids = {}
@@ -385,13 +379,10 @@ def invalidate_active_transaction() -> bool:
     """
     Invalidate the open transaction, if there is one.
 
-    Called from `session.py`'s file handlers on Blender's main thread, inside
-    the call stack of the command whose handler triggered the load or reload.
-
-    Only the innermost transaction is invalidated. Nesting is not supported:
-    `mutation_transaction` has one caller (`server_core._run_handler`), which
-    never runs inside another, and an outer transaction around an inner one
-    would still roll back after a load.
+    Called from `session.py`'s file handlers on the main thread, inside the
+    command that triggered the load or reload. Only the innermost transaction
+    is invalidated, so transactions must not nest: an outer one would still
+    roll back after a load.
 
     Returns:
         bool: True when a transaction was open and is now invalidated.
@@ -419,16 +410,13 @@ def replacing_library_contents() -> Iterator[None]:
     """
     Mark a `lib.reload()` so `blend_import_post` can tell it from a link or an append.
 
-    Blender fires `blend_import_post` for all three (measured by
-    `scripts/blender_probes/library_replace_handlers.py`); a reload replaces
-    existing linked datablocks with fresh session_uids, while a link or append
-    adds new ones a failed request must roll back. Invalidating on every import
-    would disarm that rollback, so the handler invalidates only while this flag
-    is set. Wrap exactly the reload call.
+    Blender fires `blend_import_post` for all three, but only a reload replaces
+    existing datablocks with fresh session_uids; a link or append adds new ones
+    a failed request must roll back. So the handler invalidates the transaction
+    only while this flag is set. Wrap exactly the reload call.
 
-    No production handler calls this yet: Task 7's `reload_library` and
-    `relocate_library` will, and they also bypass the transaction, so today this
-    is defence in depth for a future side-effect reload.
+    `reload_library` and `relocate_library` use it but bypass the transaction,
+    so it matters only to a command that reloads a library inside one.
 
     Yields:
         None: The flag is set for the duration of the block and restored after

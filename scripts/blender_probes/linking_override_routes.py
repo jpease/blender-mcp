@@ -1,21 +1,18 @@
 r"""
-Measure the three library-override routes against a fixture built here (plan Task 7 Step 2).
+Print what the three library-override routes produce, on a fixture built here.
 
-For each route, and for the collection *and* one object inside it, print
-`library`, `override_library`, `is_editable` and `is_system_override`. The
-plan's expected table: Route A leaves the objects locked; Route B makes them
-editable but system overrides; Route C (`do_fully_editable=True`) makes them
-editable user overrides. **No route here reads `bpy.context`**: the scene and
-view layer come from `bpy.data.scenes[0]` / `scene.view_layers[0]`, which is
-what "no operator context needed" means (`rg -n 'bpy.context' <this file>` finds
-only this sentence). Each route is also run with the linked collection first
-instanced in the scene and without, because `create_override` receives a linked
-collection in either state.
+For the collection and an object inside it, each route prints `library`,
+`override_library`, `is_editable` and `is_system_override`. Expected: Route A
+leaves objects locked, Route B makes them editable system overrides, and Route C
+(`do_fully_editable=True`) makes them editable user overrides. The scene and
+view layer come from `bpy.data`, never `bpy.context`, to show that no operator
+context is needed. Each route runs with the linked collection instanced in the
+scene and without, since `create_override` can receive either.
 
-A final section measures the Route C edge cases `create_override` is built on:
-where the override goes when the linked collection is instanced inside a local
-sub-collection, what a second call on the same linked collection does, and what
-the call returns on an override collection and on a local one.
+A last section covers the Route C cases `create_override` depends on: where the
+override goes when the linked collection is instanced in a local
+sub-collection, and what a second call, a call on the override and a call on a
+local collection return.
 
 From the repository root::
 

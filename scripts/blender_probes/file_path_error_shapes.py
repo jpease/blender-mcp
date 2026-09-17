@@ -1,17 +1,16 @@
 """
-Capture Blender's real path-bearing error texts and show `sanitize_blender_error` on each.
+Print Blender's real path-bearing error texts beside `sanitize_blender_error`'s output.
 
-Plan Task 5 Step 6 requires every sanitizer test string to come from a real
-`RuntimeError`, not a hand-written one, because the message format is not a
-contract: each shape below breaks a different plausible sanitizer. This prints
-the raw text and the sanitized text side by side, for a plain work directory
-and for one whose name carries a space and an apostrophe (the quoting trap).
+Sanitizer tests should copy these texts rather than invent them: the format is
+not a contract, and each shape breaks a different plausible sanitizer. Every
+shape runs in a plain work directory and in one whose name has a space and an
+apostrophe, which defeats naive quoting.
 
-It also records two facts the path pipeline depends on: what `bpy.path.abspath`
-returns for `//` forms with and without an open file, and that the committed
-zstd and gzip fixtures under `tests/fixtures/blend/` really open.
+Also prints what `bpy.path.abspath` returns for `//` forms with and without an
+open file, and opens the committed zstd and gzip fixtures in
+`tests/fixtures/blend/`.
 
-Run from the repository root (the empty-path shape reports the process CWD)::
+Run from the repository root; the empty-path shape reports the process CWD::
 
     /opt/homebrew/bin/blender --background --factory-startup \
         --python scripts/blender_probes/file_path_error_shapes.py

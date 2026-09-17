@@ -1,4 +1,4 @@
-"""Re-verify the handoff's 5.2.1 API facts against 5.2.2: introspection half."""
+"""Re-verify API facts first measured on 5.2.1 against 5.2.2: introspection half."""
 
 import bpy
 

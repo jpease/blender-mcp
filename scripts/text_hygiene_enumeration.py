@@ -1,55 +1,33 @@
 r"""
-Enumerate every character that can smuggle a path separator past the addon.
+Enumerate the characters that could slip a path separator or a disguise past the addon.
 
-Run it - it needs no Blender and no network::
+Needs no Blender and no network::
 
     .venv/bin/python scripts/text_hygiene_enumeration.py
 
-**Why this is committed rather than pasted into a docstring.** Three repair
-cycles of Task 3 each blocked the homoglyph the previous critic had used, and
-each shipped the class. The question a blocklist can never answer is "what else
-is there?", and that question is one loop over Unicode. This script is that
-loop, so the answer is reproducible instead of asserted, and so a future
-Unicode version can be re-measured rather than re-reasoned about.
+A homoglyph blocklist cannot say what it misses; one loop over Unicode can, and can
+be rerun for a new Unicode version. Sections:
 
-It reports five things:
-
-1. Every code point outside `UNSAFE_CATEGORIES` whose NFKC form contains `/`,
-   `\\` or `:` - the characters that are inert to a category filter and become a
-   real separator in any consumer that normalises.
-2. What `client_safe_leaf` does with each of them, so "the allowlist catches
-   them" is a measurement rather than a claim.
-3. What `safe_relative_link` does with the link shapes that defeated the three
-   previous blocklists.
-4. That NFKC is the identity on every character `LINK_COMPONENT_ALLOWED` admits,
-   which is why `safe_relative_link` needs no normalisation pass and why adding
-   one could only widen what it publishes.
-5. The confusables `is_confusable` exists for: characters the leaf allowlist
-   *does* admit and NFKC still changes, which is the case neither allowlist
-   covers.
-6. **The confusables it does not catch**, measured rather than implied: the
-   classic homoglyph class NFKC leaves untouched. This is the limit
-   `is_confusable`'s docstring names, and it is printed here so the claim is a
-   reading of this script's output rather than a sentence somebody wrote.
-7. That the check is NFKC-against-NFC, so a canonically decomposed name - what
-   macOS produced for years - is published rather than reduced.
-8. **What composing first costs.** `NFKC(x) == NFKC(NFC(x))` holds over every
-   assigned code point - and that is a property of the *NFKC form*, while
-   `is_confusable` compares NFKC against NFC, so the identity does not answer
-   the question the section used to head itself with. The flip set is printed
-   instead: the code points the NFC change newly admits, how many of those
-   `_is_admissible_leaf` will actually publish, and U+212B / U+2126 as worked
-   cases.
+1. Code points outside `UNSAFE_CATEGORIES` whose NFKC form contains `/`, `\\` or
+   `:`. A category filter passes them; a consumer that normalises sees a separator.
+2. What `client_safe_leaf` does with each of them.
+3. What `safe_relative_link` does with link shapes that defeat a blocklist.
+4. Whether NFKC leaves every character `LINK_COMPONENT_ALLOWED` admits unchanged; if
+   so, `safe_relative_link` needs no normalisation pass.
+5. Confusables the leaf allowlist admits but NFKC changes, which only `is_confusable`
+   catches.
+6. Homoglyphs NFKC leaves alone, which `is_confusable` misses.
+7. That a decomposed (NFD) name is published, because the check compares NFKC with NFC.
+8. What comparing with NFC gives up: the code points it newly admits, how many of
+   them `_is_admissible_leaf` would publish, and U+212B and U+2126 as examples.
 """
 
 import importlib.util
 import pathlib
 import unicodedata
 
-# Loaded by path, not imported: `bundled/addon/__init__.py` imports `bpy`, so
-# the package cannot be imported outside Blender. This module deliberately
-# imports nothing from its own package, which is what makes that possible - the
-# same property `tests/conftest.load_addon_source_module` relies on.
+# Loaded by path because the addon package's `__init__.py` imports `bpy`. That works
+# only while `text_hygiene.py` imports nothing from its own package.
 _MODULE = pathlib.Path(__file__).resolve().parents[1] / "src/blender_mcp/bundled/addon/text_hygiene.py"
 _spec = importlib.util.spec_from_file_location("addon_text_hygiene", _MODULE)
 if _spec is None or _spec.loader is None:
@@ -89,11 +67,11 @@ for character in ("\u2044", "\u2215"):
 
 print("\n=== 3. the four link shapes that defeated the three previous blocklists ===")
 LINK_CASES = {
-    "cycle-2: literal ..": "//../../clients/acme/canon.blend",
-    "cycle-3 F1: U+FE68, NFKC -> backslash": "//..\ufe68..\ufe68clients\ufe68acme\ufe68canon.blend",
-    "cycle-3 F2: U+29F8 BIG SOLIDUS": "//..\u29f8..\u29f8clients\u29f8acme\u29f8canon.blend",
-    "cycle-3 F3: no homoglyph at all, rooted //": "///Users/victim/clients/acme-merger/lib/canon.blend",
-    "cycle-3 F4: ZWSP hides .. from a raw gate": "//.\u200b./.\u200b./clients/acme/canon.blend",
+    "literal ..": "//../../clients/acme/canon.blend",
+    "U+FE68, NFKC -> backslash": "//..\ufe68..\ufe68clients\ufe68acme\ufe68canon.blend",
+    "U+29F8 BIG SOLIDUS": "//..\u29f8..\u29f8clients\u29f8acme\u29f8canon.blend",
+    "no homoglyph at all, rooted //": "///Users/victim/clients/acme-merger/lib/canon.blend",
+    "ZWSP hides .. from a raw gate": "//.\u200b./.\u200b./clients/acme/canon.blend",
     "benign, must still publish whole": "//libs/canon.blend",
 }
 for label, filepath in LINK_CASES.items():
@@ -123,9 +101,8 @@ for name, probe in (
 ASCII_MAX = 0x7F
 
 print("\n=== 6. the confusables is_confusable does NOT catch: NFKC leaves them alone ===")
-# Each probe is `canon.blend` with exactly one ASCII letter replaced by a
-# homoglyph, written out rather than computed: a computed substitution silently
-# produced an unsubstituted probe, which reads as evidence and is not.
+# Each probe is `canon.blend` with one letter swapped for a homoglyph. Written out,
+# because a computed swap can silently leave the probe unchanged and still look valid.
 for rendered_as, probe in (
     ("cyrillic small a", "c\u0430non.blend"),
     ("cyrillic small o", "can\u043en.blend"),
@@ -154,14 +131,8 @@ for label, probe in (
     print(f"  {label:38s} confusable={text_hygiene.is_confusable(probe)!s:5s} -> {verdict}: {published!r}")
 
 print("\n=== 8. what composing first costs: NFKC(x) == NFKC(NFC(x)), and the set that flipped ===")
-# Two different questions, and section 8 used to print the first and draw the
-# second's conclusion. `NFKC(x) == NFKC(NFC(x))` is a property of the *NFKC
-# form* - the folded results agree - and it is true. `is_confusable` does not
-# compare NFKC forms: it compares NFKC against NFC. So the identity above says
-# nothing about which code points the predicate's answer changed for, and the
-# headline it carried ("composing first widens nothing") was a conclusion the
-# measurement did not reach. The flip set below is that second question,
-# measured.
+# `NFKC(x) == NFKC(NFC(x))` compares folded forms, but `is_confusable` compares NFKC
+# with NFC, so only the flip set shows which code points' answers changed.
 checked = 0
 disagreements: list[str] = []
 flipped: list[int] = []
@@ -176,9 +147,8 @@ for code_point in range(0x110000):
     composed = unicodedata.normalize("NFC", character)
     if folded != unicodedata.normalize("NFKC", composed):
         disagreements.append(f"U+{code_point:04X}")
-    # The predicate before the NFC change was `NFKC(x) != x`; it is now
-    # `NFKC(x) != NFC(x)`. A code point flips when the first said "confusable"
-    # and the second says "not".
+    # Flipped: confusable under the old test `NFKC(x) != x`, but not under the
+    # current `NFKC(x) != NFC(x)`.
     if folded != character and folded == composed:
         flipped.append(code_point)
         if text_hygiene._is_admissible_leaf(character):

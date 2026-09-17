@@ -1,17 +1,12 @@
 """
-Task 6's file-lifecycle commands - `open_shot`, `save_shot`, `reset_session` - against a stub `bpy`.
+The file-lifecycle commands `open_shot`, `save_shot` and `reset_session`, against a stub `bpy`.
 
-The stub `bpy.ops.wm` records every operator call with its **keyword arguments
-as passed**, because the load-bearing assertions here are about arguments that
-were passed explicitly rather than inherited: `save_as_mainfile`'s
-`relative_remap` defaults to True and a factory-settings Blender compresses a
-bare save, so an omitted argument does the opposite of a falsey one. Each stub
-operator raises `RuntimeError` on failure and never returns `{'CANCELLED'}`,
-which is what the real three do (measured on 5.2.2, plan Task 6 behaviour 1).
+The stub `bpy.ops.wm` records each operator's keyword arguments as passed, because an
+omitted argument can do the opposite of a false one: `save_as_mainfile`'s `relative_remap`
+defaults to True, and factory settings compress a bare save. Like the real operators, each
+stub raises `RuntimeError` on failure rather than returning `{'CANCELLED'}`.
 
-Real-file assertions (an existing `.blend`'s bytes unchanged after a refused
-overwrite) use `tmp_path` and the committed fixture, not a stub filesystem:
-`os.path.exists` is the guard, so it is exercised for real.
+Overwrite tests use real files under `tmp_path`, because the guard is `os.path.exists`.
 """
 
 from __future__ import annotations
@@ -114,7 +109,7 @@ class _RecordingWm:
 
     def read_factory_settings(self, **kwargs: object) -> set[str]:
         """
-        Record the call; this operator also disables every enabled add-on (measured), so it must never be used.
+        Record the call; production must never use it, because it also disables every enabled add-on.
 
         Args:
             **kwargs: Exactly what the handler passed.
@@ -154,7 +149,7 @@ class _RecordingWm:
 
 def _abspath(bpy: types.ModuleType, path: str) -> str:
     """
-    Mimic `bpy.path.abspath`, including its measured unsaved-session behaviour.
+    Mimic `bpy.path.abspath`, including its behaviour when no file is open.
 
     Args:
         bpy: The stub module, for `data.filepath`.
@@ -162,7 +157,7 @@ def _abspath(bpy: types.ModuleType, path: str) -> str:
 
     Returns:
         str: `//x` joined to the open file's directory, or the bare `x` when no
-        file is open (measured on 5.2.2 by `file_path_error_shapes.py`).
+        file is open.
 
     """
     if not path.startswith("//"):
@@ -263,7 +258,7 @@ def _assert_no_absolute_path(text: str, *paths: object) -> None:
 
 
 def test_open_shot_passes_use_scripts_false_explicitly(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """An omitted `use_scripts` is an automatic-critical item (§07), even though the operator default is False."""
+    """An omitted `use_scripts` is a critical defect, even though the operator default is False."""
     server, _bpy, wm = _server(monkeypatch)
     shot = _shot(tmp_path)
 
@@ -277,7 +272,7 @@ def test_open_shot_passes_use_scripts_false_explicitly(monkeypatch: pytest.Monke
 
 
 def test_open_shot_passes_load_ui_false_explicitly_by_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """`open_mainfile`'s own `load_ui` default is True (RNA, 5.2.2), so the command's False must be passed."""
+    """`open_mainfile`'s own `load_ui` default is True, so the command's False must be passed."""
     server, _bpy, wm = _server(monkeypatch)
 
     _run(server, "open_shot", filepath=str(_shot(tmp_path)))
@@ -300,11 +295,7 @@ def test_no_file_command_takes_a_use_scripts_parameter(monkeypatch: pytest.Monke
 
 
 def test_use_scripts_appears_in_no_server_side_schema() -> None:
-    """
-    No MCP tool schema under `server/` may carry `use_scripts` (Task 5 policy, criterion 5).
-
-    Trivially true until Task 9 adds the file tools; it is a tripwire for that task, not evidence for this one.
-    """
+    """No MCP tool schema under `server/` may carry `use_scripts`, so a client can never enable embedded scripts."""
     offenders = [str(path) for path in SERVER_SRC.rglob("*.py") if "use_scripts" in path.read_text(encoding="utf-8")]
 
     assert offenders == []
@@ -313,7 +304,7 @@ def test_use_scripts_appears_in_no_server_side_schema() -> None:
 def test_open_shot_refuses_a_dirty_session_without_discard_unsaved(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """An open silently destroys unsaved work (Task 2, measured), so it needs an explicit discard."""
+    """An open destroys unsaved work without asking, so it needs an explicit discard."""
     server, _bpy, wm = _server(monkeypatch, is_dirty=True)
 
     response = _run(server, "open_shot", filepath=str(_shot(tmp_path)))
@@ -339,7 +330,7 @@ def test_open_shot_opens_a_dirty_session_when_discard_unsaved_is_true(
 def test_open_shot_refuses_while_scripts_auto_execute_is_enabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Step 4b refuse branch: the preference on means a .blend could run embedded scripts."""
+    """Refuse branch: the preference on means a .blend could run embedded scripts."""
     server, _bpy, wm = _server(monkeypatch, auto_execute=True)
 
     response = _run(server, "open_shot", filepath=str(_shot(tmp_path)))
@@ -352,7 +343,7 @@ def test_open_shot_refuses_while_scripts_auto_execute_is_enabled(
 def test_open_shot_proceeds_while_scripts_auto_execute_is_disabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Step 4b allow branch: the factory default (False) does not block a load."""
+    """Allow branch: the factory default (False) does not block a load."""
     server, _bpy, wm = _server(monkeypatch, auto_execute=False)
 
     response = _run(server, "open_shot", filepath=str(_shot(tmp_path)))
@@ -464,7 +455,7 @@ def test_open_shot_refuses_outside_the_roots_before_saying_whether_the_file_exis
 def test_a_runtime_error_from_open_mainfile_is_a_clean_error_response(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Shape 3 carries the path twice; the response keeps the cause and neither path."""
+    """A load error carrying the path twice keeps its cause and loses both paths."""
     server, _bpy, wm = _server(monkeypatch)
     shot = _shot(tmp_path)
     canonical = os.path.realpath(shot)
@@ -483,7 +474,7 @@ def test_a_runtime_error_from_open_mainfile_is_a_clean_error_response(
 def test_the_known_path_closes_what_structural_detection_leaves_behind(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A `, ` in a directory name leaves a relative tail structurally (Task 5 backlog); the known path removes it."""
+    """A `, ` in a directory name leaves a relative tail structurally (a known limit); the known path removes it."""
     directory = tmp_path / "Smith, John"
     directory.mkdir()
     shot = _shot(directory)
@@ -698,7 +689,7 @@ def test_save_shot_in_place_uses_save_mainfile_with_explicit_arguments(
 def test_a_runtime_error_from_a_save_operator_is_a_clean_error_response(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, in_place: bool
 ) -> None:
-    """Shape 4's derived `<path>@` name is removed from both save operators' errors."""
+    """The derived `<path>@` temp name is removed from both save operators' errors."""
     current = _shot(tmp_path)
     server, _bpy, wm = _server(monkeypatch, filepath=str(current))
     target = current if in_place else tmp_path / "new.blend"
@@ -827,7 +818,7 @@ def test_reset_session_without_confirm_is_refused(monkeypatch: pytest.MonkeyPatc
 def test_reset_session_reads_the_empty_factory_startup_file_and_never_factory_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`read_factory_settings` unregisters every add-on (measured), so reset uses `read_homefile`."""
+    """`read_factory_settings` unregisters every add-on, so reset uses `read_homefile`."""
     server, _bpy, wm = _server(monkeypatch, filepath="/shots/sq010.blend", is_dirty=True)
     before = server.get_session_info()["session_epoch"]  # type: ignore[attr-defined]
 
@@ -863,7 +854,7 @@ def test_a_runtime_error_from_the_reset_operator_is_a_clean_error_response(monke
 def test_the_file_commands_are_dispatchable_and_advertised_beside_get_session_info(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Handshake parity: all three new commands and `get_session_info` are advertised and dispatchable."""
+    """Handshake parity: all three file commands and `get_session_info` are advertised and dispatchable."""
     server, _bpy, _wm = _server(monkeypatch)
 
     capabilities = server.get_addon_info()["capabilities"]  # type: ignore[attr-defined]
@@ -968,14 +959,14 @@ def test_each_file_command_is_answered_exactly_once_through_the_drain_loop(
 
 
 # ---------------------------------------------------------------------------
-# cycle-1 repairs
+# save_shot: dirty-flag timing, relative links, temp save names
 # ---------------------------------------------------------------------------
 
 
 def test_the_drain_tick_ends_after_a_save_so_a_queued_edit_runs_after_blender_clears_the_dirty_flag(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Blender clears `is_dirty` after the tick; an edit in the save's tick was un-marked and later lost."""
+    """Blender clears `is_dirty` after the tick, so a command queued behind a save runs in the next tick."""
     server, _bpy, _wm = _server(monkeypatch)
     client = _RecordingClient()
     for request_id, cmd_type, params in (
@@ -1012,8 +1003,7 @@ def _with_external_paths(
     """
     Give the stub session libraries and external file paths, as `bpy.utils.blend_paths` reports them.
 
-    Measured on 5.2.2 (`file_lifecycle_handlers_real_blender.py` section E): `blend_paths(absolute=False,
-    packed=False, local=True)` lists image paths **and every library path, indirect ones included**; an
+    Like Blender, the stub lists image paths and every library path, indirect ones included; an
     indirect library is one whose `users_id` are all `is_library_indirect`.
 
     Args:
@@ -1055,7 +1045,7 @@ def _with_relative_library(bpy: types.ModuleType, *filepaths: str) -> None:
 def test_saving_to_another_directory_warns_about_relative_links_that_will_not_resolve(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`relative_remap=False` keeps `//libs/x.blend` verbatim, which breaks from a new directory (probe P4)."""
+    """`relative_remap=False` keeps `//libs/x.blend` verbatim, which breaks from a new directory."""
     (tmp_path / "projA").mkdir()
     (tmp_path / "projB").mkdir()
     current = _shot(tmp_path / "projA")
@@ -1096,7 +1086,7 @@ def test_no_relative_link_warning_when_the_links_still_resolve(
 def test_a_leftover_temp_save_name_beside_the_target_refuses_the_save(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str, in_place: bool
 ) -> None:
-    """Blender writes `<target>@` then renames it; a planted `@` symlink redirected the write outside the roots."""
+    """Blender writes `<target>@` then renames it, so a planted `@` symlink would redirect the write."""
     current = _shot(tmp_path)
     server, _bpy, wm = _server(monkeypatch, filepath=str(current))
     target = current if in_place else tmp_path / "fresh.blend"
@@ -1124,7 +1114,7 @@ def test_a_leftover_temp_save_name_beside_the_target_refuses_the_save(
 def test_a_relative_image_path_counts_as_an_external_path_that_will_not_resolve(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """An image-only file with `//textures/t2.png` broke on reopen from projB with no warning (cycle-2 critic)."""
+    """A `//` image path counts too, so a file with no libraries still gets the warning."""
     (tmp_path / "projA").mkdir()
     (tmp_path / "projB").mkdir()
     server, bpy, _wm = _server(monkeypatch, filepath=str(_shot(tmp_path / "projA")))
@@ -1141,7 +1131,7 @@ def test_a_relative_image_path_counts_as_an_external_path_that_will_not_resolve(
 def test_an_indirect_library_is_not_counted_because_blender_rederives_it_from_its_parent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`//libs/deep/lib2.blend` linked through `lib1.blend` re-resolves from its parent on reopen (measured)."""
+    """`//libs/deep/lib2.blend`, linked through `lib1.blend`, re-resolves from its parent on reopen."""
     (tmp_path / "projA").mkdir()
     (tmp_path / "projB").mkdir()
     server, bpy, _wm = _server(monkeypatch, filepath=str(_shot(tmp_path / "projA")))
@@ -1163,7 +1153,7 @@ def test_an_indirect_library_is_not_counted_because_blender_rederives_it_from_it
 def test_a_temp_save_name_that_cannot_be_checked_refuses_the_save(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, error: OSError, in_place: bool
 ) -> None:
-    """An `lstat` failure other than not-found refuses: "cannot tell" must not read as "clear" (cycle-2 critic)."""
+    """An `lstat` failure other than not-found refuses: "cannot tell" must not read as "clear"."""
     current = _shot(tmp_path)
     server, _bpy, wm = _server(monkeypatch, filepath=str(current))
     real_lstat = os.lstat

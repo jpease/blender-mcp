@@ -13,8 +13,7 @@ def beat() -> float:
     Count a fire and ask to be called again.
 
     Returns:
-        float: The interval Blender should wait before calling again - which it
-            never does under `--background`, which is the finding.
+        float: The poll interval, which Blender never honours under `--background`.
 
     """
     fires.append(1)

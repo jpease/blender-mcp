@@ -1,9 +1,7 @@
 """
-Regression coverage for the catalog measurement harness's provenance stamp.
+Tests for the revision stamp `scripts/measure_catalog.py` prints with each measurement.
 
-`scripts/` is outside `testpaths`, so nothing else exercises `_git_revision` - the one
-function standing between this project and the failure its own docstring records, where
-correct byte counts were published against the wrong commit.
+`scripts/` is outside `testpaths`, so nothing else runs `_git_revision`.
 """
 
 import subprocess
@@ -15,7 +13,7 @@ import pytest
 
 from conftest import REPO_ROOT
 
-# Appended, not inserted: `scripts/` must never shadow a stdlib module for the whole session.
+# Appended so `scripts/` cannot shadow a stdlib module for the rest of the session.
 sys.path.append(str(REPO_ROOT / "scripts"))
 
 import measure_catalog
@@ -33,7 +31,7 @@ def _fake_run(*, sha: str, status_out: str, status_code: int = 0) -> _Run:
         status_code: Return code for `git status --porcelain`.
 
     Returns:
-        A callable matching the `subprocess.run` calls `_git_revision` makes.
+        The stand-in.
 
     """
 
@@ -57,19 +55,19 @@ def _fake_run(*, sha: str, status_out: str, status_code: int = 0) -> _Run:
 
 
 def test_clean_tree_reports_a_bare_revision(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An empty `git status` means the measurement is reproducible from that commit alone."""
+    """A clean tree is stamped with the bare revision."""
     monkeypatch.setattr(subprocess, "run", _fake_run(sha="270958a\n", status_out=""))
     assert measure_catalog._git_revision() == "270958a"
 
 
 def test_dirty_tree_is_marked(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Uncommitted changes must be stamped, since the number is not the commit's number."""
+    """Uncommitted changes are stamped, since the number is not the commit's."""
     monkeypatch.setattr(subprocess, "run", _fake_run(sha="270958a\n", status_out=" M src/x.py"))
     assert measure_catalog._git_revision() == "270958a (dirty)"
 
 
 def test_failed_status_is_not_reported_as_clean(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A `git status` that fails must not be indistinguishable from a clean tree."""
+    """A `git status` that fails must not read the same as a clean tree."""
     monkeypatch.setattr(subprocess, "run", _fake_run(sha="270958a\n", status_out="", status_code=129))
     assert measure_catalog._git_revision() == "270958a (cleanliness unknown)"
 

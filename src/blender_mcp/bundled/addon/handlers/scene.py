@@ -157,12 +157,9 @@ def _object(name):
     """
     Resolve one object by name for every scene tool in this module.
 
-    Goes through `object_lookup.find_object`, so a name an override shares with
-    its linked original resolves to the override - the only one of the pair these
-    tools can edit - and a name linked from several libraries with no local object
-    is refused rather than guessed between. `server_core._resolve_targets` resolves
-    the transaction's snapshot by the same rule, so a rollback restores the object
-    the handler mutated.
+    A name shared by an override and its linked original means the override, the
+    only one of the pair these tools can edit. `server_core._resolve_targets`
+    uses the same rule, so a rollback restores the object the handler changed.
 
     Args:
         name: The client-supplied object name.

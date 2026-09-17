@@ -8,11 +8,9 @@ from conftest import StubFactory
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-# Importing these registers their tools onto the process-global FastMCP app for the rest of the
-# session. `scene` is a core module the package initializer already imported and enriched;
-# `scene_authoring` arrives after `finalize_tool_documentation` has run, so its tools carry raw
-# docstrings and no annotations. Any assertion about which tools a *selection* advertises, or
-# about descriptions and annotations, must go through test_bundles.py's subprocess helper.
+# These imports register tools on the process-global FastMCP app for the whole session, and
+# `scene_authoring` loads after `finalize_tool_documentation`, so its tools lack annotations.
+# Test what a selection advertises, or tool descriptions, via test_bundles.py's subprocess helper.
 from blender_mcp.server.tools import scene, scene_authoring
 
 SCENE_COMMANDS = {
@@ -32,8 +30,7 @@ def test_scene_tools_are_registered_and_dispatched(monkeypatch: pytest.MonkeyPat
     """All nine scene commands stay reachable and mutating once both modules are imported."""
     addon, _bpy = _load_addon(monkeypatch, data={})
 
-    # `scene` and `scene_authoring` register onto the same FastMCP app; importing both above is
-    # what a `scene-authoring` process does, and all nine commands must still be reachable.
+    # Importing both modules is what a `scene-authoring` process does.
     assert set(scene.mcp._tool_manager._tools) >= SCENE_COMMANDS
     assert set(addon.BlenderMCPServer()._build_command_handlers()) >= SCENE_COMMANDS
     assert not SCENE_COMMANDS & addon.BlenderMCPServer._READ_ONLY_COMMANDS
@@ -159,7 +156,7 @@ def test_breaking_tool_names_are_absent() -> None:
 
 
 def test_remove_scene_objects_dispatches_named_objects(stub_blender_connection: StubFactory) -> None:
-    """A confirmed removal must reach the addon under its own command name, carrying the names."""
+    """A confirmed removal reaches the addon under its own command name, with the names."""
     connection = stub_blender_connection()
 
     result = asyncio.run(scene_authoring.remove_scene_objects(ctx=None, object_names=["Cube"], confirm_remove=True))
@@ -168,7 +165,7 @@ def test_remove_scene_objects_dispatches_named_objects(stub_blender_connection: 
         "remove_scene_objects",
         {"object_names": ["Cube"], "managed_rig": None, "confirm_remove": True},
     )
-    # No `name` parameter, so the stub falls back to its documented "Created" echo.
+    # With no `name` parameter the stub echoes "Created".
     assert result["changed_objects"] == ["Created"]
 
 
@@ -186,9 +183,8 @@ def test_attribute_domains_are_rejected_per_geometry_kind() -> None:
     """
     Each geometry accepts only its own attribute domains, and says which in the error.
 
-    Both messages come from the single `_validate_attributes` helper, so they are asserted
-    here: the helper derives the allowlist wording from its `counts` mapping, and nothing
-    else would notice if a reorder or a reword changed what clients read.
+    The wording is built from `_validate_attributes`'s `counts` mapping, so a reorder there
+    changes what clients read.
     """
     with pytest.raises(ValidationError, match="only support POINT or CURVE domains"):
         scene_authoring.CurvesGeometry(

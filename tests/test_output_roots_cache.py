@@ -1,18 +1,10 @@
 """
 Coverage for keeping the writable-output-root probe off Blender's hot path.
 
-`get_addon_info` is dispatched from `drain_command_queue`, i.e. on Blender's
-main thread, and `writable_roots` runs an `os.path.isdir` plus an `os.access`
-on every candidate - the first of which come from the operator-supplied
-`BLENDERMCP_OUTPUT_ROOTS`. On a hung network mount those stat calls block
-uninterruptibly, freezing Blender's UI and every queued command;
-`_DRAIN_TIME_BUDGET_SECONDS` cannot bound them because that budget is only
-checked *between* commands. So the answer is computed once per candidate list
-instead of on every handshake.
-
-The advertised roots and their order are a separate design decision (see
-tests/test_output_roots.py and tests/test_blender_rig.py), so these tests also
-pin the cache to changing nothing observable about *what* is advertised.
+Every handshake runs on Blender's main thread, and a stat on a hung network mount
+blocks there, freezing the UI and the command queue. So the probe runs once per
+candidate list, and these tests also check that caching changes nothing about which
+roots are advertised or in what order.
 """
 
 from __future__ import annotations
@@ -32,9 +24,8 @@ def _instrumented_server(monkeypatch: pytest.MonkeyPatch) -> tuple[object, list[
     """
     Load the addon with every filesystem probe of the candidate roots recorded.
 
-    The counter wraps `writable_roots` rather than `os.path.isdir`/`os.access`
-    directly: one entry per *probe pass* is what the handshake cost is measured
-    in, and it stays readable if the per-candidate checks are ever changed.
+    Counts calls to `writable_roots`, one per probe pass, rather than the stat calls
+    inside it, so the count survives changes to the per-candidate checks.
 
     Args:
         monkeypatch: Fixture used to load the addon and install the counter.
@@ -72,10 +63,9 @@ def test_the_cache_changes_neither_the_advertised_roots_nor_their_order(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """
-    Caching is an I/O optimisation; the ranking it serves is a design decision.
+    Caching must not change which roots are advertised or their order.
 
-    Both handshakes must report exactly what an uncached probe of the same
-    candidates would, in the same order - a configured root first.
+    Both handshakes must match an uncached probe, with the configured root first.
     """
     mounted = tmp_path / "output"
     mounted.mkdir()
@@ -94,13 +84,10 @@ def test_the_cache_changes_neither_the_advertised_roots_nor_their_order(
 
 def test_a_changed_candidate_list_is_probed_again(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """
-    The candidates are not constant, so the cache must be keyed on them.
+    The cache is keyed on the candidate list, so a changed list is probed again.
 
-    `bpy.data.filepath` changes whenever the user opens or saves a .blend, and
-    `BLENDERMCP_OUTPUT_ROOTS` can be re-exported; caching the first answer for
-    the life of the process would keep advertising roots that no longer reflect
-    either. Keying on the candidate list costs no I/O - building it is pure
-    string work - and re-probes exactly when the answer could have changed.
+    The open .blend and `BLENDERMCP_OUTPUT_ROOTS` can both change while the process
+    runs; a cache for the process lifetime would advertise stale roots.
     """
     first_root = tmp_path / "first"
     second_root = tmp_path / "second"
@@ -125,9 +112,8 @@ def test_the_cache_cannot_be_corrupted_by_its_caller(monkeypatch: pytest.MonkeyP
     """
     A handshake mutating the list it was handed must not poison the next one.
 
-    The roots travel into a response dict that other code is free to edit, and
-    a cache that hands out its own list would then advertise whatever that
-    caller left behind.
+    The roots go into a response dict other code may edit, so the cache must not
+    hand out its own list.
     """
     server, _probes, _server_core = _instrumented_server(monkeypatch)
 

@@ -1,30 +1,12 @@
 """
 Shared PEP 562 lazy-submodule machinery for split tool packages.
 
-A package whose `__init__.py` star-imports every submodule defeats a dotted bundle entry (see
-`..bundles`): Python always runs a package's `__init__.py` before importing any of its
-submodules, so requesting one submodule via `importlib.import_module` still imports -- and
-registers the `@mcp.tool()`-decorated tools of -- every sibling the `__init__.py` star-imports.
-That is exactly how `camera`/`lighting` behaved before this module existed: naming `camera.core`
-still registered all 23 camera tools, because `camera/__init__.py` star-imported `rigs` too.
+Importing any submodule runs the package `__init__.py` first, so an `__init__.py` that
+star-imports its submodules registers all their tools and defeats a dotted bundle entry (see
+`..bundles`). These hooks keep `package.Name` and `dir(package)` working without that.
 
-`lazy_getattr`/`lazy_dir` let such a package's `__init__.py` stay import-light -- no submodule
-is *executed* until something actually asks for one of its names -- while `package.SomeName`
-attribute access (used throughout this repo's `tests/server/tools/*/test_tools.py` files) and
-`dir(package)` keep working exactly as they did under the old star-import.
-
-Both resolve names by parsing each candidate submodule's source with `ast` rather than by
-importing it to check with `hasattr`: an earlier version of this module did the latter, and
-Task 5's cycle-2 review caught that it defeats the whole split two ways `hasattr`-checking
-cannot avoid -- `dir(package)` unconditionally imported (and registered the tools of) every
-submodule including the one a bundle deliberately excludes, and any missing or mistyped name
-walked all the way to that submodule before raising `AttributeError`, importing it along the
-way. Parsing a file's top-level definitions costs no import and therefore no tool registration,
-no matter which submodule is asked about or whether the name exists at all. Verified to agree
-with the real runtime attribute set for every submodule these two packages currently split
-across, both by hand and by
-`test_ast_derived_submodule_names_match_the_real_runtime_attributes` in `test_bundles.py`,
-which re-checks this on every test run rather than trusting a one-time check to stay true.
+Names are found by parsing submodule source, not by importing to check: importing would
+register the tools of submodules a bundle excludes, on `dir()` or on a missing name.
 """
 
 import ast
@@ -40,15 +22,9 @@ def _submodule_top_level_names(package_file: str, submodule_name: str) -> frozen
     """
     Names a submodule binds at module scope, found by parsing its source -- no import.
 
-    Covers every way a module-level name currently reaches a module's own `__dict__` in these
-    packages: `def`/`async def`/`class` statements, plain and annotated assignments, and
-    `import`/`from ... import ...` (including `as` aliases) -- the same names `hasattr`/`vars()`
-    would see after actually importing the module, without needing to import it to find out.
-    `test_ast_derived_submodule_names_match_the_real_runtime_attributes` in `test_bundles.py`
-    checks this claim against every current camera/lighting submodule, but the check is scoped
-    to those files: tuple-unpacking assignment, augmented assignment, and a name bound inside a
-    module-level `if`/`try`/`for`/`with` block are not handled and would under-report if any of
-    these submodules ever grew one -- causing a false `AttributeError` for that name, not a leak.
+    Handles only the binding forms these submodules use today. A name bound by tuple
+    unpacking or inside a module-level `if`/`try`/`for`/`with` is missed, and looking it up
+    on the package raises `AttributeError`.
 
     Args:
         package_file: The lazy package's own `__file__`, used to locate `<submodule_name>.py`
@@ -56,8 +32,7 @@ def _submodule_top_level_names(package_file: str, submodule_name: str) -> frozen
         submodule_name: The submodule's bare name (no package prefix, no `.py` suffix).
 
     Returns:
-        Every name the submodule binds at module scope. Cached: each file is parsed at most
-        once no matter how many names are looked up against it.
+        Every name the submodule binds at module scope.
 
     """
     source_path = Path(package_file).parent / f"{submodule_name}.py"
@@ -78,14 +53,10 @@ def _submodule_top_level_names(package_file: str, submodule_name: str) -> frozen
 
 def lazy_getattr(package_name: str, package_file: str, submodule_names: tuple[str, ...], name: str) -> Any:  # ruff: ignore[any-type] -- a lazily resolved attribute can be any type a submodule defines
     """
-    Resolve `<package>.<name>` by importing only the submodule that actually defines it.
+    Resolve `<package>.<name>` by importing only the submodule that defines it.
 
-    Checks each of `submodule_names` against `_submodule_top_level_names` first, so only the
-    one that defines `name` is ever imported -- a name that exists nowhere in `submodule_names`
-    raises without importing any of them. Intended as the body of a package's PEP 562
-    module-level `__getattr__`, which Python calls only when normal attribute lookup on the
-    package has already failed, so this never runs for a name the package's own `__init__.py`
-    imports at module scope.
+    The body of a package's PEP 562 `__getattr__`. A name no submodule defines raises
+    without importing anything.
 
     Args:
         package_name: The calling package's `__name__`, used as the relative-import anchor.
@@ -111,11 +82,7 @@ def lazy_dir(package_file: str, submodule_names: tuple[str, ...], package_global
     """
     List a lazy package's own names plus every name its submodules define, without importing any.
 
-    Intended as the body of a package's PEP 562 module-level `__dir__`, so introspection
-    (`dir(package)`, IDE completion) sees the same names `lazy_getattr` can resolve, even though
-    none of them are imported at module scope -- and calling `dir()` never itself imports (and
-    so never registers the tools of) a submodule a bundle deliberately excluded. Unlike
-    `lazy_getattr`, no relative-import anchor is needed here since nothing is imported.
+    The body of a package's PEP 562 `__dir__`, listing the names `lazy_getattr` can resolve.
 
     Args:
         package_file: The calling package's own `__file__`.

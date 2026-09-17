@@ -1,21 +1,19 @@
 """
-Drive `save_shot(create_directories=...)` and `object_lookup.find_object` against real Blender (post-Phase-2).
+Check `save_shot(create_directories=...)` and `object_lookup.find_object` against real Blender.
 
-Two gaps an agent reported after the Phase 2 gate, measured here on the real
-handlers and the real `bpy.data.objects`:
+Each check prints ok or FAIL, and the probe exits 1 if any failed.
 
-A. **Directories.** A `canon/shots/sh010.blend` target whose directories do not
-   exist: refused without the opt-in (nothing created), saved with it
-   (`created_directory` True, the file reopens), refused outside the configured
-   roots with nothing created, and `created_directory` False on a second save
-   into the now-existing directory.
-B. **Names after an override.** A canon `HeroCam` linked and overridden (Route C),
-   saved and reopened: `bpy.data.objects.get` order, the `(name, None)` key,
-   and what `find_object` and the scene tools' `_object` return. Then two
-   libraries that each link a `Prop` with no local one: `find_object` refuses,
-   naming each library by leaf and real `session_uid` with the true total, and
-   `Library.id_type` is `'LIBRARY'` (what `candidates.display_name` branches on).
-   A missing name is None.
+A. Saving to `canon/shots/sh010.blend` whose directories do not exist: refused
+   without the opt-in, with nothing created; saved with it (`created_directory`
+   True, and the file reopens); `created_directory` False for a second save
+   into the now-existing directory; refused outside the configured roots, with
+   nothing created.
+B. A canon `HeroCam` linked, overridden, saved and reopened: `bpy.data.objects.get`
+   order, the `(name, None)` key, and what `find_object` and the scene tools'
+   `_object` return. Then two libraries each linking a `Prop`, with no local
+   one: `find_object` refuses, naming each library by leaf and real
+   `session_uid` with the true total, and `Library.id_type` is `'LIBRARY'`,
+   which `candidates.display_name` branches on. A missing name gives None.
 
 From the repository root::
 
@@ -36,8 +34,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 ADDON_DIR = ROOT / "src/blender_mcp/bundled/addon"
 _PACKAGE = types.ModuleType("probe_addon")
 _PACKAGE.__path__ = [str(ADDON_DIR)]  # type: ignore[attr-defined]
-# `helpers` (imported by `handlers.scene`) reads the package's `ADDON_ID`; the
-# real `__init__` registers Blender classes, so only the constant is provided.
+# `helpers`, imported by `handlers.scene`, reads the package's `ADDON_ID`; the real
+# `__init__` would register Blender classes, so only the constant is provided.
 _PACKAGE.ADDON_ID = "blender_mcp_probe"  # type: ignore[attr-defined]
 sys.modules["probe_addon"] = _PACKAGE
 file_lifecycle = importlib.import_module("probe_addon.handlers.file_lifecycle")
@@ -129,7 +127,7 @@ def section_a(work: pathlib.Path) -> None:
 
 def section_b(work: pathlib.Path) -> None:
     """Resolve names an override shares with its linked original."""
-    print("B. find_object after Route C")
+    print("B. find_object after override_hierarchy_create")
     canon_path = work / "canon.blend"
     canon(canon_path, "CanonHero", "HeroCam")
     bpy.ops.wm.read_homefile(use_empty=True, use_factory_startup=True)
@@ -144,8 +142,7 @@ def section_b(work: pathlib.Path) -> None:
     order = [(obj.name, obj.library is not None) for obj in bpy.data.objects]
     print(f"  bpy.data.objects order after reopen: {order}")
     check("two objects are named HeroCam", [name for name, _ in order].count("HeroCam") == len(("override", "linked")))
-    # Asserted, not printed: `object_lookup`'s docstring cites this probe for both
-    # claims, and a printed value a passing run does not check is not an instrument.
+    # Checked, not just printed: `object_lookup`'s docstring states both.
     check("local IDs come before linked ones in Main", order[0] == ("HeroCam", False))
     check("plain get(name) returns the local object", bpy.data.objects.get("HeroCam").library is None)
     keyed = bpy.data.objects.get(("HeroCam", None))  # pyright: ignore[reportArgumentType]
@@ -156,8 +153,7 @@ def section_b(work: pathlib.Path) -> None:
     check("a missing name is None", object_lookup.find_object(bpy.data.objects, "NoSuchObject") is None)
     check("the (name, None) key of a missing name is None", bpy.data.objects.get(("NoSuchObject", None)) is None)  # pyright: ignore[reportArgumentType]
 
-    # Linked first but sorting last, so insertion order and name order disagree and
-    # the checks below can tell which one `get(name)` actually follows.
+    # Linked first but sorting last, so the checks can tell which order `get(name)` follows.
     first, second = work / "a" / "zeta.blend", work / "b" / "alpha.blend"
     first.parent.mkdir()
     second.parent.mkdir()
@@ -173,8 +169,8 @@ def section_b(work: pathlib.Path) -> None:
     print(f"  plain get('Prop') picked: {picked}; first by name: {sorted_first}")
     check("get(name) follows Main insertion order: the library linked first", picked == "zeta.blend")
     check("get(name) does NOT follow library name order", sorted_first == "alpha.blend" and picked != sorted_first)
-    # `candidates.display_name` takes the leaf branch only on this discriminator, and
-    # its docstring cites this check for it: the wrong branch publishes a path.
+    # `candidates.display_name` shows only the leaf name on this value; the other
+    # branch would publish a path.
     check("a real Library reports id_type 'LIBRARY'", all(lib.id_type == "LIBRARY" for lib in bpy.data.libraries))
     message = refusal(lambda: object_lookup.find_object(bpy.data.objects, "Prop"))
     check(f"two linked Props with no local one are refused: {message!r}", "more than one library" in message)

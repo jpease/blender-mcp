@@ -1,19 +1,17 @@
 r"""
-Measure what each candidate `reset_session` operator does to preferences and to an enabled add-on.
+Print what each candidate `reset_session` operator does to preferences and to an enabled add-on.
 
-Plan Task 6's command table names `wm.read_factory_settings(use_empty=True)`.
-That operator loads factory *preferences* as well as the factory startup file,
-and the socket server lives inside an add-on: an operator that disables enabled
-add-ons would unregister the addon answering the very command that called it.
-This stages a throwaway add-on (so nothing about the real addon is assumed),
-enables it, flips `use_scripts_auto_execute` on, and runs each candidate
-operator from a clean start, reporting afterwards:
+`wm.read_factory_settings` also loads factory preferences, and the socket
+server lives in an add-on, so an operator that disables add-ons would
+unregister the one answering the command. A throwaway add-on stands in, so
+nothing about the real one is assumed. Each operator runs from a clean start
+with that add-on enabled and `use_scripts_auto_execute` on, then prints:
 
 - whether the add-on is still enabled, and whether its `unregister` ran;
-- which of `@persistent` `load_pre` / `load_post` / `load_post_fail` fired, and
-  whether `load_post` is still attached;
-- whether the flipped preference was reset;
-- how many objects the resulting scene holds and what `bpy.data.filepath` is.
+- which persistent `load_pre`, `load_post` and `load_post_fail` handlers fired,
+  and whether `load_post` is still attached;
+- whether the preference was reset;
+- the object count and `bpy.data.filepath` afterwards.
 
 From the repository root::
 

@@ -1,13 +1,9 @@
 """
-Container healthcheck: both halves of the "remote" host must genuinely answer.
+Container healthcheck: Blender's addon socket and the MCP server must both answer.
 
-A TCP connect proves nothing - Docker accepts on a published port before
-anything is listening inside - so each check does a real round-trip:
-
-1. Blender's addon socket answers a ping (the MCP server's upstream).
-2. The MCP server answers an `initialize` over streamable HTTP (what clients reach).
-
-`docker compose up --wait` then blocks until an agent could actually use it.
+Each check makes a real request, because an open port does not mean a server is
+serving on it. Exits 0 only when both answer, so `docker compose up --wait`
+returns once an agent can use the container.
 """
 
 import json

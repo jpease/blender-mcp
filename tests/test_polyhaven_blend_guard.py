@@ -1,11 +1,8 @@
 """
 The Poly Haven `.blend` model import validates the download before Blender reads it.
 
-Appendix A's open R2 finding: `import_polyhaven_asset` handed a network-fetched
-file straight to `bpy.data.libraries.load`. The guard is `file_paths`, applied
-to the download directory the handler itself created rather than to the
-deployment's file roots, because the file is the handler's own temp artefact,
-not a caller-named path.
+The file must be a real `.blend` inside the handler's own download directory; the
+deployment's file roots do not apply.
 """
 
 import contextlib
@@ -93,8 +90,8 @@ def _server(
     addon, bpy = _load_addon(monkeypatch, data={"filepath": "", "objects": objects})
     bpy.data.libraries = types.SimpleNamespace(load=loads.load)
     bpy.context.collection = types.SimpleNamespace(objects=types.SimpleNamespace(link=lambda _obj: None))
-    # Blender's factory value (measured, Task 6). Without a readable preference the
-    # scripts check refuses, as an unreadable preference must (TASK_STATE decision 18).
+    # Blender's factory value. The scripts check refuses when the preference is
+    # unreadable, so the stub must provide it.
     bpy.context.preferences = types.SimpleNamespace(filepaths=types.SimpleNamespace(use_scripts_auto_execute=False))
     handler = sys.modules[f"{addon.__name__}.handlers.polyhaven"]
     files = {"blend": {"1k": {"blend": {"url": _URL}}}}
@@ -112,7 +109,7 @@ def _server(
 
 
 def test_a_valid_downloaded_blend_is_still_imported(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The guard is not a redesign: a real `.blend` imports exactly as before, even under enforced roots."""
+    """A real `.blend` still imports, even when the file roots are enforced elsewhere."""
     elsewhere = tmp_path / "configured_root"
     elsewhere.mkdir()
     monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(elsewhere))
@@ -138,7 +135,7 @@ def test_a_downloaded_blend_whose_header_is_not_a_blend_is_never_loaded(monkeypa
 def test_a_downloaded_blend_resolving_outside_its_download_directory_is_never_loaded(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Contained to the handler's own temp dir, on realpath'd forms (macOS's temp dir is itself a symlink)."""
+    """A download that symlinks out of the handler's temp directory is refused."""
     outside = tmp_path / "outside.blend"
     outside.write_bytes((FIXTURES / "empty_zstd.blend").read_bytes())
     server, loads = _server(monkeypatch, None, link_to=outside)
@@ -165,7 +162,7 @@ def test_a_failed_blend_load_reports_no_absolute_path(monkeypatch: pytest.Monkey
 def test_a_downloaded_blend_is_never_loaded_while_scripts_auto_execute_is_on(
     monkeypatch: pytest.MonkeyPatch, preferences: str
 ) -> None:
-    """An appended object's Python driver ran with the preference on (measured); refused in Poly Haven's error shape."""
+    """An on or unreadable preference refuses the import in Poly Haven's error shape, naming no path."""
     server, loads = _server(monkeypatch, (FIXTURES / "empty_zstd.blend").read_bytes())
     filepaths = types.SimpleNamespace(use_scripts_auto_execute=True) if preferences == "on" else types.SimpleNamespace()
     sys.modules["bpy"].context.preferences = types.SimpleNamespace(filepaths=filepaths)
@@ -239,7 +236,7 @@ def _raise(error: Exception) -> object:
 
 
 def test_a_failed_hdri_setup_reports_no_absolute_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The HDRI branch returned `{e!s}` from `images.load`, which names the cached file."""
+    """The HDRI branch sanitizes an `images.load`-shaped error, which names the cached file."""
     server, _loads = _server(monkeypatch, b"hdr")
     handler = sys.modules[type(server).__module__.rsplit(".", 1)[0] + ".handlers.polyhaven"]
     bpy = sys.modules["bpy"]
@@ -253,7 +250,7 @@ def test_a_failed_hdri_setup_reports_no_absolute_path(monkeypatch: pytest.Monkey
 
 
 def test_a_failed_texture_load_reports_no_absolute_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The textures branch returned `{e!s}` from `images.load`, which names the temp file."""
+    """The textures branch sanitizes an `images.load` error, which names the temp file."""
     server, _loads = _server(monkeypatch, b"jpg")
     handler = sys.modules[type(server).__module__.rsplit(".", 1)[0] + ".handlers.polyhaven"]
     files = {"diffuse": {"1k": {"jpg": {"url": "https://dl.polyhaven.org/x/asset_1k.jpg"}}}}
@@ -274,7 +271,7 @@ def test_a_failed_texture_load_reports_no_absolute_path(monkeypatch: pytest.Monk
 def test_a_failure_before_any_download_reports_no_absolute_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str, arguments: tuple
 ) -> None:
-    """The outer handlers returned `str(e)` / `{e!s}` for anything, including an OS error naming a path."""
+    """The outer handlers sanitize any error, including an OS error naming a path."""
     server, _loads = _server(monkeypatch, None)
     handler = sys.modules[type(server).__module__.rsplit(".", 1)[0] + ".handlers.polyhaven"]
     monkeypatch.setattr(handler, "get_json", _raise(_leak(tmp_path)))

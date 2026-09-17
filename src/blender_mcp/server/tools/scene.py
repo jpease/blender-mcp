@@ -3,7 +3,7 @@
 """
 Typed scene composition, hierarchy, constraint, modifier and validation tools.
 
-Registers the seven tools that stayed in the core surface, including the cross-domain
+Registers the seven core-surface scene tools, including the cross-domain
 `validate_scene` preflight. Geometry authoring and destructive scene operations live in
 `scene_authoring.py` (bundle: `scene-authoring`); the shared input base and Blender
 dispatch helper live in `_scene_shared.py`.
@@ -297,10 +297,8 @@ for _modifier_type, _setting_names in _MODIFIER_SETTING_NAMES.items():
 
 ModifierSpecInput = Annotated[functools.reduce(operator.or_, _modifier_variants), Field(discriminator="type")]
 
-# Validated inside manage_modifiers rather than declared as that tool's parameter type: exposing
-# ModifierSpecInput directly would serialize all 30 modifier types' full settings schemas into
-# that one tool's advertised JSON schema on every client connection, at a cost of roughly 19K
-# tokens for detail no single call ever needs more than one variant of.
+# Validated inside manage_modifiers, not declared as its parameter type, so every modifier's
+# settings schema stays out of the tool schema clients carry in context.
 modifier_spec_adapter = TypeAdapter(ModifierSpecInput)
 
 

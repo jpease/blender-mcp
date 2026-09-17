@@ -152,14 +152,11 @@ class ObjectState:
         """
         Release every datablock reference after the database was replaced.
 
-        A load or library reload may have freed each of these, so nothing here
-        reads or removes them: `remove()` on a freed geometry backup is a
-        use-after-free that the `suppress(Exception)` around the other removal
-        paths would hide. A backup that survives (a library reload leaves local
-        session_uids unchanged, measured by
-        `scripts/blender_probes/transaction_library_rollback.py` case B) is
-        presumably left as an unused orphan - inferred, not measured: that case
-        holds no geometry backup. A leak is recoverable; a wrong removal is not.
+        A load or library reload may have freed these, so nothing here reads or
+        removes them: `remove()` on a freed geometry backup is a use-after-free
+        that the `suppress(Exception)` on other removal paths would hide. A
+        backup that survives is left as an orphan; a leak is recoverable, a
+        wrong removal is not.
         """
         self.obj = None
         self.parent = None

@@ -1,81 +1,11 @@
-"""
-Drive a live GUI Blender over the addon's own socket, for evidence that needs a real event loop.
+r"""
+Drive a live GUI Blender over the addon's own socket, for tests that need a real event loop.
 
-**What this rig reaches, and what it does not.** This script speaks the *addon's*
-newline-delimited JSON socket protocol and **stands up no MCP server at all**. A
-scenario driven through it therefore calls `get_addon_info` the *addon command*,
-and cannot call `get_addon_status` the *MCP tool*; the latter is unreachable here
-by construction, because it lives server-side (`server/tools/core.py`) and calls
-`force_addon_handshake()` inside the MCP process. The container rig
-(`docker/blender/docker-compose.yml`) is the only mode that runs a real MCP
-server, and it publishes *only* that layer - Blender's socket never leaves the
-container. So there is no mode in which one scenario drives both layers. A reader
-who assumes this script exercises "MCP tool -> socket -> addon" will write a
-scenario that cannot run; the MCP wrapper layer is covered by ordinary `pytest`.
-
-**Why a live Blender is needed.** The addon refuses to start under
-`blender --background`, and `bpy.app.timers` never fire there, so the drain loop
-that answers commands does not run. Anything that depends on a command actually
-being dequeued needs a real event loop: a GUI Blender locally (this script), or
-Xvfb in the container.
-
-**Which Blender answers.** The rig picks a free ephemeral port rather than the
-addon's own default, refuses to start if anything is already listening on the
-port it chose, and treats readiness as a `ping` that came back *plus* a receipt
-carrying this run's nonce and port, written by its own bootstrap after `start()`
-reported `running`. Without all three the rig would happily adopt the developer's
-live Blender - a connect to 9876 succeeds on any machine with the addon running -
-and report that session's answers as its own.
-
-**Isolation, precisely.** The addon is staged into the caller-supplied working
-directory and Blender is pointed at it with **both** `BLENDER_USER_RESOURCES` and
-`BLENDER_USER_SCRIPTS`, so config, datafiles and extensions resolve under the
-work dir too: opening or saving a `.blend` writes `recent-files.txt` there rather
-than into the user's own profile. Setting only `BLENDER_USER_SCRIPTS` leaves the
-other three pointing at the user's Blender - measured, not assumed. What protects
-`userpref.blend` is `--factory-startup`, which makes Blender ignore saved
-preferences entirely; no environment variable does that. `TMPDIR` is redirected
-to `<work-dir>/tmp`, so Blender's *session* temp dir - autosaves, `quit.blend`,
-render previews - lands under the work dir as well rather than in `$TMPDIR`.
-
-**What `BLENDERMCP_OUTPUT_ROOTS` does, and does not, do.** It makes the launched
-Blender **lead with** the work dir in its handshake. It does **not** make the
-work dir the only advertised root: `server_core._writable_output_roots()`
-*prepends* the configured roots and then appends the open blend's directory,
-`bpy.app.tempdir`, `tempfile.gettempdir()` and `~`, so `$HOME` is still in the
-list (measured: `['<work-dir>', '<work-dir>/tmp/blender_*', '<work-dir>/tmp',
-'/Users/<user>']`). That list is an advisory preference ranking, not an enforced
-root set; narrowing the addon's own default candidates is Task 5's decision, not
-this script's.
-
-**The child's environment is pruned before the rig sets its own.** Every
-inherited `BLENDER*` variable is dropped - `BLENDER_SYSTEM_SCRIPTS` shadows
-Blender's *system* scripts tree exactly as `PYTHONPATH` shadows the staged addon,
-and a denylist that stopped at `BLENDER_USER_*` missed it - together with
-`PYTHONPATH`, `PYTHONHOME` and `PYTHONSTARTUP`. `PYTHONPATH` is the one with a
-concrete precedent: this project's own container entrypoint runs the MCP server
-with `PYTHONPATH=/repo/src` as a per-command prefix
-(`docker/blender/entrypoint.sh`; it does not `export` it, so the container itself
-is safe). A developer who exports the same thing in their own shell would make
-Blender's Python resolve `blender_mcp` to the *server* package instead of the
-staged addon, and the bootstrap's import would fail inside Blender.
-
-**What "the rig writes nowhere else" actually means.** Every file this process
-writes, and every Blender-side path this script controls - user resources,
-scripts, the session temp dir, staged fixtures, the bootstrap and the log - lives
-under `--work-dir`. `sys.dont_write_bytecode` is set before the scenario is
-imported so that loading it no longer drops a `__pycache__/` beside the caller's
-file. What the rig cannot promise is a *scenario* that asks Blender to write
-elsewhere: the advertised roots are advisory, and a scenario may name any path.
-
-**What the rig will delete or overwrite.** Only a directory carrying its own
-`.blender-rig-owned` marker, which it writes into `--work-dir` itself. A
-`--work-dir` that already has contents and no marker is refused outright, which
-is what keeps a real Blender resources root (`config/`, `datafiles/`,
-`extensions/`, `scripts/`, `userpref.blend`) and an auto-executing
-`startup/`/`modules/` tree from being adopted. Inside a marked work dir the rig
-replaces only `addons/blender_mcp` and its own `blends/` copies, never the whole
-`addons/` tree, so add-ons installed alongside it survive.
+The addon will not start under `blender --background`, where timers never fire and
+no command is dequeued, so the rig launches a GUI Blender. It is macOS only; on
+Linux use the container rig (`docker/blender/docker-compose.yml`). The rig speaks
+only the addon's socket protocol and runs no MCP server, so a scenario can call
+addon commands such as `get_addon_info` but not MCP tools such as `get_addon_status`.
 
 Usage:
     python scripts/blender_rig.py --work-dir <dir> --scenario <scenario.py> \
@@ -83,32 +13,39 @@ Usage:
         [--port 0] [--timeout 60] [--scenario-timeout 300] [--command-timeout 180]
 
 A scenario module defines `run(rig)` and drives the socket through `rig.send()`.
-It fails by raising; a clean return is a pass. Example:
+It fails by raising; a clean return is a pass. The rig prints `RIG PASSED` and exits
+0, or prints `RIG FAILED` and exits 1. Example:
 
     def run(rig):
         assert rig.send("ping")["status"] == "success"
 
-The scenario runs in *this* process, so it cannot touch `bpy`. When a scenario
-needs Blender to do something of its own accord - anything that must not arrive
-as a queued socket command - pass that work as a `--blender-script`, which
-Blender runs after the bootstrap. Such a script finds the working directory in
-`BLENDERMCP_RIG_WORK_DIR`, which is how the two halves exchange files.
+The scenario runs in this process, so it cannot touch `bpy`. Work that must happen
+inside Blender, rather than arrive as a queued socket command, goes in a
+`--blender-script`, which Blender runs after the bootstrap. Such a script finds the
+work dir in `BLENDERMCP_RIG_WORK_DIR`, where the two halves exchange files.
 
-Blender's combined output is drained on a reader thread into
-`<work-dir>/blender.log`; its `RIG:` lines are echoed here, and the tail of it is
-quoted in any startup or shutdown failure. Leaving that pipe undrained is what
-deadlocks Blender in `write()` on the very thread the drain loop runs on.
+By default the rig picks a free port, refuses a port that already has a listener,
+and treats Blender as ready only when a ping succeeds and its bootstrap has written
+a receipt with this run's nonce and port. Otherwise a developer's own running
+Blender could answer in its place.
 
-**One residual deadlock the design cannot rescue: give this process a stdout
-somebody reads.** The echo above is a `print()` to the *rig's own* stdout. If
-that is a pipe nobody drains, the reader thread blocks in `print`, stops reading
-Blender's pipe, and Blender then deadlocks in `write()` exactly as if the rig
-had never drained it at all - and because a blocked `print` raises nothing,
-`_OutputDrain`'s `except BaseException` fallback to `_drain_silently` never
-runs. Only `_ECHOED_PREFIXES` lines are echoed, which bounds the volume in
-practice, but the rig cannot bound a reader that never reads. Run it with stdout
-on a terminal, a file, or a pipe that is being consumed - `... | tee`, not a
-pipe opened and left unread.
+Blender runs with `--factory-startup`, and `BLENDER_USER_RESOURCES`,
+`BLENDER_USER_SCRIPTS` and `TMPDIR` point into `--work-dir`, so its config, recent
+files, autosaves and temp files stay out of the user's profile. Inherited `BLENDER*`,
+`PYTHONPATH`, `PYTHONHOME` and `PYTHONSTARTUP` are dropped first, since any of them
+can load other scripts or the wrong `blender_mcp` package. `BLENDERMCP_OUTPUT_ROOTS`
+confines `.blend` file commands to the work dir; nothing confines other writes a
+scenario asks Blender for, and the handshake still lists `~` as a writable root.
+
+The rig writes only into a `--work-dir` that is new, empty, or carries its
+`.blender-rig-owned` marker, and there replaces only `addons/blender_mcp` and its
+`blends/` copies. It refuses a populated unmarked directory, so it never adopts a
+real Blender resources root or a `startup/` tree Blender would execute.
+
+Blender's combined output goes to `<work-dir>/blender.log`; its `RIG:` and
+`RIG-BLENDER:` lines are echoed here, and failures quote the log's tail. Give this
+process a stdout that something reads (a terminal, a file, `| tee`): if the echo
+blocks, the rig stops draining Blender's pipe and Blender deadlocks in `write()`.
 """
 
 import argparse
@@ -136,13 +73,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _BUNDLED_ADDON = _REPO_ROOT / "src" / "blender_mcp" / "bundled" / "addon"
 _BLENDER = Path("/opt/homebrew/bin/blender")
 _INSTALLED_ADDON_NAME = "blender_mcp"
-# 0 means "ask the kernel for a free one". Deliberately not the addon's own 9876,
-# which is where a developer's live Blender already is.
+# 0 asks the kernel for a free port. The addon's own 9876 is where a developer's
+# running Blender usually listens.
 _DEFAULT_PORT = 0
 _DEFAULT_TIMEOUT_SECONDS = 60.0
 _DEFAULT_SCENARIO_TIMEOUT_SECONDS = 300.0
-# Matches the real client's socket timeout (server/connection.py), so a stall the
-# rig exists to observe is reported as a stall rather than as a rig failure.
+# The real client's socket timeout (server/connection.py), so a stall reads as a
+# stall rather than as a rig failure.
 _DEFAULT_COMMAND_TIMEOUT_SECONDS = 180.0
 _POLL_INTERVAL_SECONDS = 0.25
 _READINESS_PROBE_TIMEOUT_SECONDS = 5.0
@@ -154,25 +91,20 @@ _OWNED_MARKER_TEXT = "Created by scripts/blender_rig.py; this directory is rebui
 _LOG_TAIL_LINES = 40
 _ECHOED_PREFIXES = ("RIG:", "RIG-BLENDER:")
 _FIXTURE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
-# What the addon prints when its own bind() lost the port after the rig's
-# pre-flight said it was free. start() swallows the OSError into this print, so
-# it is the only trace of the real cause of a readiness timeout.
+# The addon prints this when its bind() fails, instead of raising, so it is the
+# only trace of why readiness timed out.
 _BIND_FAILURE_MARKER = "Failed to start server"
-# A --work-dir holding any of these, with no marker, is a real Blender resources
-# root or a scripts tree Blender auto-executes from. Pointing the rig at one both
-# defeats the isolation and hands the launched Blender somebody else's code.
+# An unmarked --work-dir holding any of these is a Blender resources root or a
+# scripts tree Blender executes from.
 _BLENDER_RESOURCE_ENTRIES = ("config", "datafiles", "extensions", "scripts", "userpref.blend")
 _AUTO_EXECUTED_SCRIPT_DIRS = ("startup", "modules")
-# Inherited variables that would redirect Blender or its Python out from under
-# the rig. Pruned as a prefix rather than a list: BLENDER_SYSTEM_SCRIPTS is the
-# one a BLENDER_USER_-only denylist missed.
+# Inherited variables that could redirect Blender or its Python away from the
+# staged addon. A prefix also catches BLENDER_SYSTEM_SCRIPTS.
 _PRUNED_ENVIRONMENT_PREFIXES = ("BLENDER",)
 _PRUNED_ENVIRONMENT_NAMES = frozenset({"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"})
 
-# Mirrors docker/blender/start_server.py: enable the addon and start its socket
-# server with no UI interaction. The container installs the addon by copying it
-# into Blender's addons directory; here BLENDER_USER_SCRIPTS points Blender at
-# the staged copy instead, so the user's own configuration is never touched.
+# Mirrors docker/blender/start_server.py. Blender finds the staged addon through
+# BLENDER_USER_SCRIPTS, so the user's own configuration is never touched.
 _BOOTSTRAP = '''\
 """Enable the staged BlenderMCP addon and start its socket server (written by scripts/blender_rig.py)."""
 
@@ -209,18 +141,10 @@ class _OutputDrain:
     """
     Blender's combined output, read on a thread that must never stop early.
 
-    An undrained pipe fills at ~64 KiB - the addon prints several lines per
-    connection and the rig opens one connection per command - and Blender then
-    blocks in `write()` on its **main** thread, which is the thread the drain
-    loop answers commands on. The rig's own logging would be what caused the hang
-    it exists to detect, and the symptom would be indistinguishable from "Blender
-    hung".
-
-    So the reader's failure modes are handled rather than allowed to end the
-    thread: a byte the pipe cannot decode, a work dir that will not take the log
-    file, anything at all. On any failure the raw stream is still consumed to
-    exhaustion so the pipe cannot fill, and the exception is kept so `_shut_down`
-    can say *the rig's own log reader died* instead of blaming Blender.
+    If the pipe fills, at about 64 KiB, Blender blocks in `write()` on its main
+    thread, where the drain loop answers commands, and the rig causes the hang it
+    exists to detect. So on any failure the reader still consumes the raw stream
+    to EOF, and keeps the exception so `_shut_down` can blame the reader, not Blender.
 
     Attributes:
         failure: Whatever ended the tee, or None if it ran to EOF normally.
@@ -234,9 +158,8 @@ class _OutputDrain:
         Args:
             blender: The process whose combined output to drain.
             log_path: File to tee that output into.
-            abandoned: Set once the scenario has been abandoned at its deadline;
-                echoing stops there, so nothing lands in the transcript after
-                the verdict has been printed.
+            abandoned: Set once the scenario is abandoned at its deadline; echoing
+                stops then, so nothing prints after the verdict.
 
         """
         self._blender = blender
@@ -253,15 +176,10 @@ class _OutputDrain:
 
     def join(self, timeout: float) -> None:
         """
-        Wait for the reader to reach EOF, if it ever got as far as running.
+        Wait for the reader to reach EOF, if it was ever started.
 
-        A reader that was never started is joined silently rather than by
-        raising. `start()` can fail - "can't start new thread" is the realistic
-        way - and `Thread.join` on an unstarted thread raises `RuntimeError`,
-        which `_shut_down` would raise out of its own `finally` after Blender had
-        been terminated and before any diagnosis was built. The run would then
-        report "cannot join thread before it is started" instead of the failure
-        to create the thread, which is the fact worth knowing.
+        `start()` can fail, and joining an unstarted thread raises `RuntimeError`,
+        which would replace that failure with a misleading teardown error.
 
         Args:
             timeout: Seconds to wait before giving up on it.
@@ -276,15 +194,14 @@ class _OutputDrain:
         Report whether the reader is still running.
 
         Returns:
-            bool: True if it has not reached EOF, which means the pipe's write
-                end is still open somewhere - typically a Blender grandchild that
-                inherited it.
+            bool: True until EOF. Alive after Blender exits means something still
+                holds the pipe's write end, usually a Blender grandchild.
 
         """
         return self._thread.is_alive()
 
     def _run(self) -> None:
-        """Tee the output, and fall back to a silent drain if that cannot be done."""
+        """Tee the output, and fall back to a silent drain if that fails."""
         try:
             self._tee()
         # Deliberately BaseException: the only outcome worse than losing the log is
@@ -309,9 +226,8 @@ class _OutputDrain:
         """
         Consume the raw pipe to EOF, discarding it, so it can never fill.
 
-        Reads the byte stream underneath the text wrapper on purpose: whatever
-        broke the tee may well be the decoder, and re-entering it would end this
-        thread a second time.
+        Reads the bytes under the text wrapper, because the decoder may be what
+        broke the tee.
         """
         stream = self._blender.stdout
         if stream is None:
@@ -330,9 +246,7 @@ class _Launch:
     """
     One launched Blender, and the identity the rig will hold it to.
 
-    Kept together because readiness is a claim about *this* process: the port
-    alone identifies nothing, and the nonce is meaningless without the work dir
-    the receipt is written into.
+    Readiness is a claim about this process, which the port alone does not identify.
 
     Attributes:
         process: The Blender the rig started.
@@ -379,11 +293,8 @@ class BlenderRig:
             blends: `.blend` fixture copies by the name the caller gave them.
             port: Port the addon's socket server is listening on.
             command_timeout: Seconds to wait for one command's reply.
-            abandoned: Set when the scenario overran its deadline. The scenario
-                runs on a daemon thread that is *not* killed, so without this an
-                abandoned scenario keeps printing `-->`/`<--` pairs into the
-                stdout that is the evidence artefact, after `RIG FAILED` has
-                already been printed.
+            abandoned: Set when the scenario overran its deadline. Its thread keeps
+                running, so `send` must then refuse and stop printing.
 
         """
         self.work_dir = work_dir
@@ -405,11 +316,9 @@ class BlenderRig:
             dict: The decoded response, including the echoed request id.
 
         Raises:
-            RigError: If the rig has already abandoned this scenario, if the
-                command was not answered within the command timeout - in which
-                case it may still be executing inside Blender - if Blender closed
-                the connection without answering, or if it answered a different
-                request than the one just sent.
+            RigError: If the scenario was abandoned, the command went unanswered
+                within the command timeout (it may still run inside Blender), the
+                transport failed, or the reply is for a different request.
 
         """
         self._refuse_if_abandoned(command_type)
@@ -452,13 +361,10 @@ class BlenderRig:
 
     def _round_trip(self, request: dict) -> dict:
         """
-        Exchange one newline-delimited JSON frame, or explain what went wrong.
+        Exchange one newline-delimited JSON frame, turning socket failures into `RigError`.
 
-        Every socket failure is translated here, because `send`'s documented
-        contract is `RigError` and a bare `TimeoutError: timed out` from the
-        socket layer honoured neither the contract nor the reader: it named
-        neither the command nor the port, and it described an unknown outcome as
-        a failure.
+        A bare socket `TimeoutError` names neither the command nor the port, and
+        reads as a failure when the outcome is unknown.
 
         Args:
             request: The frame to send.
@@ -468,9 +374,7 @@ class BlenderRig:
 
         Raises:
             RigError: If the command was not answered in time, if the transport
-                failed, or if Blender closed the connection mid-frame. `RigError`
-                is a `RuntimeError`, so the one raised by `_exchange` for a short
-                frame passes through the `OSError` handler untouched.
+                failed, or if Blender closed the connection mid-frame.
 
         """
         try:
@@ -492,19 +396,10 @@ class BlenderRig:
         """
         Send one frame on a fresh connection and read the reply frame back.
 
-        One connection per command deliberately: the addon serves each client on
-        its own thread, so a scenario that reconnects proves the listener is
-        still accepting, which a long-lived socket would hide.
-
-        The connect and the reply share one deadline, so `--command-timeout` is
-        the budget for the command rather than for each of its two waits; giving
-        the same figure to both would bound the exchange at twice the number the
-        flag's own help text promises.
-
-        Socket failures are left to propagate - a `TimeoutError` when the
-        exchange overran that budget, any other `OSError` when the transport
-        itself broke - because `_round_trip` is the one place that knows how to
-        describe them to a scenario author.
+        A new connection per command shows the listener still accepts, which a
+        long-lived socket would hide. The connect and the reply share one deadline,
+        so `--command-timeout` bounds the whole command. Socket errors propagate to
+        `_round_trip`, which describes them.
 
         Args:
             request: The frame to send.
@@ -522,15 +417,8 @@ class BlenderRig:
         """
         Describe a command whose outcome is unknown, rather than calling it a failure.
 
-        Measured against the real addon with a 0.5s command timeout: the command
-        the rig had given up on ran on Blender's next main-thread tick and
-        mutated the scene. Nothing on the addon side cancels a queued command,
-        and its reply is lost in silence, because a `sendall` to a peer-closed
-        TCP socket succeeds at the kernel level until the RST arrives - so the
-        addon's own "client disconnected" branch is usually never reached and
-        nothing is logged. Reporting this as a plain failure invites the reader
-        to conclude the scene was untouched, which is the one conclusion the
-        evidence does not support.
+        Nothing cancels a command the addon has queued, so it can still run and
+        change the scene after the rig gives up, and its reply is lost.
 
         Args:
             request: The frame that went unanswered.
@@ -551,18 +439,11 @@ class BlenderRig:
 
 def _read_frame(sock: socket.socket, timeout: float) -> bytes:
     """
-    Read until the newline that terminates one protocol frame, or until EOF.
+    Read until the newline that ends one protocol frame, or until EOF.
 
-    Shared by the readiness probe and by `BlenderRig.send`, so both agree on
-    what "a reply arrived" means; the caller decides whether a short read is a
-    failure or merely a not-yet-ready peer.
-
-    The timeout bounds the *frame*, not each `recv`. A socket timeout alone
-    bounds one call, so a peer that dribbles under the limit and never sends a
-    newline is read for as long as it keeps dribbling: measured at 3.2s against a
-    1.0s socket timeout, one byte every 0.4s. The rig's whole verdict is "Blender
-    did not hang", so it must not own a wait it cannot bound - hence a monotonic
-    deadline, with each `recv` given only what is left of it.
+    The timeout bounds the whole frame, not each `recv`, so a peer that trickles
+    bytes without a newline cannot hold the rig past its deadline. The readiness
+    probe and `BlenderRig.send` share this, so they agree on what a reply is.
 
     Args:
         sock: The connected socket to read from.
@@ -573,8 +454,7 @@ def _read_frame(sock: socket.socket, timeout: float) -> bytes:
 
     Raises:
         TimeoutError: If no complete frame arrived before the deadline. It is an
-            `OSError`, so the readiness probe's own handler already treats it as
-            "not ready yet"; `BlenderRig._round_trip` turns it into a `RigError`.
+            `OSError`, so the readiness probe treats it as not ready yet.
 
     """
     deadline = time.monotonic() + timeout
@@ -594,9 +474,6 @@ def _read_frame(sock: socket.socket, timeout: float) -> bytes:
 def _decode_frame(buffer: bytes) -> dict:
     """
     Decode the first newline-delimited JSON frame in a received buffer.
-
-    Shared so the readiness probe and `BlenderRig.send` cannot drift apart over
-    what counts as one frame.
 
     Args:
         buffer: Bytes read from the socket.
@@ -628,11 +505,7 @@ def _require_local_blender() -> None:
 
 def _choose_port(requested: int) -> int:
     """
-    Settle on a port, preferring one the kernel says is free.
-
-    The addon's default is 9876, which is exactly where a developer's own
-    Blender is listening, so defaulting to it aims the rig at the machine's most
-    likely running process instead of at a fresh one.
+    Settle on a port: the requested one, or a free one from the kernel.
 
     Args:
         requested: The `--port` value; 0 means "pick a free one".
@@ -652,15 +525,10 @@ def _require_port_free(port: int) -> None:
     """
     Abort rather than adopt a process that is already listening.
 
-    `SO_REUSEADDR` does not let a second process bind an in-use port on macOS,
-    so Blender's own bind would fail, `start()` would swallow it into a print,
-    and every command would be answered by the stranger - very likely the user's
-    live Blender, against which a scenario's first destructive step lands.
-
-    Run twice: once before any staging, and again immediately before `Popen`, so
-    the window in which the port can be taken is as short as this process can
-    make it. It cannot be closed - only Blender's own `bind()` is authoritative -
-    which is why the readiness receipt has to carry the port as well.
+    Blender's own bind would fail, `start()` would only print the error, and every
+    command would reach the other process, most likely the user's own Blender.
+    Checked again just before launch to narrow the race; the port in the
+    readiness receipt catches what remains.
 
     Args:
         port: The port the rig intends to use.
@@ -685,40 +553,14 @@ def _claim_work_dir(work_dir: Path) -> None:
     """
     Take ownership of `--work-dir`, or refuse to touch it at all.
 
-    Everything else the rig writes is inside this directory, so this is the one
-    place the "writes nowhere it does not own" rule has to hold. The rule is
-    simply: the directory is empty, does not exist, or already carries the rig's
-    own marker. Anything else is somebody's data.
+    The directory must be missing, empty, or already carry the rig's marker;
+    anything else is someone's data. This stops the rig pointing
+    `BLENDER_USER_RESOURCES` at a real resources root such as
+    `~/Library/Application Support/Blender/5.2`, which has no `addons/` child, and
+    launching Blender with a `startup/` or `modules/` tree it would execute.
 
-    That single rule is what keeps two specific disasters out of reach, neither
-    of which a narrower check caught:
-
-    - `~/Library/Application Support/Blender/5.2` is a plausible `--work-dir`
-      and has no `addons/` child (the real one is `scripts/addons`), so a guard
-      that looked only at `addons/` waved it through and then pointed
-      `BLENDER_USER_RESOURCES` at the user's genuine resources root.
-    - `BLENDER_USER_SCRIPTS=<work-dir>` makes Blender import every `.py` in
-      `<work-dir>/startup/` at launch and put `<work-dir>/modules/` on
-      `sys.path`. A reused or mistargeted work dir containing either injects
-      code into the Blender the rig is about to trust - a code-execution surface
-      opened by the isolation mechanism itself.
-
-    A symlinked `--work-dir` is deliberately *not* refused. This function used to
-    open with an `is_symlink()` check, which could never fire: `main()` resolves
-    `--work-dir` before `_execute` passes it here, and `.resolve()` follows the
-    link. Unreachable code that reads as a safety control is worse than no code,
-    because the next reader trusts it - and it would have been redundant even if
-    reachable, since resolution and the rule above compose: the rule is applied
-    to the *real* directory. A link aimed at somebody's data is refused because
-    that directory has contents and no marker; a link aimed at an empty or
-    rig-created directory is claimed, which is what the caller asked for. So the
-    check protected nothing, while refusing a scratch directory reached through a
-    symlink - a volume elsewhere, a `$TMPDIR` alias - is a real cost.
-
-    The symlink checks in `_rig_owned_subdirectory` and `_stage_blends` are a
-    different matter and stay. Those paths are *built* underneath the resolved
-    work dir and never resolved again, so a link planted at one of them really
-    is written through, and both have a test to prove it.
+    A symlinked `--work-dir` is allowed: `main()` has resolved it, so the rule
+    applies to the real directory.
 
     Args:
         work_dir: The caller-supplied directory, already resolved by `main()`.
@@ -774,16 +616,15 @@ def _rig_owned_subdirectory(work_dir: Path, name: str) -> Path:
     """
     Create, or re-adopt, a subdirectory of the work dir the rig may rebuild.
 
-    The marker records that the rig created *this directory*, which is a weaker
-    claim than "the rig created everything in it" - so callers still replace only
-    the specific entries they own rather than the whole tree.
+    The marker shows the rig created the directory, not everything in it, so
+    callers replace only the entries they own.
 
     Args:
         work_dir: The claimed working directory.
         name: The subdirectory's name.
 
     Returns:
-        Path: The subdirectory, guaranteed to be a real directory with a marker.
+        Path: The subdirectory, a real directory carrying the marker.
 
     Raises:
         RigError: If the path exists as a symlink, as a regular file, or as a
@@ -810,13 +651,8 @@ def _stage_addon(work_dir: Path) -> None:
     """
     Copy this checkout's addon where a `BLENDER_USER_SCRIPTS` Blender will find it.
 
-    Only `addons/blender_mcp` is removed and rebuilt, never the `addons/` tree
-    itself. The marker proves the rig *created* the directory; it proves nothing
-    about what has been put in it since, and a run that inherits its own marker
-    from a previous run would otherwise delete add-ons a user installed through
-    Blender's UI in between. This is the same discipline
-    `addon_manager.install_addon` applies: remove only what you can positively
-    identify as yours.
+    Only `addons/blender_mcp` is replaced, so add-ons a user installed through
+    Blender's UI between runs survive.
 
     Args:
         work_dir: The caller-supplied directory to stage into.
@@ -843,15 +679,8 @@ def _stage_blends(work_dir: Path, blends: list[tuple[str, Path]]) -> dict[str, P
     """
     Copy each `.blend` fixture into the work dir and hand the scenario the copy.
 
-    A scenario is handed a path, not a policy: give it the caller's own fixture
-    and the first save command overwrites the source in place. Scenarios address
-    fixtures as `rig.blends[name]`, so the substitution is invisible to them.
-
-    The destination is unlinked before it is written, because `shutil.copy2`
-    follows a destination symlink and writes *through* it - the same hazard the
-    staging directory is hardened against, and the reason `blends/` carries the
-    rig's marker too. Duplicate `--blend` names are refused rather than silently
-    clobbering each other, since both would resolve to one filename.
+    A scenario's first save would otherwise overwrite the caller's fixture. The
+    destination is unlinked first because `shutil.copy2` writes through a symlink.
 
     Args:
         work_dir: The caller-supplied directory to copy into.
@@ -882,18 +711,10 @@ def _child_environment(work_dir: Path) -> dict[str, str]:
     """
     Build Blender's environment from a pruned copy of this process's.
 
-    Pruned as a prefix (`BLENDER*`) rather than as a list of known-bad names: an
-    earlier denylist of `BLENDER_USER_*` and `BLENDERMCP_*` let
-    `BLENDER_SYSTEM_SCRIPTS` through, which redirects Blender's *system* scripts
-    tree - the same shadowing hazard one prefix over. `PYTHONPATH`, `PYTHONHOME`
-    and `PYTHONSTARTUP` go for the matching reason on the Python side: any of
-    them can make the bootstrap's `from blender_mcp.server_core import ...`
-    resolve to the wrong tree, and the failure is invisible from out here.
-
-    `TMPDIR` is then pointed inside the work dir so Blender's session temp
-    directory - autosaves, `quit.blend`, render previews, and the first entry
-    `bpy.app.tempdir` reports - lands under `--work-dir` rather than in the
-    user's `$TMPDIR`.
+    The dropped variables could load another scripts tree or make the bootstrap
+    import `blender_mcp` from the wrong place, a failure invisible from here.
+    `TMPDIR` moves Blender's session temp files, such as autosaves and
+    `quit.blend`, into the work dir.
 
     Args:
         work_dir: The directory every Blender-side path should land under.
@@ -922,18 +743,15 @@ def _launch_blender(work_dir: Path, port: int, nonce: str, blender_scripts: list
     """
     Start a GUI Blender running the staged addon's socket server.
 
+    Checks the port again just before `Popen`, to narrow the window in which
+    something else can take it.
+
     Args:
         work_dir: Directory holding the staged addon and the bootstrap script.
         port: Port the addon's socket server should listen on.
         nonce: This run's identifier, written back out in the readiness receipt.
-        blender_scripts: Extra `--python` scripts, run inside Blender after the
-            bootstrap. This is the only way a scenario can reach `bpy`, since the
-            scenario itself runs in this process, outside Blender.
-
-    The port pre-flight is run once more here, immediately before `Popen`, so
-    the window in which something else can take the port is as narrow as this
-    process can make it; it raises `RigError` through `_require_port_free` if the
-    port went away in the meantime.
+        blender_scripts: Extra `--python` scripts run inside Blender after the
+            bootstrap; a scenario's only way to reach `bpy`.
 
     Returns:
         subprocess.Popen[str]: The running Blender process, its combined output
@@ -956,11 +774,8 @@ def _launch_blender(work_dir: Path, port: int, nonce: str, blender_scripts: list
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        # Blender's own output is not guaranteed UTF-8 - native library chatter, a
-        # crash dump, a path in another encoding. Under the default strict decoding
-        # one such byte ends the reader thread, and the pipe it was draining then
-        # fills and deadlocks Blender. Replacing the byte keeps the log readable and
-        # the reader alive; _OutputDrain handles the case this does not cover.
+        # Blender's output is not always UTF-8. Under strict decoding one bad byte
+        # would end the reader, and the undrained pipe would deadlock Blender.
         errors="replace",
     )
 
@@ -988,12 +803,10 @@ def _log_tail(log_path: Path) -> str:
 
 def _bind_failure_note(log_path: Path) -> str:
     """
-    Surface a swallowed bind failure, which is otherwise buried in the log tail.
+    Report a swallowed bind failure, which is otherwise buried in the log tail.
 
-    `BlenderMCPServer.start()` catches its own `OSError` and prints it, so a port
-    taken between the rig's pre-flight and Blender's `bind()` reads out here as
-    nothing more specific than "never answered a ping". The cause is in the log;
-    this lifts it into the first sentence.
+    `BlenderMCPServer.start()` prints its bind error instead of raising, so a port
+    taken after the pre-flight would read only as a ping that never came back.
 
     Args:
         log_path: Blender's log.
@@ -1016,11 +829,7 @@ def _bind_failure_note(log_path: Path) -> str:
 
 def _receipt_matches(receipt: Path, nonce: str, port: int) -> bool:
     """
-    Check that the readiness receipt was written by *this* run's bootstrap.
-
-    The port is checked as well as the nonce. The bootstrap has always recorded
-    it, and it is the one field that catches a receipt this run wrote for a
-    *different* port - a stale file from an earlier launch in a reused work dir.
+    Check that the readiness receipt was written by this run's bootstrap, for this port.
 
     Args:
         receipt: The receipt file the bootstrap writes.
@@ -1042,10 +851,9 @@ def _ping_answers(port: int) -> bool:
     """
     Round-trip a `ping`, because accepting a connection is not being ready.
 
-    `start()` binds and listens *before* registering the drain timer, and any
-    `--blender-script` runs before timers begin firing, so there is a real window
-    in which the port accepts and nothing dequeues. `docker/blender/healthcheck.py`
-    draws the same conclusion for the container and round-trips a ping too.
+    The socket listens before the drain timer is registered, and any
+    `--blender-script` runs before timers fire, so the port can accept while
+    nothing answers.
 
     Args:
         port: The port to probe.
@@ -1070,12 +878,11 @@ def _ping_answers(port: int) -> bool:
 
 def _wait_until_ready(launch: _Launch, timeout: float) -> None:
     """
-    Block until *this* Blender is answering commands, or give up with its log.
+    Block until this Blender is answering commands, or give up with its log.
 
-    Readiness is three things together: the process is alive, its bootstrap wrote
-    a receipt carrying this run's nonce and port, and a `ping` came back. Any one
-    alone is satisfiable by the wrong process or by a half-started one - a bare
-    connect most of all, which succeeds against any listener on the machine.
+    Ready means the process is alive, a receipt carries this run's nonce and
+    port, and a ping succeeds. The wrong or a half-started process can pass any
+    one of them alone.
 
     Args:
         launch: The Blender the rig started, and the identity it must prove.
@@ -1089,8 +896,7 @@ def _wait_until_ready(launch: _Launch, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if launch.process.poll() is not None:
-            # The pipe is at EOF now, so the reader will finish; joining first is
-            # what makes the quoted tail include Blender's own last words.
+            # The pipe is at EOF, so join first to get Blender's last lines into the tail.
             launch.drain.join(_SHUTDOWN_GRACE_SECONDS)
             raise RigError(
                 f"Blender exited with status {launch.process.returncode} "
@@ -1100,9 +906,8 @@ def _wait_until_ready(launch: _Launch, timeout: float) -> None:
         if _receipt_matches(receipt, launch.nonce, launch.port) and _ping_answers(launch.port):
             return
         time.sleep(_POLL_INTERVAL_SECONDS)
-    # Blender is still running here, so the reader cannot be joined - it has no
-    # EOF to reach. The tee flushes every line as it writes it, which is what
-    # makes the tail current anyway.
+    # Blender is still running, so the reader cannot be joined. It flushes every
+    # line, so the tail is current anyway.
     raise RigError(
         f"the Blender this rig launched never answered a ping on port {launch.port} within {timeout:.0f}s."
         f"{_bind_failure_note(launch.log_path)}{_log_tail(launch.log_path)}"
@@ -1118,16 +923,10 @@ def _run_scenario_with_deadline(
     """
     Run the scenario under a wall clock, so a wedged one still reaches teardown.
 
-    The rig's documented cross-process synchronization is "poll for a file",
-    which is the canonical way to wait forever. A harness whose whole purpose is
-    to show that Blender did not hang must not be able to hang itself. The
-    scenario runs on a daemon thread so an abandoned one cannot keep the
-    interpreter alive after the rig has reported.
-
-    A daemon thread is abandoned, not stopped, so the deadline also *silences*
-    it: the event set here makes `BlenderRig.send` refuse and stop printing, and
-    stops the log reader echoing. Without that, `-->`/`<--` pairs keep arriving
-    in the transcript after `RIG FAILED`, and the transcript is the artefact.
+    A scenario polling for a file Blender never writes would otherwise wait
+    forever. The daemon thread is abandoned, not stopped, so setting `abandoned`
+    makes `BlenderRig.send` refuse and keeps the log reader from echoing after
+    the verdict.
 
     Args:
         run: The scenario's `run(rig)`.
@@ -1145,8 +944,8 @@ def _run_scenario_with_deadline(
     def _target() -> None:
         try:
             run(rig)
-        # Deliberately broad: whatever the scenario raised is re-raised on the calling
-        # thread below, so the rig reports the scenario's own failure, not a thread crash.
+        # Re-raised on the calling thread below, so the rig reports the scenario's own
+        # failure, not a thread crash.
         except BaseException as failure:
             raised.append(failure)
 
@@ -1168,10 +967,8 @@ def _reader_problems(drain: _OutputDrain | None) -> list[str]:
     """
     Blame the rig's own reader when it was the reader, not Blender, that broke.
 
-    A reader that was never constructed contributes nothing on purpose. That can
-    only happen while another exception is already on its way out of `_execute` -
-    the one that stopped the reader being constructed - and a `RigError` raised
-    from teardown would replace that real diagnosis with a vaguer one.
+    No reader means an exception is already leaving `_execute`, and raising here
+    would replace it with a vaguer one.
 
     Args:
         drain: The reader, or None if the launch never got one.
@@ -1198,28 +995,17 @@ def _reader_problems(drain: _OutputDrain | None) -> list[str]:
 
 def _shut_down(blender: subprocess.Popen[str], drain: _OutputDrain | None, log_path: Path) -> None:
     """
-    Stop Blender, escalating to a kill if it ignores the polite request.
+    Stop Blender, escalating to a kill if it ignores SIGTERM.
 
-    Deliberately not `with subprocess.Popen(...)`: CPython's `Popen.__exit__`
-    calls `self.wait()` with **no timeout** on every path but `KeyboardInterrupt`,
-    so the one teardown failure this function anticipates - a process that
-    survived `SIGKILL` - would propagate into `__exit__` and block forever on
-    exactly the process that just proved it will not die. A harness that cannot
-    hang must not own an unbounded wait.
-
-    The reader is joined after the process has been asked to stop, not before,
-    and every diagnosis is built after that join so the quoted tail holds
-    Blender's last words rather than whatever had been flushed when it was asked
-    to stop.
+    Not `with subprocess.Popen(...)`: its `__exit__` waits with no timeout, so a
+    process that survives SIGKILL would hang the rig. The reader is joined after
+    the stop request, so the quoted log tail includes Blender's last lines.
 
     Args:
         blender: The process to stop.
         drain: The reader draining its output, or None if the launch never got
-            one. `_launch_blender` hands back a process whose output is already
-            accumulating in a pipe, so teardown has to work for a Blender that
-            was started and then failed to acquire a reader - the one case where
-            stopping it promptly is the whole point, since an undrained pipe
-            deadlocks it in `write()`.
+            one. That Blender still needs stopping promptly, since its undrained
+            pipe will deadlock it.
         log_path: Blender's log, quoted if anything went wrong.
 
     Raises:
@@ -1257,8 +1043,8 @@ def _close_quietly(stream: IO[str] | None) -> None:
     """
     Release the pipe once nothing is reading it any more.
 
-    Closing it while the reader is still in `readline` raises `ValueError` on
-    that thread and leaks the log handle, which is why the caller checks first.
+    Closing it while the reader is still reading raises `ValueError` on that
+    thread, so the caller checks first.
 
     Args:
         stream: The pipe to close, if there is one.
@@ -1275,11 +1061,8 @@ def _load_scenario(path: Path) -> ModuleType:
     """
     Import a scenario module from an arbitrary path.
 
-    Byte-code writing is turned off first: `exec_module` otherwise drops a
-    `__pycache__/` next to the *caller's* scenario file, which is outside
-    `--work-dir` and contradicts the rig's own containment claim. The container
-    half already does this with `PYTHONDONTWRITEBYTECODE=1`
-    (`docker/blender/entrypoint.sh`).
+    Turns off bytecode writing first, so no `__pycache__/` appears beside the
+    caller's scenario, outside `--work-dir`.
 
     Args:
         path: The scenario file.
@@ -1306,8 +1089,8 @@ def _parse_blend(argument: str) -> tuple[str, Path]:
     """
     Split a `name=path` fixture argument and check the file is really there.
 
-    The name becomes a filename inside the work dir, so it is restricted to
-    characters that cannot walk out of it.
+    The name becomes a filename in the work dir, so it may only use characters
+    that cannot leave it.
 
     Args:
         argument: The raw `--blend` value.
@@ -1402,11 +1185,9 @@ def _execute(arguments: argparse.Namespace, work_dir: Path) -> None:
     """
     Bring Blender up, run the scenario against it, and always tear Blender down.
 
-    Both the launch and the reader that drains it live inside the `try`, and
-    teardown is keyed on whether a process was started rather than on reaching
-    the end of setup. `_launch_blender` returns a Blender whose output is already
-    accumulating in a pipe, so every statement after it is a statement that can
-    orphan a process which will deadlock in `write()` once ~64 KiB has piled up.
+    Teardown depends on whether Blender was launched, not on setup finishing:
+    from launch its output fills a pipe, and a Blender left behind deadlocks in
+    `write()`.
 
     Args:
         arguments: The parsed command line.
@@ -1443,11 +1224,9 @@ def main(argv: list[str] | None = None) -> int:
     """
     Run one scenario and report whether it passed.
 
-    Catches `BaseException`, not `Exception`: the rig's exit code *is* its
-    verdict, and a scenario that calls `sys.exit(0)` would otherwise end this
-    process with status 0 having printed neither `RIG PASSED` nor `RIG FAILED` -
-    a pass it never earned, in the artefact eight tasks are gated on. Argument
-    parsing stays outside the `try` so `--help` still exits 0.
+    Catches `BaseException` because the exit code is the verdict: a scenario that
+    calls `sys.exit(0)` must not pass. Argument parsing stays outside the `try` so
+    `--help` still exits 0.
 
     Args:
         argv: Arguments to parse; None means `sys.argv`.

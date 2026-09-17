@@ -1,15 +1,12 @@
 """
-Adversarial coverage for the addon's filesystem trust boundary (plan Task 5).
+Adversarial coverage for the addon's filesystem trust boundary.
 
-Path canonicalization is a domain where a plausible implementation is routinely
-wrong and the failure is silent, so every attack has its own named test and the
-positive magic-byte cases use real `.blend` files: the failure mode there is a
-false rejection, which no negative test can catch.
+Path canonicalization fails silently, so each attack has its own test. The magic-byte cases
+use real `.blend` files, because only a positive test catches a false rejection.
 
-The Blender error strings below are **captured, not written**: each was printed
-by `scripts/blender_probes/file_path_error_shapes.py` from a real `RuntimeError`
-on Blender 5.2.2 LTS (2026-09-16). Blender's message format is not a contract,
-so a hand-written approximation would test the sanitizer against the wrong text.
+The Blender error strings below are copied from real `RuntimeError`s, not written by hand:
+Blender's message format is not a contract, so an approximation would test the sanitizer
+against the wrong text.
 """
 
 import ast
@@ -28,10 +25,10 @@ from conftest import load_addon_source_module
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "blend"
 FILE_PATHS_SOURCE = Path(__file__).resolve().parent.parent / "src/blender_mcp/bundled/addon/file_paths.py"
 
-# --- captured by scripts/blender_probes/file_path_error_shapes.py, Blender 5.2.2 LTS ---
+# --- captured from Blender 5.2.2 error text ---
 _WORK = "/var/folders/87/ykdcq2j525x7kkhl13f1lrm80000gn/T/fp_shapes_4ucfn0pm"
 _HOSTILE_WORK = "/var/folders/87/ykdcq2j525x7kkhl13f1lrm80000gn/T/fp shapes o'brien alk8jmkc"
-# The probe runs from the repository root, so the empty-path shape reported this checkout.
+# The capture ran from the repository root, so the empty-path shape named this checkout.
 _CWD = str(Path(__file__).resolve().parent.parent)
 SHAPE_1_MISSING = f'Error: Cannot read file "{_WORK}/missing.blend": No such file or directory\n'
 SHAPE_2_DIRECTORY = f'Error: File format is not supported in file "{_WORK}"\n'
@@ -50,12 +47,11 @@ HOSTILE_SHAPE_4 = (
     f"Error: Cannot open file {_HOSTILE_WORK}/no/such/dir/x.blend@ for writing: No such file or directory\n"
 )
 HOSTILE_SHAPE_5 = f"Error: Trying to reload library 'LIgood.blend' from invalid path '{_HOSTILE_WORK}/gone.blend'\n"
-# --- captured by scripts/blender_probes/linking_handlers_real_blender.py section J, Blender 5.2.2 LTS ---
-# A `.blend` author (or a script) can set `Library.name` to an absolute path; Blender quotes it with its `LI` code.
+# --- captured from Blender 5.2.2: a `Library.name` set to an absolute path, quoted with its `LI` code ---
 _NAME_WORK = "/private/var/folders/87/ykdcq2j525x7kkhl13f1lrm80000gn/T/t7_handlers_d4j7t6wp"
 _NAME_TAIL = f"from invalid path '{_NAME_WORK}/moved_canon.blend'\n"
 HOSTILE_LIBRARY_NAME_SHAPE_5 = f"Error: Trying to reload library 'LI/Users/victim/shots/canon.blend' {_NAME_TAIL}"
-# --- captured by the same probe, section L: a newline inside the hostile name ---
+# --- captured the same way: a newline inside the hostile name ---
 _NEWLINE_WORK = "/private/var/folders/87/ykdcq2j525x7kkhl13f1lrm80000gn/T/t7_handlers_aeqmk5c4"
 NEWLINE_LIBRARY_NAME_SHAPE_5 = (
     "Error: Trying to reload library 'LI/Users/victim/a\n/b.blend' "
@@ -243,12 +239,10 @@ def test_tilde_expands_to_the_home_directory(tmp_path: Path, monkeypatch: pytest
 
 def test_blenders_relative_form_resolves_inside_the_blend_directory(tmp_path: Path) -> None:
     """
-    `bpy.path.abspath('//sub/shot.blend')` is `<blend dir>/sub/shot.blend`, and that dir may sit behind a link.
+    A `//` expansion under a symlinked directory resolves to its canonical form.
 
-    Measured: with a file saved under macOS's temp dir, `bpy.data.filepath` and
-    the expansion begin `/var/folders/...`, a symlink to `/private/var/...`. The
-    result must be the canonical form, or it is compared against roots under a
-    different name than the one the file really has.
+    On macOS the temp dir `/var/...` is a symlink to `/private/var/...`. A path left in the
+    linked form would be compared against roots under a name the file does not really have.
     """
     (tmp_path / "shots" / "fx" / "sub").mkdir(parents=True)
     (tmp_path / "linked_shots").symlink_to(tmp_path / "shots", target_is_directory=True)
@@ -260,7 +254,7 @@ def test_blenders_relative_form_resolves_inside_the_blend_directory(tmp_path: Pa
 
 
 def test_a_relative_form_climbing_out_of_the_blend_directory_is_normalised(tmp_path: Path) -> None:
-    """Measured: `bpy.path.abspath('//../escape.blend')` keeps the literal `..`, so resolution must remove it."""
+    """`bpy.path.abspath('//../escape.blend')` keeps the literal `..`, so resolution must remove it."""
     module = _file_paths()
     blend_dir = tmp_path / "fx"
     blend_dir.mkdir()
@@ -431,7 +425,7 @@ def test_a_zstd_compressed_blend_is_accepted() -> None:
 
 
 def test_a_gzip_blend_written_without_an_fname_is_accepted() -> None:
-    """FLG is zero in a normal gzip `.blend`; the superseded 4-byte constant pinned it to 8 (FNAME set)."""
+    """FLG is zero in a normal gzip `.blend`; a 4-byte constant pins it to 8 (FNAME set) and rejects it."""
     path = FIXTURES / "empty_gzip.blend"
     assert path.read_bytes()[:4] == b"\x1f\x8b\x08\x00"
 
@@ -439,7 +433,7 @@ def test_a_gzip_blend_written_without_an_fname_is_accepted() -> None:
 
 
 def test_a_pre_5x_blend_header_is_accepted(tmp_path: Path) -> None:
-    """`BLENDER-v293` is what the superseded 12-byte `BLENDER17-01` constant rejected."""
+    """`BLENDER-v293` is what a 12-byte `BLENDER17-01` constant rejects."""
     body = _uncompressed_blend_bytes()
     path = _write(tmp_path / "legacy.blend", b"BLENDER-v293" + body[17:])
 
@@ -557,7 +551,7 @@ def test_sanitizer_does_not_present_the_id_code_as_part_of_the_library_name() ->
 
 
 def test_sanitizer_reduces_a_library_name_containing_a_newline() -> None:
-    """Without DOTALL the name match stopped at the newline and `a` plus a relative tail went out (cycle 2)."""
+    """Without DOTALL the name match stops at the newline and `a` plus a relative tail goes out."""
     sanitized = _file_paths().sanitize_blender_error(RuntimeError(NEWLINE_LIBRARY_NAME_SHAPE_5))
 
     _assert_no_absolute_path(sanitized, "victim")
@@ -579,7 +573,7 @@ def test_sanitizer_reduces_a_library_name_without_touching_the_filesystem(monkey
 
 
 def test_sanitizer_reduces_a_library_name_holding_an_absolute_path_to_its_leaf() -> None:
-    """The `LI` code kept the quoted name from reading as a path, so the name went out whole (Task 7 cycle 1)."""
+    """The `LI` code keeps the quoted name from reading as a path, so without the name rule it goes out whole."""
     sanitized = _file_paths().sanitize_blender_error(RuntimeError(HOSTILE_LIBRARY_NAME_SHAPE_5))
 
     _assert_no_absolute_path(sanitized, "victim", "shots")
@@ -597,9 +591,9 @@ def test_sanitizer_reduces_a_library_name_holding_an_absolute_path_to_its_leaf()
 )
 def test_sanitizer_reduces_every_quoted_library_name_shape_to_its_leaf(template: str) -> None:
     """
-    Not captured: format strings read from the 5.2.2 binary (`strings Blender | grep "library '%s'"`).
+    Other Blender messages that quote a library name reduce it to its leaf too, not only the reload one.
 
-    Each quotes a library name with nothing after the quote that the reload shape relies on.
+    These formats were read from Blender's binary rather than captured from errors.
     """
     raw = template.format(name="LI/Users/victim/shots/canon.blend")
 
@@ -610,7 +604,7 @@ def test_sanitizer_reduces_every_quoted_library_name_shape_to_its_leaf(template:
 
 
 def test_sanitizer_removes_quoted_paths_containing_a_space_and_an_apostrophe() -> None:
-    """Captured with a work dir named `fp shapes o'brien`: the apostrophe sits inside a `'...'` path."""
+    """A work dir named `fp shapes o'brien` puts a space and an apostrophe inside a `'...'` path."""
     module = _file_paths()
 
     for raw in (HOSTILE_SHAPE_3, HOSTILE_SHAPE_5):
@@ -628,7 +622,7 @@ def test_sanitizer_removes_an_unquoted_path_containing_a_space() -> None:
 
 
 def test_sanitizer_removes_windows_drive_and_unc_paths() -> None:
-    """Not captured (no Windows Blender here); constructed in Blender's shape-1 wording."""
+    """Constructed in Blender's shape-1 wording; there is no Windows capture."""
     module = _file_paths()
 
     for path in ("C:\\Users\\artist\\shot.blend", "D:/shows/shot.blend", "\\\\farm\\canon\\shot.blend"):
@@ -638,7 +632,7 @@ def test_sanitizer_removes_windows_drive_and_unc_paths() -> None:
 
 
 def test_sanitizer_removes_home_relative_paths() -> None:
-    """Not captured; a `~` path discloses an account name just as an absolute one does."""
+    """A `~` path discloses an account name just as an absolute one does."""
     module = _file_paths()
 
     texts = ("Error: Cannot read file '~artist/shot.blend'", "Error: Cannot open file ~/shots/x.blend@ for writing")
@@ -661,7 +655,7 @@ def test_sanitizer_names_the_exception_type_when_it_carries_no_text() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Cycle-1 repairs: cause text, known paths, closing punctuation, case-folding volumes
+# Cause text, known paths, closing punctuation, case-folding volumes
 # ---------------------------------------------------------------------------
 
 

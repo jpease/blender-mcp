@@ -1,12 +1,9 @@
 """
 Measure the `tools/list` payload a server process advertises.
 
-See `bundles.py` for why an advertised payload is permanent context cost rather than a
-one-time startup cost. These helpers are pure: they take already-built tool objects and
-return byte counts, so they can be unit-tested without a FastMCP app and without Blender.
-
-Nothing at runtime imports this module. It ships inside the package deliberately: `scripts/`
-is not an importable package, and keeping the pure half here is what makes it testable.
+See `bundles.py` for why that payload matters. The helpers are pure, so they test without a
+FastMCP app or Blender. Only `scripts/measure_catalog.py` uses this at runtime; it lives in the
+package because `scripts/` is not importable.
 """
 
 import json
@@ -16,11 +13,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Protocol
 
-# Rough divisor for turning bytes into a token estimate. JSON schema text tokenizes denser
-# than prose, so this is an approximation kept explicit rather than buried in a call site.
-# 3.6 is an unvalidated rule of thumb -- no measurement in this repo derives it. Treat every
-# printed token figure as order-of-magnitude, and re-derive this against a real tokenizer
-# before using token counts to argue a threshold has been met.
+# An unvalidated rule of thumb, so token figures are order-of-magnitude only. Check a real
+# tokenizer before using one to argue a threshold is met.
 BYTES_PER_TOKEN: float = 3.6
 
 
@@ -46,10 +40,7 @@ class PayloadReport:
     """
     Byte accounting for one `tools/list` response.
 
-    `payload_report` is the only supported constructor. `per_tool` is a read-only view, so a
-    frozen report is immutable through and through; it is not hashable, since it carries a
-    mapping. `total_bytes`, `tool_count` and `total_tokens` are properties derived from
-    `per_tool`, so a report cannot disagree with itself.
+    Build it with `payload_report`. It is immutable but not hashable, because it holds a mapping.
 
     Attributes:
         per_tool: Wire bytes contributed by each tool, keyed by tool name.
@@ -64,7 +55,7 @@ class PayloadReport:
     description_bytes: int
 
     def __post_init__(self) -> None:
-        """Freeze `per_tool` so the documented immutability holds however the report was built."""
+        """Freeze `per_tool`, however the report was built."""
         object.__setattr__(self, "per_tool", MappingProxyType(dict(self.per_tool)))
 
     @property
@@ -105,11 +96,8 @@ def _json_bytes(value: dict[str, Any] | str) -> int:
     """
     Compute the wire bytes of any JSON-serializable value.
 
-    This is the single definition of "how many bytes does this occupy on the wire" - every
-    counter in this module routes through it, so no figure is computed in a different
-    encoding. (`description_bytes` alone then subtracts its two delimiting quotes; see
-    `_text_bytes`.) The encoding is ASCII-escaped, so the string's length is exactly its
-    byte count.
+    Every counter here uses this, so all figures share one encoding. The output is ASCII-escaped,
+    so its length is its byte count.
 
     Args:
         value: A dumped tool, an `inputSchema` mapping, or a description string.
@@ -125,9 +113,8 @@ def _text_bytes(text: str) -> int:
     r"""
     Compute the wire bytes a string contributes as a JSON value, excluding its quotes.
 
-    Measuring the encoded form rather than `len(text)` keeps this counter in the same unit
-    as the schema and total counters: a non-ASCII character costs what it actually costs on
-    the wire (an em dash is six bytes as `\u2014`, not one).
+    Measures the encoded form, not `len(text)`, so a non-ASCII character counts at its wire size
+    (an em dash is six bytes as `\u2014`).
 
     Args:
         text: The raw string value, such as a tool description.
@@ -163,9 +150,7 @@ def payload_report(tools: Sequence[_Dumpable]) -> PayloadReport:
         dumped = tool.model_dump(exclude_none=True)
         name = dumped["name"]
         if name in per_tool:
-            # Overwriting per_tool[name] while still accumulating both tools into
-            # schema_bytes/description_bytes would yield an internally inconsistent,
-            # artificially smaller report. A repeated name is a malformed payload.
+            # Keying by name would drop one tool from per_tool but not from the other totals.
             raise ValueError(f"duplicate tool name in payload: {name!r}")
         per_tool[name] = _json_bytes(dumped)
         schema_bytes += _json_bytes(dumped.get("inputSchema") or {})

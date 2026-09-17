@@ -1,13 +1,10 @@
 """
-Rollback that survives a file swap or a library reload, and tracks `libraries` (plan Task 4).
+Rollback that survives a file swap or a library reload, and tracks `libraries`.
 
-The hazard these tests invert is reproduced, against the unmodified code, by the
-two `test_regression_guard_*` nodes in `tests/test_mutation_transaction.py`: a
-transaction that snapshotted one database and rolls back in another removes the
-other database's contents. The Blender facts the stubs below encode - which
-handlers fire for a load, a link, a reload and an unlink, and which session_uids
-move - are measured by `scripts/blender_probes/library_replace_handlers.py` and
-`scripts/blender_probes/transaction_library_rollback.py`.
+These invert the regression guards in `tests/test_mutation_transaction.py`: a
+transaction that snapshotted one database and rolls back in another removes that
+database's contents. The stubs encode which handlers Blender fires for a load, a
+link, a reload and an unlink, and which session_uids move.
 """
 
 from __future__ import annotations
@@ -62,10 +59,9 @@ class FakeLibraries(RecordingCollection):
     """
     `bpy.data.libraries`: removing a library also frees every datablock linked from it.
 
-    Measured on 5.2.2 by `scripts/blender_probes/transaction_library_rollback.py`
-    case E, which also shows a later `remove()` on one of those datablocks
-    raising `ReferenceError`. A freed datablock is marked here, so that call is
-    observable instead of hidden by `suppress(Exception)`.
+    In Blender a later `remove()` on a freed datablock raises `ReferenceError`, so
+    freed datablocks are marked here to make such a call visible instead of hidden
+    by `suppress(Exception)`.
     """
 
     def __init__(self, data: dict[str, FakeCollection]) -> None:
@@ -181,7 +177,7 @@ def _uids(data: dict[str, FakeCollection]) -> set[int]:
 
 
 # ---------------------------------------------------------------------------
-# Item 2a.1 - the library commands bypass the transaction; the link does not
+# The library commands bypass the transaction; the link does not
 # ---------------------------------------------------------------------------
 
 
@@ -207,10 +203,10 @@ def test_the_datablock_replacing_set_is_the_three_library_commands_and_nothing_r
 
 def test_a_library_replacing_command_never_reaches_mutation_transaction(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    Each of the three is named literally, so emptying the constant cannot make this pass vacuously.
+    Each of the three is named literally, so emptying the constant cannot make this pass without testing.
 
-    `unlink_libraries` fires no handler at all (measured), so this routing is the
-    only thing standing between it and a rollback over freed datablocks.
+    `unlink_libraries` fires no handler, so this routing is the only thing keeping
+    a rollback away from its freed datablocks.
     """
     data = _data_with_libraries()
     addon, _bpy = _load_addon(monkeypatch, data=data)
@@ -274,7 +270,7 @@ def test_link_canon_library_still_enters_mutation_transaction(monkeypatch: pytes
 
 def test_a_reload_that_fails_after_churning_its_library_removes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    Step 1b inverted: the same reload shape through the dispatcher, then a raise.
+    The library-reload regression guard inverted: the same reload shape through the dispatcher, then a raise.
 
     No handler fires and no flag is set here, so the only thing keeping the
     reloaded contents alive is the command bypassing the transaction.
@@ -306,13 +302,13 @@ def test_a_reload_that_fails_after_churning_its_library_removes_nothing(monkeypa
 
 
 # ---------------------------------------------------------------------------
-# Item 2 - load_post invalidates a transaction that is open during a swap
+# load_post invalidates a transaction that is open during a swap
 # ---------------------------------------------------------------------------
 
 
 def test_a_swap_inside_an_open_transaction_is_not_rolled_back_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    Step 1 inverted: the whole-database swap, but Blender's `load_post` reaches the open transaction.
+    The file-swap regression guard inverted: Blender's `load_post` reaches the open transaction.
 
     A handler that loads a file as a side effect and then fails must leave the
     new file whole, and the client must be told its partial work was not undone.
@@ -343,11 +339,7 @@ def test_a_swap_inside_an_open_transaction_is_not_rolled_back_and_says_so(monkey
 
 
 def test_an_invalidated_geometry_backup_is_dropped_without_remove(monkeypatch: pytest.MonkeyPatch) -> None:
-    """
-    After a load the backup mesh is freed; `remove()` on it would be a use-after-free `suppress` hides.
-
-    Asserted on the stub's recorded calls, not by inspection.
-    """
+    """After a load the backup mesh is freed; `remove()` on it would be a use-after-free `suppress` hides."""
     data = _data_with_libraries()
     addon, bpy = _load_addon(monkeypatch, data=data)
     server, _core, session, _txn = _modules(addon)
@@ -395,7 +387,7 @@ def test_object_state_invalidate_releases_every_live_reference_without_touching_
 
 
 # ---------------------------------------------------------------------------
-# Item 2a.3 - blend_import_post invalidates only while a replace is in progress
+# blend_import_post invalidates only while a replace is in progress
 # ---------------------------------------------------------------------------
 
 
@@ -472,7 +464,7 @@ def test_the_replace_flag_is_cleared_when_the_reload_raises(monkeypatch: pytest.
 
 
 # ---------------------------------------------------------------------------
-# Item 4 - a failed link rolls its Library back, linked datablocks first
+# A failed link rolls its Library back, linked datablocks first
 # ---------------------------------------------------------------------------
 
 
@@ -490,8 +482,8 @@ def test_a_failed_link_rolls_back_its_library_with_the_file_handlers_registered(
     """
     The negative assertion that catches "just invalidate on `blend_import_post`".
 
-    `libraries.load(link=True)` fires `blend_import_post` (measured), so a
-    handler that invalidated on every import would leave this library behind.
+    `libraries.load(link=True)` fires `blend_import_post`, so a handler that
+    invalidated on every import would leave this library behind.
     """
     data = _data_with_libraries()
     addon, bpy = _load_addon(monkeypatch, data=data)
@@ -538,7 +530,7 @@ def test_a_failed_link_never_removes_a_datablock_its_library_removal_already_fre
 
 
 # ---------------------------------------------------------------------------
-# The active-transaction reference, and registration of the new handler
+# The active-transaction reference, and registration of blend_import_post
 # ---------------------------------------------------------------------------
 
 

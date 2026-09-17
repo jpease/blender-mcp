@@ -1,28 +1,19 @@
 """
 File-lifecycle commands: which shot is open, and opening, saving or resetting it.
 
-Task 3 created this module with `get_session_info`; Task 6 added `open_shot`,
-`save_shot` and `reset_session`. `open_shot` and `reset_session` replace the
-whole database, so they are `server_core._SESSION_SWAP_COMMANDS`: the drain loop
-runs each as the last command of its tick and keeps it out of
-`mutation_transaction`. `save_shot` replaces nothing and is deliberately not a
-member (TASK_STATE decision T3-3).
+`open_shot` and `reset_session` replace the whole database, so they are session
+swap commands: each ends its drain tick and runs outside `mutation_transaction`.
+`save_shot` is not one: a save replaces no datablock, so the commands queued
+behind it stay safe, and making it a swap would discard them on every save.
 
-Every path goes through `file_paths` (roots first, then `resolve_blend_path`),
-and every operator failure through `sanitize_blender_error` with the paths the
-call knew, because Blender's own error text embeds the absolute path.
+Paths go through `file_paths` for the roots and file checks, and operator errors
+through `sanitize_blender_error`, because Blender's error text embeds absolute
+paths. Published names go through `text_hygiene` so every module applies one
+rule. `filepath` in a result is published absolute, like `current_filepath`,
+because a client compares it against the file roots.
 
-Client-facing *names* this module publishes (library names and links, the
-scene name) go through `..text_hygiene`, never through a rule written here: the
-whole reason that module exists is that this field and `session._failure_note`
-kept being fixed one at a time. Two other routes are deliberate: operator error
-text goes through `file_paths.sanitize_blender_error`, and `filepath` in a
-result is the absolute open-file path, published raw like `current_filepath`
-(TASK_STATE T3-14).
-
-`get_session_info` is read-only and touches no datablock, which is why it is in
-`server_core._READ_ONLY_COMMANDS`: it is the cheap poll a client makes after a
-swap it was told about, and it must never be wrapped in `mutation_transaction`.
+`get_session_info` touches no datablock and is the cheap poll after a swap, so
+it is a read-only command and never runs in `mutation_transaction`.
 """
 
 import os
@@ -56,19 +47,9 @@ _REHANDSHAKE_NOTE = (
     "file. Re-handshake (get_addon_info) before relying on a cached capability list."
 )
 
-# Long enough for a real project-relative link, short enough that this field
-# cannot be used to push a multi-kilobyte string into an agent's context.
-#
-# **It is four times `client_safe_text`'s default, not "well under" it**, and an
-# earlier revision of this comment said the opposite.
-# `text_hygiene.MAX_NOTE_NAME_CHARS` is 64 and this is 256, so a link published
-# whole is the longest single string this module emits. The bound that is
-# actually being traded off is the *aggregate*: one entry per linked library
-# multiplies it, and the library list is itself unbounded (recorded as a
-# residual, owner Task 7). 256 is chosen against a real project-relative link -
-# `//lib/chars/hero/hero_rig.blend` and several directories deeper - rather than
-# against the leaf rule, which governs a name with no separators left in it and
-# has no reason to be the same number.
+# Room for a project-relative link several directories deep, while keeping a
+# hostile link from pushing kilobytes into an agent's context. The bound applies
+# per library, and the library list itself is unbounded.
 _MAX_REPORTED_LINK_CHARS = 256
 
 
@@ -76,77 +57,28 @@ def _library_summary(library: object) -> dict[str, object]:
     r"""
     Describe one linked library by identity, not by where it sits on this machine.
 
-    `Library.filepath` is whatever the link was made with, and the decision
-    about how much of it may be published is **not taken here**. It is taken by
-    `text_hygiene.safe_relative_link`, which is the single allowlist both this
-    field and `session._failure_note` are gated on. Three repair cycles put the
-    decision here as a blocklist and three critics walked through it - with
-    `C:\\`, then U+FF0F, then U+FE68 and `///Users/...`. The predicate is
-    inverted and shared so that the next character nobody has thought of is
-    excluded by not being admitted.
+    `text_hygiene.safe_relative_link` decides whether `filepath` is published
+    whole, exactly as it returned it. Anything it refuses (absolute, rooted
+    `///...`, traversing, over-long, or with a character outside its allowlist)
+    is reduced to a leaf, because it would reveal the studio's storage layout.
+    `is_relative` is judged on the same stripped form, so `///Users/...` is not
+    reported as relative.
 
-    Which reduction applies:
-
-    - A link `safe_relative_link` admits is published **exactly as that function
-      returned it** - the normalised, control-stripped form it made its decision
-      about. Gating one string and publishing another is what cycle 3 did: the
-      gate ran on the raw text and the publisher then stripped format
-      characters, manufacturing the `..` the gate had rejected.
-    - Everything else - absolute, rooted (`///...`), traversing, over-long, or
-      carrying a character the allowlist does not admit - is reduced to a leaf,
-      because those are the studio's storage layout or a disguise for it, and
-      this socket is unauthenticated.
-
-    `is_relative` says which *kind* of link this is, and says it about the same
-    stripped form the gate saw. It is not `filepath.startswith("//")`: that reported
-    `///Users/victim/...` as relative, which is how a whole absolute path
-    reached a client through the branch that exists to keep absolute paths out.
-
-    **`name` is allowlisted too, and it is the fifth recurrence of the defect
-    class above.** It sat one line up from `filepath` going through
-    `client_safe_text` - which strips control characters and truncates and
-    applies no allowlist at all - on the argument that a Blender ID name is a
-    display label rather than a path. It is not: measured on Blender 5.2.2, a
-    `Library.name` accepts `/Users/victim/shots/canon.blend`, `../../etc/passwd`
-    and `C:\\studio\\vault` verbatim, and this socket is unauthenticated. In the
-    benign case the name Blender mints *is* the basename, so the leaf rule
-    returns it unchanged and the cost of the allowlist is zero. It goes through
-    `client_safe_name_leaf`, the leaf rule without `client_safe_leaf`'s `isdir`
-    call, because the name is author-chosen text, not a path on this machine
-    (Task 7 cycle 3); `filepath` keeps `client_safe_leaf`, whose directory check
-    exists for a path Blender reports.
-    `tests/test_session_state.py::test_a_hostile_library_name_is_reduced_to_a_leaf_like_the_filepath_is`
-    runs the whole hostile table through it.
+    `name` is reduced to a leaf too: Blender lets a `.blend` author set
+    `Library.name` to a path such as `/Users/victim/shots/canon.blend`. It skips
+    `client_safe_leaf`'s `isdir` check, which would reveal whether a directory by
+    that author-chosen name exists.
 
     Args:
         library: A `bpy.types.Library`.
 
     Returns:
-        dict[str, object]: `session_uid` - the handle Task 7's commands resolve
-        by, *never* by name, because after a Route C override two libraries'
-        contents can share a name. **A `session_uid` is valid only for the
-        `(session_id, session_epoch)` it was read under.** Blender's own RNA
-        description for it says "A session-wide unique identifier ... unchanged
-        when reloading the file"; that is wrong, and a Task 7 implementer who
-        reads RNA rather than this line will resolve the wrong library. Measured
-        on 5.2.2 by `scripts/blender_probes/session_handlers.py`, which links one
-        library into a shot and reopens the shot four times::
-
-            uid sequence across four loads: [1452, 1485, 1518, 1551]
-            STABLE across loads: False
-
-        **The last line is the finding; the numbers are not.** They are
-        allocation counters and move with everything the process did before the
-        measurement. An earlier revision of this docstring quoted a three-value
-        sequence attributed to "a critic", and no committed instrument produced
-        it - the probe above did not measure session uids at all until this
-        round. What the probe reproduces on any run is that the uid is different
-        after every load, so a uid cached across a swap names nothing. `name`,
-        reported for display only
-        and reduced to an admissible leaf; `filepath` (whole only for a link the
-        allowlist admits, a bare leaf otherwise); `is_relative`; and
-        `is_missing`, which says the link is broken now and is what makes a swap
-        or a reload worth attempting.
+        dict[str, object]: `session_uid`, the handle the linking commands
+        resolve by, because two libraries' contents can share a name. It is
+        valid only for the `(session_id, session_epoch)` it was read under:
+        despite Blender's own description, it changes on every load. `name`,
+        for display only; `filepath`, whole or reduced to a leaf; `is_relative`;
+        and `is_missing`, true when the link is broken now.
 
     """
     filepath = str(getattr(library, "filepath", "") or "")
@@ -187,10 +119,8 @@ def _expand_blender_relative(raw: object) -> object:
     """
     Expand a `//` path against the open file, refusing one that has nothing to be relative to.
 
-    With no file open, `bpy.path.abspath('//x.blend')` returns the bare
-    `'x.blend'` (measured on 5.2.2, `scripts/blender_probes/file_path_error_shapes.py`),
-    which would then resolve against the process CWD - a directory the caller
-    never named.
+    With no file open, `bpy.path.abspath` leaves a `//` path relative, and it
+    would resolve against the working directory, which the caller never named.
 
     Args:
         raw: The path the client sent; non-strings pass through to be refused
@@ -217,21 +147,17 @@ def _checked_blend_path(raw: object, *, must_exist: bool, create_directories: bo
     """
     Validate a `.blend` path: expand `//`, enforce the roots, then check the file.
 
-    **The roots are enforced before `resolve_blend_path` looks at the file**, so a
-    path outside them is refused with one message whether it names a file, a
-    directory or nothing: checking existence first would answer that question
-    about any path on the machine (`enforce_roots` canonicalizes its own input,
-    so the order changes no containment decision). With no roots configured
-    there is no boundary to protect and the file checks speak for themselves.
+    Roots come before the file checks, so a path outside them gets the same
+    refusal whether it names a file, a directory or nothing; otherwise any path
+    on the machine could be probed for existence.
+
+    Hand Blender the returned canonical path, never the raw one: Blender resolves
+    the raw form's `..` before symlinks, which is not the path the roots checked.
 
     Args:
         raw: The path the client sent.
         must_exist: True to open, False to save.
         create_directories: For a save, accept a missing target directory.
-
-    Blender must be handed this canonical string, never the raw one: the raw
-    form's `..` is resolved textually before symlinks, which is not the path the
-    roots were checked against.
 
     Returns:
         str: The canonical path to hand to Blender. A refusal propagates as the
@@ -248,26 +174,15 @@ def _refuse_scripts_auto_execute(command: str = "open_shot") -> None:
     """
     Refuse a load while Blender is set to run scripts embedded in a `.blend`.
 
-    Task 7's linking commands and the Poly Haven `.blend` import call it too.
-    **It is not the control for script execution** (user decision, 2026-09-16):
-    Blender gates drivers on the session flag (`-y` / `--enable-autoexec`, or
-    `open_mainfile` / `revert_mainfile` with `use_scripts=True`, "Reload
-    Trusted"), which this preference does not reflect - under `-y` it reads
-    False and a linked library's Python driver still ran after a link, an
-    override and a reload (Task 7 cycle-1 critic, 5.2.2). With the flag off
-    nothing ran (`scripts/blender_probes/linking_scripts_auto_execute.py`). In
-    the intended trusted deployments MCP loads follow Blender's own trust, as a
-    manual link does; detecting the session flag is a Phase 4 requirement for
-    pooled or untrusted deployments.
+    The linking commands and the Poly Haven `.blend` import call it too. It does
+    not fully control script execution: Blender runs drivers based on the
+    session's trust flag (`-y`, or a load with `use_scripts=True`), which this
+    preference does not reflect. Trusted deployments accept that; an untrusted
+    one would need to detect the flag, which is not implemented.
 
-    `open_mainfile(use_scripts=False)` is always passed, but this preference is
-    the same code-execution surface on an unauthenticated socket, and a user
-    preference or app template can turn it on. **Refuse, not warn** (plan Task 6
-    Step 4b's recommendation, taken): a refusal costs an artist who has it on
-    nothing `open_shot` needs, and a warning is a control nobody reads. This is
-    stricter than Task 5's permissive-when-unset roots on purpose: there the
-    default is *unconfigured*; here the default is *safe* (False, measured) and
-    someone changed it. A preference that cannot be read is treated as on.
+    Refused rather than warned about, and stricter than unset file roots: the
+    preference defaults to off, so finding it on means someone enabled it. An
+    unreadable preference counts as on.
 
     Args:
         command: The refusing command, named in the message.
@@ -289,12 +204,9 @@ def _operator_failure_message(command: str, exc: BaseException, known_paths: tup
     """
     Build the client-facing message for a file operator that raised.
 
-    `open_mainfile`, `save_mainfile` and `save_as_mainfile` raise `RuntimeError`
-    on every failure mode measured and never return `{'CANCELLED'}` (plan Task 6
-    behaviour 1, 5.2.2; re-run by `scripts/blender_probes/file_lifecycle_handlers_real_blender.py`),
-    and their text embeds the absolute path, up to twice. `read_homefile` was not
-    seen to fail and is handled the same way. The raw text
-    stays chained for Blender's console; only the sanitized form is the message.
+    Blender's file operators raise `RuntimeError` with the absolute path in the
+    text, sometimes twice. The raw exception stays chained for Blender's console;
+    the client gets only the sanitized text.
 
     Args:
         command: The command name, for the message.
@@ -313,14 +225,11 @@ def _refuse_a_leftover_temp_save(canonical: str) -> None:
     """
     Refuse a save while Blender's temporary save name is occupied or cannot be checked.
 
-    Blender writes `<target>@` and then renames it over the target (the `@`
-    name is in its own error text). A symlink planted at that name redirected
-    the write outside the configured roots and replaced the target with a link
-    (cycle-1 critic, reproduced), so anything there - file, directory, or a
-    symlink even when dangling, which is why this is `lstat` and not `exists` -
-    refuses the save. Any other `OSError` (`EACCES`, `ENAMETOOLONG`) refuses too,
-    with its own wording: its text would carry the path, and "cannot tell" must
-    not mean "clear".
+    Blender writes `<target>@`, then renames it over the target, so a symlink
+    planted at that name redirects the write outside the roots. Anything there
+    refuses the save, including a dangling symlink, hence `lstat` rather than
+    `exists`. Any other `OSError` refuses too, because "cannot tell" must not
+    mean "clear".
 
     Args:
         canonical: The validated target path.
@@ -348,12 +257,12 @@ def _is_indirect_library(library: object) -> bool:
     """
     Report whether a library is only reached through another library.
 
-    Measured on 5.2.2 (`scripts/blender_probes/file_lifecycle_handlers_real_blender.py`
-    section E): `Library.parent` is not reliable in the session that made the
-    link (None until the file is reopened), but every datablock in `users_id`
-    of an indirect library carries `is_library_indirect`. Blender re-derives an
-    indirect library's path from its parent on load, so its `//` path does not
-    break when the main file moves.
+    `Library.parent` is set while the link is made, but after a reopen it is None
+    whenever the main file's own entry for the library resolves, because Blender
+    then re-reads it as direct; every user of an indirect library carries
+    `is_library_indirect` either way. Blender resolves an indirect library
+    through its parent rather than from the main file's entry, so its `//` path
+    survives the main file moving.
 
     Args:
         library: A `bpy.types.Library`.
@@ -370,15 +279,12 @@ def _unresolvable_relative_paths(canonical: str, relative_remap: bool) -> int:
     """
     Count `//`-relative external file paths a save to another directory will leave pointing nowhere.
 
-    With `relative_remap=False` Blender writes each path verbatim, so
-    `//libs/lib.blend` or `//textures/t2.png` saved from `projA/` into `projB/`
-    resolves against `projB/` on reopen and is missing, while the open session
-    still reports it found (measured, section E of the probe above). The paths
-    come from `bpy.utils.blend_paths(absolute=False, packed=False, local=True)`,
-    which lists the main file's images, libraries and other external files
-    (`local=True` skips paths inside linked datablocks, which resolve from their
-    library) - but it also lists indirect libraries, which are subtracted. Read
-    before the save: `bpy.data.filepath` is still the old file.
+    With `relative_remap=False` Blender writes each path verbatim, so it resolves
+    against the new directory on reopen, while the open session still reports
+    it found. `blend_paths(local=True)` skips paths inside linked datablocks but
+    still lists indirect libraries, whose paths Blender re-derives, so those are
+    subtracted. Must run before the save, while `bpy.data.filepath` is still the
+    old file.
 
     Args:
         canonical: The validated target path.
@@ -409,11 +315,8 @@ class FileLifecycleHandlersMixin:
     """
     Report and change which .blend the session holds.
 
-    `get_session_info` is a `staticmethod` because it reads process-wide session
-    state and the open database, not anything belonging to one server instance.
-    It is still reached as `self.get_session_info` from the dispatch table, like
-    every other handler. `open_shot` and `reset_session` are instance methods
-    only because they compare `self._build_command_handlers()` across the swap.
+    `get_session_info` is a `staticmethod` because it reads process-wide state,
+    not the server instance; the dispatch table still reaches it through `self`.
     """
 
     @staticmethod
@@ -421,29 +324,21 @@ class FileLifecycleHandlersMixin:
         """
         Report the current session: which file, which epoch, and what went wrong.
 
-        `session_epoch` is what a client compares against the epoch it last saw.
-        When it has moved, the addon's advertised `capabilities` may have moved
-        with it - the Poly Haven / Sketchfab / ND handlers are gated on
-        per-`.blend` scene flags - so the client re-handshakes before trusting
-        its cached list. `is_dirty` and `libraries` are what make a swap
-        destructive, so both are reported before one is attempted.
+        When `session_epoch` has moved, the client must re-handshake, because
+        some advertised capabilities depend on the open file's scene settings.
 
         Returns:
-            dict[str, object]: `session_id` (str, minted once per addon
-            process) and `session_epoch` (int) - the pair a client compares,
-            because the counter alone restarts at 0 with the process;
-            `current_filepath` (str | None; None when the session has never been
-            saved **and after an aborted swap, because this process can no
-            longer truthfully name the file it has open**), `last_load_error` /
-            `last_save_error` (str | None, carrying no filesystem path),
-            `session_indeterminate` (bool - true while a swap was aborted
-            part-way and no completed load has happened since; the drain loop
-            refuses every command except this one, `get_addon_info` and the
-            swap commands while it is set), `is_dirty` (bool - unsaved work a
-            swap would destroy), and `libraries`, one
-            `{"session_uid", "name", "filepath", "is_relative", "is_missing"}`
-            entry per linked library (see `_library_summary` for which links are
-            reported whole and which are reduced to a leaf).
+            dict[str, object]: `session_id` (str, new per addon process) and
+            `session_epoch` (int), compared as a pair because the epoch restarts
+            at 0 with the process; `current_filepath` (str | None; None when the
+            session has never been saved, or after an aborted swap, when the
+            open file cannot be named truthfully); `last_load_error` /
+            `last_save_error` (str | None, with no filesystem path);
+            `session_indeterminate` (bool, true after an aborted swap until a
+            load completes, while the drain loop refuses all but this command,
+            `get_addon_info` and the swap commands); `is_dirty` (bool, unsaved
+            work a swap would destroy); and `libraries`, one entry per linked
+            library as `_library_summary` describes.
 
         """
         return {
@@ -467,13 +362,11 @@ class FileLifecycleHandlersMixin:
         """
         Describe the database a completed swap left open.
 
-        **It never raises an `Exception`.** It runs after an irreversible load,
-        so an error here must not reach the client as "the open failed": the load
-        stands and the client has to re-handshake either way. A field that could
-        not be read is reported under `warnings` instead. **Known limit:** a
-        `BaseException` (Esc's `KeyboardInterrupt`) raised here is not caught, and
-        the client receives `server_core`'s abort message, which says the session
-        may be indeterminate although `load_post` has already completed the load.
+        Never raises an `Exception`: the load has already happened, so a read
+        failure here must not reach the client as a failed open. An unreadable
+        field is reported under `warnings`. A `BaseException` such as Esc's
+        `KeyboardInterrupt` is not caught, and the client is then told the
+        session may be indeterminate although the load completed.
 
         Args:
             capabilities_before: `_capability_names()` read before the swap.
@@ -512,25 +405,14 @@ class FileLifecycleHandlersMixin:
         """
         Replace the open database with a `.blend`, synchronously, and answer after the swap.
 
-        **The protocol was decided by experiment, not preference:** TASK_STATE
-        decision 11 (Task 2) - synchronous validate-then-swap, answering after
-        `wm.open_mainfile` returns; the drain callback survives the load and
-        `bpy.context.window` is None for the rest of that tick. So everything
-        that can refuse runs **before** the operator: roots, the file checks,
-        unsaved work, and the scripts preference. The drain loop makes this the
-        last command of its tick and keeps it out of `mutation_transaction`
-        (`server_core._SESSION_SWAP_COMMANDS`).
+        Everything that can refuse runs before `wm.open_mainfile`, because once
+        it runs the old database is gone. `use_scripts=False` is always passed and
+        is not a parameter, so no tool can run code embedded in a file.
 
-        `use_scripts=False` is passed explicitly and is not a parameter (spec
-        Decision #7). A failure raises `RuntimeError`, never `{'CANCELLED'}`.
-
-        **Known limit of the unsaved-work guard.** Blender clears `is_dirty` for
-        a save only when it processes that save's notifier. `save_shot` ends its
-        drain tick so nothing runs before that, but a save made by something
-        else (another add-on's timer, a script) followed by an edit in the same
-        main-thread pass can still leave `is_dirty` falsely clear, and this
-        guard then lets the edit be discarded. A GUI Ctrl+S and File -> Save
-        Copy are not affected (measured by the cycle-2 critic).
+        Known limit: Blender clears `is_dirty` for a save only when it handles the
+        save's notifier. A save by something else, such as another add-on's timer,
+        followed by an edit in the same main-thread pass can leave `is_dirty`
+        clear, and this guard then lets the edit be discarded.
 
         Args:
             filepath: The `.blend` to open; absolute, `~`, or `//` relative to a
@@ -538,7 +420,7 @@ class FileLifecycleHandlersMixin:
             load_ui: Load the file's window layout too. Default False; the
                 operator's own default is True.
             discard_unsaved: Required when the session has unsaved work, which
-                an open destroys silently (measured, Task 2).
+                an open destroys without asking.
 
         Returns:
             dict[str, object]: `filepath` (the open file, as
@@ -581,48 +463,39 @@ class FileLifecycleHandlersMixin:
         """
         Write the open database to disk, refusing to replace an existing file unconfirmed.
 
-        `filepath=None` saves in place with `wm.save_mainfile`; a path uses
-        `wm.save_as_mainfile`, which moves the session to it. **Every target that
-        already exists needs `confirm_overwrite=True`, including the open file
-        itself**: an in-place save replaces the copy on disk, which may hold
-        someone else's later save. The guard is `os.path.exists` before the
-        operator runs; `check_existing` only drives the file browser's dialog and
-        overwrites silently when called programmatically (plan Task 6 behaviour 3).
-        A save is also refused while anything occupies Blender's temporary
-        `<target>@` name (`_refuse_a_leftover_temp_save`).
+        `filepath=None` saves in place; a path moves the session to it. Every
+        existing target needs `confirm_overwrite=True`, the open file included,
+        because the copy on disk may hold someone else's later save. The check is
+        `os.path.exists` here, because the operator's `check_existing` only drives
+        the file browser and does not stop a scripted overwrite.
 
-        `compress` and `relative_remap` are passed on every call. Left out,
-        `save_as_mainfile` rewrites library paths to `//` form (its default is
-        True) and a factory-settings Blender compresses (`use_file_compression`
-        beats the operator default; measured on 5.2.2). A failure raises
-        `RuntimeError`, never `{'CANCELLED'}`.
+        `compress` and `relative_remap` are always passed. Omitted,
+        `save_as_mainfile` would rewrite library paths to `//` form, and the
+        user's compression preference would apply.
 
         Args:
             filepath: Where to save; None to save the open file in place.
             compress: Write a compressed `.blend`. Default False: canon publishes
-                must be uncompressed (spec §4.1 invariant 1).
+                must be uncompressed, because compression turns a re-save's tiny
+                byte difference into most of the file and breaks content digests.
             relative_remap: Rewrite linked-library paths relative to the new
                 location. Default False.
             confirm_overwrite: Required when the target already exists. A
                 confirmed overwrite also replaces an existing `.blend1` backup
-                when Blender's `save_version` keeps one (measured, cycle-1 critic).
-            create_directories: Create the target's missing directory and its
-                missing parents, inside the file roots **when any are configured** -
-                with none, the boundary is permissive for this as for every other
-                path (see `file_paths`), and this is the first parameter here that
-                *creates* filesystem structure. Created only once every refusal has
-                passed; a save Blender then fails leaves them in place.
+                when Blender keeps one.
+            create_directories: Create the target's missing directory and
+                parents, inside the file roots when any are configured. They are
+                created after every refusal check, and stay if Blender's save then
+                fails.
 
         Returns:
             dict[str, object]: `filepath` (the open file after the save),
-            `saved_in_place`, `overwrote_existing`, `created_directory`, `compress`, `relative_remap`,
-            `session_id`, `session_epoch` (unchanged by a save), and `warnings`
-            when `//`-relative external file paths (images, direct
-            libraries) will not resolve from a new directory. **No `is_dirty`:** in the GUI Blender clears the flag
-            when it processes the save's notifier, after this tick, so a value
-            read here is untrue; poll `get_session_info` instead. The drain loop
-            ends its tick after this command (`server_core._TICK_ENDING_COMMANDS`)
-            so nothing queued behind it runs before that clear.
+            `saved_in_place`, `overwrote_existing`, `created_directory`,
+            `compress`, `relative_remap`, `session_id`, `session_epoch`
+            (unchanged by a save), and `warnings` when `//`-relative external
+            file paths (images, direct libraries) will not resolve from a new
+            directory. No `is_dirty`: Blender clears it only after this tick, so
+            poll `get_session_info` instead.
 
         Raises:
             ValueError: When the request is refused; nothing was written.
@@ -671,21 +544,16 @@ class FileLifecycleHandlersMixin:
 
     def reset_session(self, confirm: object = False) -> dict[str, object]:
         """
-        Replace the open database with an empty factory scene (spec §4.5's pool reset).
+        Replace the open database with an empty factory scene, as a pooled worker's reset step.
 
-        **`wm.read_homefile(use_empty=True, use_factory_startup=True)`, not the
-        plan's `wm.read_factory_settings`.** Measured on 5.2.2 by
-        `scripts/blender_probes/reset_operator_side_effects.py`:
-        `read_factory_settings` also loads factory *preferences* and runs every
-        enabled add-on's `unregister` - this addon's included, from inside its own
-        command - and resets the user's preferences. `read_homefile` with the
-        factory startup file leaves both alone, fires `load_post` (so the epoch
-        moves once, with no increment here - TASK_STATE T3-4), and ignores the
-        user's own startup file, so the reset scene is the same on every machine.
+        Uses `wm.read_homefile` with factory startup, not
+        `wm.read_factory_settings`, which also resets the user's preferences and
+        unregisters every add-on, this one included. The factory startup file
+        makes the reset scene the same on every machine. The load fires
+        `load_post`, which moves the epoch, so this does not increment it.
 
-        `confirm=True` is the whole consent: discarding the session is this
-        command's only effect, so no second unsaved-work flag is asked for; the
-        result says whether unsaved work was discarded.
+        `confirm=True` is the only consent needed, because discarding the session
+        is the command's whole purpose.
 
         Args:
             confirm: Must be True.

@@ -1,13 +1,13 @@
 r"""
-Reproduce plan §0.3 finding 5's gate smoke test, then extend it to Route C (plan Task 7 Step 1).
+Run the link, override, save and reopen gate smoke test on Route A and Route C.
 
-Link a canon collection, override it, save the shot with `relative_remap=False`,
-reopen it, and print the libraries and overrides the reopened file holds. Run
-twice: once with finding 5's own route (`libraries.load(create_liboverrides=True)`,
-Route A) and once with the route Task 7 rules for
-(`override_hierarchy_create(..., do_fully_editable=True)`, Route C). The fixture
-is built here, in a fresh temporary directory; nothing is read from the plan's
-transcript. `bpy.context` is never used to reach the scene.
+Links a canon collection, overrides it, saves the shot with
+`relative_remap=False`, reopens it and prints the libraries and overrides it
+holds. Route A, `libraries.load(create_liboverrides=True)`, is what the original
+smoke test used and leaves objects locked. Route C,
+`override_hierarchy_create(..., do_fully_editable=True)`, is what the linking
+handlers use. Builds its fixture in a temporary directory, and reaches the
+scene without `bpy.context`.
 
 From the repository root::
 

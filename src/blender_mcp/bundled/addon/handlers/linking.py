@@ -1,46 +1,26 @@
 """
 Linking commands: link canon libraries into a shot, override them, and list, reload, relocate or unlink them.
 
-Plan Task 7. Every ruling below was re-measured on Blender 5.2.2 before this
-module was written; the instruments are in `scripts/blender_probes/`:
+Overrides use Route C, `override_hierarchy_create(..., do_fully_editable=True)`:
+the other routes leave objects locked or make system overrides. Reload and
+relocate use `lib.filepath` and `lib.reload()`, because the `wm.lib_*` operators
+ignore `filepath` and the relocate operator renames the library.
 
-- **Overrides use Route C**, `override_hierarchy_create(scene, view_layer,
-  do_fully_editable=True)` (`linking_override_routes.py`): Route A's objects
-  stay locked and Route B's are system overrides. Neither needs `bpy.context`,
-  so the scene always comes from `bpy.data`.
-- **Reload and relocate use the data API**, `lib.filepath = ...; lib.reload()`
-  (`linking_reload_ruling.py`). `wm.lib_reload` / `wm.lib_relocate` ignore
-  `filepath`, return `{'CANCELLED'}` for a bad name and the relocate operator
-  renames the library; nothing here calls them.
-- **Handles are `session_uid`s.** After a Route C override two collections and
-  two objects share each name, so a name resolves nothing. The one exception is
-  `link_canon_library`'s `collections` / `objects`: they name datablocks inside
-  the library *file*, which have no local uid yet. A `session_uid` is valid only
-  until the next file load or library reload (both churn every uid they touch).
+Handles are `session_uid`s, because after an override a collection and its
+override share a name. Only `link_canon_library` takes names, of datablocks
+inside the library file. A uid lasts until the next file load or library reload.
 
-Routing (`server_core`): `list_libraries` is read-only; `reload_library`,
-`relocate_library` and `unlink_libraries` are `_DATABLOCK_REPLACING_COMMANDS` and
-bypass `mutation_transaction`, because a reload gives every linked datablock a
-fresh uid and a rollback would delete them; `link_canon_library` and
-`create_override` stay transacted, so a failure removes what they created.
+`reload_library`, `relocate_library` and `unlink_libraries` bypass the mutation
+transaction: a reload gives linked datablocks new uids, so a rollback would
+delete them. Linking and overriding stay transacted.
 
-**Scripts.** The four commands that load or override library data refuse while
-`preferences.filepaths.use_scripts_auto_execute` is on, through the same check
-`open_shot` uses. **That refusal is not the control for script execution**
-(user decision, 2026-09-16). Blender gates drivers on the *session* flag - set by
-`-y` / `--enable-autoexec`, or by `open_mainfile` / `revert_mainfile` with
-`use_scripts=True` ("Reload Trusted") - which the preference does not reflect:
-under `-y` the preference reads False and a linked library's Python driver ran
-after a link, an override and a reload (cycle-1 critic, 5.2.2). With the session
-flag off nothing ran (`linking_scripts_auto_execute.py`). In the intended trusted
-deployments these loads follow Blender's own trust, the same as a manual link;
-detecting the session flag is a Phase 4 requirement for pooled or untrusted
-deployments.
+The scripts check refuses while `use_scripts_auto_execute` is on, but it is not
+the control for script execution: Blender runs drivers per the session's trust
+flag (`-y`), which the preference does not reflect. Untrusted deployments would
+need that flag checked, which is not implemented.
 
-Blender embeds absolute paths in its own error text, so every `except` around a
-data-API call sanitizes with the paths the call held
-(`file_lifecycle._operator_failure_message`), and library identity is published
-only through `file_lifecycle._library_summary`.
+Blender puts absolute paths in its error text, so every `except` sanitizes with
+`_operator_failure_message`.
 """
 
 import os
@@ -67,8 +47,8 @@ from .file_lifecycle import (
 
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
-# Per library in a listing, and per override in a report: a canon library can
-# link thousands of datablocks, and the exact count is reported beside the cap.
+# Per library or override: a canon library can link thousands of datablocks.
+# The exact count is reported beside the cap.
 MAX_LISTED_DATABLOCKS = 100
 MAX_LINK_NAMES = 100
 MAX_UNLINK_UIDS = 100
@@ -88,8 +68,7 @@ def _require_uid(name: str, value: object) -> int:
     """
     Refuse a handle that is not an integer `session_uid`.
 
-    `True == 1` in Python, so a bool is refused explicitly rather than resolving
-    whichever datablock has uid 1.
+    A bool is refused, since `True == 1` would resolve the datablock with uid 1.
 
     Args:
         name: The parameter name, for the message.
@@ -159,16 +138,10 @@ def resolve_unique_name(datablocks: Iterable[object], name: str, kind: str) -> o
     """
     Resolve a datablock by name only when exactly one has it.
 
-    The plan-required name-to-uid resolver; no command calls it yet (Task 9's
-    tools may). The sanctioned route **for a caller that can supply a
-    `session_uid`**: after a Route C override a name is ambiguous by construction
-    and `bpy.data.x[name]` returns whichever Blender ordered first, so an ambiguous
-    name is refused with every candidate's uid for the caller to choose from.
-
-    `object_lookup.find_object` is the rule for the object tools, which take no uid
-    to supply; it prefers the local (editable) object and refuses only when several
-    *linked* objects share a name. The two rules differ deliberately - see that
-    module's docstring.
+    For a caller that can fall back to a `session_uid`: `bpy.data.x[name]` picks
+    whichever match Blender lists first, so an ambiguous name is refused with every
+    candidate's uid. No command calls it yet. The object tools take no uid and use
+    `object_lookup.find_object` instead.
 
     Args:
         datablocks: The `bpy.data` collection to search.
@@ -266,11 +239,12 @@ def _bounded_list(key: str, items: list[object], describe: object) -> dict[str, 
 
     Args:
         key: The list's result key.
-        items: Everything.
-        describe: The per-item describer.
+        items: Every item; only the first `MAX_LISTED_DATABLOCKS` are described.
+        describe: Turns one item into its entry.
 
     Returns:
-        dict[str, object]: `<key>`, `<key>_count`-style `count`, and `truncated`.
+        dict[str, object]: `<key>`, the exact count (`datablocks` reports it as
+        `datablock_count`), and `<key>_truncated`.
 
     """
     return {
@@ -305,8 +279,8 @@ def _linked_datablocks(library: object) -> dict[str, object]:
     """
     List what a library links, from `Library.users_id`.
 
-    `users_id` is a Python-level property absent from `bl_rna.properties`
-    (handoff §08), and it is the direct answer; no `bpy.data` walk.
+    `users_id` is missing from `bl_rna.properties` but exists, and it avoids
+    walking `bpy.data`.
 
     Args:
         library: A `bpy.types.Library`.
@@ -322,11 +296,9 @@ def _missing_warnings(library: object) -> dict[str, object]:
     """
     Warn when a reload left linked datablocks as placeholders.
 
-    `Library.is_missing` only says the *file* is missing. Measured on 5.2.2
-    (`linking_handlers_real_blender.py` section H): relocating to a file that
-    lacks the linked collection leaves `is_missing=False` on the library and a
-    placeholder collection with `ID.is_missing=True`, and a reopen warns that
-    linked data-blocks are missing.
+    `Library.is_missing` covers only the file. A file that lacks a linked
+    datablock leaves the library looking fine and the datablock a placeholder
+    with `is_missing` set.
 
     Args:
         library: A `bpy.types.Library`, just reloaded.
@@ -356,8 +328,8 @@ def _absolute(paths: Iterable[object]) -> tuple[str, ...]:
     """
     Keep only absolute path strings for the sanitizer.
 
-    A relative known path is replaced as a plain substring, so `canon.blend`
-    would mangle the library name in `library 'canon.blend'`.
+    The sanitizer replaces plain substrings, so a relative `canon.blend` would
+    also mangle the name in `library 'canon.blend'`.
 
     Args:
         paths: Candidate paths.
@@ -373,9 +345,8 @@ def _library_paths(library: object) -> tuple[str, ...]:
     """
     Every absolute form of a library's path that Blender may put in an error.
 
-    `reload()` embeds `bpy.path.abspath(filepath)` for a `//` link (measured,
-    `linking_reload_ruling.py` section D); the canonical form covers a symlinked
-    directory.
+    `reload()` reports a `//` path expanded; the canonical form covers a
+    symlinked directory.
 
     Args:
         library: A `bpy.types.Library`.
@@ -384,8 +355,8 @@ def _library_paths(library: object) -> tuple[str, ...]:
         tuple[str, ...]: The stored, expanded and canonical forms that are absolute.
 
     """
-    # An absolute `Library.name` is replaced whole too: a quoted-name match can
-    # end early inside it (an apostrophe then a space) and leave a relative tail.
+    # An absolute name too: a quoted-name match can stop at an apostrophe inside
+    # it and leave a relative tail.
     name = getattr(library, "name", "")
     raw = str(getattr(library, "filepath", "") or "")
     if not raw:
@@ -412,10 +383,8 @@ def _reload(library: object, command: str, known_paths: tuple[str, ...]) -> None
     """
     Reload a library, flagged for the transaction handlers and sanitized on failure.
 
-    `replacing_library_contents` wraps exactly the call, so the
-    `blend_import_post` it fires disarms any transaction a future caller has open
-    (Task 4). A failure raises before any uid moves (measured) and leaves the
-    contents as they were.
+    The flag lets `blend_import_post` disarm an open transaction, whose rollback
+    would otherwise delete the reloaded datablocks. A failed reload changes no uids.
 
     Args:
         library: The library.
@@ -461,9 +430,8 @@ def _refuse_absent_names(data_from: object, collections: list[str], objects: lis
     """
     Refuse, inside the `libraries.load` block, a name the file does not contain.
 
-    An absent name still creates a `Library` datablock when the block exits,
-    while a raise inside the block creates none (measured,
-    `linking_datablock_lifecycle.py` section B).
+    Raising inside the block creates no `Library`; an absent name left to the
+    block's exit would still create one.
 
     Args:
         data_from: The file's contents, as `libraries.load` yields them.
@@ -529,9 +497,8 @@ def _refuse_unoverridable(collection: object) -> None:
     existing = [c for c in bpy.data.collections if _uid_of(getattr(c.override_library, "reference", None)) == uid]
     if existing:
         raise ValueError(f"collection session_uid {uid} is already overridden by {_candidates(existing)}")
-    # Overriding a collection overrides every collection inside it, including one
-    # already overridden on its own: `Child` then `Parent` left two `ChildBody`
-    # overrides that persisted (measured, `linking_handlers_real_blender.py` section M).
+    # Overriding a collection overrides every collection inside it, so an inner
+    # collection with its own override would end up overridden twice.
     inner = {_uid_of(child) for child in getattr(collection, "children_recursive", ())}
     inner_overrides = [
         c for c in bpy.data.collections if _uid_of(getattr(c.override_library, "reference", None)) in inner
@@ -547,13 +514,10 @@ def _override_hierarchy(collection: object, scene: object, unlinked: list[tuple[
     """
     Override one linked collection's hierarchy with Route C, replacing its instances.
 
-    Route C places the override beside every instance of the linked collection
-    and leaves the instance in place, so the asset would draw twice (measured,
-    `linking_override_routes.py`); each instance whose parent received the
-    override is unlinked from that parent and recorded in `unlinked`, so a
-    caller can put it back when a later step fails. The linked collection itself
-    is not removed: the override references it and it survives a save (measured,
-    Step 5). Call `_refuse_unoverridable` first.
+    Route C adds the override beside each instance and leaves the instance, so
+    the asset would draw twice. Replaced instances are recorded in `unlinked` so a
+    caller can restore them if a later step fails. The linked collection stays:
+    the override references it. Call `_refuse_unoverridable` first.
 
     Args:
         collection: A linked `bpy.types.Collection`.
@@ -572,7 +536,7 @@ def _override_hierarchy(collection: object, scene: object, unlinked: list[tuple[
     uid = collection.session_uid  # type: ignore[attr-defined]
     parents = [parent for parent in _instance_parents() if _has_child(parent, collection)]
     try:
-        # Measured: returns None rather than raising for a collection it cannot override.
+        # Returns None, rather than raising, for a collection it cannot override.
         override = collection.override_hierarchy_create(  # type: ignore[attr-defined]
             scene,
             scene.view_layers[0],  # type: ignore[attr-defined]
@@ -601,9 +565,8 @@ def _refuse_nested_requests(collections: list) -> None:
     """
     Refuse a request that names a collection and a collection inside it.
 
-    Overriding the outer one overrides the inner one, so the per-collection
-    re-check would refuse anyway - but by naming an override this same request
-    built and rolled back, which tells the client nothing it can act on.
+    The per-collection check would refuse it too, but by naming an override this
+    request built and rolled back, which the client cannot act on.
 
     Args:
         collections: The requested linked collections.
@@ -626,19 +589,9 @@ def _override_all(collections: list, scene: object) -> list[dict[str, object]]:
     """
     Override several linked collections, all or nothing for the user's placement.
 
-    Every collection is validated before the first instance is replaced, and
-    again just before its own override - a nested request (`[Parent, Child]`)
-    passes the first pass and is refused by the second, because overriding
-    `Parent` already overrode `Child`. Such a request is now refused before
-    either pass by `_refuse_nested_requests`, whose message names both
-    collections; the re-check stays as the guard for anything that pass misses
-    (a hierarchy Blender builds that `children_recursive` did not show). An
-    instance unlinked for an earlier collection is re-linked when a later one
-    fails. `mutation_transaction` removes the overrides a failed request created,
-    but it does not restore `children` links, so without this a refused second
-    collection destroyed the first one's existing placement (reproduced on 5.2.2,
-    `linking_handlers_real_blender.py` section G). Re-linking appends, so the
-    placement returns but its position among its siblings may not.
+    On failure, instances unlinked for earlier collections are re-linked: the
+    transaction removes the new overrides but not `children` links, so the
+    user's placement would be lost. Re-linking appends, so sibling order may change.
 
     Args:
         collections: Linked `bpy.types.Collection`s.
@@ -671,9 +624,8 @@ def _link_into(members: object, items: list[object]) -> None:
     """
     Instance linked datablocks in the scene root unless already there.
 
-    A linked datablock nobody uses is not written on save (measured,
-    `linking_datablock_lifecycle.py` section A), so a link that is not
-    instanced silently disappears at the next save.
+    Blender does not save a linked datablock nobody uses, so an uninstanced link
+    would vanish at the next save.
 
     Args:
         members: `scene.collection.children` or `.objects`.
@@ -689,11 +641,8 @@ def _iter_ids() -> Iterator[tuple[str, object]]:
     """
     Walk every datablock in every `bpy.data` ID collection, once.
 
-    `bpy.data.all_ids` is itself a `COLLECTION` property (fixed type `ID`) that
-    repeats every datablock (measured on 5.2.2, `linking_handlers_real_blender.py`
-    section E, whose first run reported all five removals as `all_ids`), so a
-    walk that included it would count each datablock twice and hand duplicates
-    to `batch_remove`.
+    Skips `all_ids`-style aggregates of type `ID`, which repeat every datablock
+    and would hand `batch_remove` duplicates.
 
     Yields:
         tuple[str, object]: `(collection name, datablock)` pairs.
@@ -725,11 +674,8 @@ def _newly_orphaned(before: dict[int, tuple[str, int]]) -> list[tuple[str, objec
     """
     Find local datablocks that this unlink left with no users.
 
-    **Not `orphans_purge`.** That purges every orphan in the file, and measured
-    (`linking_datablock_lifecycle.py` section D2) it deleted a zero-user
-    material the user had made, unrelated to any library. This takes only
-    datablocks that had users before the unlink and have none now; libraries
-    and datablocks linked from a library that was not named are never taken.
+    Not `orphans_purge`, which also deletes the user's unrelated zero-user
+    datablocks. Only datablocks that had users before the unlink are taken.
 
     Args:
         before: `_census()` read before the removal.
@@ -786,8 +732,7 @@ def _remove_libraries(
     """
     Remove each library, re-resolving it by uid first so `remove()` never reaches a freed one.
 
-    Summaries are read before any removal: a removed library's attributes
-    cannot be read afterwards.
+    Summaries are read first, because a removed library cannot be read.
 
     Args:
         libraries: The resolved libraries.
@@ -876,21 +821,19 @@ class LinkingHandlersMixin:
         """
         Link datablocks from a canon `.blend` into the open shot, instanced or overridden.
 
-        The link is `bpy.data.libraries.load(link=True)` - never with
-        `create_liboverrides=True`, whose objects stay locked. With
-        `as_override=True` each linked collection is overridden by Route C, as
-        `create_override` does; otherwise each linked datablock is instanced in
-        the scene root, because an unused link is dropped on save. Transacted: a
-        failure removes the `Library` and everything it linked.
+        Never `create_liboverrides=True`, whose objects stay locked; `as_override`
+        uses Route C, as `create_override` does. Without it each datablock is
+        instanced in the scene root. Transacted: a failure removes the `Library`
+        and everything it linked.
 
         Args:
             filepath: The library `.blend`; absolute, `~`, or `//` relative to a saved open file. Roots enforced.
-            collections: Names of collections **inside the library file** (not
-                handles into `bpy.data`, which is why they are names). None means none.
+            collections: Names of collections inside the library file, which have
+                no uid yet. None means none.
             objects: Names of objects inside the library file. None means none.
             as_override: Override each linked collection (Route C). Refused with `objects`.
             relative: Store the library path relative to the open file; refused in a never-saved session,
-                where Blender silently stores it absolute (measured).
+                where Blender would silently store it absolute.
             scene_uid: The scene to instance or override into; optional when the file has one scene.
 
         Returns:
@@ -954,21 +897,18 @@ class LinkingHandlersMixin:
         """
         Make a linked collection's hierarchy editable in the shot (Route C).
 
-        `override_hierarchy_create(scene, view_layer, do_fully_editable=True)`
-        with the kwarg passed explicitly: its default is False, which produces
-        system overrides. Not per-object `override_create`, which overrides one
-        ID at a time. Refuses a local collection, an override, and a collection
-        already overridden (a second call would make `CanonHero.001`, measured).
+        `do_fully_editable` defaults to False, which makes system overrides.
+        Refuses a local collection, an override, and a collection already
+        overridden, which would get a second copy.
 
         Args:
             collection_uid: The **linked** collection's `session_uid`.
             scene_uid: The scene to override into; optional when the file has one scene.
 
         Returns:
-            dict[str, object]: `override` (`session_uid`, `is_system_override` -
-            expected False, `reference_uid`, `hierarchy_root_uid`, ...),
-            `scene_uid`, `replaced_instances`, and `objects` inside the override,
-            each with the state that tells it from its same-named linked original.
+            dict[str, object]: `override` (`session_uid`, `is_system_override`,
+            `reference_uid`, `hierarchy_root_uid`, ...), `scene_uid`,
+            `replaced_instances`, and `objects` inside the override.
 
         """
         uid = _require_uid("collection_uid", collection_uid)
@@ -1009,11 +949,9 @@ class LinkingHandlersMixin:
         """
         Re-read a library from its file with `lib.reload()`.
 
-        Replaces every datablock linked from it in place, with fresh
-        `session_uid`s: anything holding a reference or uid from before is stale.
-        Not transacted (`_DATABLOCK_REPLACING_COMMANDS`) and not a session swap.
-        File roots are not enforced here: the path is the one already in the
-        open file, and only `relocate_library` can change it.
+        Every datablock linked from it gets a new `session_uid`, so earlier
+        references are stale. File roots are not enforced: the path is already
+        in the open file.
 
         Args:
             library_uid: The library's `session_uid`.
@@ -1037,12 +975,11 @@ class LinkingHandlersMixin:
         """
         Point a library at another `.blend` and reload it: `lib.filepath = <canonical>; lib.reload()`.
 
-        The new path goes through the roots and `resolve_blend_path` first and
-        is stored in its canonical absolute form. A failed reload restores the
-        previous `filepath`, leaving the library as it was (measured). Refuses a
-        file another library already links. Invalidates references like
-        `reload_library`. The data API does not rename the library (measured),
-        but `name_before` / `name_after` are reported so a client never relies on it.
+        The path is checked against the roots and stored canonical. A failed
+        reload restores the previous `filepath`. Refuses a file another library
+        already links. Invalidates uids like `reload_library`. Reports
+        `name_before` and `name_after` so a client need not assume the name is
+        unchanged.
 
         Args:
             library_uid: The library's `session_uid`.
@@ -1069,7 +1006,7 @@ class LinkingHandlersMixin:
                     f"that file is already linked as library session_uid {other.session_uid}; reload or unlink "
                     "that library instead"
                 )
-        # Before the filepath assignment: a refusal must leave the library untouched.
+        # Before the assignment, so a refusal leaves the library untouched.
         _refuse_scripts_auto_execute("relocate_library")
         name_before = client_safe_name_leaf(library.name)  # type: ignore[attr-defined]
         previous = library.filepath  # type: ignore[attr-defined]
@@ -1096,28 +1033,24 @@ class LinkingHandlersMixin:
         """
         Remove exactly the named libraries and everything linked from them.
 
-        Deletes user data, so it requires `confirm=True` and an explicit uid
-        list; every uid is resolved before anything is removed, and each is
-        re-resolved just before its own removal so `remove()` never reaches a
-        datablock an earlier removal freed. An indirect library (reached only
-        through another library) is refused: removing it edits the parent
-        library's contents. Blender also frees the local override objects of
-        the removed datablocks (measured); the report counts everything that
-        went, by uid census, not by assumption. Not transacted: `libraries.remove`
-        fires no handler and there is nothing a rollback could restore.
+        Every uid is resolved before anything is removed, and again just before its
+        own removal, so `remove()` never reaches a library an earlier removal freed.
+        An indirect library is refused: removing it edits its parent's contents.
+        Blender also frees overrides of the removed data, so the report counts
+        everything that went by uid census. Not transacted: a rollback could not
+        restore a removed library.
 
         Args:
             library_uids: The libraries' `session_uid`s, 1 to `MAX_UNLINK_UIDS`.
             confirm: Must be True.
-            purge_orphans: Also remove local datablocks this unlink left without users - never
-                `orphans_purge`, which also deletes unrelated orphans the user made.
+            purge_orphans: Also remove local datablocks this unlink left without users.
 
         Returns:
             dict[str, object]: `removed_libraries` (summaries read before removal),
             `already_removed_uids`, `removed_count`, `removed_by_type`,
             `removed_uids` (capped, with `removed_uids_truncated`),
-            `purged_orphans`, `purged_by_type`, and `other_libraries_removed` -
-            unnamed libraries that disappeared, expected empty. A refusal is a
+            `purged_orphans`, `purged_by_type`, and `other_libraries_removed`
+            (unnamed libraries that disappeared, expected empty). A refusal is a
             `ValueError` raised before anything is removed; a Blender failure
             part-way is a `RuntimeError` listing the uids already removed.
 

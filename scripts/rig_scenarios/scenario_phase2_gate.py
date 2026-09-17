@@ -1,17 +1,11 @@
 r"""
-Drive the phase-2 gate scenario against a live Blender (plan Task 10; spec Sec.8's phase gate).
+Run the phase-2 gate scenario against a live Blender.
 
-Spec Sec.8, verbatim: "Open a shot, link canon, create an override, save, reopen with the link
-intact; no hang." This scenario runs that sentence end to end over the **addon
-socket only**, per Task 10's ruling (b): the MCP-tool wrapper layer (`open_shot`,
-`save_shot`, `link_canon_library`, ... as *server tools*) is a different concern
-- a mapping from tool call to socket command - and is proven by ordinary
-`pytest` against a stubbed connection. Every command this scenario issues is an
-addon command present in `server_core._build_command_handlers()` (`ping` is the
-one exception: it is dispatched before that table is consulted, and every prior
-rig scenario in this repository sends it the same way).
+Opens a shot, links canon, creates an override, saves, and reopens with the link
+intact, without a hang. It uses the addon socket only; the MCP tool wrappers are
+tested by `pytest` against a stubbed connection.
 
-Run it with the two upfront fixtures, from the repository root::
+From the repository root::
 
     /opt/homebrew/bin/blender --background --factory-startup \
         --python scripts/rig_scenarios/make_phase2_gate_fixtures.py -- \
@@ -23,67 +17,20 @@ Run it with the two upfront fixtures, from the repository root::
         --blend shot=<work>/shot.blend \
         --blend compressed=tests/fixtures/blend/empty_zstd.blend
 
-The third `.blend` the scenario needs - the save target - is never staged: it is
-a path under `rig.work_dir` that `save_shot` itself creates (Step 7).
+`tests/test_phase2_gate.py` runs the same steps. The `compressed` fixture is the
+committed binary the magic-byte tests use; `save_shot` creates the save target
+under `rig.work_dir`.
 
-**Request/response counting (criterion 4) is per-connection first-frame
-evidence, not an independent tally.** `BlenderRig._round_trip` opens a fresh
-connection per single `rig.send`, so a byte-for-byte transport count has to be
-kept by the caller rather than read off the rig - TASK_STATE's "Flagged for
-Task 10" note names this as unresolved and leaves the choice to this task.
-Chosen here: option 2, amended to something this rig can observe. `_Counted`
-wraps every call this scenario makes - both `rig.send` (one connection, one
-frame each way) and a pipelined batch (one connection, N frames each way, via
-`scenario_file_swap_barrier`'s `_pipelined`) - and increments a request
-counter immediately before the call and a response counter immediately after
-it returns without raising. This is not two independently-kept counters that
-could drift apart: `rig.send` and `_pipelined` each raise before returning if
-the frame they read back is missing, malformed, or answers a different request
-id than the one just sent, so a response is only ever counted because the
-matching request's own reply already passed that check. What the pair proves
-is "this connection's first frame back matched what was sent", once per
-connection used, not a system-wide delivery guarantee; the multi-process
-ordering clause of Sec.07's concurrency dimension is carried by
-`tests/server/test_threading.py::test_every_command_spanning_a_swap_is_answered_on_both_sockets`
-(Task 3), cited rather than re-built here.
+`_Counted` counts a request before each call and a response after it returns.
+Matching totals show that each connection this single client opened got its
+replies, not that concurrent clients do.
 
-**Step 6's uid discipline, why Step 9 does not repeat it as a name lookup, and
-what Step 9 does and does not prove about editability.** After
-`create_override`, the scene holds a linked collection and its override under
-the *same name* (Task 7 finding 5(d)), so this scenario resolves the
-override's object by the `session_uid` `create_override`'s own response
-reports, never by name. A `session_uid` is valid only for the
-`(session_id, session_epoch)` it was read under (`handlers/file_lifecycle.py`
-`_library_summary` docstring) - it does **not** survive the Step 8 reopen. No
-addon command re-exposes an object's `is_editable` / `is_system_override` by
-uid after a reopen (`set_object_transform` and `get_object_info` both resolve
-by bare name, which is exactly the ambiguous lookup Step 6's discipline exists
-to avoid), so Step 9 does not attempt to re-read those two fields, and this
-live gate carries **no post-reopen evidence of editability at all**. What
-Step 9 does instead: resolve the *linked* collection's fresh post-reopen uid
-from `list_libraries`' own `datablocks` list (which only ever lists true
-library members, never the same-named local override, so this lookup is
-unambiguous) and call `create_override` on it again. Route C's
-`_refuse_unoverridable` refuses with "already overridden by ..." only while a
-real override (`c.override_library.reference`) still points at that
-collection, so the refusal is uid-based proof that the override **persisted**
-- nothing more. `is_editable=True` / `is_system_override=False` are asserted
-once, live, at creation (Step 6). The claim that this pair of fields also
-holds *after* a save/reopen is evidenced separately, by
-`scripts/blender_probes/linking_handlers_real_blender.py` sections A and B
-running the same override, save and reopen against real Blender data
-structures directly (no socket), not by this scenario.
-
-**What each of the three `.blend` fixtures is, precisely, for criterion 5a.**
-`canon.blend` and `shot.blend` are built by
-`scripts/rig_scenarios/make_phase2_gate_fixtures.py`, a separate script that
-needs `bpy` and is run once before this scenario - by the pytest wrapper
-(`tests/test_phase2_gate.py`) or by hand, per the invocation above - not by an
-addon socket command. The `compressed` fixture is not built by anything: it is
-`tests/fixtures/blend/empty_zstd.blend`, the real committed binary Task 5's
-magic-byte tests already use. Only the third file, the save target
-(`_step_save`'s `target`), is created by this scenario itself, and it is
-created by issuing `save_shot` - an addon command - never written directly.
+The override has the same name as its linked collection, so objects are resolved
+by `session_uid`. Uids do not survive the reopen, and no command reads an object's
+editability by uid, so editability is asserted only at creation. After the reopen,
+`_step_assert_link_survived` finds the linked collection's new uid through
+`list_libraries` and tries to override it again; the "already overridden" refusal
+shows the override persisted, and nothing more.
 
 Fails by raising; a clean return is a pass.
 """
@@ -99,17 +46,13 @@ _BARRIER_PATH = Path(__file__).resolve().parent / "scenario_file_swap_barrier.py
 _BARRIER_SPEC = importlib.util.spec_from_file_location("scenario_file_swap_barrier_shared_for_gate", _BARRIER_PATH)
 if _BARRIER_SPEC is None or _BARRIER_SPEC.loader is None:
     raise SystemExit(f"{_BARRIER_PATH} is not loadable - this scenario was copied out of the repository")
-# Reused rather than copied, as scenario_file_lifecycle.py already does: the
-# pipelining, frame-reading, load stamping and client-safety helpers are that
-# scenario's, so every transcript in this repository is judged by one rule.
+# Shared, not copied, so every rig transcript is judged by one rule.
 barrier = importlib.util.module_from_spec(_BARRIER_SPEC)
 _BARRIER_SPEC.loader.exec_module(barrier)
 
 _COMMAND_TIMEOUT_SECONDS = 180.0
-# Mirrors server_core.py's `_SESSION_SWAP_COMMANDS`: classification of "is this
-# a swap" happens on the command's type, before its outcome is known, which is
-# exactly why a *failed* member of this set still discards whatever else was
-# queued behind it in the same batch (see `_pipelined_negative`).
+# Mirrors `server_core._SESSION_SWAP_COMMANDS`. Membership goes by command type, so
+# even a refused swap discards what was queued behind it.
 _SESSION_SWAP_COMMANDS = frozenset({"open_shot", "reset_session"})
 
 
@@ -186,7 +129,7 @@ class _Counted:
 
 def _no_epoch_move(before: int, response: dict, label: str) -> None:
     """
-    Assert a response carries the same epoch it started with (Step 4b).
+    Assert a response carries the same epoch it started with.
 
     Args:
         before: The epoch read immediately before the call.
@@ -200,7 +143,7 @@ def _no_epoch_move(before: int, response: dict, label: str) -> None:
 
 def _step_reset_and_open(counted: _Counted, shot: Path) -> int:
     """
-    Start empty, open the shot, and prove the connection still works after it (Steps 2-3).
+    Start empty, open the shot, and prove the connection still works after it.
 
     Args:
         counted: The counting wrapper around the rig.
@@ -229,7 +172,7 @@ def _step_reset_and_open(counted: _Counted, shot: Path) -> int:
 
 def _step_handshake(counted: _Counted, epoch: int, shot: Path) -> None:
     """
-    Step 4: cross-check `get_addon_info` and `get_session_info`.
+    Cross-check `get_addon_info` and `get_session_info`.
 
     Args:
         counted: The counting wrapper around the rig.
@@ -248,7 +191,7 @@ def _step_handshake(counted: _Counted, epoch: int, shot: Path) -> None:
 
 def _step_link(counted: _Counted, epoch: int, canon: Path) -> dict[str, object]:
     """
-    Step 5: link the canon collection and confirm it in `list_libraries`.
+    Link the canon collection and confirm it in `list_libraries`.
 
     Args:
         counted: The counting wrapper around the rig.
@@ -288,12 +231,12 @@ def _step_link(counted: _Counted, epoch: int, canon: Path) -> dict[str, object]:
 
 def _step_override(counted: _Counted, epoch: int, collection_uid: object) -> None:
     """
-    Step 6: override the linked collection (Route C) and check one object by uid.
+    Override the linked collection and check one object by uid.
 
     Args:
         counted: The counting wrapper around the rig.
         epoch: The epoch, which overriding must not move.
-        collection_uid: The linked collection's session_uid, from Step 5.
+        collection_uid: The linked collection's session_uid, from `_step_link`.
 
     """
     override = counted.send("create_override", {"collection_uid": collection_uid})
@@ -316,17 +259,11 @@ def _step_override(counted: _Counted, epoch: int, collection_uid: object) -> Non
 
 def _step_save(counted: _Counted, epoch: int, target: Path, canon: Path) -> None:
     """
-    Step 7: save to a new path, uncompressed and un-remapped, with the epoch unmoved.
+    Save to a new path, uncompressed and un-remapped, with the epoch unmoved.
 
-    Asserts the **kwargs the call actually reported**, not just the outcome:
-    `relative_remap=False` and `compress=False` in `save_shot`'s own result,
-    plus a direct on-disk check that the canon library's absolute path was
-    written verbatim. The two are not redundant. For an absolute library link,
-    `relative_remap=True` still leaves `Library.filepath` absolute (measured)
-    and Step 9's `list_libraries` reports the same reduced leaf name either
-    way, so a `list_libraries` comparison alone cannot tell a correct call from
-    one that silently inherited `relative_remap`'s `True` default - only
-    reading the byte written to disk can.
+    Also reads the saved bytes for the canon's absolute path. `relative_remap=True`
+    leaves the in-memory `Library.filepath` absolute and `list_libraries` reports it
+    the same either way, so only the file shows whether the path was remapped.
 
     Args:
         counted: The counting wrapper around the rig.
@@ -360,11 +297,11 @@ def _step_save(counted: _Counted, epoch: int, target: Path, canon: Path) -> None
 
 def _step_reopen(counted: _Counted, epoch_before_save: int, target: Path) -> int:
     """
-    Step 8: reopen the saved file.
+    Reopen the saved file.
 
     Args:
         counted: The counting wrapper around the rig.
-        epoch_before_save: The epoch from before Step 7's save.
+        epoch_before_save: The epoch from before `_step_save`.
         target: The saved file to reopen.
 
     Returns:
@@ -384,7 +321,7 @@ def _step_reopen(counted: _Counted, epoch_before_save: int, target: Path) -> int
 
 def _step_assert_link_survived(counted: _Counted, epoch: int, link: dict[str, object]) -> None:
     """
-    Step 9: the link and the override must both have survived the round trip.
+    Assert the link and the override both survived the save/reopen round trip.
 
     Args:
         counted: The counting wrapper around the rig.
@@ -393,9 +330,7 @@ def _step_assert_link_survived(counted: _Counted, epoch: int, link: dict[str, ob
 
     """
     listing = counted.send("list_libraries")["result"]
-    # Filtering by the exact filepath recorded at Step 5 *is* the byte-identical
-    # comparison criterion 2 asks for; a further `==` on the same field would
-    # only restate what the filter already required to reach this line.
+    # This filter is already the exact filepath comparison.
     matches = [lib for lib in listing["libraries"] if lib["filepath"] == link["library_filepath"]]
     assert len(matches) == 1, f"expected exactly one library with filepath {link['library_filepath']!r}: {matches}"
     reopened_library = matches[0]
@@ -421,26 +356,13 @@ def _pipelined_negative(
     counted: _Counted, port: int, request_id: str, command_type: str, params: dict
 ) -> tuple[dict, dict]:
     """
-    Pipeline one command expected to fail behind a `ping`, on a single connection.
+    Pipeline one command expected to fail, then a `ping`, on a single connection.
 
-    Proves criterion 3's "a connection that still works afterwards" directly:
-    the `ping` is read back on the *same socket* the bad command was refused
-    on, not on a fresh one `rig.send` would open.
-
-    Whether the trailing `ping` is answered *normally* depends on `command_type`.
-    `server_core._run_session_swap`'s own docstring: "**A refused swap discards
-    the queue too.** ... an `open_shot` that its own validation refuses (before
-    `load_pre`, nothing loaded) still answers every command queued behind it
-    ... with a rejection" (recorded there as a Task 6 backlog item, not a bug).
-    `open_shot` and `reset_session` are `_SESSION_SWAP_COMMANDS`; classification
-    happens on the command's *type*, before its outcome is known, so a failed
-    `open_shot` discards the ping exactly as a successful one would. `save_shot`
-    is not a member, so a failed `save_shot` answers a queued ping normally.
-    Either way the ping gets back a real frame - a barrier discard or a pong -
-    which is what proves this connection did not hang or drop. Which shape to
-    check for is derived from `command_type` against `_SESSION_SWAP_COMMANDS`
-    above, not passed in, so it cannot say one thing while the request sent
-    says another.
+    The ping is read back on the socket that saw the refusal, so any frame there
+    shows the connection neither hung nor dropped. A swap command discards what is
+    queued behind it even when refused, so the ping expects a barrier discard after
+    one and a pong otherwise. That expectation is derived from `command_type`, so it
+    cannot disagree with the request sent.
 
     Args:
         counted: The counting wrapper around the rig.
@@ -515,14 +437,13 @@ def _negative_unconfirmed_overwrite(counted: _Counted, port: int, epoch: int, ta
     """
     Negative case: saving over an existing file without `confirm_overwrite`.
 
-    `save_shot` is not a `_SESSION_SWAP_COMMANDS` member, so unlike the two
-    cases above, the trailing ping here is expected to run normally.
+    `save_shot` is not a swap command, so the trailing ping runs normally.
 
     Args:
         counted: The counting wrapper around the rig.
         port: The addon's socket port.
         epoch: The epoch, which a refusal must not move.
-        target: The already-saved file from Step 7, whose bytes must survive untouched.
+        target: The file `_step_save` wrote, whose bytes must survive untouched.
 
     """
     before = target.read_bytes()
@@ -541,7 +462,7 @@ def _negative_unconfirmed_overwrite(counted: _Counted, port: int, epoch: int, ta
 
 def _negative_compressed_open_succeeds(counted: _Counted, epoch: int, compressed: Path) -> int:
     """
-    Negative-in-name-only case: a compressed `.blend` must be *accepted* by `open_shot`.
+    Check that `open_shot` accepts a compressed `.blend`; negative in name only.
 
     Args:
         counted: The counting wrapper around the rig.
@@ -562,13 +483,13 @@ def _negative_compressed_open_succeeds(counted: _Counted, epoch: int, compressed
 
 def _negative_queued_behind_open_shot(counted: _Counted, port: int, epoch: int, shot: Path) -> int:
     """
-    Negative case: a command queued behind an `open_shot` must be cleanly discarded, not run.
+    Negative case: a command queued behind an `open_shot` is discarded, not run.
 
     Args:
         counted: The counting wrapper around the rig.
         port: The addon's socket port.
         epoch: The epoch before the pipelined swap.
-        shot: A file to swap to, so this case does not depend on Step 3's shot still being current.
+        shot: A file to swap to, so this case does not depend on which file is open.
 
     Returns:
         int: The epoch after the swap.
@@ -631,8 +552,7 @@ def run(rig: Rig) -> None:
     _step_assert_link_survived(counted, epoch, link)
     print("RIG: phase-2 gate scenario (steps 1-10) passed", flush=True)
 
-    # Step 4 / 4b: negative cases, run after the gate itself so none of them
-    # can perturb the sequence above.
+    # After the gate, so no negative case can disturb its sequence.
     _negative_missing_file(counted, port, epoch, rig.work_dir)
     _negative_outside_roots(counted, port, epoch)
     _negative_unconfirmed_overwrite(counted, port, epoch, target)

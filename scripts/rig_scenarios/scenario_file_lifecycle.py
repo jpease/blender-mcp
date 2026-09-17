@@ -1,7 +1,7 @@
 r"""
-Drive the real `open_shot`, `save_shot` and `reset_session` over the socket of a live GUI Blender (plan Task 6 Step 6).
+Drive the real `open_shot`, `save_shot` and `reset_session` over the socket of a live GUI Blender.
 
-Run it with a fixture, from the repository root::
+From the repository root::
 
     /opt/homebrew/bin/blender --background --factory-startup \
         --python scripts/rig_scenarios/make_fixture.py -- <work>/fixture.blend
@@ -10,31 +10,25 @@ Run it with a fixture, from the repository root::
         --scenario scripts/rig_scenarios/scenario_file_lifecycle.py \
         --blend fixture=<work>/fixture.blend
 
-No `--blender-script`: unlike `scenario_file_swap_barrier.py`, nothing is grafted
-onto the addon, so every command here is production's own handler. The rig sets
-`BLENDERMCP_OUTPUT_ROOTS` to the work dir, so the file roots are **enforced**
-for this run (asserted from the handshake).
+No `--blender-script`, so every command runs production's own handler. The rig sets
+`BLENDERMCP_OUTPUT_ROOTS` to the work dir, so file roots are enforced.
 
-Rounds, each asserted:
+Rounds:
 
-1. The handshake advertises all three commands **and** `get_session_info`.
-2. Refusals, each with the epoch unchanged and a client-safe message: a
+1. The handshake advertises the three commands and `get_session_info`.
+2. Refusals that leave the epoch unchanged with a client-safe message: a
    `use_scripts` parameter, a path outside the roots, a `//` path in an unsaved
-   session, and unsaved work without `discard_unsaved` (the session is made
-   dirty by a real `create_primitive` - under `--background` `is_dirty` never
-   becomes True, which is why this half needs the GUI).
-3. A **queued** `open_shot` pipelined as `[get_session_info, open_shot, ping]`
-   down one connection: the swap answers success after the load (TASK_STATE
-   decision 11), the epoch moves exactly once, and the `ping` behind it is
-   answered by Task 3's barrier rather than run.
-4. `save_shot` to a new path (header `BLENDER`, not compressed; `is_dirty` False
-   afterwards), refused over that same file without `confirm_overwrite` with
-   its bytes unchanged, refused in place without confirmation, then accepted.
-5. `[save_shot, set_object_transform]` pipelined in one connection, then
-   `open_shot` of the same file without `discard_unsaved`: refused, because the
-   edit is still unsaved work.
-6. `reset_session` refused without `confirm`, then run: the epoch moves once,
-   the scene is empty, and the addon is still serving (`ping`, capabilities).
+   session, and unsaved work without `discard_unsaved`. Needs the GUI: under
+   `--background` `is_dirty` never becomes True.
+3. `[get_session_info, open_shot, ping]` pipelined on one connection: the swap
+   succeeds, the epoch moves once, and the barrier rejects the `ping`.
+4. `save_shot` to a new path writes an uncompressed file and clears `is_dirty`;
+   overwrites without `confirm_overwrite` are refused with the bytes unchanged;
+   a confirmed in-place save succeeds.
+5. `[save_shot, set_object_transform]` pipelined, then `open_shot` without
+   `discard_unsaved` is refused, because the edit is still unsaved.
+6. `reset_session` is refused without `confirm`, then runs: the epoch moves once,
+   the scene is empty, and the addon still serves.
 
 Fails by raising; a clean return is a pass.
 """
@@ -50,8 +44,7 @@ _BARRIER_PATH = Path(__file__).resolve().parent / "scenario_file_swap_barrier.py
 _BARRIER_SPEC = importlib.util.spec_from_file_location("scenario_file_swap_barrier_shared", _BARRIER_PATH)
 if _BARRIER_SPEC is None or _BARRIER_SPEC.loader is None:
     raise SystemExit(f"{_BARRIER_PATH} is not loadable - this scenario was copied out of the repository")
-# The pipelining, frame-reading and client-safety helpers are that scenario's,
-# reused rather than copied so the two transcripts are judged by one rule.
+# Shared, not copied, so both scenarios judge client safety by one rule.
 barrier = importlib.util.module_from_spec(_BARRIER_SPEC)
 _BARRIER_SPEC.loader.exec_module(barrier)
 
@@ -189,11 +182,10 @@ def _save_then_edit_round(rig: Rig, port: int, epoch: int) -> None:
     """
     Pipeline a save and an edit into one connection, then check the edit is still protected.
 
-    Blender clears the dirty flag when it processes the save's notifier, after the
-    drain tick. An edit run in the same tick as the save was therefore marked dirty
-    and then silently un-marked, and a later `open_shot` without `discard_unsaved`
-    destroyed it (cycle-1 critic, reproduced live). The drain loop now ends its
-    tick after `save_shot`, so the edit runs after the clear.
+    Blender clears the dirty flag after the drain tick that ran the save. An edit in
+    that same tick would lose its dirty flag, and `open_shot` without
+    `discard_unsaved` would then discard it. The drain loop ends its tick after
+    `save_shot`, so the edit runs after the clear.
 
     Args:
         rig: The rig.
@@ -221,7 +213,7 @@ def _save_then_edit_round(rig: Rig, port: int, epoch: int) -> None:
 
 def _reset_round(rig: Rig, epoch: int) -> None:
     """
-    Refuse an unconfirmed reset, run a confirmed one, and prove the addon survived it.
+    Refuse an unconfirmed reset, run a confirmed one, and check the addon still serves.
 
     Args:
         rig: The rig.

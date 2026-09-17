@@ -1,51 +1,40 @@
 """
-Prove every test added by Phase 2 fails once the thing it names is broken.
+Check that each test this matrix tracks fails once the behaviour it names is reverted.
 
-Task 1 built this and owns most of its rows; later tasks add rows for the nodes
-they add to the files listed in NEW_TEST_FILES, because the coverage check below
-reports an uncovered node as a gap rather than ignoring it.
+A test that still passes with its fix reverted is a critical failure here. Per-file
+evidence hides one, because a sibling failing in the same file looks like the revert
+was caught, so each row names the exact node ids it expects to fail and runs only those.
 
-**Why this exists in the repository rather than in a session scratchpad.** The
-phase's rubric makes "a test that still passes with its fix reverted" an
-automatic critical failure, and four such tests were found in this task alone.
-Three of the four hid the same way: the evidence was gathered per *file* rather
-than per *test node*, so a sibling assertion failing in the same file read as
-"the revert was caught". Every row below therefore names the exact node ids it
-expects to fail, and only those nodes are run.
+Usage::
 
-**How to run it:**
+    .venv/bin/python scripts/revert_matrix.py                # run the whole matrix
+    .venv/bin/python scripts/revert_matrix.py --list         # print the coverage map
+    .venv/bin/python scripts/revert_matrix.py --only linking # rows whose label contains it
 
-    .venv/bin/python scripts/revert_matrix.py           # run the whole matrix
-    .venv/bin/python scripts/revert_matrix.py --list    # print the coverage map
-    .venv/bin/python scripts/revert_matrix.py --only R2 # rows whose label matches
+Every label starts with the area it guards, and `--only` matches that prefix as a
+substring, so the prefix is how a group of rows is selected: `session:`, `barrier:`,
+`handshake:`, `rehandshake:`, `text hygiene:`, `transaction:`, `file paths:`,
+`file roots:`, `file lifecycle:`, `save_shot`'s `create_directories:`, `linking:`,
+`candidates:`, `object lookup:`, `polyhaven:`, `output_roots:`, `get_addon_status:`,
+`server tools:`, `server instructions:`, `transport:`, `rig:`, `docker:`,
+`entrypoint:`, `quiet box:` and `boundary:`. A `... control:` row is the deliberate
+opposite of its neighbour: it proves the same node also notices over-enforcement.
 
-Each row edits one file in place, runs only its own node ids, and restores the
-file in a `finally`. It must be run on a clean tree: a crash between the edit
-and the restore leaves a modified working copy, so check `git status` after.
-It edits `scripts/blender_rig.py`, the addon, the Docker files and
-`pyproject.toml`, so nothing else may be running against the checkout at the
-time.
+Each row edits one file in place, runs its nodes, and restores the file in a
+`finally`. Rows edit files under `src/`, `scripts/`, `tests/` and `docker/`, and
+`pyproject.toml`: start from a clean tree, run nothing else against the checkout
+meanwhile, and check `git status` afterwards in case a crash skipped a restore.
 
-**Running it from a copy of the repository silently credits itself.** A first
-matrix run in a plain `cp -a` copy produced **39 false survivors**: `.venv` is
-an editable install whose `.pth` file points at the *original* `src`, so every
-revert this harness wrote under `src/blender_mcp/server/` or
-`addon_manager.py` was written to the copy and imported from the original. The
-reverted code was never executed, the tests passed, and each row was recorded
-as "the fix is not falsifiable". Set `PYTHONPATH` to the copy's own `src`,
-which precedes `.pth` entries on `sys.path`::
+A row prints `FAILS as required` when all its nodes fail, and is listed as a SURVIVOR
+otherwise. A node collected from NEW_TEST_FILES or listed in
+NEW_NODES_IN_EXISTING_FILES is UNCOVERED unless a row names it or
+NOT_INDIVIDUALLY_FALSIFIABLE gives a reason. The exit status is 0 only with neither.
+
+In a copy of the repository, `.venv`'s editable install still imports the original
+`src`, so reverts to the package never run and their rows falsely survive. Put the
+copy's `src` first::
 
     PYTHONPATH=<copy>/src .venv/bin/python scripts/revert_matrix.py
-
-This is the same class of false credit as the `__pycache__` staleness bug this
-harness already guards against: the harness measures something real, just not
-the thing it names. Running from the repository root needs no `PYTHONPATH`.
-
-**Coverage is checked, not assumed.** `--list` (and every run) compares the
-nodes named here against the nodes pytest actually collects in the five test
-files this task added, plus the two tests it added to
-`tests/test_addon_manager.py`. A node that is neither covered by a row nor
-listed in `NOT_INDIVIDUALLY_FALSIFIABLE`, with a reason, is reported as a gap.
 """
 
 import argparse
@@ -56,10 +45,8 @@ import sys
 
 from dataclasses import dataclass, field
 
-# `scripts/` is sys.path[0] when this is run as `python scripts/revert_matrix.py`, which is
-# the only supported way to run it (see the PYTHONPATH note above). Nothing imports this
-# module, so a plain import is safe here; a consumer loaded by path uses
-# `quiet_box.load_quiet_box` instead.
+# Importable because `scripts/` is sys.path[0] when this file or `check_revert_anchors.py`
+# runs as a script. Code outside `scripts/` uses `quiet_box.load_quiet_box`.
 import quiet_box
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -78,9 +65,9 @@ ADDON_TEXT_HYGIENE = ROOT / "src/blender_mcp/bundled/addon/text_hygiene.py"
 SERVER_TEXT_HYGIENE = ROOT / "src/blender_mcp/text_hygiene.py"
 ADDON_FILE_LIFECYCLE = ROOT / "src/blender_mcp/bundled/addon/handlers/file_lifecycle.py"
 ADDON_LINKING = ROOT / "src/blender_mcp/bundled/addon/handlers/linking.py"
-# Task 9: server-side tool wrappers and their registration/documentation surface.
+# Server-side tool wrappers and their registration/documentation surface.
 SERVER_FILE_LIFECYCLE_TOOL = ROOT / "src/blender_mcp/server/tools/file_lifecycle.py"
-# Post-Phase-2: `save_shot.create_directories` and name resolution after a library override.
+# `save_shot.create_directories` and name resolution after a library override.
 ADDON_OBJECT_LOOKUP = ROOT / "src/blender_mcp/bundled/addon/object_lookup.py"
 ADDON_CANDIDATES = ROOT / "src/blender_mcp/bundled/addon/candidates.py"
 SERVER_APP = ROOT / "src/blender_mcp/server/app.py"
@@ -102,9 +89,8 @@ ENTRYPOINT = ROOT / "docker/blender/entrypoint.sh"
 HEALTHCHECK = ROOT / "docker/blender/healthcheck.py"
 DOCKER_START = ROOT / "docker/blender/start_server.py"
 
-# The two parametrized node-id prefixes Task 3 cycle 3 added. Named because
-# the ids carry the parameter text verbatim and the rows would otherwise be
-# unreadably long lines.
+# Short names for the test files rows cite. Node ids carry parameter text
+# verbatim, so the rows would otherwise be unreadably long lines.
 RIGT = "tests/test_blender_rig.py"
 DOCKT = "tests/test_docker_rig.py"
 ROOTST = "tests/test_output_roots.py"
@@ -114,8 +100,8 @@ FLT = "tests/test_file_lifecycle_handlers.py"
 LKT = "tests/test_linking_handlers.py"
 CORET = "tests/server/tools/test_core.py"
 CLIT = "tests/server/test_cli_transport.py"
-# Task 9's server-side tool wrapper tests. Named distinctly from FLT (the addon/bpy-level
-# handler tests Task 6 added) -- same subject, different layer.
+# Server-side tool wrapper tests. Named apart from FLT (the addon/bpy-level handler
+# tests): same subject, different layer.
 SFLT = "tests/server/tools/test_file_lifecycle.py"
 BUNT = "tests/server/test_bundles.py"
 OLT = "tests/test_object_lookup.py"
@@ -123,8 +109,7 @@ CANDT = "tests/test_candidates.py"
 SIT = "tests/server/test_server_instructions.py"
 SOIT = "tests/server/tools/test_scene_object_inspection.py"
 AMT = "tests/test_addon_manager.py"
-# Named because the node id plus its parameter is one character past the line
-# limit inline, and splitting the f-string is what `ruff format` joins back.
+# Named because inline it passes the line limit, and `ruff format` rejoins a split f-string.
 _LIST_SCALAR = "test_a_string_where_a_list_belongs_is_not_iterated_character_by_character"
 SESSIONT = "tests/test_session_state.py"
 TSWAPT = "tests/test_transaction_session_swap.py"
@@ -133,9 +118,8 @@ QBT = "tests/test_quiet_box.py"
 THREADT = "tests/server/test_threading.py"
 CONNT = "tests/server/test_connection_framing.py"
 HOSTILE_LIB = f"{SESSIONT}::test_a_hostile_library_path_is_reduced_the_same_way_a_failure_note_is"
-# The `name` half of the same table, parametrized with short ids on purpose:
-# a row has to name the nodes it expects to fail, and the `filepath` half's
-# 500-character ids are unreadable in one.
+# The `name` half of the same table, with short ids so a row can list its nodes; the
+# `filepath` half's ids run to hundreds of characters.
 HOSTILE_LIB_NAME = f"{SESSIONT}::test_a_hostile_library_name_is_reduced_to_a_leaf_like_the_filepath_is"
 HOSTILE_LIB_NAME_IDS = (
     "traversal out of the shot",
@@ -156,30 +140,25 @@ HOSTILE_LIB_NAME_IDS = (
     "name is a Windows path",
 )
 EVASION = f"{THREADT}::test_the_producer_scan_catches_every_shape_that_evaded_it"
-# Named because the full node id is one character past the line limit inline.
+# Named because inline the node id passes the line limit.
 NFKC_BACKSLASH_LIB = (
     f"{HOSTILE_LIB}[nfkc-backslash (U+FE68)-//..\\ufe68..\\ufe68clients\\ufe68acme\\ufe68canon.blend-forbidden8]"
 )
 
-# The files added outright by a Phase 2 task; every node they collect must be
-# accounted for. Task 1 added the first five; Task 3 added `test_session_state.py`;
-# Task 5 added the next two; Task 6 added `FLT`; Task 7 added the last.
+# Test files this matrix owns outright: every node they collect must be accounted for.
 NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, PHT, FLT, LKT, SFLT, OLT, CANDT, SIT)
-# Nodes added to files that already existed. **Not optional bookkeeping:**
-# `coverage_gaps()` subtracts the rows below from *this* universe, so a task that
-# adds nodes here without listing them gets a "0 uncovered" that is true of the
-# files the matrix knows about and vacuous as a claim about the task - which is
-# precisely the blind spot this harness was built to prevent. Task 1 added the
-# first two; the rest are Task 3's.
+# Nodes in files the matrix does not own. `coverage_gaps()` sees only these and the nodes
+# collected from NEW_TEST_FILES, so a node left off this list is never checked.
 NEW_NODES_IN_EXISTING_FILES = (
-    # --- Post-Phase-2: which object a name shared with an override resolves to ---
+    # --- which object a name shared with an override resolves to ---
     f"{SOIT}::test_the_transaction_snapshots_the_same_object_the_handler_mutates_after_an_override",
     f"{SOIT}::test_an_ambiguous_target_name_is_skipped_rather_than_raising_out_of_the_snapshot",
     f"{SOIT}::test_object_name_lookups_resolve_to_the_override_even_when_the_linked_original_is_listed_first",
     f"{SOIT}::test_get_object_info_says_whether_it_resolved_an_override_or_a_linked_object",
+    # --- the handshake carries the writable output roots ---
     f"{AMT}::test_handshake_surfaces_writable_output_roots",
     f"{AMT}::test_handshake_defaults_writable_output_roots_when_the_addon_omits_them",
-    # --- Task 3: the handshake carries the session ---
+    # --- the handshake carries the session ---
     f"{AMT}::test_handshake_surfaces_the_session_epoch_and_the_open_file",
     f"{AMT}::test_handshake_defaults_the_session_fields_when_the_addon_omits_them",
     *(
@@ -192,14 +171,14 @@ NEW_NODES_IN_EXISTING_FILES = (
         f"{AMT}::test_handshake_refuses_a_session_id_that_is_not_a_string[{case}]"
         for case in ("dict", "list", "int", "bool", "float")
     ),
-    # --- Task 3 cycle 5: the triaged repair round ---
+    # --- bounded rejection, aborts around the swap, and a refresh that stops retrying ---
     f"{THREADT}::test_rejecting_a_full_queue_to_distinct_stalled_peers_is_bounded",
     f"{THREADT}::test_an_abort_during_the_pre_swap_drain_answers_the_swaps_own_client",
     f"{THREADT}::test_an_abort_before_the_swap_is_dispatched_does_not_claim_the_database_is_half_replaced",
     f"{THREADT}::test_a_failed_load_then_an_abort_does_not_claim_a_known_clean_database_is_half_replaced",
     f"{THREADT}::test_a_second_identical_failure_then_an_abort_is_still_not_indeterminate",
     f"{CONNT}::test_a_refresh_that_learns_a_newer_session_than_the_one_observed_stops_retrying",
-    # --- Task 3: the barrier, the stamp, and the liveness bounds ---
+    # --- the barrier, the stamp, and the liveness bounds ---
     f"{THREADT}::test_a_swap_is_the_last_command_its_tick_executes",
     f"{THREADT}::test_a_failed_swap_also_discards_the_commands_queued_behind_it",
     f"{THREADT}::test_the_barrier_message_names_the_epoch_without_claiming_it_moved",
@@ -222,7 +201,7 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{THREADT}::test_the_open_mainfile_stub_takes_use_scripts_the_way_production_passes_it",
     f"{THREADT}::test_an_escaping_exception_hands_the_drain_loop_to_a_fresh_timer",
     f"{THREADT}::test_a_stopped_server_does_not_resurrect_its_drain_timer",
-    # --- Task 3: the epoch made actionable on the client side ---
+    # --- the epoch made actionable on the client side ---
     f"{CONNT}::test_an_unchanged_session_marker_does_not_invalidate_the_cached_handshake",
     f"{CONNT}::test_a_moved_epoch_marks_the_cached_handshake_stale",
     f"{CONNT}::test_a_restarted_addon_at_the_same_epoch_still_marks_the_handshake_stale",
@@ -230,7 +209,7 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{CONNT}::test_a_response_carrying_no_marker_changes_nothing",
     f"{CONNT}::test_the_command_gate_reads_the_refreshed_capability_set",
     f"{CONNT}::test_a_barrier_rejection_read_off_the_socket_marks_the_handshake_stale",
-    # --- Task 3 cycle 3: liveness, the fail-closed stamp, and the abort path ---
+    # --- liveness, the fail-closed stamp, and the abort path ---
     f"{THREADT}::test_a_healthy_peer_queued_behind_stalled_ones_is_still_answered",
     f"{THREADT}::test_a_peer_slower_than_a_loopback_reader_is_not_destroyed_for_it",
     f"{THREADT}::test_a_malformed_frame_arriving_mid_rejection_cannot_park_the_main_thread",
@@ -250,12 +229,12 @@ NEW_NODES_IN_EXISTING_FILES = (
             "helper takes the queue-def sneak(target, item):\\n    target.put_nowait(item)\\n",
         )
     ),
-    # --- Task 3 cycle 3: the client-side reaction, made non-amplifying ---
+    # --- the client-side reaction, made non-amplifying ---
     f"{CONNT}::test_an_ordinary_commands_result_cannot_trip_a_re_handshake",
     f"{CONNT}::test_a_non_conforming_epoch_does_not_re_arm_the_flag_forever",
     f"{CONNT}::test_one_swap_costs_exactly_one_re_handshake_over_a_real_round_trip",
     f"{CONNT}::test_a_refresh_that_fails_leaves_the_staleness_signal_standing",
-    # --- Task 3 structural pass: the server boundary, the latch, the send floor ---
+    # --- the server boundary, the latch, the send floor ---
     f"{AMT}::test_the_handshake_strips_control_characters_from_the_session_id",
     f"{AMT}::test_the_handshake_strips_control_characters_from_the_reported_filepath",
     f"{AMT}::test_a_session_id_that_is_nothing_but_control_characters_is_absent_not_empty",
@@ -267,7 +246,7 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{THREADT}::test_an_abort_after_a_completed_load_does_not_bump_the_marker_twice",
     f"{THREADT}::test_the_past_budget_send_never_takes_the_socket_out_of_timeout_mode",
     f"{THREADT}::test_a_peer_whose_recv_reports_would_block_is_not_disconnected",
-    # --- Task 3 gate round: the whole handshake constructor, and load_pre -----
+    # --- the whole handshake constructor, and load_pre ---
     *(
         f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[{field}]"
         for field in (
@@ -294,25 +273,23 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{THREADT}::test_an_abort_in_the_swaps_prologue_still_answers_the_swaps_own_client",
     f"{THREADT}::test_a_swap_that_answers_normally_is_not_answered_a_second_time_by_the_guard",
     f"{THREADT}::test_a_second_abort_that_began_no_load_does_not_bump_the_marker_again",
-    # --- Task 4: the Step 1 / 1b reproductions, kept as regression guards ---
+    # --- a file swap and a library reload under a transaction, kept as regression guards ---
     f"{MUTT}::test_regression_guard_a_transaction_unaware_of_a_file_swap_removes_the_whole_new_file",
     f"{MUTT}::test_regression_guard_a_transaction_unaware_of_a_library_reload_removes_the_reloaded_contents",
-    # --- Task 5: the file path policy crosses the handshake ---
+    # --- the file path policy crosses the handshake ---
     f"{AMT}::test_handshake_surfaces_the_file_path_policy",
     f"{AMT}::test_handshake_reads_an_addon_that_omits_the_file_path_policy_as_permissive",
     f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[file_roots]",
     f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[file_roots_enforced]",
     f"{AMT}::test_a_hostile_element_inside_a_list_field_is_dropped_not_published[file_roots]",
-    # --- Task 9: file_lifecycle joins core, and the ten tools' hints/prose ---
+    # --- file_lifecycle joins core, and the ten tools' hints/prose ---
     f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",
     f"{BUNT}::test_file_lifecycle_tools_are_exactly_ten_and_reachable_from_shot_and_asset",
     f"{BUNT}::test_file_lifecycle_tools_advertise_correct_hints",
     f"{BUNT}::test_file_lifecycle_tools_blend_file_prose_is_correct",
 )
 
-# Nodes no single revert can break on their own, with the reason. Keeping these
-# named is the point: an omission reads as coverage, which is the defect this
-# harness was extended to stop.
+# Nodes no single revert can break, each with the reason, so the gap check skips them.
 _DOUBLE_DEFENDED = (
     "two independent defences produce the same client-visible outcome here, so no single revert can falsify "
     "it. `strip_unsafe` removes the character, and `_is_admissible_leaf` refuses a leaf that still carries "
@@ -361,11 +338,8 @@ NOT_INDIVIDUALLY_FALSIFIABLE: dict[str, str] = {
         _ROOTED_TWICE
     ),
     "tests/test_session_state.py::test_a_published_link_is_never_an_absolute_path": _ROOTED_TWICE,
-    # These three characterise code this repository does not own, which is the
-    # point of them: they are what make the security claims in `cli.py`'s
-    # docstrings falsifiable instead of asserted. No edit to `cli.py` can move
-    # them, so a revert row would be theatre. Recorded here with a reason
-    # rather than left as a silent gap.
+    # These three pin behaviour outside this repository that `cli.py`'s docstrings rely
+    # on. No edit to `cli.py` can move them, so a revert row would prove nothing.
     "tests/server/test_cli_transport.py::test_a_remote_host_header_is_refused_by_the_running_app": (
         "characterises FastMCP's TransportSecurityMiddleware, not this repo's code: it pins the 421 that "
         "_serve_http's docstring cites. It fails if `mcp` changes or `app.py` stops configuring transport "
@@ -390,7 +364,7 @@ class Revert:
     One reverted behaviour and the test nodes that must notice.
 
     Attributes:
-        label: Human-readable description of what is being undone.
+        label: What is being undone, behind the prefix naming the area it guards.
         path: File to edit.
         old: Text to replace; None means "append `new`", creating the file if needed.
         new: Replacement text.
@@ -407,13 +381,9 @@ class Revert:
     also: str = ""
 
 
-# Appended by the library-name revert. The production import of
-# `client_safe_text` was removed when `name` was routed through
-# `client_safe_leaf`, so reverting the call site alone would raise `NameError`
-# and the row would be credited for the wrong reason - the defect class
-# `check_revert_anchors.py` exists to catch. This restores the reverted
-# behaviour without restoring the import statement, which a single-anchor row
-# cannot reach.
+# Appended by the library-name revert. The helper imports `client_safe_text` itself: a
+# row has one anchor and cannot add an import, and a missing one would fail the test
+# with `NameError` instead of the reverted behaviour.
 REVERTED_LIBRARY_NAME = '''
 
 def _reverted_unallowlisted_name(value: object) -> str:
@@ -453,11 +423,9 @@ def _bare_connect(port: int) -> bool:
         return False
 '''
 
-# Appended by the two canonicalization rows. Task 5's cycle-1 repair added a
-# device/inode containment check for case-folding volumes, which independently
-# accepts the positive "root through a symlink" and "trailing separator" cases,
-# so reverting canonicalization alone leaves those nodes passing (measured). The
-# redefinition disables that second defence alongside the reverted one.
+# Appended by the two canonicalization rows. `_has_ancestor_directory`'s device/inode
+# check also accepts the symlinked-root and trailing-separator cases, so reverting
+# canonicalization alone would leave those nodes passing; this disables it too.
 NO_SAME_DIRECTORY_FALLBACK = """
 
 def _has_ancestor_directory(candidate, root):
@@ -467,42 +435,42 @@ def _has_ancestor_directory(candidate, root):
 REVERTS: list[Revert] = [
     # --- which Blender, and which configuration, the rig launches ---
     Revert(
-        "A: --factory-startup dropped from the launch",
+        "rig: --factory-startup dropped from the launch",
         RIG,
         '    command = [str(_BLENDER), "--factory-startup", "--python", str(bootstrap)]',
         '    command = [str(_BLENDER), "--python", str(bootstrap)]',
         (f"{RIGT}::test_blender_is_launched_with_factory_startup",),
     ),
     Revert(
-        "R3: only BLENDER_USER_SCRIPTS is set",
+        "rig: only BLENDER_USER_SCRIPTS is set",
         RIG,
         '        "BLENDER_USER_RESOURCES": str(work_dir),\n',
         "",
         (f"{RIGT}::test_both_blender_user_resource_roots_point_at_the_work_dir",),
     ),
     Revert(
-        "R5: the launched Blender's output roots left unscoped",
+        "rig: the launched Blender's output roots left unscoped",
         RIG,
         '        "BLENDERMCP_OUTPUT_ROOTS": str(work_dir),\n',
         "",
         (f"{RIGT}::test_the_launched_blender_is_pointed_at_the_work_dir_first",),
     ),
     Revert(
-        "B2: TMPDIR left at the user's own, so bpy.app.tempdir escapes the work dir",
+        "rig: TMPDIR left at the user's own, so bpy.app.tempdir escapes the work dir",
         RIG,
         '        "TMPDIR": str(work_dir / "tmp"),\n',
         "",
         (f"{RIGT}::test_blender_s_session_temp_dir_is_redirected_under_the_work_dir",),
     ),
     Revert(
-        "R8: PYTHONPATH no longer pruned from the child environment",
+        "rig: PYTHONPATH no longer pruned from the child environment",
         RIG,
         '_PRUNED_ENVIRONMENT_NAMES = frozenset({"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"})',
         '_PRUNED_ENVIRONMENT_NAMES = frozenset({"PYTHONHOME", "PYTHONSTARTUP"})',
         (f"{RIGT}::test_an_inherited_pythonpath_cannot_shadow_the_staged_addon",),
     ),
     Revert(
-        "C2: the prune narrowed back to BLENDER_USER_, so BLENDER_SYSTEM_* survives",
+        "rig: the prune narrowed back to BLENDER_USER_, so BLENDER_SYSTEM_* survives",
         RIG,
         '_PRUNED_ENVIRONMENT_PREFIXES = ("BLENDER",)\n'
         '_PRUNED_ENVIRONMENT_NAMES = frozenset({"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"})',
@@ -512,7 +480,7 @@ REVERTS: list[Revert] = [
     ),
     # --- which process answers the port ---
     Revert(
-        "R1b: the preflight no longer refuses an occupied port",
+        "rig: the preflight no longer refuses an occupied port",
         RIG,
         '    try:\n        with socket.create_connection(("127.0.0.1", port), timeout=1.0):\n'
         "            pass\n    except OSError:\n        return\n    raise RigError(",
@@ -520,7 +488,7 @@ REVERTS: list[Revert] = [
         (f"{RIGT}::test_the_rig_refuses_a_port_something_is_already_listening_on",),
     ),
     Revert(
-        "R1b control: the preflight refuses every port",
+        "rig control: the preflight refuses every port",
         RIG,
         '    try:\n        with socket.create_connection(("127.0.0.1", port), timeout=1.0):\n'
         "            pass\n    except OSError:\n        return\n    raise RigError(",
@@ -528,28 +496,28 @@ REVERTS: list[Revert] = [
         (f"{RIGT}::test_a_free_port_passes_the_preflight",),
     ),
     Revert(
-        "R1a: the default port back to the addon's own 9876",
+        "rig: the default port back to the addon's own 9876",
         RIG,
         "_DEFAULT_PORT = 0\n",
         "_DEFAULT_PORT = 9876\n",
         (f"{RIGT}::test_the_default_port_is_an_unused_ephemeral_port",),
     ),
     Revert(
-        "R1a control: _choose_port ignores an explicit --port",
+        "rig control: _choose_port ignores an explicit --port",
         RIG,
         "    if requested:\n        return requested\n",
         "    if False:\n        return requested\n",
         (f"{RIGT}::test_an_explicit_port_is_honoured",),
     ),
     Revert(
-        "C4: the port is not re-checked immediately before Popen",
+        "rig: the port is not re-checked immediately before Popen",
         RIG,
         "    _require_port_free(port)\n    return subprocess.Popen(",
         "    return subprocess.Popen(",
         (f"{RIGT}::test_the_port_is_rechecked_immediately_before_blender_is_started",),
     ),
     Revert(
-        "R1c: readiness back to a bare connect",
+        "rig: readiness back to a bare connect",
         RIG,
         "        if _receipt_matches(receipt, launch.nonce, launch.port) and _ping_answers(launch.port):",
         "        if _receipt_matches(receipt, launch.nonce, launch.port) and _bare_connect(launch.port):",
@@ -557,7 +525,7 @@ REVERTS: list[Revert] = [
         also=BARE_CONNECT,
     ),
     Revert(
-        "R1d: the receipt is not checked at all",
+        "rig: the receipt is not checked at all",
         RIG,
         '    try:\n        written = json.loads(receipt.read_text(encoding="utf-8"))\n'
         "    except (OSError, ValueError):\n        return False\n"
@@ -566,21 +534,21 @@ REVERTS: list[Revert] = [
         (f"{RIGT}::test_the_readiness_receipt_must_carry_the_rig_s_own_nonce_and_port",),
     ),
     Revert(
-        "C4: the receipt's port is recorded but never checked",
+        "rig: the receipt's port is recorded but never checked",
         RIG,
         ' and written.get("port") == port',
         "",
         (f"{RIGT}::test_the_readiness_receipt_must_carry_the_rig_s_own_nonce_and_port",),
     ),
     Revert(
-        "C4: a swallowed bind failure is left buried in the log tail",
+        "rig: a swallowed bind failure is left buried in the log tail",
         RIG,
         '    if _BIND_FAILURE_MARKER not in text:\n        return ""',
         '    if True:\n        return ""',
         (f"{RIGT}::test_a_startup_failure_names_a_bind_failure_the_addon_swallowed",),
     ),
     Revert(
-        "A5: the log tail is formatted before the reader is joined",
+        "rig: the log tail is formatted before the reader is joined",
         RIG,
         "            launch.drain.join(_SHUTDOWN_GRACE_SECONDS)\n            raise RigError(",
         "            raise RigError(",
@@ -588,35 +556,35 @@ REVERTS: list[Revert] = [
     ),
     # --- what the rig may delete and overwrite ---
     Revert(
-        "B3/B5: any --work-dir is claimed, marker or not",
+        "rig: any --work-dir is claimed, marker or not",
         RIG,
         "        if existing:\n            raise RigError(_foreign_work_dir_message(work_dir, existing))",
         "        if False:\n            raise RigError(_foreign_work_dir_message(work_dir, existing))",
         (f"{RIGT}::test_a_populated_work_dir_the_rig_did_not_create_is_refused",),
     ),
     Revert(
-        "B5: a real Blender resources root is no longer recognised as one",
+        "rig: a real Blender resources root is no longer recognised as one",
         RIG,
         '_BLENDER_RESOURCE_ENTRIES = ("config", "datafiles", "extensions", "scripts", "userpref.blend")',
         "_BLENDER_RESOURCE_ENTRIES = ()",
         (f"{RIGT}::test_a_work_dir_that_is_a_real_blender_resources_root_is_refused",),
     ),
     Revert(
-        "C1: an auto-executing startup/ tree is no longer recognised",
+        "rig: an auto-executing startup/ tree is no longer recognised",
         RIG,
         '_AUTO_EXECUTED_SCRIPT_DIRS = ("startup", "modules")',
         "_AUTO_EXECUTED_SCRIPT_DIRS = ()",
         (f"{RIGT}::test_a_work_dir_holding_auto_executed_scripts_is_refused",),
     ),
     Revert(
-        "B3 control: the work dir is never marked, so the rig refuses its own",
+        "rig control: the work dir is never marked, so the rig refuses its own",
         RIG,
         '    marker.write_text(_OWNED_MARKER_TEXT, encoding="utf-8")\n\n\ndef _foreign_work_dir_message',
         "\n\ndef _foreign_work_dir_message",
         (f"{RIGT}::test_an_empty_or_rig_created_work_dir_is_claimed",),
     ),
     Revert(
-        "R4: the marker no longer guards a directory the rig did not create",
+        "rig: the marker no longer guards a directory the rig did not create",
         RIG,
         "    if directory.is_dir() and not marker.is_file():\n        raise RigError(\n"
         '            f"{directory} exists but carries no {_OWNED_MARKER_NAME}, so the rig did not create it "\n'
@@ -629,7 +597,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "C3/F10: <work-dir>/addons as a regular file is no longer refused",
+        "rig: <work-dir>/addons as a regular file is no longer refused",
         RIG,
         "    if directory.exists() and not directory.is_dir():\n"
         '        raise RigError(f"{directory} exists and is not a directory; the rig will not replace it.")\n',
@@ -637,21 +605,21 @@ REVERTS: list[Revert] = [
         (f"{RIGT}::test_an_addons_path_that_is_a_regular_file_is_refused",),
     ),
     Revert(
-        "R4 control: staging merges into its own previous stage instead of rebuilding it",
+        "rig control: staging merges into its own previous stage instead of rebuilding it",
         RIG,
         "    if staged.exists():\n        shutil.rmtree(staged)\n",
         "",
         (f"{RIGT}::test_staging_replaces_its_own_previous_stage",),
     ),
     Revert(
-        "B4: the whole addons/ tree is removed again, not just blender_mcp",
+        "rig: the whole addons/ tree is removed again, not just blender_mcp",
         RIG,
         "    if staged.exists():\n        shutil.rmtree(staged)\n",
         "    if addons.exists():\n        shutil.rmtree(addons)\n    addons.mkdir(parents=True)\n",
         (f"{RIGT}::test_staging_leaves_other_add_ons_in_its_own_directory_alone",),
     ),
     Revert(
-        "R4: a symlinked addons/ directory is no longer refused",
+        "rig: a symlinked addons/ directory is no longer refused",
         RIG,
         "    if directory.is_symlink():\n"
         '        raise RigError(f"{directory} is a symlink; refusing to write through it. '
@@ -660,7 +628,7 @@ REVERTS: list[Revert] = [
         (f"{RIGT}::test_staging_refuses_a_symlinked_addons_directory",),
     ),
     Revert(
-        "R6: fixtures handed over by their original path",
+        "rig: fixtures handed over by their original path",
         RIG,
         "        destination.unlink(missing_ok=True)\n        shutil.copy2(source, destination)\n"
         "        copies[name] = destination",
@@ -668,21 +636,21 @@ REVERTS: list[Revert] = [
         (f"{RIGT}::test_fixtures_are_copied_so_a_scenario_cannot_write_through_to_the_original",),
     ),
     Revert(
-        "B3: blends/ is created without the rig's marker, so a pre-placed file is overwritten",
+        "rig: blends/ is created without the rig's marker, so a pre-placed file is overwritten",
         RIG,
         '    staged_dir = _rig_owned_subdirectory(work_dir, "blends")',
         '    staged_dir = work_dir / "blends"\n    staged_dir.mkdir(parents=True, exist_ok=True)',
         (f"{RIGT}::test_a_pre_placed_fixture_is_not_silently_overwritten",),
     ),
     Revert(
-        "B3 control: every existing fixture destination is refused, reused work dir or not",
+        "rig control: every existing fixture destination is refused, reused work dir or not",
         RIG,
         "        destination.unlink(missing_ok=True)\n",
         '        if destination.exists():\n            raise RigError("refusing any existing destination")\n',
         (f"{RIGT}::test_the_rig_replaces_a_fixture_copy_it_made_itself",),
     ),
     Revert(
-        "B3: copy2 follows a symlinked fixture destination again",
+        "rig: copy2 follows a symlinked fixture destination again",
         RIG,
         "        if destination.is_symlink():\n"
         '            raise RigError(f"{destination} is a symlink; refusing to write through it.")\n',
@@ -690,7 +658,7 @@ REVERTS: list[Revert] = [
         (f"{RIGT}::test_a_symlinked_fixture_destination_is_not_written_through",),
     ),
     Revert(
-        "B3: two --blend fixtures may share one name again",
+        "rig: two --blend fixtures may share one name again",
         RIG,
         "        if name in copies:\n"
         '            raise RigError(f"--blend {name} was given twice; the two copies would overwrite each other.")\n',
@@ -698,14 +666,14 @@ REVERTS: list[Revert] = [
         (f"{RIGT}::test_two_fixtures_with_the_same_name_are_refused",),
     ),
     Revert(
-        "R6: fixture names unvalidated, so one can escape the work dir",
+        "rig: fixture names unvalidated, so one can escape the work dir",
         RIG,
         "    if not _FIXTURE_NAME.match(name):",
         "    if False:",
         (f"{RIGT}::test_a_fixture_name_cannot_escape_the_work_dir",),
     ),
     Revert(
-        "F4: importing the scenario writes __pycache__ beside the caller's file again",
+        "rig: importing the scenario writes __pycache__ beside the caller's file again",
         RIG,
         "    sys.dont_write_bytecode = True\n    spec = importlib_util.spec_from_file_location",
         "    spec = importlib_util.spec_from_file_location",
@@ -713,49 +681,49 @@ REVERTS: list[Revert] = [
     ),
     # --- liveness of the rig itself ---
     Revert(
-        "R7: no deadline on the scenario",
+        "rig: no deadline on the scenario",
         RIG,
         "    if thread.is_alive():\n        abandoned.set()",
         "    if False:\n        abandoned.set()",
         (f"{RIGT}::test_a_scenario_that_never_returns_is_abandoned_at_its_deadline",),
     ),
     Revert(
-        "R7 control: the scenario's own failure is swallowed",
+        "rig control: the scenario's own failure is swallowed",
         RIG,
         "    if raised:\n        raise raised[0]",
         "    return",
         (f"{RIGT}::test_a_failing_scenario_still_reports_its_own_error",),
     ),
     Revert(
-        "A3: an abandoned scenario may still send commands",
+        "rig: an abandoned scenario may still send commands",
         RIG,
         "        self._refuse_if_abandoned(command_type)\n        self._sequence += 1",
         "        self._sequence += 1",
         (f"{RIGT}::test_an_abandoned_scenario_cannot_send_another_command",),
     ),
     Revert(
-        "A3: the deadline no longer tells the rig it abandoned the scenario",
+        "rig: the deadline no longer tells the rig it abandoned the scenario",
         RIG,
         "    if thread.is_alive():\n        abandoned.set()\n        raise RigError(",
         "    if thread.is_alive():\n        raise RigError(",
         (f"{RIGT}::test_the_deadline_silences_the_scenario_it_could_not_stop",),
     ),
     Revert(
-        "A3: the transcript keeps growing after the verdict",
+        "rig: the transcript keeps growing after the verdict",
         RIG,
         "        if not self._abandoned.is_set():\n            print(line, flush=True)",
         "        print(line, flush=True)",
         (f"{RIGT}::test_the_deadline_silences_the_scenario_it_could_not_stop",),
     ),
     Revert(
-        "A4: main catches Exception, so sys.exit(0) leaves the rig exiting 0",
+        "rig: main catches Exception, so sys.exit(0) leaves the rig exiting 0",
         RIG,
         '    except BaseException as failure:\n        detail = ""',
         '    except Exception as failure:\n        detail = ""',
         (f"{RIGT}::test_a_scenario_that_exits_the_process_is_not_reported_as_a_pass",),
     ),
     Revert(
-        "A2: Popen used as a context manager, reintroducing an unbounded wait()",
+        "rig: Popen used as a context manager, reintroducing an unbounded wait()",
         RIG,
         "        blender = _launch_blender(work_dir, port, nonce, blender_scripts)\n"
         "        drain = _OutputDrain(blender, log_path, abandoned)\n",
@@ -764,21 +732,21 @@ REVERTS: list[Revert] = [
         (f"{RIGT}::test_the_process_is_never_waited_on_without_a_timeout",),
     ),
     Revert(
-        "R2: Blender's output no longer drained to exhaustion",
+        "rig: Blender's output no longer drained to exhaustion",
         RIG,
         "            for line in stream:\n                log.write(line)",
         "            for line in [stream.readline()]:\n                log.write(line)",
         (f"{RIGT}::test_blender_s_output_is_drained_to_a_log_instead_of_filling_the_pipe",),
     ),
     Revert(
-        "A1: the pipe decodes strictly again",
+        "rig: the pipe decodes strictly again",
         RIG,
         '        errors="replace",\n',
         "",
         (f"{RIGT}::test_blender_s_output_is_decoded_leniently",),
     ),
     Revert(
-        "A1: the reader dies on the first byte it cannot decode",
+        "rig: the reader dies on the first byte it cannot decode",
         RIG,
         "        try:\n            self._tee()\n"
         "        # Deliberately BaseException: the only outcome worse than losing the log is\n"
@@ -789,14 +757,14 @@ REVERTS: list[Revert] = [
         (f"{RIGT}::test_the_log_reader_survives_output_it_cannot_decode",),
     ),
     Revert(
-        "A3: the log reader keeps echoing after the verdict",
+        "rig: the log reader keeps echoing after the verdict",
         RIG,
         "                if line.startswith(_ECHOED_PREFIXES) and not self._abandoned.is_set():",
         "                if line.startswith(_ECHOED_PREFIXES):",
         (f"{RIGT}::test_the_log_reader_stops_echoing_once_the_scenario_is_abandoned",),
     ),
     Revert(
-        "A1: a reader that died is not reported, so Blender is blamed instead",
+        "rig: a reader that died is not reported, so Blender is blamed instead",
         RIG,
         "    if drain.failure is not None:\n        problems.append(\n"
         '            f"the rig\'s own log reader died with {type(drain.failure).__name__}: {drain.failure} "\n'
@@ -806,14 +774,14 @@ REVERTS: list[Revert] = [
         (f"{RIGT}::test_teardown_reports_the_rig_s_own_log_reader_dying",),
     ),
     Revert(
-        "A6: a reader still holding the pipe is not reported",
+        "rig: a reader still holding the pipe is not reported",
         RIG,
         "    if drain.is_alive():\n        problems.append(\n",
         "    if False:\n        problems.append(\n",
         (f"{RIGT}::test_teardown_reports_a_log_reader_that_outlived_blender",),
     ),
     Revert(
-        "R2: failures no longer quote Blender's log",
+        "rig: failures no longer quote Blender's log",
         RIG,
         '    tail = "\\n".join(lines[-_LOG_TAIL_LINES:])',
         '    tail = ""',
@@ -835,7 +803,7 @@ REVERTS: list[Revert] = [
         (f"{RIGT}::test_the_rig_is_not_importable_as_part_of_the_package",),
     ),
     Revert(
-        "D1: a packaging root outside src/ would distribute scripts/",
+        "boundary: a packaging root outside src/ would distribute scripts/",
         PYPROJECT,
         'packages = [{ include = "blender_mcp", from = "src" }]',
         'packages = [{ include = "blender_mcp", from = "src" }, { include = "blender_rig", from = "scripts" }]',
@@ -966,14 +934,14 @@ REVERTS: list[Revert] = [
         (f"{DOCKT}::test_compose_healthcheck_round_trips_both_blender_and_the_mcp_server",),
     ),
     Revert(
-        "R19: the compose toolsets key is mistyped",
+        "docker: the compose toolsets key is mistyped",
         COMPOSE,
         "      BLENDER_MCP_TOOLSETS: shot",
         "      BLENDER_MCP_TOOLSET: shot",
         (f"{DOCKT}::test_compose_pins_a_toolset_selection_the_server_can_resolve",),
     ),
     Revert(
-        "R19: the compose toolsets value does not resolve",
+        "docker: the compose toolsets value does not resolve",
         COMPOSE,
         "      BLENDER_MCP_TOOLSETS: shot",
         "      BLENDER_MCP_TOOLSETS: shto",
@@ -1051,23 +1019,23 @@ REVERTS: list[Revert] = [
         (f"{ROOTST}::test_writable_roots_ignores_empty_candidates",),
     ),
     Revert(
-        "R1 wiring: the handshake ignores the deployment-configured roots",
+        "output_roots wiring: the handshake ignores the deployment-configured roots",
         ADDON_SERVER_CORE,
         "            *configured_roots(),\n",
         "",
         (f"{ROOTST}::test_get_addon_info_reports_writable_output_roots",),
     ),
     Revert(
-        "R1 wiring: an unconfigured Blender reports no writable root at all",
+        "output_roots wiring: an unconfigured Blender reports no writable root at all",
         ADDON_SERVER_CORE,
         '            getattr(bpy.app, "tempdir", None),\n            tempfile.gettempdir(),\n'
         '            os.path.expanduser("~"),\n',
         "",
         (f"{ROOTST}::test_get_addon_info_reports_roots_without_any_configuration",),
     ),
-    # --- the handshake, and the MCP tool payload (defect ruling C's sixth site) ---
+    # --- the handshake, and the MCP tool payload (`get_addon_status`) ---
     Revert(
-        "R17: the writable_output_roots parse removed from the handshake",
+        "handshake: the writable_output_roots parse removed from the handshake",
         ADDON_MANAGER,
         '            writable_output_roots=normalized_session_text_list(info.get("writable_output_roots")),\n',
         "",
@@ -1077,14 +1045,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "R17: the handshake reorders the roots it was sent",
+        "handshake: the handshake reorders the roots it was sent",
         ADDON_MANAGER,
         '            writable_output_roots=normalized_session_text_list(info.get("writable_output_roots")),',
         '            writable_output_roots=normalized_session_text_list(info.get("writable_output_roots"))[::-1],',
         (f"{AMT}::test_handshake_surfaces_writable_output_roots",),
     ),
     Revert(
-        "F1: get_addon_status hardcodes an empty roots list",
+        "get_addon_status: get_addon_status hardcodes an empty roots list",
         SERVER_CORE_TOOL,
         '            "writable_output_roots": result.writable_output_roots,',
         '            "writable_output_roots": [],',
@@ -1094,44 +1062,44 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "F1: get_addon_status reorders the roots the handshake gave it",
+        "get_addon_status: get_addon_status reorders the roots the handshake gave it",
         SERVER_CORE_TOOL,
         '            "writable_output_roots": result.writable_output_roots,',
         '            "writable_output_roots": list(reversed(result.writable_output_roots)),',
         (f"{CORET}::test_get_addon_status_reports_the_writable_output_roots",),
     ),
     Revert(
-        "F1: get_addon_status invents roots for an addon that sent none",
+        "get_addon_status: get_addon_status invents roots for an addon that sent none",
         SERVER_CORE_TOOL,
         '            "writable_output_roots": result.writable_output_roots,',
         '            "writable_output_roots": result.writable_output_roots or ["/invented"],',
         (f"{CORET}::test_get_addon_status_reports_no_roots_for_an_addon_that_does_not_send_them",),
     ),
     Revert(
-        "defect ruling C: a payload key goes undocumented",
+        "get_addon_status: a payload key goes undocumented",
         SERVER_CORE_TOOL,
         '"writable_output_roots" (empty when none)',
         "writable output roots (empty when none)",
         (f"{CORET}::test_get_addon_status_documents_every_key_it_returns",),
     ),
-    # --- Task 3: the session epoch reaching the agent ---
+    # --- the session epoch reaching the agent ---
     Revert(
-        "task 3: the session epoch is hardcoded instead of read off the handshake",
+        "get_addon_status: the session epoch is hardcoded instead of read off the handshake",
         SERVER_CORE_TOOL,
         '            "session_epoch": result.session_epoch,',
         '            "session_epoch": 0,',
         (f"{CORET}::test_get_addon_status_reports_the_session_epoch_and_the_open_file",),
     ),
     Revert(
-        "task 3: the open .blend is hardcoded, so the payload cannot report a swap",
+        "get_addon_status: the open .blend is hardcoded, so the payload cannot report a swap",
         SERVER_CORE_TOOL,
         '            "current_filepath": result.current_filepath,',
         '            "current_filepath": None,',
         (f"{CORET}::test_get_addon_status_reports_no_epoch_for_an_addon_that_does_not_send_one",),
     ),
-    # --- Task 3: session state, the epoch, and the failure notes -------------
+    # --- session state, the epoch, and the failure notes -------------
     Revert(
-        "task 3: a completed load stops moving the epoch, so no client learns its capabilities are stale",
+        "session: a completed load stops moving the epoch, so no client learns its capabilities are stale",
         ADDON_SESSION,
         "    _STATE.session_epoch += 1",
         "    _STATE.session_epoch += 0",
@@ -1145,7 +1113,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: a FAILED load bumps the epoch, forcing a re-handshake storm on an event that changed nothing",
+        "session: a FAILED load bumps the epoch, forcing a re-handshake storm on an event that changed nothing",
         ADDON_SESSION,
         '    _STATE.last_load_error = _failure_note("Loading", file_path)',
         '    _STATE.last_load_error = _failure_note("Loading", file_path)\n    _STATE.session_epoch += 1',
@@ -1155,14 +1123,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: a successful SAVE bumps the epoch, invalidating every client cache for nothing",
+        "session: a successful SAVE bumps the epoch, invalidating every client cache for nothing",
         ADDON_SESSION,
         "    written = _reported_path(file_path)",
         "    written = _reported_path(file_path)\n    _STATE.session_epoch += 1",
         (f"{SESSIONT}::test_a_successful_save_does_not_move_the_session_epoch",),
     ),
     Revert(
-        "task 3: save_post trusts its argument, so save_as_mainfile(copy=True) names a file nobody has open",
+        "session: save_post trusts its argument, so save_as_mainfile(copy=True) names a file nobody has open",
         ADDON_SESSION,
         '    _STATE.current_filepath = _reported_path(getattr(bpy.data, "filepath", ""))',
         "    _STATE.current_filepath = written",
@@ -1172,7 +1140,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: a failed save records nothing, so a blocked checkpoint looks like a clean one",
+        "session: a failed save records nothing, so a blocked checkpoint looks like a clean one",
         ADDON_SESSION,
         '    _STATE.last_save_error = _failure_note("Saving", file_path)',
         "    _STATE.last_save_error = None",
@@ -1182,7 +1150,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the leaf split goes back to os.path.basename, which on posix splits on / only",
+        "text hygiene: the leaf split goes back to os.path.basename, which on posix splits on / only",
         ADDON_TEXT_HYGIENE,
         "    leaf = strip_unsafe(raw)\n"
         "    for separator in _LEAF_SEPARATORS:\n"
@@ -1194,32 +1162,27 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: control characters survive into a client-facing note (newline = prompt-injection surface)",
+        "text hygiene: control characters survive into a client-facing note (newline = prompt-injection surface)",
         ADDON_TEXT_HYGIENE,
         '    return "".join(character for character in str(value or "") if not is_unsafe(character)).strip()',
         '    return str(value or "").strip()',
         (
-            # `[newline]` and `[ansi-escape]` are deliberately **not** here, and
-            # the reason is a finding rather than an omission: their expectation
-            # is hygiene alone, and the leaf allowlist added in this pass refuses
-            # a control character on its own - so they pass with the strip
-            # reverted, and naming them would make this row a SURVIVOR. They are
-            # covered by "the leaf allowlist goes away" below. The two named here
-            # expect the *stripped* name (`ab.blend`), which only stripping
-            # produces; reverted, they get `the requested file`.
+            # Not `[newline]` or `[ansi-escape]`: the leaf allowlist refuses those
+            # without the strip, so they would pass (see NOT_INDIVIDUALLY_FALSIFIABLE).
+            # These expect the stripped name `ab.blend`, which only stripping produces.
             f"{SESSIONT}::test_a_recorded_failure_names_one_bounded_leaf_and_nothing_else[nul]",
             f"{SESSIONT}::test_a_recorded_failure_names_one_bounded_leaf_and_nothing_else[c1-control]",
         ),
     ),
     Revert(
-        "task 3: the note's length bound goes away, so a 400-character name ships whole",
+        "text hygiene: the note's length bound goes away, so a 400-character name ships whole",
         ADDON_TEXT_HYGIENE,
         "    if len(text) > max_chars:",
         "    if False:",
         (f"{SESSIONT}::test_a_recorded_failure_names_one_bounded_leaf_and_nothing_else[over-long]",),
     ),
     Revert(
-        "task 3: the leaf assertion stops rejecting traversal tokens and empty components",
+        "text hygiene: the leaf assertion stops rejecting traversal tokens and empty components",
         ADDON_TEXT_HYGIENE,
         'NOT_A_LEAF = frozenset({"", ".", ".."})',
         "NOT_A_LEAF = frozenset()",
@@ -1230,14 +1193,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: a directory is named in a failure note - which for an empty path is the server's own CWD",
+        "text hygiene: a directory is named in a failure note - which for an empty path is the server's own CWD",
         ADDON_TEXT_HYGIENE,
         "        if os.path.isdir(raw):",
         "        if False:",
         (f"{SESSIONT}::test_a_directory_is_never_named_in_a_recorded_failure",),
     ),
     Revert(
-        "task 3: the snapshot loses its process-unique id, reopening the epoch's ABA hole across a restart",
+        "session: the snapshot loses its process-unique id, reopening the epoch's ABA hole across a restart",
         ADDON_SESSION,
         '        "session_id": SESSION_ID,',
         '        "session_id": "",',
@@ -1247,78 +1210,78 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: handler registration stacks duplicates, so one swap moves the epoch twice",
+        "session: handler registration stacks duplicates, so one swap moves the epoch twice",
         ADDON_SESSION,
         "        if handler not in handler_list:",
         "        if True:",
         (f"{SESSIONT}::test_registering_twice_does_not_stack_duplicate_handlers",),
     ),
     Revert(
-        "task 3: unregistering an absent handler raises, leaving the addon un-unloadable",
+        "session: unregistering an absent handler raises, leaving the addon un-unloadable",
         ADDON_SESSION,
         "        while handler in handler_list:\n            handler_list.remove(handler)",
         "        handler_list.remove(handler)",
         (f"{SESSIONT}::test_unregistering_without_registering_is_not_an_error",),
     ),
     Revert(
-        "task 3: the addon lifecycle never wires the session handlers in, so nothing maintains the epoch",
+        "session: the addon lifecycle never wires the session handlers in, so nothing maintains the epoch",
         ADDON_INIT,
         "    session.register_handlers()",
         "    pass  # handler wiring reverted",
         (f"{SESSIONT}::test_the_addon_registers_and_unregisters_the_session_handlers",),
     ),
     Revert(
-        "task 3: get_session_info is absent from the dispatch table, so the poll surface cannot be polled",
+        "session: get_session_info is absent from the dispatch table, so the poll surface cannot be polled",
         ADDON_SERVER_CORE,
         '            "get_session_info": self.get_session_info,',
         '            "get_session_info_reverted": self.get_session_info,',
         (f"{SESSIONT}::test_get_session_info_is_registered_and_read_only",),
     ),
     Revert(
-        "task 3: the library summary publishes an absolute filepath, mapping the asset library out",
+        "text hygiene: the library summary publishes an absolute filepath, mapping the asset library out",
         ADDON_FILE_LIFECYCLE,
         '        "filepath": whole if whole is not None else client_safe_leaf(filepath),',
         '        "filepath": filepath,',
         (f"{SESSIONT}::test_the_library_summary_reports_identity_without_the_asset_library_layout",),
     ),
     Revert(
-        "task 3: save_shot joins the swap set, discarding a whole batch every time a client checkpoints",
+        "session: save_shot joins the swap set, discarding a whole batch every time a client checkpoints",
         ADDON_SERVER_CORE,
         '_SESSION_SWAP_COMMANDS = frozenset({"open_shot", "reset_session"})',
         '_SESSION_SWAP_COMMANDS = frozenset({"open_shot", "reset_session", "save_shot"})',
         (f"{SESSIONT}::test_the_session_swap_set_holds_the_commands_that_replace_the_database",),
     ),
     Revert(
-        "task 3: a swap is wrapped in mutation_transaction, whose rollback would enumerate the whole new file",
+        "session: a swap is wrapped in mutation_transaction, whose rollback would enumerate the whole new file",
         ADDON_SERVER_CORE,
         "            or cmd_type in self._SESSION_SWAP_COMMANDS\n",
         "",
         (f"{SESSIONT}::test_a_session_swap_command_never_reaches_mutation_transaction",),
     ),
     Revert(
-        "task 3: get_session_info reports the dirty flag and libraries from nowhere",
+        "text hygiene: get_session_info reports the dirty flag and libraries from nowhere",
         ADDON_FILE_LIFECYCLE,
         '            "is_dirty": bool(bpy.data.is_dirty),',
         '            "is_dirty": False,',
         (f"{SESSIONT}::test_get_session_info_reports_the_dirty_flag_and_the_library_summary",),
     ),
     Revert(
-        "task 3: an unsaved session reports an empty string, which reads as a real path in a client's logs",
+        "session: an unsaved session reports an empty string, which reads as a real path in a client's logs",
         ADDON_SESSION,
         '    reported = str(file_path or "")\n    return reported or None',
         '    return str(file_path or "")',
         (f"{SESSIONT}::test_an_unsaved_session_reports_no_filepath_rather_than_an_empty_string",),
     ),
     Revert(
-        "task 3: a disable/enable cycle leaves the handler lists stacked",
+        "session: a disable/enable cycle leaves the handler lists stacked",
         ADDON_SESSION,
         "def unregister_handlers() -> None:",
         "def unregister_handlers() -> None:\n    return",
         (f"{SESSIONT}::test_a_disable_enable_cycle_leaves_exactly_one_of_each_handler",),
     ),
-    # --- Task 3: the barrier itself (plan Step 6) ----------------------------
+    # --- the barrier itself -------------------------------------------
     Revert(
-        "task 3: THE BARRIER - a swap no longer ends its tick or discards the batch queued behind it",
+        "barrier: THE BARRIER - a swap no longer ends its tick or discards the batch queued behind it",
         ADDON_SERVER_CORE,
         "                self._run_session_swap(command, client)\n                break",
         (
@@ -1327,19 +1290,15 @@ REVERTS: list[Revert] = [
             "                continue"
         ),
         (
-            # Only the three the *snapshot* half alone can protect. The rest
-            # are covered by the stamp half as well, so reverting the snapshot
-            # alone leaves them passing. An earlier revision of this comment
-            # pointed at "the compound row below", which does not exist; there
-            # is no single revert that falsifies both halves at once, and
-            # saying there was is how a reader stops looking for the gap.
+            # Only what the snapshot alone protects; the stamp also covers the
+            # rest, so they pass with just the snapshot reverted.
             f"{THREADT}::test_a_failed_swap_also_discards_the_commands_queued_behind_it",
             f"{THREADT}::test_the_barrier_message_names_the_epoch_without_claiming_it_moved",
             f"{THREADT}::test_a_swap_ends_its_tick_even_when_a_fresh_command_is_already_queued",
         ),
     ),
     Revert(
-        "task 3: no rejection frame is sent on EITHER barrier half, so the client is dropped in silence",
+        "barrier: no rejection frame is sent on EITHER barrier half, so the client is dropped in silence",
         ADDON_SERVER_CORE,
         "        deadline = time.monotonic() + self._REJECTION_TIME_BUDGET_SECONDS",
         "        return  # the whole rejection path reverted",
@@ -1350,29 +1309,27 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: superseded commands are dropped, not answered - the hang criterion 2 names",
+        "barrier: superseded commands are dropped, not answered, so their clients hang",
         ADDON_SERVER_CORE,
         "            self._discard_superseded(superseded)",
         "            superseded.clear()",
         (f"{THREADT}::test_every_command_spanning_a_swap_is_answered_on_both_sockets",),
     ),
     Revert(
-        "task 3: the enqueue path stops stamping, so the mid-load window is invisible again",
+        "barrier: the enqueue path stops stamping, so the mid-load window is invisible again",
         ADDON_SERVER_CORE,
         "        self._stamp_session(command)",
         "        pass  # stamping reverted",
         (
-            # `..._rejected_at_dequeue` is deliberately absent: the drain loop now
-            # fails CLOSED, so an unstamped command is rejected too - for a
-            # different reason, but the assertion cannot tell them apart. What an
-            # unstamped queue really costs is the *serviced* case below, which
-            # turns into a rejection the client never asked for.
+            # Not `..._rejected_at_dequeue`: the drain loop rejects an unstamped
+            # command too, and the test cannot tell the two rejections apart.
+            # Without the stamp, the serviced case below is rejected instead.
             f"{THREADT}::test_a_command_queued_after_the_swap_is_serviced_normally_under_the_stamp",
             f"{THREADT}::test_the_enqueue_path_is_the_only_producer_and_it_stamps",
         ),
     ),
     Revert(
-        "task 3: the dequeue comparison goes away, so a stale stamp is never acted on",
+        "barrier: the dequeue comparison goes away, so a stale stamp is never acted on",
         ADDON_SERVER_CORE,
         "            if stamp != self._session_marker():",
         "            if False:",
@@ -1382,21 +1339,21 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the enqueue path reaches for bpy on a client thread",
+        "barrier: the enqueue path reaches for bpy on a client thread",
         ADDON_SERVER_CORE,
         "        self._stamp_session(command)\n        print(",
         "        self._stamp_session(command)\n        _ = bpy.data\n        print(",
         (f"{THREADT}::test_the_stamp_is_read_without_touching_bpy_on_the_client_thread",),
     ),
     Revert(
-        "task 3: the barrier fires for an undispatchable swap, so one frame discards everyone batch",
+        "barrier: the barrier fires for an undispatchable swap, so one frame discards everyone batch",
         ADDON_SERVER_CORE,
         ' and self._is_dispatchable(\n                    command.get("type")\n                )',
         "",
         (f"{THREADT}::test_a_swap_command_the_addon_cannot_dispatch_discards_nobodys_batch",),
     ),
     Revert(
-        "task 3: the rejection path loses its deadline, pinning Blender's main thread on a stalled peer",
+        "barrier: the rejection path loses its deadline, pinning Blender's main thread on a stalled peer",
         ADDON_SERVER_CORE,
         "            timeout = (\n"
         "                self._REJECTION_SEND_TIMEOUT_SECONDS\n"
@@ -1407,21 +1364,21 @@ REVERTS: list[Revert] = [
         (f"{THREADT}::test_rejecting_a_full_queue_to_a_stalled_peer_is_bounded",),
     ),
     Revert(
-        "task 3: the pre-swap drain goes back to `while True`, which races producers that keep refilling",
+        "barrier: the pre-swap drain goes back to `while True`, which races producers that keep refilling",
         ADDON_SERVER_CORE,
         "        for _slot in range(self._MAX_QUEUED_COMMANDS):",
         "        while True:",
         (f"{THREADT}::test_the_pre_swap_drain_is_bounded_by_an_explicit_count",),
     ),
     Revert(
-        "task 3: only Exception is caught, so a blender-side abort strands the swap's own client",
+        "barrier: only Exception is caught, so a blender-side abort strands the swap's own client",
         ADDON_SERVER_CORE,
         "        except BaseException as e:",
         "        except SystemExit as e:",
         (f"{THREADT}::test_the_swaps_own_client_is_answered_when_the_swap_raises_a_base_exception",),
     ),
     Revert(
-        "task 3: superseded is built outside the try, so an abort mid-drain loses dequeued commands",
+        "barrier: superseded is built outside the try, so an abort mid-drain loses dequeued commands",
         ADDON_SERVER_CORE,
         (
             "                superseded.append(self.command_queue.get_nowait())\n"
@@ -1438,7 +1395,7 @@ REVERTS: list[Revert] = [
         also="\n# taken is defined at module scope so the reverted body still runs.\ntaken = []\n",
     ),
     Revert(
-        "task 3: the queue is drained AFTER the swap, the ordering Task 2's cycle-2 correction rejected",
+        "barrier: the queue is drained AFTER the swap, so a command enqueued mid-load is swept up with it",
         ADDON_SERVER_CORE,
         (
             "            self._drain_queue_into(superseded)\n"
@@ -1451,28 +1408,28 @@ REVERTS: list[Revert] = [
         (f"{THREADT}::test_the_queue_is_snapshotted_before_the_swap_runs_not_after",),
     ),
     Revert(
-        "task 3: the rejection frame drops the machine-readable epoch, leaving a client to regex prose",
+        "barrier: the rejection frame drops the machine-readable epoch, leaving a client to regex prose",
         ADDON_SERVER_CORE,
         '                    "session_epoch": epoch,',
         '                    "session_epoch_prose_only": epoch,',
         (f"{THREADT}::test_the_barrier_rejection_carries_the_epoch_as_a_first_class_field",),
     ),
     Revert(
-        "task 3: a dying tick hands off to nothing, so one escaping exception kills the drain loop",
+        "barrier: a dying tick hands off to nothing, so one escaping exception kills the drain loop",
         ADDON_SERVER_CORE,
         "            self._replace_this_dying_timer()\n            raise",
         "            raise",
         (f"{THREADT}::test_an_escaping_exception_hands_the_drain_loop_to_a_fresh_timer",),
     ),
     Revert(
-        "task 3: recovery resurrects a timer stop() deliberately removed",
+        "barrier: recovery resurrects a timer stop() deliberately removed",
         ADDON_SERVER_CORE,
         "        if not self.running:\n            return\n        dying = self._drain_timer",
         "        dying = self._drain_timer",
         (f"{THREADT}::test_a_stopped_server_does_not_resurrect_its_drain_timer",),
     ),
     Revert(
-        "task 3: a command sent after the swap is never serviced, so the barrier wedges the server",
+        "barrier: a command sent after the swap is never serviced, so the barrier wedges the server",
         ADDON_SERVER_CORE,
         (
             "            self._execute_and_answer(command, client)\n"
@@ -1486,15 +1443,15 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the harness's open_mainfile stub refuses production's own `use_scripts` spelling",
+        "barrier: the harness's open_mainfile stub refuses production's own `use_scripts` spelling",
         TEST_THREADING_FILE,
         'def open_mainfile(self, filepath: str = "", use_scripts: bool = False) -> set[str]:',
         'def open_mainfile(self, filepath: str = "", _use_scripts: bool = False) -> set[str]:',
         (f"{THREADT}::test_the_open_mainfile_stub_takes_use_scripts_the_way_production_passes_it",),
     ),
-    # --- Task 3: the handshake and the client-side reaction ------------------
+    # --- the handshake and the client-side reaction ------------------
     Revert(
-        "task 3: the handshake stops carrying the session fields",
+        "handshake: the handshake stops carrying the session fields",
         ADDON_MANAGER,
         '            session_epoch=normalized_session_epoch(info.get("session_epoch")),',
         "            session_epoch=None,",
@@ -1504,7 +1461,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: current_filepath is parsed with `or None`, so any JSON type reaches a str|None field",
+        "handshake: current_filepath is parsed with `or None`, so any JSON type reaches a str|None field",
         ADDON_MANAGER,
         '            current_filepath=normalized_session_text(info.get("current_filepath")),',
         '            current_filepath=info.get("current_filepath") or None,',
@@ -1517,7 +1474,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: session_id is parsed with `or None`, so the ABA guard takes any JSON type off the socket",
+        "handshake: session_id is parsed with `or None`, so the ABA guard takes any JSON type off the socket",
         ADDON_MANAGER,
         '            session_id=normalized_session_id(info.get("session_id")),',
         '            session_id=info.get("session_id") or None,',
@@ -1527,14 +1484,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the handshake marker drops the session id, so a restart at the same epoch looks unchanged",
+        "handshake: the handshake marker drops the session id, so a restart at the same epoch looks unchanged",
         ADDON_MANAGER,
         "        return (self.session_id, self.session_epoch)",
         "        return (None, self.session_epoch)",
         (f"{AMT}::test_handshake_surfaces_the_session_id_so_the_epoch_survives_a_restart",),
     ),
     Revert(
-        "task 3: a reported session change no longer marks the cached handshake stale",
+        "rehandshake: a reported session change no longer marks the cached handshake stale",
         SERVER_CONNECTION,
         "    _session_marker_stale.set()",
         "    return",
@@ -1545,21 +1502,21 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: only the epoch is compared, so a restart back to the same number looks unchanged (ABA)",
+        "rehandshake: only the epoch is compared, so a restart back to the same number looks unchanged (ABA)",
         SERVER_CONNECTION,
         "or observed == _addon_handshake.session_marker():",
         "or observed[1] == _addon_handshake.session_epoch:",
         (f"{CONNT}::test_a_restarted_addon_at_the_same_epoch_still_marks_the_handshake_stale",),
     ),
     Revert(
-        "task 3: the marker is read at frame level only, so get_session_info's nested pair is missed",
+        "rehandshake: the marker is read at frame level only, so get_session_info's nested pair is missed",
         SERVER_CONNECTION,
         '    if command_type in _SESSION_REPORTING_COMMANDS:\n        sources.append(payload.get("result"))',
         "    pass  # nested result read reverted",
         (f"{CONNT}::test_the_marker_is_read_from_a_command_result_as_well_as_the_frame",),
     ),
     Revert(
-        "task 3: every response invalidates the handshake, so each tool call costs two commands",
+        "rehandshake: every response invalidates the handshake, so each tool call costs two commands",
         SERVER_CONNECTION,
         (
             "    if observed is None or _addon_handshake is None or observed == _addon_handshake.session_marker():\n"
@@ -1572,63 +1529,62 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the stale flag is never cleared, so every command pays for another handshake",
+        "rehandshake: the stale flag is never cleared, so every command pays for another handshake",
         SERVER_CONNECTION,
         "    _session_marker_stale.clear()",
         "    pass  # clear() reverted",
         (f"{CONNT}::test_one_swap_costs_exactly_one_re_handshake_over_a_real_round_trip",),
     ),
     Revert(
-        "task 3: the command gate goes back to the handshake cached once per process",
+        "rehandshake: the command gate goes back to the handshake cached once per process",
         SERVER_CONNECTION,
         "        handshake = refresh_handshake_if_session_changed(self)",
         "        handshake = get_last_handshake()",
         (f"{CONNT}::test_the_command_gate_reads_the_refreshed_capability_set",),
     ),
     Revert(
-        "task 3: the receive path never observes the marker, so the mechanism is never reached",
+        "rehandshake: the receive path never observes the marker, so the mechanism is never reached",
         SERVER_CONNECTION,
         "            note_session_marker(response, command_type)",
         "            pass  # note_session_marker reverted",
         (f"{CONNT}::test_a_barrier_rejection_read_off_the_socket_marks_the_handshake_stale",),
     ),
-    # --- Task 3 cycle 3: the repairs three critics converged on ---------------
+    # --- send liveness, the fail-closed drain, the marker, path hygiene, the producer scan ---
     Revert(
-        "task 3: `or` short-circuits again, so a spent budget closes every remaining peer unsent",
+        "barrier: `or` short-circuits again, so a spent budget closes every remaining peer unsent",
         ADDON_SERVER_CORE,
         "            if not self._send_bounded(client, frame, timeout):",
         "            if time.monotonic() >= deadline or not self._send_bounded(client, frame, timeout):",
         (
             f"{THREADT}::test_a_healthy_peer_queued_behind_stalled_ones_is_still_answered",
-            # The distinct-peer sibling sees the same defect at the other end of
-            # the batch: with the short-circuit back, every peer past the budget
-            # is closed with zero send attempts, so `unattempted` is non-empty.
+            # With the short-circuit back, every peer past the budget is closed
+            # without a send attempt, which the distinct-peer sibling also sees.
             f"{THREADT}::test_rejecting_a_full_queue_to_distinct_stalled_peers_is_bounded",
         ),
     ),
     Revert(
-        "task 3: the send timeout goes back to a performance target used as a health threshold",
+        "barrier: the send timeout goes back to a performance target used as a health threshold",
         ADDON_SERVER_CORE,
         "    _REJECTION_SEND_TIMEOUT_SECONDS = 0.25",
         "    _REJECTION_SEND_TIMEOUT_SECONDS = 0.05",
         (f"{THREADT}::test_a_peer_slower_than_a_loopback_reader_is_not_destroyed_for_it",),
     ),
     Revert(
-        "task 3: an abandoned peer is written to again, paying a syscall per remaining frame",
+        "barrier: an abandoned peer is written to again, paying a syscall per remaining frame",
         ADDON_SERVER_CORE,
         "            if client in abandoned:\n                continue",
         "            if False:\n                continue",
         (f"{THREADT}::test_rejecting_a_full_queue_to_a_stalled_peer_is_bounded",),
     ),
     Revert(
-        "task 3: the write-lock acquisition is unbounded again, outside both of the path's own bounds",
+        "barrier: the write-lock acquisition is unbounded again, outside both of the path's own bounds",
         ADDON_SERVER_CORE,
         "        acquired = send_lock.acquire(False) if lock_timeout <= 0 else send_lock.acquire(timeout=lock_timeout)",
         "        acquired = send_lock.acquire()",
         (f"{THREADT}::test_a_malformed_frame_arriving_mid_rejection_cannot_park_the_main_thread",),
     ),
     Revert(
-        "task 3: a failed timeout restore reports the frame as delivered, leaving the peer spinning",
+        "barrier: a failed timeout restore reports the frame as delivered, leaving the peer spinning",
         ADDON_SERVER_CORE,
         (
             "            print(\"Could not restore a client socket's own timeout"
@@ -1639,21 +1595,21 @@ REVERTS: list[Revert] = [
         (f"{THREADT}::test_a_socket_whose_timeout_cannot_be_restored_is_dropped_not_left_spinning",),
     ),
     Revert(
-        "task 3: the drain loop fails OPEN again, so an unstamped command runs",
+        "barrier: the drain loop fails OPEN again, so an unstamped command runs",
         ADDON_SERVER_CORE,
         "            if stamp != self._session_marker():",
         "            if stamp is not None and stamp != self._session_marker():",
         (f"{THREADT}::test_a_command_that_reached_the_queue_unstamped_is_rejected_not_run",),
     ),
     Revert(
-        "task 3: ordinary responses stop carrying the marker, so Blender's own File -> Open is invisible",
+        "barrier: ordinary responses stop carrying the marker, so Blender's own File -> Open is invisible",
         ADDON_SERVER_CORE,
         '        response["session_id"], response["session_epoch"] = self._session_marker()',
         "        pass  # per-frame marker reverted",
         (f"{THREADT}::test_an_ordinary_response_carries_the_session_marker_too",),
     ),
     Revert(
-        "task 3: an aborted swap leaves the marker where it was, so mid-load stamps still match",
+        "barrier: an aborted swap leaves the marker where it was, so mid-load stamps still match",
         ADDON_SERVER_CORE,
         (
             "            mid_load = load_in_flight()\n"
@@ -1667,7 +1623,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the dying timer is never unregistered, so one live drain timer rests on Blender alone",
+        "barrier: the dying timer is never unregistered, so one live drain timer rests on Blender alone",
         ADDON_SERVER_CORE,
         (
             "        if dying is not None:\n"
@@ -1678,42 +1634,34 @@ REVERTS: list[Revert] = [
         (f"{THREADT}::test_a_dying_tick_leaves_exactly_one_live_drain_timer",),
     ),
     Revert(
-        "task 3: a swap across a disable/enable cycle is observed and discarded",
+        "session: a swap across a disable/enable cycle is observed and discarded",
         ADDON_SESSION,
         "    if observed != _STATE.current_filepath:\n        _STATE.session_epoch += 1",
         "    if False:\n        _STATE.session_epoch += 1",
         (f"{SESSIONT}::test_a_swap_while_the_addon_was_disabled_still_moves_the_marker",),
     ),
     Revert(
-        "task 3: every registration bumps the epoch, so a plain Blender start invalidates every cache",
+        "session: every registration bumps the epoch, so a plain Blender start invalidates every cache",
         ADDON_SESSION,
         "    if observed != _STATE.current_filepath:\n        _STATE.session_epoch += 1",
         "    if True:\n        _STATE.session_epoch += 1",
         (f"{SESSIONT}::test_re_enabling_on_the_same_file_does_not_move_the_marker",),
     ),
     Revert(
-        "task 3: the unsafe-character set stops at C0/C1, so U+2028 and the bidi overrides survive",
+        "text hygiene: the unsafe-character set stops at C0/C1, so U+2028 and the bidi overrides survive",
         ADDON_TEXT_HYGIENE,
         'UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})',
         'UNSAFE_CATEGORIES = frozenset({"Cc"})',
         (
-            # The `filepath` branch no longer depends on this set - the leaf
-            # allowlist refuses `Zl` and `Cf` by not admitting them - so the two
-            # path params that used to be named here now pass with it reverted.
-            # `name` is the field that still depends on it, because
-            # `client_safe_text` publishes what it is given.
-            # `name` is the field that still depends on it, and the dependency
-            # is now *which* safe string is published rather than whether one
-            # is: `client_safe_leaf` strips first and allowlists second, so with
-            # the set reverted the override survives the strip and the allowlist
-            # refuses the leaf outright. The test therefore names the stripped
-            # string rather than asserting hygiene, which any of the three
-            # outcomes satisfies.
+            # Only `name` depends on this set; for `filepath` the leaf allowlist
+            # refuses `Zl` and `Cf` anyway. With the set reverted, the bidi override
+            # survives the strip and the allowlist refuses the whole leaf, so the
+            # test asserts the stripped string, not just that the output is safe.
             f"{SESSIONT}::test_a_library_name_is_published_without_its_control_characters",
         ),
     ),
     Revert(
-        "task 3: the link allowlist stops rejecting traversal and empty components",
+        "text hygiene: the link allowlist stops rejecting traversal and empty components",
         ADDON_TEXT_HYGIENE,
         "        if component in NOT_A_LEAF or not set(component) <= LINK_COMPONENT_ALLOWED:",
         '        if not set(component) <= LINK_COMPONENT_ALLOWED | {"."}:',
@@ -1724,7 +1672,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the link predicate goes back to a blocklist, which is a list of the attacks already known",
+        "text hygiene: the link predicate goes back to a blocklist, which is a list of the attacks already known",
         ADDON_TEXT_HYGIENE,
         "        if component in NOT_A_LEAF or not set(component) <= LINK_COMPONENT_ALLOWED:",
         '        if component in NOT_A_LEAF or any(marker in component for marker in ("/", "\\\\", ":")):',
@@ -1735,27 +1683,25 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the confusable check goes, so an admitted letter publishes a name that renders as another",
+        "text hygiene: the confusable check goes, so an admitted letter publishes a name that renders as another",
         ADDON_TEXT_HYGIENE,
         "    if is_confusable(leaf) or not _is_admissible_leaf(leaf):",
         "    if not _is_admissible_leaf(leaf):",
         (f"{SESSIONT}::test_a_confusable_leaf_name_is_refused_rather_than_published",),
     ),
     Revert(
-        "task 3: `//` followed by a root is called relative again, so an absolute path is published whole",
+        "text hygiene: `//` followed by a root is called relative again, so an absolute path is published whole",
         ADDON_TEXT_HYGIENE,
         "    if body[:1] in _LEAF_SEPARATORS:\n        return None",
         "    if False:\n        return None",
         (
-            # Only `is_relative` depends on this clause. The *publication*
-            # decision for `///Users/...` is taken one line further on, by the
-            # empty-component check, and survives this revert - measured, not
-            # assumed, which is why the other two nodes moved to the row below.
+            # Only `is_relative` depends on this clause; the empty-component check
+            # still keeps `///Users/...` from being published. See `_ROOTED_TWICE`.
             f"{SESSIONT}::test_a_rooted_relative_prefix_is_not_reported_as_relative",
         ),
     ),
     Revert(
-        "task 3: the gate admits one string and the publisher returns another, manufacturing what it rejected",
+        "text hygiene: the gate admits one string and the publisher returns another, manufacturing what it rejected",
         ADDON_FILE_LIFECYCLE,
         '        "filepath": whole if whole is not None else client_safe_leaf(filepath),',
         '        "filepath": filepath if whole is not None else client_safe_leaf(filepath),',
@@ -1765,7 +1711,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the library summary loses the hygiene its sibling field has, on both branches",
+        "text hygiene: the library summary loses the hygiene its sibling field has, on both branches",
         ADDON_FILE_LIFECYCLE,
         ('        "filepath": whole if whole is not None else client_safe_leaf(filepath),'),
         '        "filepath": filepath,',
@@ -1777,28 +1723,28 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: get_addon_status publishes the epoch without the id it is only comparable within",
+        "get_addon_status: get_addon_status publishes the epoch without the id it is only comparable within",
         SERVER_CORE_TOOL,
         '            "session_id": result.session_id,',
         "",
         (f"{CORET}::test_get_addon_status_reports_the_session_id_the_epoch_is_only_comparable_within",),
     ),
     Revert(
-        "task 3: the refresh's own response is read as news, so one swap costs two handshakes",
+        "rehandshake: the refresh's own response is read as news, so one swap costs two handshakes",
         SERVER_CONNECTION,
         '    if getattr(_refreshing, "active", False):\n        return',
         "    if False:\n        return",
         (f"{CONNT}::test_one_swap_costs_exactly_one_re_handshake_over_a_real_round_trip",),
     ),
     Revert(
-        "task 3: a failed re-handshake clears the staleness signal permanently and never retries",
+        "rehandshake: a failed re-handshake clears the staleness signal permanently and never retries",
         SERVER_CONNECTION,
         "    if learned is None or None in learned:",
         "    if False:",
         (f"{CONNT}::test_a_refresh_that_fails_leaves_the_staleness_signal_standing",),
     ),
     Revert(
-        "task 3: the observed pair is compared raw, so a normalized value never equals its own twin",
+        "rehandshake: the observed pair is compared raw, so a normalized value never equals its own twin",
         SERVER_CONNECTION,
         (
             '                normalized_session_id(source.get("session_id")),\n'
@@ -1808,21 +1754,21 @@ REVERTS: list[Revert] = [
         (f"{CONNT}::test_a_non_conforming_epoch_does_not_re_arm_the_flag_forever",),
     ),
     Revert(
-        "task 3: any result carrying a session_epoch key trips a re-handshake, whatever command it answers",
+        "rehandshake: any result carrying a session_epoch key trips a re-handshake, whatever command it answers",
         SERVER_CONNECTION,
         "    if command_type in _SESSION_REPORTING_COMMANDS:",
         "    if True:",
         (f"{CONNT}::test_an_ordinary_commands_result_cannot_trip_a_re_handshake",),
     ),
     Revert(
-        "task 3: the producer scan goes back to the form five shapes were shown to evade",
+        "barrier: the producer scan goes back to the form five shapes were shown to evade",
         TEST_THREADING_FILE,
         '_ENQUEUE_METHODS = frozenset({"put", "put_nowait"})',
         '_ENQUEUE_METHODS = frozenset({"put_nowait"})',
         (f"{EVASION}[blocking put()-def sneak(self, item):\\n    self.command_queue.put(item)\\n]",),
     ),
     Revert(
-        "task 3: the producer scan walks FunctionDef only, missing an async def and a lambda",
+        "barrier: the producer scan walks FunctionDef only, missing an async def and a lambda",
         TEST_THREADING_FILE,
         "_CALLABLE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)",
         "_CALLABLE_NODES = (ast.FunctionDef,)",
@@ -1833,7 +1779,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the producer scan requires the receiver spelled `<x>.command_queue` again",
+        "barrier: the producer scan requires the receiver spelled `<x>.command_queue` again",
         TEST_THREADING_FILE,
         "            and node.func.attr in _ENQUEUE_METHODS\n        )",
         (
@@ -1930,12 +1876,7 @@ REVERTS: list[Revert] = [
         "    mcp.settings.host = host\n    mcp.settings.port = port\n    mcp.settings.transport_security = None\n",
         (f"{CLIT}::test_binding_all_interfaces_keeps_dns_rebinding_protection",),
     ),
-    # ---------------------------------------------------------------------
-    # Cycle-4 repairs. Added because `--list` reported 50 new nodes with no
-    # row: the matrix pins test nodes, so a fix whose test nobody pinned is a
-    # fix nobody proved. That gap is exactly how an unreachable `--work-dir`
-    # symlink guard survived three critic cycles and a 95-row matrix.
-    # ---------------------------------------------------------------------
+    # --- HTTP host, port and opt-in validation ---
     Revert(
         "transport: an empty BLENDERMCP_HTTP_HOST falls through to a wildcard bind again",
         SERVER_CLI,
@@ -1949,7 +1890,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "transport: a non-loopback bind needs no opt-in, as it did before the repair",
+        "transport: a non-loopback bind needs no opt-in",
         SERVER_CLI,
         "    if not _allows_remote(env):",
         "    if False:",
@@ -2059,6 +2000,7 @@ REVERTS: list[Revert] = [
         "    host: str | None = None\n    port: int | None = None\n",
         (f"{CLIT}::test_an_http_config_without_an_address_cannot_be_built_even_under_o",),
     ),
+    # --- the rig's --work-dir, its frame bounds, and its teardown ---
     Revert(
         "rig: --work-dir is no longer resolved, so the rig reports a path it is not writing to",
         RIG,
@@ -2113,6 +2055,7 @@ REVERTS: list[Revert] = [
         "",
         (f"{RIGT}::test_teardown_tolerates_a_reader_that_never_started",),
     ),
+    # --- the container's teardown, its readiness probe, and the bind note ---
     Revert(
         "entrypoint: teardown has no SIGKILL escalation, so a wedged child blocks it for ever",
         ENTRYPOINT,
@@ -2141,8 +2084,9 @@ REVERTS: list[Revert] = [
         "# different file, and this note used to name the mapping it depends on.",
         (f"{DOCKT}::test_binding_all_interfaces_records_the_publish_that_makes_it_safe",),
     ),
+    # --- the allowlist a published leaf name is held to ---
     Revert(
-        "task 3: the leaf allowlist goes back to a three-character blocklist",
+        "text hygiene: the leaf allowlist goes back to a three-character blocklist",
         ADDON_TEXT_HYGIENE,
         "    return all(\n"
         "        character in LEAF_PUNCTUATION or unicodedata.category(character).startswith(LEAF_CATEGORY_PREFIXES)\n"
@@ -2152,15 +2096,15 @@ REVERTS: list[Revert] = [
         (f"{SESSIONT}::test_no_character_can_smuggle_a_separator_through_a_leaf_name",),
     ),
     Revert(
-        "task 3: the leaf allowlist refuses every letter, so a real file name reports as unnameable",
+        "text hygiene: the leaf allowlist refuses every letter, so a real file name reports as unnameable",
         ADDON_TEXT_HYGIENE,
         'LEAF_CATEGORY_PREFIXES = ("L", "N", "M")',
         'LEAF_CATEGORY_PREFIXES = ("N",)',
         (f"{SESSIONT}::test_a_confusable_check_does_not_refuse_an_ordinary_name",),
     ),
-    # --- Task 3 structural pass: the latch, the abort guard, the send floor ---
+    # --- the latch, the abort guard, the send floor ---
     Revert(
-        "task 3: an aborted swap latches nothing, so the state stays advisory and nothing reads it",
+        "session: an aborted swap latches nothing, so the state stays advisory and nothing reads it",
         ADDON_SESSION,
         "    _STATE.session_indeterminate = True\n    _STATE.current_filepath = None",
         "    _STATE.session_indeterminate = False\n    _STATE.current_filepath = None",
@@ -2171,14 +2115,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: an aborted session still names the shot it was replacing, which save_shot would write over",
+        "session: an aborted session still names the shot it was replacing, which save_shot would write over",
         ADDON_SESSION,
         "    _STATE.session_indeterminate = True\n    _STATE.current_filepath = None",
         "    _STATE.session_indeterminate = True",
         (f"{SESSIONT}::test_an_aborted_swap_latches_a_state_a_client_can_read",),
     ),
     Revert(
-        "task 3: a completed load stops clearing the latch, so the addon wedges after one abort",
+        "session: a completed load stops clearing the latch, so the addon wedges after one abort",
         ADDON_SESSION,
         "    _STATE.load_in_flight = False\n    _STATE.session_indeterminate = False",
         "    _STATE.load_in_flight = False",
@@ -2188,7 +2132,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the snapshot stops publishing the latch, so no client can see why it is being refused",
+        "session: the snapshot stops publishing the latch, so no client can see why it is being refused",
         ADDON_SESSION,
         '        "session_indeterminate": _STATE.session_indeterminate,',
         '        "session_indeterminate": False,',
@@ -2198,21 +2142,21 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: get_addon_info hides the latch, so the one surface a refused client can reach says nothing",
+        "session: get_addon_info hides the latch, so the one surface a refused client can reach says nothing",
         ADDON_SERVER_CORE,
         '            "session_indeterminate": session["session_indeterminate"],',
         '            "session_indeterminate": False,',
         (f"{SESSIONT}::test_an_aborted_swap_latches_a_state_a_client_can_read",),
     ),
     Revert(
-        "task 3: the drain loop stops enforcing the latch, so a command runs against a half-replaced database",
+        "barrier: the drain loop stops enforcing the latch, so a command runs against a half-replaced database",
         ADDON_SERVER_CORE,
         '            if session_is_indeterminate() and command.get("type") not in self._INDETERMINATE_SAFE_COMMANDS:',
         "            if False:",
         (f"{THREADT}::test_a_command_is_refused_while_the_session_is_indeterminate",),
     ),
     Revert(
-        "task 3: the latch refuses the commands that repair and report it, wedging the addon for good",
+        "barrier: the latch refuses the commands that repair and report it, wedging the addon for good",
         ADDON_SERVER_CORE,
         "    _INDETERMINATE_SAFE_COMMANDS = frozenset("
         '{"get_addon_info", "get_session_info", "open_shot", "reset_session"})',
@@ -2220,7 +2164,7 @@ REVERTS: list[Revert] = [
         (f"{THREADT}::test_the_commands_that_report_or_repair_an_indeterminate_session_still_run",),
     ),
     Revert(
-        "task 3: the abort guard goes back to a bare except, claiming a partial replace when no load ran",
+        "barrier: the abort guard goes back to a bare except, claiming a partial replace when no load ran",
         ADDON_SERVER_CORE,
         (
             "            mid_load = load_in_flight()\n"
@@ -2242,7 +2186,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the abort guard's two concerns go back to being exclusive, so a mid-load abort never latches",
+        "barrier: the abort guard's two concerns go back to being exclusive, so a mid-load abort never latches",
         ADDON_SERVER_CORE,
         (
             "            mid_load = load_in_flight()\n"
@@ -2262,36 +2206,36 @@ REVERTS: list[Revert] = [
         (f"{THREADT}::test_an_abort_that_beats_the_answer_still_latches_a_load_that_was_in_flight",),
     ),
     Revert(
-        "task 3: the abort message stops asking the flag, so a mid-load abort still says the database is unchanged",
+        "barrier: the abort message stops asking the flag, so a mid-load abort still says the database is unchanged",
         ADDON_SERVER_CORE,
         "        return self._ABORTED_MID_LOAD if mid_load else self._ABORTED_BEFORE_HANDOFF",
         "        return self._ABORTED_BEFORE_HANDOFF",
         (f"{THREADT}::test_an_abort_that_beats_the_answer_still_latches_a_load_that_was_in_flight",),
     ),
     Revert(
-        "task 3: the abort message always claims a half-replaced database, re-arming the T3-18 false positive",
+        "barrier: the abort message always claims a half-replaced database, even when no load had begun",
         ADDON_SERVER_CORE,
         "        return self._ABORTED_MID_LOAD if mid_load else self._ABORTED_BEFORE_HANDOFF",
         "        return self._ABORTED_MID_LOAD",
         (f"{THREADT}::test_an_abort_with_no_load_in_flight_still_answers_and_still_claims_nothing_moved",),
     ),
     Revert(
-        "task 3: the past-budget send goes back to settimeout(0), which drops the peer it is answering",
+        "barrier: the past-budget send goes back to settimeout(0), which drops the peer it is answering",
         ADDON_SERVER_CORE,
         "    _PAST_BUDGET_SEND_TIMEOUT_SECONDS = 0.001",
         "    _PAST_BUDGET_SEND_TIMEOUT_SECONDS = 0.0",
         (f"{THREADT}::test_the_past_budget_send_never_takes_the_socket_out_of_timeout_mode",),
     ),
     Revert(
-        "task 3: BlockingIOError falls through to `break` again, so EAGAIN reads as a dead client",
+        "barrier: BlockingIOError falls through to `break` again, so EAGAIN reads as a dead client",
         ADDON_SERVER_CORE,
         "                except BlockingIOError:",
         "                except TimeoutError:",
         (f"{THREADT}::test_a_peer_whose_recv_reports_would_block_is_not_disconnected",),
     ),
-    # --- Task 3 structural pass: the server boundary ---
+    # --- the server boundary ---
     Revert(
-        "task 3: the server boundary stops filtering control characters, as it did for three whole cycles",
+        "handshake: the server boundary stops filtering control characters",
         ADDON_MANAGER,
         "    cleaned = strip_unsafe(value)",
         "    cleaned = value",
@@ -2302,14 +2246,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: `warning` goes back to carrying the addon's own error message verbatim",
+        "handshake: `warning` goes back to carrying the addon's own error message verbatim",
         ADDON_MANAGER,
         '            warning=strip_unsafe(f"Addon handshake failed: {e}"),',
         '            warning=f"Addon handshake failed: {e}",',
         (f"{AMT}::test_a_hostile_addon_error_message_does_not_reach_the_handshake_warning",),
     ),
     Revert(
-        "task 3: the list fields publish the cleaned form again, manufacturing a traversal and an exact capability",
+        "handshake: the list fields publish the cleaned form again, manufacturing a traversal and an exact capability",
         ADDON_MANAGER,
         "    return isinstance(element, str) and cleaned == element",
         "    return True",
@@ -2319,28 +2263,28 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the structural gate goes back to allowing an end-trim, so padding synthesises a root and a capability",
+        "handshake: the structural gate allows an end-trim again, so padding synthesises a root and a capability",
         ADDON_MANAGER,
         "    return isinstance(element, str) and cleaned == element",
         "    return isinstance(element, str) and cleaned == element.strip()",
         (f"{AMT}::test_an_element_that_only_differs_by_end_whitespace_is_refused_too",),
     ),
     Revert(
-        "task 3: an untrusted payload's truthiness decides whether the session is indeterminate",
+        "handshake: an untrusted payload's truthiness decides whether the session is indeterminate",
         ADDON_MANAGER,
         '            session_indeterminate=info.get("session_indeterminate") is True,',
         '            session_indeterminate=info.get("session_indeterminate") is not None,',
         (f"{AMT}::test_the_handshake_reports_an_indeterminate_session_only_when_the_addon_says_so",),
     ),
     Revert(
-        "task 3: the two copies of the control-character rule drift, which is the risk duplication carries",
+        "text hygiene: the two copies of the control-character rule drift, which is the risk duplication carries",
         SERVER_TEXT_HYGIENE,
         'UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})',
         'UNSAFE_CATEGORIES = frozenset({"Cc"})',
         (f"{AMT}::test_both_sides_of_the_socket_hold_the_same_control_character_block",),
     ),
     Revert(
-        "task 3: get_addon_status carries the latch under a name its docstring never mentions",
+        "get_addon_status: get_addon_status carries the latch under a name its docstring never mentions",
         SERVER_CORE_TOOL,
         '            "session_indeterminate": result.session_indeterminate,',
         '            "session_indeterminate_x": result.session_indeterminate,',
@@ -2350,9 +2294,9 @@ REVERTS: list[Revert] = [
             f"{CORET}::test_get_addon_status_reports_a_healthy_session_as_determinate",
         ),
     ),
-    # --- Task 3 cycle 5: the triaged repair round -----------------------------
+    # --- the library name, is_confusable, the refresh, and abort accounting ---
     Revert(
-        "task 3: the library name goes back through client_safe_text, which allowlists nothing",
+        "text hygiene: the library name goes back through client_safe_text, which allowlists nothing",
         ADDON_FILE_LIFECYCLE,
         '        "name": client_safe_name_leaf(getattr(library, "name", "")),',
         '        "name": _reverted_unallowlisted_name(getattr(library, "name", "")),',
@@ -2360,14 +2304,14 @@ REVERTS: list[Revert] = [
         REVERTED_LIBRARY_NAME,
     ),
     Revert(
-        "task 3: is_confusable compares against the raw string, so an NFD name is called a disguise",
+        "text hygiene: is_confusable compares against the raw string, so an NFD name is called a disguise",
         ADDON_TEXT_HYGIENE,
         '    return unicodedata.normalize("NFKC", text) != unicodedata.normalize("NFC", text)',
         '    return unicodedata.normalize("NFKC", text) != text',
         (f"{SESSIONT}::test_a_decomposed_accent_is_a_real_name_not_a_disguise",),
     ),
     Revert(
-        "task 3: is_confusable is made constantly False, so a compatibility disguise is published",
+        "text hygiene: is_confusable is made constantly False, so a compatibility disguise is published",
         ADDON_TEXT_HYGIENE,
         '    return unicodedata.normalize("NFKC", text) != unicodedata.normalize("NFC", text)',
         '    return unicodedata.normalize("NFKC", text) != unicodedata.normalize("NFKC", text)',
@@ -2377,14 +2321,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the refresh demands the stale pair again, so the staleness flag re-arms forever",
+        "rehandshake: the refresh demands the stale pair again, so the staleness flag re-arms forever",
         SERVER_CONNECTION,
         "    if learned is None or None in learned:",
         "    if learned is None or learned != observed:",
         (f"{CONNT}::test_a_refresh_that_learns_a_newer_session_than_the_one_observed_stops_retrying",),
     ),
     Revert(
-        "task 3: an abort during the pre-swap drain leaves the swap's own client with nothing",
+        "barrier: an abort during the pre-swap drain leaves the swap's own client with nothing",
         ADDON_SERVER_CORE,
         '            if not receipt["answered"]:',
         "            if False:",
@@ -2394,14 +2338,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the answer receipt goes back to a prediction the caller writes up front",
+        "barrier: the answer receipt goes back to a prediction the caller writes up front",
         ADDON_SERVER_CORE,
         "        try:\n            self._drain_queue_into(superseded)",
         '        try:\n            receipt["answered"] = True\n            self._drain_queue_into(superseded)',
         (f"{THREADT}::test_an_abort_in_the_swaps_prologue_still_answers_the_swaps_own_client",),
     ),
     Revert(
-        "task 3: a clean load_post_fail stops accounting for its load, so it reads as an abort",
+        "session: a clean load_post_fail stops accounting for its load, so it reads as an abort",
         ADDON_SESSION,
         "    _STATE.load_failures += 1\n    _STATE.load_in_flight = False",
         "    _STATE.load_failures += 1",
@@ -2475,9 +2419,9 @@ REVERTS: list[Revert] = [
         "    return None  # reverted: silently unstamped",
         (f"{QBT}::test_the_by_path_loader_refuses_a_caller_outside_the_repository",),
     ),
-    # --- Task 3 gate round: the sixth recurrence, and the one positive signal ---
+    # --- every handshake field refuses a hostile value, and load_pre ---
     Revert(
-        "task 3: addon_version goes back to whatever the socket sent, in a field declared list[int]",
+        "handshake: addon_version goes back to whatever the socket sent, in a field declared list[int]",
         ADDON_MANAGER,
         '            addon_version=normalized_addon_version(info.get("addon_version")),',
         '            addon_version=info.get("addon_version"),',
@@ -2488,7 +2432,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: capabilities is `list(... or [])` again, which validates the container and nothing in it",
+        "handshake: capabilities is `list(... or [])` again, which validates the container and nothing in it",
         ADDON_MANAGER,
         '            capabilities=normalized_session_text_list(info.get("capabilities")),',
         '            capabilities=list(info.get("capabilities") or []),',
@@ -2499,7 +2443,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: blender_version is published raw, into get_addon_status and the handshake log line",
+        "handshake: blender_version is published raw, into get_addon_status and the handshake log line",
         ADDON_MANAGER,
         '            blender_version=normalized_session_text(info.get("blender_version")),',
         '            blender_version=info.get("blender_version"),',
@@ -2509,7 +2453,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: writable_output_roots publishes its elements raw, into the set Tasks 5 and 6 match against",
+        "handshake: writable_output_roots publishes its elements raw",
         ADDON_MANAGER,
         '            writable_output_roots=normalized_session_text_list(info.get("writable_output_roots")),',
         '            writable_output_roots=list(info.get("writable_output_roots") or []),',
@@ -2520,35 +2464,35 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: current_filepath is published raw, so the hostile string reaches get_addon_status verbatim",
+        "handshake: current_filepath is published raw, so the hostile string reaches get_addon_status verbatim",
         ADDON_MANAGER,
         '            current_filepath=normalized_session_text(info.get("current_filepath")),',
         '            current_filepath=info.get("current_filepath"),',
         (f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[current_filepath]",),
     ),
     Revert(
-        "task 3: session_id is published raw, the field the whole hygiene module was written for",
+        "handshake: session_id is published raw, the field the whole hygiene module was written for",
         ADDON_MANAGER,
         '            session_id=normalized_session_id(info.get("session_id")),',
         '            session_id=info.get("session_id"),',
         (f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[session_id]",),
     ),
     Revert(
-        "task 3: session_epoch takes any JSON value, so a string epoch is published as an epoch",
+        "handshake: session_epoch takes any JSON value, so a string epoch is published as an epoch",
         ADDON_MANAGER,
         '            session_epoch=normalized_session_epoch(info.get("session_epoch")),',
         '            session_epoch=info.get("session_epoch"),',
         (f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[session_epoch]",),
     ),
     Revert(
-        "task 3: session_indeterminate carries the payload itself rather than a verdict about it",
+        "handshake: session_indeterminate carries the payload itself rather than a verdict about it",
         ADDON_MANAGER,
         '            session_indeterminate=info.get("session_indeterminate") is True,',
         '            session_indeterminate=info.get("session_indeterminate"),',
         (f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[session_indeterminate]",),
     ),
     Revert(
-        "task 3: load_pre stops recording that a load began, so no abort is ever indeterminate",
+        "session: load_pre stops recording that a load began, so no abort is ever indeterminate",
         ADDON_SESSION,
         "    _STATE.load_in_flight = True",
         "    _STATE.load_in_flight = False",
@@ -2561,14 +2505,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 3: the load_pre handler is never registered, so Blender never tells the addon a load began",
+        "session: the load_pre handler is never registered, so Blender never tells the addon a load began",
         ADDON_SESSION,
         '    ("load_pre", _on_load_pre),\n',
         "",
         (f"{THREADT}::test_a_retry_then_an_abort_part_way_through_the_second_load_is_indeterminate",),
     ),
     Revert(
-        "task 3: an abort stops accounting for its own load, so the next abort latches on the strength of it",
+        "session: an abort stops accounting for its own load, so the next abort latches on the strength of it",
         ADDON_SESSION,
         (
             "    # call - so leaving the flag set would make the *next* abort, however\n"
@@ -2582,15 +2526,15 @@ REVERTS: list[Revert] = [
         (f"{THREADT}::test_a_second_abort_that_began_no_load_does_not_bump_the_marker_again",),
     ),
     Revert(
-        "task 3: _answer stops writing the receipt, so the guard answers a client that was already answered",
+        "barrier: _answer stops writing the receipt, so the guard answers a client that was already answered",
         ADDON_SERVER_CORE,
         '        if receipt is not None:\n            receipt["answered"] = True\n\n',
         "",
         (f"{THREADT}::test_a_swap_that_answers_normally_is_not_answered_a_second_time_by_the_guard",),
     ),
-    # --- Task 4: rollback that survives a file swap or a library reload -------
+    # --- rollback that survives a file swap or a library reload -------
     Revert(
-        "task 4: the library commands enter mutation_transaction, so a failed reload deletes what it reloaded",
+        "transaction: the library commands enter mutation_transaction, so a failed reload deletes what it reloaded",
         ADDON_SERVER_CORE,
         "            or cmd_type in self._DATABLOCK_REPLACING_COMMANDS\n",
         "",
@@ -2600,7 +2544,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 4: link_canon_library joins the datablock-replacing set, so a failed link leaks its library",
+        "transaction: link_canon_library joins the datablock-replacing set, so a failed link leaks its library",
         ADDON_SERVER_CORE,
         '_DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries"})',
         '_DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries", '
@@ -2613,7 +2557,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 4: Transaction.invalidate() does nothing, so a swap inside a transaction is rolled back",
+        "transaction: Transaction.invalidate() does nothing, so a swap inside a transaction is rolled back",
         ADDON_TRANSACTION,
         (
             "        self.invalidated = True\n"
@@ -2630,7 +2574,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 4: rollback ignores the invalidation and diffs against the emptied snapshot",
+        "transaction: rollback ignores the invalidation and diffs against the emptied snapshot",
         ADDON_TRANSACTION,
         "        if self.invalidated:\n            return ROLLBACK_SKIPPED_WARNING\n",
         "",
@@ -2641,7 +2585,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 4: a skipped rollback re-raises the original error, so the warning never reaches the envelope",
+        "transaction: a skipped rollback re-raises the original error, so the warning never reaches the envelope",
         ADDON_TRANSACTION,
         "        if warning is None:\n            raise\n",
         "        raise\n",
@@ -2651,7 +2595,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 4: ObjectState.invalidate() removes the geometry backup a load may already have freed",
+        "transaction: ObjectState.invalidate() removes the geometry backup a load may already have freed",
         ADDON_OBJECT_STATE,
         "        self.materials = []\n        self.geometry_backup = None\n\n    def discard_backup",
         "        self.materials = []\n        self.discard_backup()\n\n    def discard_backup",
@@ -2661,7 +2605,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 4: libraries untracked, so a failed link leaks the Library datablock",
+        "transaction: libraries untracked, so a failed link leaks the Library datablock",
         ADDON_TRANSACTION,
         '    "libraries",\n)',
         ")",
@@ -2672,14 +2616,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 4: libraries removed in reverse order with everything else, before their linked datablocks",
+        "transaction: libraries removed in reverse order with everything else, before their linked datablocks",
         ADDON_TRANSACTION,
         'if coll_name not in {"objects", "libraries"}]',
         'if coll_name != "objects"]',
         (f"{TSWAPT}::test_a_failed_link_never_removes_a_datablock_its_library_removal_already_freed",),
     ),
     Revert(
-        "task 4: blend_import_post invalidates on every import, disarming a failed link's rollback",
+        "transaction: blend_import_post invalidates on every import, disarming a failed link's rollback",
         ADDON_SESSION,
         "    if library_replace_in_progress():\n        invalidate_active_transaction()\n",
         "    invalidate_active_transaction()\n",
@@ -2689,14 +2633,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 4: the replace flag is not restored when the reload raises",
+        "transaction: the replace flag is not restored when the reload raises",
         ADDON_TRANSACTION,
         "    try:\n        yield\n    finally:\n        _DISPATCH.library_replace_in_progress = previous",
         "    yield\n    _DISPATCH.library_replace_in_progress = previous",
         (f"{TSWAPT}::test_the_replace_flag_is_cleared_when_the_reload_raises",),
     ),
     Revert(
-        "task 4: load_post stops invalidating the open transaction",
+        "transaction: load_post stops invalidating the open transaction",
         ADDON_SESSION,
         "    invalidate_active_transaction()\n    _STATE.session_epoch += 1\n",
         "    _STATE.session_epoch += 1\n",
@@ -2706,7 +2650,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 4: the blend_import_post handler is never registered",
+        "transaction: the blend_import_post handler is never registered",
         ADDON_SESSION,
         '    ("blend_import_post", _on_blend_import_post),\n',
         "",
@@ -2716,7 +2660,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 4: the active transaction is cleared only on success, so a failed command stays reachable",
+        "transaction: the active transaction is cleared only on success, so a failed command stays reachable",
         ADDON_TRANSACTION,
         (
             "        txn.commit()\n"
@@ -2732,7 +2676,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 4: the active transaction is never cleared",
+        "transaction: the active transaction is never cleared",
         ADDON_TRANSACTION,
         (
             "    finally:\n"
@@ -2744,7 +2688,7 @@ REVERTS: list[Revert] = [
         (f"{TSWAPT}::test_the_active_transaction_never_outlives_its_command[success]",),
     ),
     Revert(
-        "task 4 harness check: rollback stops removing new datablocks, so the Step 1/1b reproductions stop reproducing",
+        "transaction harness: rollback stops removing new datablocks, so the regression guards stop reproducing",
         ADDON_TRANSACTION,
         "        _remove_datablocks(_new_datablocks(self._before_ids, exclude_ids=self._backup_ids))\n",
         "",
@@ -2753,16 +2697,16 @@ REVERTS: list[Revert] = [
             f"{MUTT}::test_regression_guard_a_transaction_unaware_of_a_library_reload_removes_the_reloaded_contents",
         ),
     ),
-    # --- Task 5: the filesystem trust boundary ---
+    # --- the filesystem trust boundary ---
     Revert(
-        "task 5: file_paths imports bpy",
+        "file paths: file_paths imports bpy",
         ADDON_FILE_PATHS,
         None,
         "\nimport bpy\n",
         (f"{FPT}::test_file_paths_imports_no_bpy",),
     ),
     Revert(
-        "task 5: a non-string path reaches the string handling",
+        "file paths: a non-string path reaches the string handling",
         ADDON_FILE_PATHS,
         '    if not isinstance(raw, str):\n        raise ValueError("path must be a string")\n',
         "",
@@ -2772,28 +2716,28 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5: an empty or blank path is not refused (Blender opens the process CWD)",
+        "file paths: an empty or blank path is not refused (Blender opens the process CWD)",
         ADDON_FILE_PATHS,
         '    if not raw.strip():\n        raise ValueError("path must not be empty")\n',
         "",
         (f"{FPT}::test_an_empty_path_is_refused", f"{FPT}::test_a_whitespace_only_path_is_refused"),
     ),
     Revert(
-        "task 5: a NUL byte is not refused",
+        "file paths: a NUL byte is not refused",
         ADDON_FILE_PATHS,
         '    if "\\x00" in raw:\n        raise ValueError("path must not contain a NUL byte")\n',
         "",
         (f"{FPT}::test_a_nul_byte_is_refused",),
     ),
     Revert(
-        "task 5: an unexpanded Blender-relative prefix is resolved as a POSIX path",
+        "file paths: an unexpanded Blender-relative prefix is resolved as a POSIX path",
         ADDON_FILE_PATHS,
         "    if raw.startswith(BLENDER_RELATIVE_PREFIX):",
         "    if False:",
         (f"{FPT}::test_an_unexpanded_blender_relative_prefix_is_refused",),
     ),
     Revert(
-        "task 5: the .blend suffix is not checked",
+        "file paths: the .blend suffix is not checked",
         ADDON_FILE_PATHS,
         "    if not (_has_blend_suffix(raw) and _has_blend_suffix(resolved)):",
         "    if False:",
@@ -2804,7 +2748,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5: trailing dots and spaces are stripped before the suffix is compared",
+        "file paths: trailing dots and spaces are stripped before the suffix is compared",
         ADDON_FILE_PATHS,
         "    leaf = os.path.basename(path)\n",
         '    leaf = os.path.basename(path).rstrip(". ")\n',
@@ -2814,14 +2758,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5: the .blend suffix is compared case-sensitively",
+        "file paths: the .blend suffix is compared case-sensitively",
         ADDON_FILE_PATHS,
         "    return leaf.lower().endswith(BLEND_SUFFIX)",
         "    return leaf.endswith(BLEND_SUFFIX)",
         (f"{FPT}::test_the_blend_suffix_is_matched_case_insensitively",),
     ),
     Revert(
-        "task 5: realpath reverted to abspath, symlinks compared by name (plus the same-directory fallback)",
+        "file paths: realpath reverted to abspath, symlinks compared by name (plus the same-directory fallback)",
         ADDON_FILE_PATHS,
         "    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))",
         "    return os.path.abspath(os.path.expanduser(path))",
@@ -2835,7 +2779,7 @@ REVERTS: list[Revert] = [
         also=NO_SAME_DIRECTORY_FALLBACK,
     ),
     Revert(
-        "task 5: no abspath or realpath, relative and `..` paths compared as typed (plus the same-directory fallback)",
+        "file paths: no abspath or realpath, relative and `..` paths compared as typed (plus the same-dir fallback)",
         ADDON_FILE_PATHS,
         "    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))",
         "    return os.path.expanduser(path)",
@@ -2848,28 +2792,28 @@ REVERTS: list[Revert] = [
         also=NO_SAME_DIRECTORY_FALLBACK,
     ),
     Revert(
-        "task 5: ~ is not expanded, so it names a directory under the process CWD",
+        "file paths: ~ is not expanded, so it names a directory under the process CWD",
         ADDON_FILE_PATHS,
         "    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))",
         "    return os.path.realpath(os.path.abspath(path))",
         (f"{FPT}::test_tilde_expands_to_the_home_directory",),
     ),
     Revert(
-        "task 5: containment by string prefix (the /output-evil bug)",
+        "file paths: containment by string prefix (the /output-evil bug)",
         ADDON_FILE_PATHS,
         "            if os.path.commonpath((canonical_root, candidate)) == canonical_root:",
         "            if candidate.startswith(canonical_root):",
         (f"{FPT}::test_a_sibling_directory_sharing_the_roots_prefix_is_refused",),
     ),
     Revert(
-        "task 5: no configured roots refuses everything instead of enforcing nothing",
+        "file paths: no configured roots refuses everything instead of enforcing nothing",
         ADDON_FILE_PATHS,
         "    if not roots:\n        return\n",
         "",
         (f"{FPT}::test_no_configured_roots_enforces_nothing",),
     ),
     Revert(
-        "task 5: the containment refusal echoes the resolved path",
+        "file paths: the containment refusal echoes the resolved path",
         ADDON_FILE_PATHS,
         '        "path is outside the allowed file roots',
         '        f"path {candidate} is outside the allowed file roots',
@@ -2881,7 +2825,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5: a directory is read as a missing file",
+        "file paths: a directory is read as a missing file",
         ADDON_FILE_PATHS,
         (
             "    if os.path.isdir(path):\n"
@@ -2892,7 +2836,7 @@ REVERTS: list[Revert] = [
         (f"{FPT}::test_a_directory_where_a_file_is_expected_is_refused",),
     ),
     Revert(
-        "task 5: a directory is accepted as a save target",
+        "file paths: a directory is accepted as a save target",
         ADDON_FILE_PATHS,
         (
             "    if os.path.isdir(path):\n"
@@ -2903,14 +2847,14 @@ REVERTS: list[Revert] = [
         (f"{FPT}::test_a_directory_where_a_save_target_is_expected_is_refused",),
     ),
     Revert(
-        "task 5: a missing file is not refused before it is opened",
+        "file paths: a missing file is not refused before it is opened",
         ADDON_FILE_PATHS,
         '    if not os.path.isfile(path):\n        raise ValueError("file does not exist")\n',
         "",
         (f"{FPT}::test_a_missing_file_is_refused",),
     ),
     Revert(
-        "task 5: the magic-byte check is skipped",
+        "file paths: the magic-byte check is skipped",
         ADDON_FILE_PATHS,
         "    if not header.startswith(BLEND_MAGIC_PREFIXES):",
         "    if False:",
@@ -2920,14 +2864,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5: an unreadable file's OSError text (and its path) reaches the refusal",
+        "file paths: an unreadable file's OSError text (and its path) reaches the refusal",
         ADDON_FILE_PATHS,
         '        raise ValueError("file could not be read") from exc',
         '        raise ValueError(f"file could not be read: {exc}") from exc',
         (f"{FPT}::test_an_unreadable_file_is_refused_without_naming_it",),
     ),
     Revert(
-        "task 5: a save target's missing directory is not refused",
+        "file paths: a save target's missing directory is not refused",
         ADDON_FILE_PATHS,
         '        raise ValueError("target directory does not exist; pass create_directories=true to create it")\n',
         "        return\n",
@@ -2937,14 +2881,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5: a save target's read-only directory is not refused",
+        "file paths: a save target's read-only directory is not refused",
         ADDON_FILE_PATHS,
         '    if not os.access(directory, os.W_OK):\n        raise ValueError("target directory is not writable")\n',
         "",
         (f"{FPT}::test_a_save_target_in_a_read_only_directory_is_refused",),
     ),
     Revert(
-        "task 5: the magic check accepts only b'BLENDER', rejecting every compressed .blend",
+        "file paths: the magic check accepts only b'BLENDER', rejecting every compressed .blend",
         ADDON_FILE_PATHS,
         "BLEND_MAGIC_PREFIXES = (BLEND_MAGIC_UNCOMPRESSED, BLEND_MAGIC_ZSTD, BLEND_MAGIC_GZIP)",
         "BLEND_MAGIC_PREFIXES = (BLEND_MAGIC_UNCOMPRESSED,)",
@@ -2955,21 +2899,21 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5 (Fix 6): the superseded 4-byte gzip constant, pinning the FNAME flag",
+        "file paths: the superseded 4-byte gzip constant, pinning the FNAME flag",
         ADDON_FILE_PATHS,
         r'BLEND_MAGIC_GZIP = b"\x1f\x8b"',
         r'BLEND_MAGIC_GZIP = b"\x1f\x8b\x08\x08"',
         (f"{FPT}::test_a_gzip_blend_written_without_an_fname_is_accepted",),
     ),
     Revert(
-        "task 5 (Fix 6): the superseded 12-byte BLENDER17-01 constant, pinning 5.x's header",
+        "file paths: the superseded 12-byte BLENDER17-01 constant, pinning 5.x's header",
         ADDON_FILE_PATHS,
         'BLEND_MAGIC_UNCOMPRESSED = b"BLENDER"',
         'BLEND_MAGIC_UNCOMPRESSED = b"BLENDER17-01"',
         (f"{FPT}::test_a_pre_5x_blend_header_is_accepted",),
     ),
     Revert(
-        "task 5: the header read is shorter than the longest prefix",
+        "file paths: the header read is shorter than the longest prefix",
         ADDON_FILE_PATHS,
         "handle.read(max(len(prefix) for prefix in BLEND_MAGIC_PREFIXES))",
         "handle.read(len(BLEND_MAGIC_GZIP))",
@@ -2980,7 +2924,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5: the sanitizer is bypassed and Blender's text goes out raw",
+        "file paths: the sanitizer is bypassed and Blender's text goes out raw",
         ADDON_FILE_PATHS,
         "    text = _PATH_IN_TEXT.sub(_placeholder_for, text)",
         "    text = raw",
@@ -3000,7 +2944,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5: the sanitizer replaces only the first path (shape 3 ships its second copy)",
+        "file paths: the sanitizer replaces only the first path (shape 3 ships its second copy)",
         ADDON_FILE_PATHS,
         "    text = _PATH_IN_TEXT.sub(_placeholder_for, text)",
         "    text = _PATH_IN_TEXT.sub(_placeholder_for, text, count=1)",
@@ -3010,7 +2954,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5: only quoted paths are detected (shape 4's bare derived `<abs>@` survives)",
+        "file paths: only quoted paths are detected (shape 4's bare derived `<abs>@` survives)",
         ADDON_FILE_PATHS,
         "(?P<bare>{_PATH_START}",
         "(?P<bare>(?!){_PATH_START}",
@@ -3021,21 +2965,21 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5: a bare path stops at its first space",
+        "file paths: a bare path stops at its first space",
         ADDON_FILE_PATHS,
         r"(?:(?:\s+\S*[^\s:;,])*?\s+\S*[/\\]\S*?{_TRAILING})*)",
         r")",
         (f"{FPT}::test_sanitizer_removes_an_unquoted_path_containing_a_space",),
     ),
     Revert(
-        "task 5: a quoted path ends at the first matching quote, even an apostrophe inside it",
+        "file paths: a quoted path ends at the first matching quote, even an apostrophe inside it",
         ADDON_FILE_PATHS,
         r"(?P=quote)(?=$|[\s:;,.?!)\]>])",
         "(?P=quote)",
         (f"{FPT}::test_sanitizer_removes_quoted_paths_containing_a_space_and_an_apostrophe",),
     ),
     Revert(
-        "task 5: only POSIX-rooted paths are detected",
+        "file paths: only POSIX-rooted paths are detected",
         ADDON_FILE_PATHS,
         r'_PATH_START = r"(?:/|\\\\|~[\w.-]*[/\\]|[A-Za-z]:[\\/])"',
         '_PATH_START = r"(?:/)"',
@@ -3045,42 +2989,42 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5: a bare path may start mid-word, so `and/or` is cut",
+        "file paths: a bare path may start mid-word, so `and/or` is cut",
         ADDON_FILE_PATHS,
         r"""(?<![^\s"'(\[=,])""",
         "",
         (f"{FPT}::test_sanitizer_leaves_text_without_a_path_alone",),
     ),
     Revert(
-        "task 5: the reload shape's LI type code is presented as part of the library name",
+        "file paths: the reload shape's LI type code is presented as part of the library name",
         ADDON_FILE_PATHS,
         '    return _LIBRARY_ID_NAME.sub(r"\\1", text)',
         "    return text",
         (f"{FPT}::test_sanitizer_does_not_present_the_id_code_as_part_of_the_library_name",),
     ),
     Revert(
-        "task 5: an exception with no text sanitizes to an empty error",
+        "file paths: an exception with no text sanitizes to an empty error",
         ADDON_FILE_PATHS,
         "    if not raw:\n        return type(exc).__name__\n",
         "",
         (f"{FPT}::test_sanitizer_names_the_exception_type_when_it_carries_no_text",),
     ),
     Revert(
-        "task 5: Poly Haven loads the download without checking it is a .blend",
+        "polyhaven: Poly Haven loads the download without checking it is a .blend",
         ADDON_POLYHAVEN,
         "    blend_path = resolve_blend_path(path, must_exist=True)",
         "    blend_path = path",
         (f"{PHT}::test_a_downloaded_blend_whose_header_is_not_a_blend_is_never_loaded",),
     ),
     Revert(
-        "task 5: Poly Haven does not contain the download to its own directory",
+        "polyhaven: Poly Haven does not contain the download to its own directory",
         ADDON_POLYHAVEN,
         "        enforce_roots(blend_path, [download_dir])",
         "        enforce_roots(blend_path, [])",
         (f"{PHT}::test_a_downloaded_blend_resolving_outside_its_download_directory_is_never_loaded",),
     ),
     Revert(
-        "task 5: Poly Haven's download is held to the deployment's file roots, breaking the import",
+        "polyhaven: Poly Haven's download is held to the deployment's file roots, breaking the import",
         ADDON_POLYHAVEN,
         "        enforce_roots(blend_path, [download_dir])",
         "        enforce_roots(blend_path, configured_file_roots())",
@@ -3088,21 +3032,21 @@ REVERTS: list[Revert] = [
         also="\nfrom ..output_roots import configured_file_roots\n",
     ),
     Revert(
-        "task 5: Poly Haven's import error reaches the client unsanitized",
+        "polyhaven: Poly Haven's import error reaches the client unsanitized",
         ADDON_POLYHAVEN,
         '{"error": f"Failed to import model: {sanitize_blender_error(e)}"}',
         '{"error": f"Failed to import model: {e!s}"}',
         (f"{PHT}::test_a_failed_blend_load_reports_no_absolute_path",),
     ),
     Revert(
-        "task 5: file roots ignore their own variable when the output roots are set",
+        "file roots: file roots ignore their own variable when the output roots are set",
         ADDON_OUTPUT_ROOTS,
         "    return file_roots or configured_roots(source)",
         "    return configured_roots(source) or file_roots",
         (f"{ROOTST}::test_configured_file_roots_read_their_own_variable_first",),
     ),
     Revert(
-        "task 5: file roots do not fall back to the output roots",
+        "file roots: file roots do not fall back to the output roots",
         ADDON_OUTPUT_ROOTS,
         "    return file_roots or configured_roots(source)",
         "    return file_roots",
@@ -3112,49 +3056,49 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5: a blank file-roots variable counts as set, so the deployment silently goes permissive",
+        "file roots: a blank file-roots variable counts as set, so the deployment silently goes permissive",
         ADDON_OUTPUT_ROOTS,
         "    return file_roots or configured_roots(source)",
         "    return file_roots if FILE_ROOTS_ENV_VAR in source else configured_roots(source)",
         (f"{ROOTST}::test_a_blank_file_roots_variable_counts_as_unset",),
     ),
     Revert(
-        "task 5: the enforced roots borrow the advisory home-directory default",
+        "file roots: the enforced roots borrow the advisory home-directory default",
         ADDON_OUTPUT_ROOTS,
         "    return file_roots or configured_roots(source)",
         '    return file_roots or configured_roots(source) or [os.path.expanduser("~")]',
         (f"{ROOTST}::test_configured_file_roots_never_include_the_advisory_defaults",),
     ),
     Revert(
-        "task 5: the handshake publishes the configured roots un-canonicalized",
+        "file roots: the handshake publishes the configured roots un-canonicalized",
         ADDON_SERVER_CORE,
         "    return tuple(dict.fromkeys(canonical_path(root) for root in roots))",
         "    return tuple(dict.fromkeys(roots))",
         (f"{ROOTST}::test_get_addon_info_publishes_enforced_file_roots_in_canonical_form",),
     ),
     Revert(
-        "task 5: the handshake publishes the advisory writable roots as the enforced ones",
+        "file roots: the handshake publishes the advisory writable roots as the enforced ones",
         ADDON_SERVER_CORE,
         "        roots = list(_canonical_file_roots(tuple(configured_file_roots())))",
         "        roots = BlenderMCPServer._writable_output_roots()",
         (f"{ROOTST}::test_get_addon_info_publishes_a_permissive_policy_when_no_roots_are_configured",),
     ),
     Revert(
-        "task 5: the handshake never reports the policy as enforced",
+        "file roots: the handshake never reports the policy as enforced",
         ADDON_SERVER_CORE,
         '"file_roots_enforced": bool(roots)',
         '"file_roots_enforced": False',
         (f"{ROOTST}::test_get_addon_info_publishes_enforced_file_roots_in_canonical_form",),
     ),
     Revert(
-        "task 5: the server drops the addon's file roots",
+        "handshake: the server drops the addon's file roots",
         ADDON_MANAGER,
         '            file_roots=normalized_session_text_list(info.get("file_roots")),',
         "            file_roots=[],",
         (f"{AMT}::test_handshake_surfaces_the_file_path_policy",),
     ),
     Revert(
-        "task 5: the file roots cross the server boundary unnormalized",
+        "handshake: the file roots cross the server boundary unnormalized",
         ADDON_MANAGER,
         '            file_roots=normalized_session_text_list(info.get("file_roots")),',
         '            file_roots=list(info.get("file_roots") or []),',
@@ -3164,7 +3108,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5: file_roots_enforced carries the payload itself rather than a verdict about it",
+        "handshake: file_roots_enforced carries the payload itself rather than a verdict about it",
         ADDON_MANAGER,
         '            file_roots_enforced=info.get("file_roots_enforced") is True,',
         '            file_roots_enforced=info.get("file_roots_enforced"),',
@@ -3174,50 +3118,50 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5: get_addon_status hardcodes the policy as unenforced",
+        "get_addon_status: get_addon_status hardcodes the policy as unenforced",
         SERVER_CORE_TOOL,
         '            "file_roots_enforced": result.file_roots_enforced,',
         '            "file_roots_enforced": False,',
         (f"{CORET}::test_get_addon_status_reports_the_file_path_policy",),
     ),
     Revert(
-        "task 5: the file-policy keys go undocumented",
+        "get_addon_status: the file-policy keys go undocumented",
         SERVER_CORE_TOOL,
         '"file_roots"/"file_roots_enforced"',
         "file roots and whether enforced",
         (f"{CORET}::test_get_addon_status_documents_every_key_it_returns",),
     ),
-    # --- Task 5 cycle-1 repairs: cause text, known paths, case-folding volumes, Poly Haven siblings ---
+    # --- cause text, known paths, case-folding volumes, Poly Haven siblings ---
     Revert(
-        "task 5 F1: a bare path extends across a word ending in ':' into the cause",
+        "file paths: a bare path extends across a word ending in ':' into the cause",
         ADDON_FILE_PATHS,
         r"(?:(?:\s+\S*[^\s:;,])*?",
         r"(?:(?:\s+\S+)*?",
         (f"{FPT}::test_sanitizer_keeps_an_errno_text_that_contains_a_slash",),
     ),
     Revert(
-        "task 5 F1: a lone '/' is taken for a path",
+        "file paths: a lone '/' is taken for a path",
         ADDON_FILE_PATHS,
         "{_PATH_START}(?=\\S)",
         "{_PATH_START}",
         (f"{FPT}::test_sanitizer_keeps_an_errno_text_that_contains_a_slash",),
     ),
     Revert(
-        "task 5 F1: a bare path swallows the punctuation that closes it",
+        "file paths: a bare path swallows the punctuation that closes it",
         ADDON_FILE_PATHS,
         r"(?=\S)\S*?{_TRAILING}",
         r"(?=\S)\S*",
         (f"{FPT}::test_sanitizer_leaves_punctuation_after_a_bare_path",),
     ),
     Revert(
-        "task 5 F7: a quoted path closed by '?', ')' or '>' is not recognised as quoted",
+        "file paths: a quoted path closed by '?', ')' or '>' is not recognised as quoted",
         ADDON_FILE_PATHS,
         r"[\s:;,.?!)\]>])",
         r"[\s:;,.)\]])",
         (f"{FPT}::test_sanitizer_keeps_punctuation_closing_a_quoted_path",),
     ),
     Revert(
-        "task 5 F3: known paths are ignored",
+        "file paths: known paths are ignored",
         ADDON_FILE_PATHS,
         "        text = text.replace(known, PATH_PLACEHOLDER)",
         "        pass",
@@ -3227,78 +3171,78 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 5 F3: a known path's derived '@' temp name is not known",
+        "file paths: a known path's derived '@' temp name is not known",
         ADDON_FILE_PATHS,
         '    return usable | {f"{path}@" for path in usable}',
         "    return usable",
         (f"{FPT}::test_sanitizer_replaces_the_derived_temp_name_of_a_known_path",),
     ),
     Revert(
-        "task 5 F3: known paths replaced shortest-first, leaving '<path>@'",
+        "file paths: known paths replaced shortest-first, leaving '<path>@'",
         ADDON_FILE_PATHS,
         "key=len, reverse=True)",
         "key=len)",
         (f"{FPT}::test_sanitizer_replaces_the_derived_temp_name_of_a_known_path",),
     ),
     Revert(
-        "task 5 F2: containment compares spellings only, refusing a case variant on APFS",
+        "file paths: containment compares spellings only, refusing a case variant on APFS",
         ADDON_FILE_PATHS,
         "        if _has_ancestor_directory(candidate, canonical_root):\n            return\n",
         "",
         (f"{FPT}::test_a_root_spelled_in_another_case_still_contains_its_files",),
     ),
     Revert(
-        "task 5 F6: the HDRI setup error goes out raw",
+        "polyhaven: the HDRI setup error goes out raw",
         ADDON_POLYHAVEN,
         "Failed to set up HDRI in Blender: {sanitize_blender_error(e)}",
         "Failed to set up HDRI in Blender: {e!s}",
         (f"{PHT}::test_a_failed_hdri_setup_reports_no_absolute_path",),
     ),
     Revert(
-        "task 5 F6: the texture processing error goes out raw",
+        "polyhaven: the texture processing error goes out raw",
         ADDON_POLYHAVEN,
         "Failed to process textures: {sanitize_blender_error(e)}",
         "Failed to process textures: {e!s}",
         (f"{PHT}::test_a_failed_texture_load_reports_no_absolute_path",),
     ),
     Revert(
-        "task 5 F6: the asset import's outer error goes out raw",
+        "polyhaven: the asset import's outer error goes out raw",
         ADDON_POLYHAVEN,
         "Failed to download asset: {sanitize_blender_error(e)}",
         "Failed to download asset: {e!s}",
         (f"{PHT}::test_a_failure_before_any_download_reports_no_absolute_path[import_polyhaven_asset-arguments0]",),
     ),
     Revert(
-        "task 5 F6: the categories error goes out raw",
+        "polyhaven: the categories error goes out raw",
         ADDON_POLYHAVEN,
         '            return {"error": sanitize_blender_error(e)}\n\n    def list_polyhaven_assets',
         '            return {"error": str(e)}\n\n    def list_polyhaven_assets',
         (f"{PHT}::test_a_failure_before_any_download_reports_no_absolute_path[get_polyhaven_categories-arguments1]",),
     ),
     Revert(
-        "task 5 F6: the asset listing error goes out raw",
+        "polyhaven: the asset listing error goes out raw",
         ADDON_POLYHAVEN,
         '            return {"error": sanitize_blender_error(e)}\n\n    def import_polyhaven_asset',
         '            return {"error": str(e)}\n\n    def import_polyhaven_asset',
         (f"{PHT}::test_a_failure_before_any_download_reports_no_absolute_path[list_polyhaven_assets-arguments2]",),
     ),
-    # --- Task 6: open_shot, save_shot, reset_session ---
+    # --- open_shot, save_shot, reset_session ---
     Revert(
-        "task 6: open_mainfile inherits use_scripts instead of passing False",
+        "file lifecycle: open_mainfile inherits use_scripts instead of passing False",
         ADDON_FILE_LIFECYCLE,
         "bpy.ops.wm.open_mainfile(filepath=canonical, load_ui=load_ui, use_scripts=False)",
         "bpy.ops.wm.open_mainfile(filepath=canonical, load_ui=load_ui)",
         (f"{FLT}::test_open_shot_passes_use_scripts_false_explicitly",),
     ),
     Revert(
-        "task 6: open_mainfile inherits load_ui (the operator default is True)",
+        "file lifecycle: open_mainfile inherits load_ui (the operator default is True)",
         ADDON_FILE_LIFECYCLE,
         "bpy.ops.wm.open_mainfile(filepath=canonical, load_ui=load_ui, use_scripts=False)",
         "bpy.ops.wm.open_mainfile(filepath=canonical, use_scripts=False)",
         (f"{FLT}::test_open_shot_passes_load_ui_false_explicitly_by_default",),
     ),
     Revert(
-        "task 6: use_scripts exposed as an open_shot parameter",
+        "file lifecycle: use_scripts exposed as an open_shot parameter",
         ADDON_FILE_LIFECYCLE,
         "self, filepath: object, load_ui: object = False, discard_unsaved: object = False\n",
         "self, filepath: object, load_ui: object = False, discard_unsaved: object = False, "
@@ -3306,28 +3250,28 @@ REVERTS: list[Revert] = [
         (f"{FLT}::test_no_file_command_takes_a_use_scripts_parameter",),
     ),
     Revert(
-        "task 6: a server-side tool schema names use_scripts",
+        "file lifecycle: a server-side tool schema names use_scripts",
         SERVER_CORE_TOOL,
         None,
         "\n# use_scripts\n",
         (f"{FLT}::test_use_scripts_appears_in_no_server_side_schema",),
     ),
     Revert(
-        "task 6: open_shot destroys unsaved work without asking",
+        "file lifecycle: open_shot destroys unsaved work without asking",
         ADDON_FILE_LIFECYCLE,
         "        if dirty and not discard_unsaved:\n",
         "        if False:\n",
         (f"{FLT}::test_open_shot_refuses_a_dirty_session_without_discard_unsaved",),
     ),
     Revert(
-        "task 6: discard_unsaved is ignored, so a dirty session can never be replaced",
+        "file lifecycle: discard_unsaved is ignored, so a dirty session can never be replaced",
         ADDON_FILE_LIFECYCLE,
         "        if dirty and not discard_unsaved:\n",
         "        if dirty:\n",
         (f"{FLT}::test_open_shot_opens_a_dirty_session_when_discard_unsaved_is_true",),
     ),
     Revert(
-        "task 6: use_scripts_auto_execute is not checked before the load",
+        "file lifecycle: use_scripts_auto_execute is not checked before the load",
         ADDON_FILE_LIFECYCLE,
         "        _refuse_scripts_auto_execute()\n",
         "",
@@ -3337,21 +3281,21 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: an unreadable auto-execute preference is read as off (fail open)",
+        "file lifecycle: an unreadable auto-execute preference is read as off (fail open)",
         ADDON_FILE_LIFECYCLE,
         'if getattr(filepaths, "use_scripts_auto_execute", True) is not False:',
         'if getattr(filepaths, "use_scripts_auto_execute", False) is True:',
         (f"{FLT}::test_open_shot_refuses_when_the_auto_execute_preference_cannot_be_read",),
     ),
     Revert(
-        "task 6: the auto-execute check refuses whatever the preference says",
+        "file lifecycle: the auto-execute check refuses whatever the preference says",
         ADDON_FILE_LIFECYCLE,
         'if getattr(filepaths, "use_scripts_auto_execute", True) is not False:',
         "if True:",
         (f"{FLT}::test_open_shot_proceeds_while_scripts_auto_execute_is_disabled",),
     ),
     Revert(
-        "task 6: resolve_blend_path skipped, the raw path reaches the operator",
+        "file lifecycle: resolve_blend_path skipped, the raw path reaches the operator",
         ADDON_FILE_LIFECYCLE,
         "    return resolve_blend_path(expanded, must_exist=must_exist, create_directories=create_directories)\n",
         "    return str(expanded)\n",
@@ -3364,7 +3308,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: a // path in an unsaved session resolves against the process CWD",
+        "file lifecycle: a // path in an unsaved session resolves against the process CWD",
         ADDON_FILE_LIFECYCLE,
         '    if not bpy.data.filepath:\n        raise ValueError(\n            "a Blender-relative',
         '    if False:\n        raise ValueError(\n            "a Blender-relative',
@@ -3374,14 +3318,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: a // path is never expanded",
+        "file lifecycle: a // path is never expanded",
         ADDON_FILE_LIFECYCLE,
         "    return bpy.path.abspath(raw)\n",
         "    return raw\n",
         (f"{FLT}::test_open_shot_expands_a_blender_relative_path_against_the_open_file",),
     ),
     Revert(
-        "task 6: file roots not enforced on open or save",
+        "file lifecycle: file roots not enforced on open or save",
         ADDON_FILE_LIFECYCLE,
         "        enforce_roots(expanded, configured_file_roots())\n",
         "        pass\n",
@@ -3393,7 +3337,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: roots checked after the file checks, so existence leaks outside the roots",
+        "file lifecycle: roots checked after the file checks, so existence leaks outside the roots",
         ADDON_FILE_LIFECYCLE,
         '    if isinstance(expanded, str) and expanded.strip() and "\\x00" not in expanded:\n'
         "        enforce_roots(expanded, configured_file_roots())\n"
@@ -3404,7 +3348,7 @@ REVERTS: list[Revert] = [
         (f"{FLT}::test_open_shot_refuses_outside_the_roots_before_saying_whether_the_file_exists",),
     ),
     Revert(
-        "task 6: the in-place save target is not held to the roots",
+        "file lifecycle: the in-place save target is not held to the roots",
         ADDON_FILE_LIFECYCLE,
         "        canonical = _checked_blend_path(requested, must_exist=False, create_directories=create_directories)\n",
         "        canonical = (\n"
@@ -3415,7 +3359,7 @@ REVERTS: list[Revert] = [
         (f"{FLT}::test_save_shot_enforces_the_roots_for_an_explicit_target_and_for_the_open_file",),
     ),
     Revert(
-        "task 6: open_mainfile's RuntimeError reaches the client raw",
+        "file lifecycle: open_mainfile's RuntimeError reaches the client raw",
         ADDON_FILE_LIFECYCLE,
         'raise RuntimeError(_operator_failure_message("open_shot", exc, (filepath, canonical))) from exc',
         "raise RuntimeError(str(exc)) from exc",
@@ -3425,14 +3369,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: the sanitizer is not given the known paths (structural detection only)",
+        "file lifecycle: the sanitizer is not given the known paths (structural detection only)",
         ADDON_FILE_LIFECYCLE,
         "sanitize_blender_error(exc, known_paths=known)",
         "sanitize_blender_error(exc)",
         (f"{FLT}::test_the_known_path_closes_what_structural_detection_leaves_behind",),
     ),
     Revert(
-        "task 6: a save operator's RuntimeError reaches the client raw",
+        "file lifecycle: a save operator's RuntimeError reaches the client raw",
         ADDON_FILE_LIFECYCLE,
         'raise RuntimeError(_operator_failure_message("save_shot", exc, (requested, canonical))) from exc',
         "raise RuntimeError(str(exc)) from exc",
@@ -3443,7 +3387,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: the reset operator's RuntimeError reaches the client raw",
+        "file lifecycle: the reset operator's RuntimeError reaches the client raw",
         ADDON_FILE_LIFECYCLE,
         'raise RuntimeError(_operator_failure_message("reset_session", exc, (previous,))) from exc',
         "raise RuntimeError(str(exc)) from exc",
@@ -3453,7 +3397,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: a swap result does not tell the client to re-handshake",
+        "file lifecycle: a swap result does not tell the client to re-handshake",
         ADDON_FILE_LIFECYCLE,
         '            "rehandshake_required": True,\n',
         '            "rehandshake_required": False,\n',
@@ -3464,21 +3408,21 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: capabilities_changed is hard-coded False",
+        "file lifecycle: capabilities_changed is hard-coded False",
         ADDON_FILE_LIFECYCLE,
         'report["capabilities_changed"] = self._capability_names() != capabilities_before',
         'report["capabilities_changed"] = False',
         (f"{FLT}::test_open_shot_reports_that_the_capability_set_followed_the_file",),
     ),
     Revert(
-        "task 6: a failing post-swap report turns a landed swap into an error",
+        "file lifecycle: a failing post-swap report turns a landed swap into an error",
         ADDON_FILE_LIFECYCLE,
         '        except Exception as exc:\n            print(f"BlenderMCP: the swap completed',
         '        except ZeroDivisionError as exc:\n            print(f"BlenderMCP: the swap completed',
         (f"{FLT}::test_a_swap_that_landed_is_still_reported_as_a_success_when_its_report_fails",),
     ),
     Revert(
-        "task 6: flags are coerced with bool(), so the string 'true' confirms",
+        "file lifecycle: flags are coerced with bool(), so the string 'true' confirms",
         ADDON_FILE_LIFECYCLE,
         "    if not isinstance(value, bool):\n"
         '        raise ValueError(f"{name} must be true or false")\n'
@@ -3497,7 +3441,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: save inherits relative_remap (save_as_mainfile's default is True)",
+        "file lifecycle: save inherits relative_remap (save_as_mainfile's default is True)",
         ADDON_FILE_LIFECYCLE,
         "operator(filepath=canonical, compress=compress, relative_remap=relative_remap)",
         "operator(filepath=canonical, compress=compress)",
@@ -3507,7 +3451,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: save inherits compress (use_file_compression wins at factory settings)",
+        "file lifecycle: save inherits compress (use_file_compression wins at factory settings)",
         ADDON_FILE_LIFECYCLE,
         "operator(filepath=canonical, compress=compress, relative_remap=relative_remap)",
         "operator(filepath=canonical, relative_remap=relative_remap)",
@@ -3517,14 +3461,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: an explicit compress / relative_remap opt-in is dropped",
+        "file lifecycle: an explicit compress / relative_remap opt-in is dropped",
         ADDON_FILE_LIFECYCLE,
         "operator(filepath=canonical, compress=compress, relative_remap=relative_remap)",
         "operator(filepath=canonical, compress=False, relative_remap=False)",
         (f"{FLT}::test_save_shot_forwards_an_explicit_opt_in",),
     ),
     Revert(
-        "task 6: no overwrite pre-check, check_existing left to guard (it does not)",
+        "file lifecycle: no overwrite pre-check, check_existing left to guard (it does not)",
         ADDON_FILE_LIFECYCLE,
         "        if exists and not confirm_overwrite:\n",
         "        if False:\n",
@@ -3535,7 +3479,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: confirm_overwrite is ignored, so an existing file can never be replaced",
+        "file lifecycle: confirm_overwrite is ignored, so an existing file can never be replaced",
         ADDON_FILE_LIFECYCLE,
         "        if exists and not confirm_overwrite:\n",
         "        if exists:\n",
@@ -3546,14 +3490,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: an in-place save on a never-saved session is not refused up front",
+        "file lifecycle: an in-place save on a never-saved session is not refused up front",
         ADDON_FILE_LIFECYCLE,
         "        if in_place and not bpy.data.filepath:\n",
         "        if False:\n",
         (f"{FLT}::test_save_shot_in_place_on_an_unsaved_session_is_refused_with_an_actionable_message",),
     ),
     Revert(
-        "task 6: an in-place save goes through save_as_mainfile",
+        "file lifecycle: an in-place save goes through save_as_mainfile",
         ADDON_FILE_LIFECYCLE,
         "operator = bpy.ops.wm.save_mainfile if in_place else bpy.ops.wm.save_as_mainfile",
         "operator = bpy.ops.wm.save_as_mainfile",
@@ -3563,7 +3507,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: reset_session runs without confirm",
+        "file lifecycle: reset_session runs without confirm",
         ADDON_FILE_LIFECYCLE,
         '        if not _require_bool("confirm", confirm):\n',
         '        if not _require_bool("confirm", True):\n',
@@ -3574,7 +3518,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: reset_session uses the plan's read_factory_settings (unregisters every add-on)",
+        "file lifecycle: reset_session uses read_factory_settings (unregisters every add-on)",
         ADDON_FILE_LIFECYCLE,
         "bpy.ops.wm.read_homefile(use_empty=True, use_factory_startup=True, load_ui=False)",
         "bpy.ops.wm.read_factory_settings(use_empty=True)",
@@ -3585,7 +3529,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6: the three commands are not in the dispatch table",
+        "file lifecycle: the three commands are not in the dispatch table",
         ADDON_SERVER_CORE,
         '            "open_shot": self.open_shot,\n'
         '            "save_shot": self.save_shot,\n'
@@ -3599,16 +3543,16 @@ REVERTS: list[Revert] = [
             ),
         ),
     ),
-    # --- Task 6 cycle-1 repairs ---
+    # --- save_shot: the dirty flag, relative-link warnings, the temp name ---
     Revert(
-        "task 6 C1: the drain tick does not end after save_shot, so an edit behind it loses its dirty flag",
+        "file lifecycle: the drain tick does not end after save_shot, so an edit behind it loses its dirty flag",
         ADDON_SERVER_CORE,
         '            if command.get("type") in self._TICK_ENDING_COMMANDS:\n                break\n',
         "",
         (f"{FLT}::test_the_drain_tick_ends_after_a_save_so_a_queued_edit_runs_after_blender_clears_the_dirty_flag",),
     ),
     Revert(
-        "task 6 C1: save_shot reports a same-tick is_dirty that Blender has not cleared yet",
+        "file lifecycle: save_shot reports a same-tick is_dirty that Blender has not cleared yet",
         ADDON_FILE_LIFECYCLE,
         '            "relative_remap": relative_remap,\n            "session_id": session["session_id"],\n',
         '            "relative_remap": relative_remap,\n'
@@ -3617,7 +3561,7 @@ REVERTS: list[Revert] = [
         (f"{FLT}::test_save_shot_does_not_report_a_dirty_flag_blender_has_not_cleared_yet",),
     ),
     Revert(
-        "task 6 C1: no warning for //-relative links a save to a new directory breaks",
+        "file lifecycle: no warning for //-relative links a save to a new directory breaks",
         ADDON_FILE_LIFECYCLE,
         "        broken_links = _unresolvable_relative_paths(canonical, relative_remap)\n",
         "        broken_links = 0\n",
@@ -3628,7 +3572,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6 C1: the relative-link warning ignores the directory and the remap flag",
+        "file lifecycle: the relative-link warning ignores the directory and the remap flag",
         ADDON_FILE_LIFECYCLE,
         "    if relative_remap or not current:\n        return 0\n"
         "    if os.path.dirname(canonical) == os.path.dirname(canonical_path(current)):\n        return 0\n",
@@ -3639,7 +3583,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6 C1: a planted <target>@ is not checked, so the save follows it out of the roots",
+        "file lifecycle: a planted <target>@ is not checked, so the save follows it out of the roots",
         ADDON_FILE_LIFECYCLE,
         "        _refuse_a_leftover_temp_save(canonical)\n",
         "",
@@ -3650,7 +3594,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6 C1: the temp-name check uses exists(), which a dangling symlink passes",
+        "file lifecycle: the temp-name check uses exists(), which a dangling symlink passes",
         ADDON_FILE_LIFECYCLE,
         '        os.lstat(f"{canonical}@")\n    except FileNotFoundError:\n        return\n',
         '        if not os.path.exists(f"{canonical}@"):\n'
@@ -3662,9 +3606,9 @@ REVERTS: list[Revert] = [
             for place in ("explicit", "in place")
         ),
     ),
-    # --- Task 6 cycle-2 repairs ---
+    # --- save_shot: temp-name lstat failures, and which relative paths are counted ---
     Revert(
-        "task 6 C2: an lstat failure other than not-found reads as a clear temp name",
+        "file lifecycle: an lstat failure other than not-found reads as a clear temp name",
         ADDON_FILE_LIFECYCLE,
         "    except OSError as exc:\n        raise ValueError(\n",
         "    except OSError as exc:\n        return\n        raise ValueError(\n",
@@ -3675,14 +3619,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6 C2: an occupied temp name is not said to be possibly left by an interrupted save",
+        "file lifecycle: an occupied temp name is not said to be possibly left by an interrupted save",
         ADDON_FILE_LIFECYCLE,
         'already exists beside the target, possibly "\n        "left by an interrupted save;',
         'already exists beside the target; "\n        "remove it now;',
         (f"{FLT}::test_an_occupied_temp_save_name_says_it_may_be_left_by_an_interrupted_save",),
     ),
     Revert(
-        "task 6 C2: only libraries are counted, so a relative image path breaks with no warning",
+        "file lifecycle: only libraries are counted, so a relative image path breaks with no warning",
         ADDON_FILE_LIFECYCLE,
         "        for path in bpy.utils.blend_paths(absolute=False, packed=False, local=True)\n",
         "        for path in (library.filepath for library in bpy.data.libraries)\n",
@@ -3692,15 +3636,15 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 6 C2: indirect libraries are counted although they re-resolve from their parent",
+        "file lifecycle: indirect libraries are counted although they re-resolve from their parent",
         ADDON_FILE_LIFECYCLE,
         "for library in bpy.data.libraries if _is_indirect_library(library)",
         "for library in bpy.data.libraries if False",
         (f"{FLT}::test_an_indirect_library_is_not_counted_because_blender_rederives_it_from_its_parent",),
     ),
-    # --- Task 7: link_canon_library, create_override, list/reload/relocate/unlink ---
+    # --- link_canon_library, create_override, list/reload/relocate/unlink ---
     Revert(
-        "task 7: link hands the raw path to Blender without roots or file checks",
+        "linking: link hands the raw path to Blender without roots or file checks",
         ADDON_LINKING,
         "        canonical = _checked_blend_path(filepath, must_exist=True)\n"
         '        _refuse_scripts_auto_execute("link_canon_library")\n',
@@ -3708,14 +3652,14 @@ REVERTS: list[Revert] = [
         (f"{LKT}::test_link_validates_its_path_before_blender_reads_it", f"{LKT}::test_link_enforces_the_file_roots"),
     ),
     Revert(
-        "task 7: absent names are not refused inside the load block",
+        "linking: absent names are not refused inside the load block",
         ADDON_LINKING,
         "                _refuse_absent_names(data_from, collection_names, object_names)\n",
         "",
         (f"{LKT}::test_link_refuses_a_name_absent_from_the_file_and_leaves_no_library",),
     ),
     Revert(
-        "task 7: link_canon_library joins the replacing set, so a failed link keeps its Library",
+        "linking: link_canon_library joins the replacing set, so a failed link keeps its Library",
         ADDON_SERVER_CORE,
         '_DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries"})',
         '_DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries", '
@@ -3726,49 +3670,49 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: reload_library leaves the replacing set and is transacted",
+        "linking: reload_library leaves the replacing set and is transacted",
         ADDON_SERVER_CORE,
         '_DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries"})',
         '_DATABLOCK_REPLACING_COMMANDS = frozenset({"relocate_library", "unlink_libraries"})',
         (f"{LKT}::test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_does",),
     ),
     Revert(
-        "task 7: a linked collection is not instanced, so the next save drops it",
+        "linking: a linked collection is not instanced, so the next save drops it",
         ADDON_LINKING,
         "            _link_into(scene.collection.children, linked_collections)  # type: ignore[attr-defined]\n",
         "",
         (f"{LKT}::test_link_instances_what_it_linked_so_a_save_keeps_it",),
     ),
     Revert(
-        "task 7: collections defaults to a mutable list",
+        "linking: collections defaults to a mutable list",
         ADDON_LINKING,
         "        collections: object = None,\n",
         "        collections: object = [],  # noqa: B006\n",
         (f"{LKT}::test_link_names_default_to_none_and_are_not_shared_across_calls",),
     ),
     Revert(
-        "task 7: the link passes create_liboverrides (Route A) when as_override is set",
+        "linking: the link passes create_liboverrides (Route A) when as_override is set",
         ADDON_LINKING,
         "bpy.data.libraries.load(canonical, link=True, relative=relative)",
         "bpy.data.libraries.load(canonical, link=True, relative=relative, create_liboverrides=as_override)",
         (f"{LKT}::test_link_as_override_uses_route_c_not_create_liboverrides",),
     ),
     Revert(
-        "task 7: as_override with objects is not refused",
+        "linking: as_override with objects is not refused",
         ADDON_LINKING,
         "        if as_override and object_names:\n",
         "        if False:\n",
         (f"{LKT}::test_link_refuses_as_override_with_objects",),
     ),
     Revert(
-        "task 7: relative is accepted in a never-saved session",
+        "linking: relative is accepted in a never-saved session",
         ADDON_LINKING,
         "        if relative and not bpy.data.filepath:\n",
         "        if False:\n",
         (f"{LKT}::test_link_refuses_relative_in_a_never_saved_session",),
     ),
     Revert(
-        "task 7: link flags are coerced with bool()",
+        "linking: link flags are coerced with bool()",
         ADDON_LINKING,
         '        as_override = _require_bool("as_override", as_override)\n'
         '        relative = _require_bool("relative", relative)\n',
@@ -3779,14 +3723,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: a libraries.load failure goes out raw",
+        "linking: a libraries.load failure goes out raw",
         ADDON_LINKING,
         'raise RuntimeError(_operator_failure_message("link_canon_library", exc, (filepath, canonical))) from exc',
         "raise RuntimeError(str(exc)) from exc",
         (f"{LKT}::test_a_blender_link_failure_reaches_the_client_without_its_path",),
     ),
     Revert(
-        "task 7: do_fully_editable is inherited (Route B, system overrides)",
+        "linking: do_fully_editable is inherited (Route B, system overrides)",
         ADDON_LINKING,
         "            do_fully_editable=True,\n",
         "",
@@ -3797,42 +3741,42 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: create_override takes the scene from bpy.context",
+        "linking: create_override takes the scene from bpy.context",
         ADDON_LINKING,
         "        return _override_all([collection], _scene(scene_uid))[0]\n",
         "        return _override_all([collection], bpy.context.scene)[0]\n",
         (f"{LKT}::test_create_override_takes_the_scene_from_bpy_data_not_bpy_context",),
     ),
     Revert(
-        "task 7: create_override takes the view layer from bpy.context",
+        "linking: create_override takes the view layer from bpy.context",
         ADDON_LINKING,
         "            scene.view_layers[0],  # type: ignore[attr-defined]\n",
         "            bpy.context.view_layer,\n",
         (f"{LKT}::test_create_override_takes_the_scene_from_bpy_data_not_bpy_context",),
     ),
     Revert(
-        "task 7: with several scenes the first is used silently",
+        "linking: with several scenes the first is used silently",
         ADDON_LINKING,
         "    if len(scenes) != 1:\n",
         "    if False:\n",
         (f"{LKT}::test_create_override_refuses_to_guess_between_scenes",),
     ),
     Revert(
-        "task 7: a local or override collection is not refused before Blender is asked",
+        "linking: a local or override collection is not refused before Blender is asked",
         ADDON_LINKING,
         '    if getattr(collection, "library", None) is None:\n',
         "    if False:\n",
         (f"{LKT}::test_create_override_resolves_by_session_uid_among_same_named_collections",),
     ),
     Revert(
-        "task 7: an already-overridden collection is overridden again",
+        "linking: an already-overridden collection is overridden again",
         ADDON_LINKING,
         "    if existing:\n",
         "    if False:\n",
         (f"{LKT}::test_create_override_resolves_by_session_uid_among_same_named_collections",),
     ),
     Revert(
-        "task 7: a bool or float resolves the datablock whose uid equals it",
+        "linking: a bool or float resolves the datablock whose uid equals it",
         ADDON_LINKING,
         "    if isinstance(value, bool) or not isinstance(value, int):\n",
         "    if not isinstance(value, (int, float)):\n",
@@ -3843,35 +3787,35 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: an override's reference is not reported",
+        "linking: an override's reference is not reported",
         ADDON_LINKING,
         '        "reference_uid": _uid_of(getattr(override, "reference", None)),\n',
         '        "reference_uid": None,\n',
         (f"{LKT}::test_create_override_reports_same_named_linked_and_override_objects_distinguishably",),
     ),
     Revert(
-        "task 7: the linked instance stays beside its override",
+        "linking: the linked instance stays beside its override",
         ADDON_LINKING,
         "            parent.children.unlink(collection)  # type: ignore[attr-defined]\n",
         "            pass\n",
         (f"{LKT}::test_create_override_replaces_the_linked_instance_it_overrides",),
     ),
     Revert(
-        "task 7: a None override is not checked",
+        "linking: a None override is not checked",
         ADDON_LINKING,
         "    if override is None:\n",
         "    if False:\n",
         (f"{LKT}::test_create_override_that_blender_declines_is_an_error_and_rolls_back",),
     ),
     Revert(
-        "task 7: an override failure goes out raw",
+        "linking: an override failure goes out raw",
         ADDON_LINKING,
         'raise RuntimeError(_operator_failure_message("create_override", exc, known)) from exc',
         "raise RuntimeError(str(exc)) from exc",
         (f"{LKT}::test_an_override_failure_reaches_the_client_sanitized",),
     ),
     Revert(
-        "task 7: list_libraries is not read-only, so it pays for a transaction",
+        "linking: list_libraries is not read-only, so it pays for a transaction",
         ADDON_SERVER_CORE,
         '            "get_session_info",\n            "list_libraries",\n',
         '            "get_session_info",\n',
@@ -3882,14 +3826,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: list_libraries ignores offset",
+        "linking: list_libraries ignores offset",
         ADDON_LINKING,
         "        page = libraries[offset : offset + limit]\n",
         "        page = libraries[:limit]\n",
         (f"{LKT}::test_list_libraries_paginates_and_reports_what_a_reload_decision_needs",),
     ),
     Revert(
-        "task 7: list_libraries page bounds are coerced, not checked",
+        "linking: list_libraries page bounds are coerced, not checked",
         ADDON_LINKING,
         '        limit = _bounded_int("limit", limit, 1, MAX_PAGE_SIZE)\n'
         '        offset = _bounded_int("offset", offset, 0, None)\n',
@@ -3900,14 +3844,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: needs_liboverride_resync is not reported",
+        "linking: needs_liboverride_resync is not reported",
         ADDON_LINKING,
         '        "needs_liboverride_resync": bool(getattr(library, "needs_liboverride_resync", False)),\n',
         '        "needs_liboverride_resync": False,\n',
         (f"{LKT}::test_list_libraries_paginates_and_reports_what_a_reload_decision_needs",),
     ),
     Revert(
-        "task 7: linked datablocks are listed without their uids",
+        "linking: linked datablocks are listed without their uids",
         ADDON_LINKING,
         '        "session_uid": _uid_of(datablock),\n        "name": _display_name(datablock),\n        "id_type"',
         '        "session_uid": None,\n        "name": _display_name(datablock),\n        "id_type"',
@@ -3917,21 +3861,21 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: the per-library datablock list is uncapped",
+        "linking: the per-library datablock list is uncapped",
         ADDON_LINKING,
         "        key: [describe(item) for item in items[:MAX_LISTED_DATABLOCKS]],",
         "        key: [describe(item) for item in items],",
         (f"{LKT}::test_list_libraries_bounds_the_datablocks_it_lists_per_library",),
     ),
     Revert(
-        "task 7: the reload is not wrapped in replacing_library_contents",
+        "linking: the reload is not wrapped in replacing_library_contents",
         ADDON_LINKING,
         "        with replacing_library_contents():\n",
         "        if True:\n",
         (f"{LKT}::test_reload_library_uses_the_data_api_inside_the_replace_flag",),
     ),
     Revert(
-        "task 7: the reload goes through wm.lib_reload",
+        "linking: the reload goes through wm.lib_reload",
         ADDON_LINKING,
         "            library.reload()  # type: ignore[attr-defined]\n",
         "            bpy.ops.wm.lib_reload(library=library.name)  # type: ignore[attr-defined]\n",
@@ -3941,7 +3885,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: a reload failure goes out raw",
+        "linking: a reload failure goes out raw",
         ADDON_LINKING,
         "        raise RuntimeError(_operator_failure_message(command, exc, known_paths)) from exc\n",
         '        raise RuntimeError(f"{command} failed: {exc}") from exc\n',
@@ -3952,14 +3896,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: relative known paths reach the sanitizer and eat the library name",
+        "linking: relative known paths reach the sanitizer and eat the library name",
         ADDON_LINKING,
         "    return tuple(path for path in paths if isinstance(path, str) and os.path.isabs(path))\n",
         "    return tuple(path for path in paths if isinstance(path, str))\n",
         (f"{LKT}::test_a_reload_failure_in_an_unsaved_session_still_names_the_library",),
     ),
     Revert(
-        "task 7: relocate hands the raw path to Blender without roots or file checks",
+        "linking: relocate hands the raw path to Blender without roots or file checks",
         ADDON_LINKING,
         "        canonical = _checked_blend_path(filepath, must_exist=True)\n"
         "        for other in bpy.data.libraries:\n",
@@ -3970,28 +3914,28 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: relocate to a file another library already links",
+        "linking: relocate to a file another library already links",
         ADDON_LINKING,
         "            if other.session_uid != library.session_uid and canonical in _library_paths(other):\n",
         "            if False:\n",
         (f"{LKT}::test_relocate_refuses_a_file_another_library_already_links",),
     ),
     Revert(
-        "task 7: a failed relocate leaves the library pointing at the new file",
+        "linking: a failed relocate leaves the library pointing at the new file",
         ADDON_LINKING,
         "            library.filepath = previous  # type: ignore[attr-defined]\n            raise\n",
         "            raise\n",
         (f"{LKT}::test_a_failed_relocate_restores_the_previous_path_and_is_sanitized",),
     ),
     Revert(
-        "task 7: relocate stores the path as the client spelled it",
+        "linking: relocate stores the path as the client spelled it",
         ADDON_LINKING,
         "        library.filepath = canonical  # type: ignore[attr-defined]\n",
         "        library.filepath = filepath  # type: ignore[attr-defined]\n",
         (f"{LKT}::test_relocate_assigns_the_canonical_path_reloads_and_reports_the_name_both_sides",),
     ),
     Revert(
-        "task 7: an unknown uid refusal does not say where to read a current one",
+        "linking: an unknown uid refusal does not say where to read a current one",
         ADDON_LINKING,
         '        "library reload, so read a current one from list_libraries"\n',
         '        "library reload"\n',
@@ -4001,14 +3945,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: unlink runs without confirm",
+        "linking: unlink runs without confirm",
         ADDON_LINKING,
         "    if not confirm:\n",
         "    if False:\n",
         (f"{LKT}::test_unlink_refuses_without_a_real_confirmation[false]",),
     ),
     Revert(
-        "task 7: unlink's confirm is coerced with bool()",
+        "linking: unlink's confirm is coerced with bool()",
         ADDON_LINKING,
         '        confirm = _require_bool("confirm", confirm)\n',
         "        confirm = bool(confirm)\n",
@@ -4018,7 +3962,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: unlink removes every library, not only the named ones",
+        "linking: unlink removes every library, not only the named ones",
         ADDON_LINKING,
         "            bpy.data.libraries.remove(current)\n",
         "            for everything in list(bpy.data.libraries):\n"
@@ -4026,14 +3970,14 @@ REVERTS: list[Revert] = [
         (f"{LKT}::test_unlink_never_touches_a_library_that_was_not_named",),
     ),
     Revert(
-        "task 7: unknown uids are skipped instead of refusing the request",
+        "linking: unknown uids are skipped instead of refusing the request",
         ADDON_LINKING,
         "    libraries = [_library(uid) for uid in uids]\n",
         "    libraries = [lib for lib in bpy.data.libraries if lib.session_uid in uids]\n",
         (f"{LKT}::test_unlink_resolves_every_uid_before_removing_anything",),
     ),
     Revert(
-        "task 7: the uid list is neither non-empty nor bounded",
+        "linking: the uid list is neither non-empty nor bounded",
         ADDON_LINKING,
         "    if not isinstance(library_uids, list) or not 0 < len(library_uids) <= MAX_UNLINK_UIDS:\n",
         "    if not isinstance(library_uids, list):\n",
@@ -4043,7 +3987,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: uid list entries are coerced with int()",
+        "linking: uid list entries are coerced with int()",
         ADDON_LINKING,
         '    uids = list(dict.fromkeys(_require_uid("library_uids entry", uid) for uid in library_uids))\n',
         "    uids = list(dict.fromkeys(int(uid) for uid in library_uids))\n",
@@ -4053,14 +3997,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: the removal report counts only the libraries",
+        "linking: the removal report counts only the libraries",
         ADDON_LINKING,
         '            "removed_by_type": _count_by_type(before[uid][0] for uid in removed),\n',
         '            "removed_by_type": {"libraries": len(removed_libraries)},\n',
         (f"{LKT}::test_unlink_reports_exactly_what_it_removed",),
     ),
     Revert(
-        "task 7: the census walks bpy.data.all_ids, counting everything twice",
+        "linking: the census walks bpy.data.all_ids, counting everything twice",
         ADDON_LINKING,
         '        aggregate = getattr(getattr(prop, "fixed_type", None), "identifier", None) == "ID"\n',
         "        aggregate = False\n",
@@ -4070,49 +4014,49 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: an indirect library is unlinked",
+        "linking: an indirect library is unlinked",
         ADDON_LINKING,
         "    if indirect:\n",
         "    if False:\n",
         (f"{LKT}::test_unlink_refuses_an_indirect_library",),
     ),
     Revert(
-        "task 7: orphans are purged without purge_orphans",
+        "linking: orphans are purged without purge_orphans",
         ADDON_LINKING,
         "        purged = _purge_newly_orphaned(before, known) if purge_orphans else []\n",
         "        purged = _purge_newly_orphaned(before, known)\n",
         (f"{LKT}::test_unlink_purges_only_when_asked_and_only_what_it_orphaned",),
     ),
     Revert(
-        "task 7: the purge also takes datablocks that were orphans before the unlink",
+        "linking: the purge also takes datablocks that were orphans before the unlink",
         ADDON_LINKING,
         "        if previous and previous[1] > 0 and datablock.users == 0",
         "        if datablock.users == 0",
         (f"{LKT}::test_unlink_purges_only_when_asked_and_only_what_it_orphaned",),
     ),
     Revert(
-        "task 7: a library is removed through a reference an earlier removal may have freed",
+        "linking: a library is removed through a reference an earlier removal may have freed",
         ADDON_LINKING,
         "        current = next((library for library in bpy.data.libraries if library.session_uid == uid), None)\n",
         "        current = next((library for library in libraries if library.session_uid == uid), None)\n",
         (f"{LKT}::test_unlink_never_removes_a_datablock_an_earlier_removal_freed",),
     ),
     Revert(
-        "task 7: a libraries.remove failure goes out raw",
+        "linking: a libraries.remove failure goes out raw",
         ADDON_LINKING,
         '            message = _operator_failure_message("unlink_libraries", exc, known_paths)\n',
         "            message = str(exc)\n",
         (f"{LKT}::test_an_unlink_failure_reaches_the_client_sanitized",),
     ),
     Revert(
-        "task 7: the name helper returns the first of several matches",
+        "linking: the name helper returns the first of several matches",
         ADDON_LINKING,
         "    if len(matches) > 1:\n",
         "    if False:\n",
         (f"{LKT}::test_the_name_resolution_helper_refuses_ambiguity_listing_uids",),
     ),
     Revert(
-        "task 7: create_override grows a name handle",
+        "linking: create_override grows a name handle",
         ADDON_LINKING,
         "    def create_override(collection_uid: object, *, scene_uid: object = None) -> dict[str, object]:\n",
         "    def create_override(\n"
@@ -4121,7 +4065,7 @@ REVERTS: list[Revert] = [
         (f"{LKT}::test_no_linking_command_takes_a_datablock_name_as_a_handle",),
     ),
     Revert(
-        "task 7: unlink_libraries is not registered",
+        "linking: unlink_libraries is not registered",
         ADDON_SERVER_CORE,
         '            "unlink_libraries": self.unlink_libraries,\n',
         "",
@@ -4130,9 +4074,9 @@ REVERTS: list[Revert] = [
             f"{LKT}::test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_does",
         ),
     ),
-    # --- Task 7: script auto-execution refusals (Spec Decision #7) ---
+    # --- script auto-execution refusals (a .blend's scripts must never run) ---
     Revert(
-        "task 7: link_canon_library does not check use_scripts_auto_execute",
+        "linking: link_canon_library does not check use_scripts_auto_execute",
         ADDON_LINKING,
         '        _refuse_scripts_auto_execute("link_canon_library")\n',
         "",
@@ -4142,7 +4086,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: reload_library does not check use_scripts_auto_execute",
+        "linking: reload_library does not check use_scripts_auto_execute",
         ADDON_LINKING,
         '        _refuse_scripts_auto_execute("reload_library")\n',
         "",
@@ -4152,7 +4096,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: relocate_library does not check use_scripts_auto_execute",
+        "linking: relocate_library does not check use_scripts_auto_execute",
         ADDON_LINKING,
         '        _refuse_scripts_auto_execute("relocate_library")\n',
         "",
@@ -4162,7 +4106,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: the scripts check refuses even with the preference off",
+        "linking: the scripts check refuses even with the preference off",
         ADDON_FILE_LIFECYCLE,
         '    if getattr(filepaths, "use_scripts_auto_execute", True) is not False:\n',
         "    if True:\n",
@@ -4174,7 +4118,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: the scripts refusal always names open_shot",
+        "linking: the scripts refusal always names open_shot",
         ADDON_FILE_LIFECYCLE,
         '            f"{command} refuses to load while',
         '            f"open_shot refuses to load while',
@@ -4184,7 +4128,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7: the Poly Haven .blend import does not check use_scripts_auto_execute",
+        "polyhaven: the Poly Haven .blend import does not check use_scripts_auto_execute",
         ADDON_POLYHAVEN,
         '                            _refuse_scripts_auto_execute("import_polyhaven_asset")\n',
         "",
@@ -4193,9 +4137,9 @@ REVERTS: list[Revert] = [
             f"{PHT}::test_a_downloaded_blend_is_never_loaded_while_scripts_auto_execute_is_on[unreadable]",
         ),
     ),
-    # --- Task 7 cycle-1 repairs ---
+    # --- override re-linking, reload placeholders, relocation, quoted library names ---
     Revert(
-        "task 7 C1: overrides are validated one at a time and nothing re-links a replaced instance",
+        "linking: overrides are validated one at a time and nothing re-links a replaced instance",
         ADDON_LINKING,
         "    for collection in collections:\n"
         "        _refuse_unoverridable(collection)\n"
@@ -4225,7 +4169,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7 C1: a later override failure does not re-link the instances earlier ones replaced",
+        "linking: a later override failure does not re-link the instances earlier ones replaced",
         ADDON_LINKING,
         "            if not _has_child(parent, child):\n"
         "                parent.children.link(child)  # type: ignore[attr-defined]\n",
@@ -4233,7 +4177,7 @@ REVERTS: list[Revert] = [
         (f"{LKT}::test_a_later_override_failure_restores_the_instances_earlier_overrides_replaced",),
     ),
     Revert(
-        "task 7 C1: a datablock the file no longer holds is listed as present",
+        "linking: a datablock the file no longer holds is listed as present",
         ADDON_LINKING,
         '        "is_missing": bool(getattr(datablock, "is_missing", False)),\n',
         '        "is_missing": False,\n',
@@ -4243,7 +4187,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7 C1: no warning when a reload leaves placeholders",
+        "linking: no warning when a reload leaves placeholders",
         ADDON_LINKING,
         "    if not missing:\n        return {}\n",
         "    return {}\n",
@@ -4253,14 +4197,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7 C1: the missing-datablock warning is sent when nothing is missing",
+        "linking: the missing-datablock warning is sent when nothing is missing",
         ADDON_LINKING,
         "    if not missing:\n        return {}\n",
         "",
         (f"{LKT}::test_a_reload_that_finds_everything_carries_no_warning",),
     ),
     Revert(
-        "task 7 C1: an indirect library can be relocated",
+        "linking: an indirect library can be relocated",
         ADDON_LINKING,
         "        if _is_indirect_library(library):\n"
         '            raise ValueError(\n                "that library is indirect',
@@ -4268,7 +4212,7 @@ REVERTS: list[Revert] = [
         (f"{LKT}::test_relocate_refuses_an_indirect_library",),
     ),
     Revert(
-        "task 7 C1: create_override does not check use_scripts_auto_execute",
+        "linking: create_override does not check use_scripts_auto_execute",
         ADDON_LINKING,
         '        _refuse_scripts_auto_execute("create_override")\n',
         "",
@@ -4278,7 +4222,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7 C1: a quoted library name is not reduced before path detection",
+        "file paths: a quoted library name is not reduced before path detection",
         ADDON_FILE_PATHS,
         "    text = _QUOTED_LIBRARY_NAME.sub(_leaf_library_name, text)\n",
         "",
@@ -4291,7 +4235,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7 C1: a quoted library name is kept whole instead of reduced to its leaf",
+        "file paths: a quoted library name is kept whole instead of reduced to its leaf",
         ADDON_FILE_PATHS,
         "{client_safe_name_leaf(match['name'])}",
         "{match['name']}",
@@ -4303,23 +4247,23 @@ REVERTS: list[Revert] = [
             ),
         ),
     ),
-    # --- Task 7 cycle-2 repairs ---
+    # --- nested override requests, and reducing a library name ---
     Revert(
-        "task 7 C2: a nested request is not re-checked before each override, so a child is overridden twice",
+        "linking: a nested request is not re-checked before each override, so a child is overridden twice",
         ADDON_LINKING,
         "            _refuse_unoverridable(collection)\n            reports.append(",
         "            reports.append(",
         (f"{LKT}::test_a_nested_request_is_refused_before_it_overrides_a_collection_twice",),
     ),
     Revert(
-        "task 7 C2: the quoted-name match stops at a newline",
+        "file paths: the quoted-name match stops at a newline",
         ADDON_FILE_PATHS,
         '>]))", re.DOTALL\n',
         '>]))"\n',
         (f"{FPT}::test_sanitizer_reduces_a_library_name_containing_a_newline",),
     ),
     Revert(
-        "task 7 C2: a library name is reduced with the isdir-checking leaf rule",
+        "file paths: a library name is reduced with the isdir-checking leaf rule",
         ADDON_FILE_PATHS,
         "{client_safe_name_leaf(match['name'])}",
         "{client_safe_leaf(match['name'])}",
@@ -4327,15 +4271,15 @@ REVERTS: list[Revert] = [
         also="\nfrom .text_hygiene import client_safe_leaf\n",
     ),
     Revert(
-        "task 7 C2: an absolute library name is not a known path",
+        "linking: an absolute library name is not a known path",
         ADDON_LINKING,
         "    return _absolute((raw, expanded, canonical_path(expanded), name))\n",
         "    return _absolute((raw, expanded, canonical_path(expanded)))\n",
         (f"{LKT}::test_an_absolute_library_name_is_a_known_path_so_no_relative_tail_survives",),
     ),
-    # --- Task 7 cycle-3 repairs ---
+    # --- nested collection overrides, and nothing stats Library.name ---
     Revert(
-        "task 7 C3: a collection whose inner collection is already overridden is overridden again",
+        "linking: a collection whose inner collection is already overridden is overridden again",
         ADDON_LINKING,
         "    if inner_overrides:\n",
         "    if False:\n",
@@ -4345,21 +4289,21 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 7 C3: a request naming a collection and one inside it is not refused up front",
+        "linking: a request naming a collection and one inside it is not refused up front",
         ADDON_LINKING,
         "    _refuse_nested_requests(collections)\n",
         "",
         (f"{LKT}::test_a_request_naming_a_collection_and_one_inside_it_is_refused_up_front",),
     ),
     Revert(
-        "task 7 C3: the library summary stats Library.name",
+        "linking: the library summary stats Library.name",
         ADDON_FILE_LIFECYCLE,
         '        "name": client_safe_name_leaf(getattr(library, "name", "")),',
         '        "name": client_safe_leaf(getattr(library, "name", "")),',
         (f"{LKT}::test_library_names_are_reduced_without_touching_the_filesystem",),
     ),
     Revert(
-        "task 7 C3: relocate stats Library.name for name_before",
+        "linking: relocate stats Library.name for name_before",
         ADDON_LINKING,
         "        name_before = client_safe_name_leaf(library.name)",
         "        name_before = client_safe_leaf(library.name)",
@@ -4367,7 +4311,7 @@ REVERTS: list[Revert] = [
         also="\nfrom ..text_hygiene import client_safe_leaf\n",
     ),
     Revert(
-        "task 7 C3: relocate stats Library.name for name_after",
+        "linking: relocate stats Library.name for name_after",
         ADDON_LINKING,
         '            "name_after": client_safe_name_leaf(library.name),',
         '            "name_after": client_safe_leaf(library.name),',
@@ -4375,173 +4319,172 @@ REVERTS: list[Revert] = [
         also="\nfrom ..text_hygiene import client_safe_leaf\n",
     ),
     Revert(
-        "task 7 C3: a refusal's candidate list stats Library.name",
-        # Moved from handlers/linking.py with `_display_name` (post-Phase-2: now
-        # `candidates.display_name`, imported by linking under its old name). The
-        # module sits at the addon root, so the import is `.` rather than `..`.
+        "linking: a refusal's candidate list stats Library.name",
+        # `candidates.display_name`, imported by linking as `_display_name`. The
+        # module sits at the addon root, hence `.` rather than `..`.
         ADDON_CANDIDATES,
         "        return client_safe_name_leaf(name)\n",
         "        return client_safe_leaf(name)\n",
         (f"{LKT}::test_library_names_are_reduced_without_touching_the_filesystem",),
         also="\nfrom .text_hygiene import client_safe_leaf\n",
     ),
-    # --- Task 9: the ten server-side file-lifecycle/linking tools ---
+    # --- the ten server-side file-lifecycle/linking tools ---
     Revert(
-        "task 9: get_session_info is not registered as an MCP tool",
+        "server tools: get_session_info is not registered as an MCP tool",
         SERVER_FILE_LIFECYCLE_TOOL,
         "@mcp.tool()\nasync def get_session_info(ctx: Context) -> dict:",
         "async def get_session_info(ctx: Context) -> dict:",
         (f"{SFLT}::test_file_lifecycle_tools_are_registered_and_dispatched",),
     ),
     Revert(
-        "task 9: get_session_info sends an extra param the addon command takes none of",
+        "server tools: get_session_info sends an extra param the addon command takes none of",
         SERVER_FILE_LIFECYCLE_TOOL,
         '    return await _call("get_session_info", {})',
         '    return await _call("get_session_info", {"extra": True})',
         (f"{SFLT}::test_get_session_info_forwards_no_params",),
     ),
     Revert(
-        "task 9: open_shot's discard_unsaved default is unpinned to True",
+        "server tools: open_shot's discard_unsaved default is unpinned to True",
         SERVER_FILE_LIFECYCLE_TOOL,
         "    discard_unsaved: bool = False,\n",
         "    discard_unsaved: bool = True,\n",
         (f"{SFLT}::test_open_shot_defaults",),
     ),
     Revert(
-        "task 9: open_shot does not forward discard_unsaved",
+        "server tools: open_shot does not forward discard_unsaved",
         SERVER_FILE_LIFECYCLE_TOOL,
         '{"filepath": filepath, "load_ui": load_ui, "discard_unsaved": discard_unsaved}',
         '{"filepath": filepath, "load_ui": load_ui, "discard_unsaved": False}',
         (f"{SFLT}::test_open_shot_forwards_every_parameter",),
     ),
     Revert(
-        "task 9: save_shot does not forward compress",
+        "server tools: save_shot does not forward compress",
         SERVER_FILE_LIFECYCLE_TOOL,
         '"compress": compress,',
         '"compress": False,',
         (f"{SFLT}::test_save_shot_forwards_every_parameter",),
     ),
     Revert(
-        "task 9: save_shot's filepath=None default is unpinned",
+        "server tools: save_shot's filepath=None default is unpinned",
         SERVER_FILE_LIFECYCLE_TOOL,
         "    filepath: str | None = None,\n    compress: bool = False,",
         '    filepath: str | None = "",\n    compress: bool = False,',
         (f"{SFLT}::test_save_shot_default_filepath_is_none",),
     ),
     Revert(
-        "task 9: save_shot removed from _DESTRUCTIVE_TOOLS, so the hint depends on the schema alone",
+        "server tools: save_shot removed from _DESTRUCTIVE_TOOLS, so the hint depends on the schema alone",
         SERVER_DOCUMENTATION,
         '    "reload_library",\n    "save_shot",\n}',
         '    "reload_library",\n}',
         (f"{SFLT}::test_save_shot_destructive_hint_is_explicit_not_schema_derived",),
     ),
     Revert(
-        "task 9: reset_session's confirm default is unpinned to True",
+        "server tools: reset_session's confirm default is unpinned to True",
         SERVER_FILE_LIFECYCLE_TOOL,
         "async def reset_session(ctx: Context, confirm: bool = False) -> dict:",
         "async def reset_session(ctx: Context, confirm: bool = True) -> dict:",
         (f"{SFLT}::test_reset_session_defaults",),
     ),
     Revert(
-        "task 9: reset_session does not forward confirm",
+        "server tools: reset_session does not forward confirm",
         SERVER_FILE_LIFECYCLE_TOOL,
         '    return await _call("reset_session", {"confirm": confirm})',
         '    return await _call("reset_session", {"confirm": False})',
         (f"{SFLT}::test_reset_session_forwards_confirm",),
     ),
     Revert(
-        "task 9: link_canon_library does not forward as_override",
+        "server tools: link_canon_library does not forward as_override",
         SERVER_FILE_LIFECYCLE_TOOL,
         '"as_override": as_override,\n            "relative": relative,',
         '"as_override": False,\n            "relative": relative,',
         (f"{SFLT}::test_link_canon_library_forwards_every_parameter",),
     ),
     Revert(
-        "task 9: link_canon_library's relative=False default is unpinned to True",
+        "server tools: link_canon_library's relative=False default is unpinned to True",
         SERVER_FILE_LIFECYCLE_TOOL,
         "    relative: bool = False,\n    scene_uid: int | None = None,\n) -> dict:",
         "    relative: bool = True,\n    scene_uid: int | None = None,\n) -> dict:",
         (f"{SFLT}::test_link_canon_library_defaults",),
     ),
     Revert(
-        "task 9: create_override drops scene_uid before forwarding it",
+        "server tools: create_override drops scene_uid before forwarding it",
         SERVER_FILE_LIFECYCLE_TOOL,
         '    return await _call("create_override", {"collection_uid": collection_uid, "scene_uid": scene_uid})',
         '    return await _call("create_override", {"collection_uid": collection_uid, "scene_uid": None})',
         (f"{SFLT}::test_create_override_forwards_every_parameter",),
     ),
     Revert(
-        "task 9: create_override's scene_uid=None default is unpinned",
+        "server tools: create_override's scene_uid=None default is unpinned",
         SERVER_FILE_LIFECYCLE_TOOL,
         "async def create_override(ctx: Context, collection_uid: int, scene_uid: int | None = None) -> dict:",
         "async def create_override(ctx: Context, collection_uid: int, scene_uid: int | None = 999) -> dict:",
         (f"{SFLT}::test_create_override_defaults",),
     ),
     Revert(
-        "task 9: list_libraries forces offset to 0 before forwarding it",
+        "server tools: list_libraries forces offset to 0 before forwarding it",
         SERVER_FILE_LIFECYCLE_TOOL,
         '    return await _call("list_libraries", {"limit": limit, "offset": offset})',
         '    return await _call("list_libraries", {"limit": limit, "offset": 0})',
         (f"{SFLT}::test_list_libraries_forwards_pagination",),
     ),
     Revert(
-        "task 9: list_libraries' limit=25 default is unpinned",
+        "server tools: list_libraries' limit=25 default is unpinned",
         SERVER_FILE_LIFECYCLE_TOOL,
         "async def list_libraries(ctx: Context, limit: int = 25, offset: int = 0) -> dict:",
         "async def list_libraries(ctx: Context, limit: int = 10, offset: int = 0) -> dict:",
         (f"{SFLT}::test_list_libraries_defaults",),
     ),
     Revert(
-        "task 9: reload_library does not forward library_uid",
+        "server tools: reload_library does not forward library_uid",
         SERVER_FILE_LIFECYCLE_TOOL,
         '    return await _call("reload_library", {"library_uid": library_uid})',
         '    return await _call("reload_library", {"library_uid": 0})',
         (f"{SFLT}::test_reload_library_forwards_uid",),
     ),
     Revert(
-        "task 9: relocate_library does not forward filepath",
+        "server tools: relocate_library does not forward filepath",
         SERVER_FILE_LIFECYCLE_TOOL,
         '    return await _call("relocate_library", {"library_uid": library_uid, "filepath": filepath})',
         '    return await _call("relocate_library", {"library_uid": library_uid, "filepath": None})',
         (f"{SFLT}::test_relocate_library_forwards_uid_and_filepath",),
     ),
     Revert(
-        "task 9: reload_library removed from _DESTRUCTIVE_TOOLS",
+        "server tools: reload_library removed from _DESTRUCTIVE_TOOLS",
         SERVER_DOCUMENTATION,
         '    "relocate_library",\n    "reload_library",\n    "save_shot",\n}',
         '    "relocate_library",\n    "save_shot",\n}',
         (f"{BUNT}::test_file_lifecycle_tools_advertise_correct_hints",),
     ),
     Revert(
-        "task 9: open_shot removed from _BLEND_FILE_TOOLS",
+        "server tools: open_shot removed from _BLEND_FILE_TOOLS",
         SERVER_DOCUMENTATION,
         '_BLEND_FILE_TOOLS = {\n    "open_shot",\n    "save_shot",',
         '_BLEND_FILE_TOOLS = {\n    "save_shot",',
         (f"{BUNT}::test_file_lifecycle_tools_advertise_correct_hints",),
     ),
     Revert(
-        "task 9: openWorldHint drops the _BLEND_FILE_TOOLS clause",
+        "server tools: openWorldHint drops the _BLEND_FILE_TOOLS clause",
         SERVER_DOCUMENTATION,
         "openWorldHint=(tool.name in _EXTERNAL_TOOLS or tool.name in _FILE_TOOLS or tool.name in _BLEND_FILE_TOOLS),",
         "openWorldHint=(tool.name in _EXTERNAL_TOOLS or tool.name in _FILE_TOOLS),",
         (f"{BUNT}::test_file_lifecycle_tools_advertise_correct_hints",),
     ),
     Revert(
-        "task 9: unlink_libraries does not forward purge_orphans",
+        "server tools: unlink_libraries does not forward purge_orphans",
         SERVER_FILE_LIFECYCLE_TOOL,
         '{"library_uids": library_uids, "confirm": confirm, "purge_orphans": purge_orphans},',
         '{"library_uids": library_uids, "confirm": confirm, "purge_orphans": False},',
         (f"{SFLT}::test_unlink_libraries_forwards_every_parameter",),
     ),
     Revert(
-        "task 9: unlink_libraries' confirm=False default is unpinned to True",
+        "server tools: unlink_libraries' confirm=False default is unpinned to True",
         SERVER_FILE_LIFECYCLE_TOOL,
         "    confirm: bool = False,\n    purge_orphans: bool = False,\n) -> dict:",
         "    confirm: bool = True,\n    purge_orphans: bool = False,\n) -> dict:",
         (f"{SFLT}::test_unlink_libraries_defaults",),
     ),
     Revert(
-        "task 9: _call swallows an addon failure instead of propagating it",
+        "server tools: _call swallows an addon failure instead of propagating it",
         SERVER_FILE_LIFECYCLE_TOOL,
         "    result = await asyncio.to_thread(get_blender_connection().send_command, command, params)\n"
         "    return ok(result)",
@@ -4569,28 +4512,28 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "task 9: file_lifecycle removed from CORE_MODULES",
+        "server tools: file_lifecycle removed from CORE_MODULES",
         SERVER_BUNDLES,
         '    "animation",\n    "file_lifecycle",\n)',
         '    "animation",\n)',
         (f"{BUNT}::test_file_lifecycle_tools_are_exactly_ten_and_reachable_from_shot_and_asset",),
     ),
     Revert(
-        "task 9: the shot ceiling constant reverted to its pre-Task-9 value",
+        "server tools: the shot ceiling constant reverted to its pre-file-lifecycle value",
         TEST_BUNDLES_FILE,
         "SHOT_MODE_BYTE_CEILING = 218_061",
         "SHOT_MODE_BYTE_CEILING = 203_094",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
-        "task 9: the default ceiling constant reverted to a value the new tools already exceed",
+        "server tools: the default ceiling constant reverted to a value the new tools already exceed",
         TEST_BUNDLES_FILE,
         "DEFAULT_MODE_BYTE_CEILING = 78_362",
         "DEFAULT_MODE_BYTE_CEILING = 63_394",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
-        "task 9: the five open-world tools are folded into _FILE_TOOLS instead of _BLEND_FILE_TOOLS",
+        "server tools: the five open-world tools are folded into _FILE_TOOLS instead of _BLEND_FILE_TOOLS",
         SERVER_DOCUMENTATION,
         '_FILE_TOOLS = {\n    "bake_retopology_maps",',
         "_FILE_TOOLS = {\n"
@@ -4603,7 +4546,7 @@ REVERTS: list[Revert] = [
         (f"{BUNT}::test_file_lifecycle_tools_blend_file_prose_is_correct",),
     ),
     Revert(
-        "task 9: the _BLEND_FILE_TOOLS effects-prose branch is deleted",
+        "server tools: the _BLEND_FILE_TOOLS effects-prose branch is deleted",
         SERVER_DOCUMENTATION,
         "    elif name in _BLEND_FILE_TOOLS:\n"
         '        effects = "Side effects: reads or writes a .blend file on disk."\n'
@@ -4611,16 +4554,16 @@ REVERTS: list[Revert] = [
         "    elif name in _EXTERNAL_TOOLS:",
         (f"{BUNT}::test_file_lifecycle_tools_blend_file_prose_is_correct",),
     ),
-    # --- Post-Phase-2: save_shot.create_directories ---
+    # --- save_shot.create_directories ---
     Revert(
-        "post-phase-2: save_shot ignores create_directories and never makes the directory",
+        "create_directories: save_shot ignores create_directories and never makes the directory",
         ADDON_FILE_LIFECYCLE,
         "        created_directory = create_save_directory(canonical)\n",
         "        created_directory = False\n",
         (f"{FLT}::test_save_shot_refuses_a_missing_directory_unless_asked_to_create_it",),
     ),
     Revert(
-        "post-phase-2: save_shot does not validate create_directories as a bool",
+        "create_directories: save_shot does not validate create_directories as a bool",
         ADDON_FILE_LIFECYCLE,
         '        create_directories = _require_bool("create_directories", create_directories)\n',
         "",
@@ -4630,14 +4573,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "post-phase-2: resolving a save target creates its directory before any refusal has run",
+        "create_directories: resolving a save target creates its directory before any refusal has run",
         ADDON_FILE_PATHS,
         "        if create_directories:\n            return\n",
         "        if create_directories:\n            os.makedirs(directory, exist_ok=True)\n            return\n",
         (f"{FPT}::test_a_missing_save_directory_is_accepted_and_created_only_on_opt_in",),
     ),
     Revert(
-        "post-phase-2: create_save_directory reports a directory that already existed as created",
+        "create_directories: create_save_directory reports a directory that already existed as created",
         ADDON_FILE_PATHS,
         "    if os.path.isdir(directory):\n        return False\n",
         "    if os.path.isdir(directory):\n        return True\n",
@@ -4647,14 +4590,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "post-phase-2: a directory-creation OSError's text (and its path) reaches the refusal",
+        "create_directories: a directory-creation OSError's text (and its path) reaches the refusal",
         ADDON_FILE_PATHS,
         '        raise ValueError("target directory could not be created") from exc',
         '        raise ValueError(f"target directory could not be created: {exc}") from exc',
         (f"{FPT}::test_a_save_directory_blocked_by_a_file_is_refused_without_naming_it",),
     ),
     Revert(
-        "post-phase-2: the save_shot tool drops create_directories",
+        "create_directories: the save_shot tool drops create_directories",
         SERVER_FILE_LIFECYCLE_TOOL,
         '            "create_directories": create_directories,\n',
         "",
@@ -4664,22 +4607,22 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "post-phase-2: the shot ceiling reverted to before create_directories and the override fields",
+        "create_directories: the shot ceiling reverted to before create_directories and the override fields",
         TEST_BUNDLES_FILE,
         "SHOT_MODE_BYTE_CEILING = 218_061",
         "SHOT_MODE_BYTE_CEILING = 217_718",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
-        "post-phase-2: the default ceiling reverted to before create_directories and the override fields",
+        "create_directories: the default ceiling reverted to before create_directories and the override fields",
         TEST_BUNDLES_FILE,
         "DEFAULT_MODE_BYTE_CEILING = 78_362",
         "DEFAULT_MODE_BYTE_CEILING = 78_019",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
-    # --- Post-Phase-2: one object per name after a library override ---
+    # --- one object per name after a library override ---
     Revert(
-        "post-phase-2: find_object does not prefer the local object by its (name, None) key",
+        "object lookup: find_object does not prefer the local object by its (name, None) key",
         ADDON_OBJECT_LOOKUP,
         "    local = objects.get((name, None))",
         "    local = None",
@@ -4689,14 +4632,14 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "post-phase-2: several linked objects with one name are guessed between",
+        "object lookup: several linked objects with one name are guessed between",
         ADDON_OBJECT_LOOKUP,
         "    if len(matches) > 1:",
         "    if False:",
         (f"{OLT}::test_two_linked_objects_with_one_name_and_no_local_one_are_refused",),
     ),
     Revert(
-        "post-phase-2: the ambiguity refusal publishes library names unreduced",
+        "candidates: the ambiguity refusal publishes library names unreduced",
         ADDON_CANDIDATES,
         '    return client_safe_name_leaf(getattr(library, "name", ""))\n',
         '    return str(getattr(library, "name", ""))\n',
@@ -4706,9 +4649,9 @@ REVERTS: list[Revert] = [
             f"{CANDT}::test_candidates_that_reduce_to_one_name_stay_distinguishable_by_uid",
         ),
     ),
-    # --- Post-Phase-2 decision: the refusal reuses linking's bounded candidate list ---
+    # --- the refusal reuses linking's bounded candidate list ---
     Revert(
-        "post-phase-2 candidates: the candidate list is unbounded again",
+        "candidates: the candidate list is unbounded again",
         ADDON_CANDIDATES,
         "MAX_CANDIDATES = 10\n",
         "MAX_CANDIDATES = 10_000\n",
@@ -4718,7 +4661,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "post-phase-2 candidates: entries lose their session_uid",
+        "candidates: entries lose their session_uid",
         ADDON_CANDIDATES,
         'f"{namer(d)!r} (session_uid {session_uid_of(d)})"',
         'f"{namer(d)!r}"',
@@ -4731,7 +4674,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "post-phase-2 candidates: the refusal drops its true total",
+        "candidates: the refusal drops its true total",
         ADDON_OBJECT_LOOKUP,
         'f"({len(matches)} of them: {describe_library_candidates(libraries)}) and no local object has it; "',
         'f"({describe_library_candidates(libraries)}) and no local object has it; "',
@@ -4741,7 +4684,7 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "post-phase-2 candidates: the library describer trusts id_type instead of forcing the leaf rule",
+        "candidates: the library describer trusts id_type instead of forcing the leaf rule",
         ADDON_CANDIDATES,
         "    return _describe(libraries, _library_leaf)\n",
         "    return _describe(libraries, display_name)\n",
@@ -4751,22 +4694,22 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "post-phase-2 candidates: a name string reaches a namer that expects the datablock, blanking names",
+        "candidates: a name string reaches a namer that expects the datablock, blanking names",
         ADDON_CANDIDATES,
         'f"{namer(d)!r} (session_uid',
         "f\"{namer(getattr(d, 'name', ''))!r} (session_uid",
         (f"{CANDT}::test_a_non_library_name_is_published_not_blanked",),
     ),
     Revert(
-        "post-phase-2 candidates: display_name loses its library branch",
+        "candidates: display_name loses its library branch",
         ADDON_CANDIDATES,
         '    if getattr(datablock, "id_type", None) == "LIBRARY":\n',
         "    if False:\n",
         (f"{CANDT}::test_describe_candidates_reduces_a_library_name_to_a_leaf_by_its_id_type",),
     ),
-    # --- Post-Phase-2 decision: the name-resolution rule is stated once, in the server instructions ---
+    # --- the name-resolution rule is stated once, in the server instructions ---
     Revert(
-        "post-phase-2 instructions: the object-name resolution rule is deleted from the instructions",
+        "server instructions: the object-name resolution rule is deleted from the instructions",
         SERVER_APP,
         "\n\nObject names after a library override: a name shared with the linked original resolves to the\n"
         "editable override. A name linked from several libraries with no local object is refused with each\n"
@@ -4778,54 +4721,53 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "post-phase-2 instructions: the instructions are written but never handed to FastMCP",
+        "server instructions: the instructions are written but never handed to FastMCP",
         SERVER_APP,
         "instructions=SERVER_INSTRUCTIONS)",
         "instructions=None)",
         (f"{SIT}::test_the_served_instructions_are_the_ones_stated_here",),
     ),
+    # --- the lookup itself, and the commands that resolve a name through it ---
     Revert(
-        "post-phase-2: a single linked object is not resolved",
+        "object lookup: a single linked object is not resolved",
         ADDON_OBJECT_LOOKUP,
         "    return matches[0] if matches else None",
         "    return None",
         (f"{OLT}::test_a_single_linked_object_is_returned_when_no_local_one_has_the_name",),
     ),
     Revert(
-        "post-phase-2: a missing name resolves to some other object",
+        "object lookup: a missing name resolves to some other object",
         ADDON_OBJECT_LOOKUP,
         "    return matches[0] if matches else None",
         "    return matches[0] if matches else next(iter(objects.values()), None)",
         (f"{OLT}::test_a_missing_name_is_none",),
     ),
     Revert(
-        "post-phase-2: scene tools look objects up by Blender's list order",
+        "object lookup: scene tools look objects up by Blender's list order",
         ADDON_SCENE,
         '    obj = find_object(bpy.data.objects, _required_name(name, "object_name"))',
         '    obj = bpy.data.objects.get(_required_name(name, "object_name"))',
         (f"{SOIT}::test_object_name_lookups_resolve_to_the_override_even_when_the_linked_original_is_listed_first",),
     ),
     Revert(
-        "post-phase-2: get_object_info looks its object up by Blender's list order",
+        "object lookup: get_object_info looks its object up by Blender's list order",
         ADDON_SERVER_CORE,
-        # `_resolve_targets` holds the same call one indent deeper, and `apply()`
-        # replaces only the FIRST occurrence -- which is that one, since the
-        # 8-space form matches it as a suffix. This row reverted the wrong site
-        # and its node passed (SURVIVOR, caught by a full run). The trailing
-        # `if not obj:` is what makes the anchor this site's alone.
+        # The 8-space call alone also matches, as a suffix, the deeper copy in
+        # `_resolve_targets`, which comes first, and `apply()` replaces only the
+        # first match. The trailing `if not obj:` makes the anchor unique.
         "        obj = find_object(bpy.data.objects, name)\n        if not obj:\n",
         "        obj = bpy.data.objects.get(name)\n        if not obj:\n",
         (f"{SOIT}::test_object_name_lookups_resolve_to_the_override_even_when_the_linked_original_is_listed_first",),
     ),
     Revert(
-        "post-phase-2 cycle 1: the transaction snapshots its targets by Blender's list order",
+        "object lookup: the transaction snapshots its targets by Blender's list order",
         ADDON_SERVER_CORE,
         "                obj = find_object(bpy.data.objects, name)\n",
         "                obj = bpy.data.objects.get(name)\n",
         (f"{SOIT}::test_the_transaction_snapshots_the_same_object_the_handler_mutates_after_an_override",),
     ),
     Revert(
-        "post-phase-2 cycle 1: an ambiguous target name raises out of the snapshot instead of being skipped",
+        "object lookup: an ambiguous target name raises out of the snapshot instead of being skipped",
         ADDON_SERVER_CORE,
         "            try:\n"
         "                obj = find_object(bpy.data.objects, name)\n"
@@ -4835,14 +4777,14 @@ REVERTS: list[Revert] = [
         (f"{SOIT}::test_an_ambiguous_target_name_is_skipped_rather_than_raising_out_of_the_snapshot",),
     ),
     Revert(
-        "post-phase-2: get_object_info does not say whether it read an override",
+        "object lookup: get_object_info does not say whether it read an override",
         ADDON_SERVER_CORE,
         '            "is_override": getattr(obj, "override_library", None) is not None,',
         '            "is_override": False,',
         (f"{SOIT}::test_get_object_info_says_whether_it_resolved_an_override_or_a_linked_object",),
     ),
     Revert(
-        "post-phase-2: get_object_info publishes a linked object's library name unreduced",
+        "object lookup: get_object_info publishes a linked object's library name unreduced",
         ADDON_SERVER_CORE,
         '"library": client_safe_name_leaf(obj.library.name) if',
         '"library": obj.library.name if',
@@ -4853,11 +4795,10 @@ REVERTS: list[Revert] = [
 
 def collected_nodes() -> list[str]:
     """
-    Ask pytest which nodes the task's new test files actually collect.
+    Ask pytest which nodes NEW_TEST_FILES collect.
 
     Returns:
-        list[str]: Every collected node id, plus the two nodes Task 1 added to
-            an existing file.
+        list[str]: Every collected node id, plus NEW_NODES_IN_EXISTING_FILES.
 
     Raises:
         SystemExit: If collection failed, which would make coverage meaningless.
@@ -4892,18 +4833,10 @@ def _invalidate_bytecode(path: pathlib.Path) -> None:
     r"""
     Drop the cached bytecode for a file this harness just rewrote.
 
-    CPython keys a `__pycache__` entry on the source's **mtime in whole seconds
-    and its size**. Two rows editing the same module inside one second with
-    edits of the same length therefore produce a cache hit for the *previous*
-    row's bytecode, and the second row silently tests nothing - it reports
-    SURVIVOR while its edit was, in fact, applied to the file on disk.
-
-    Found the hard way: `a successful SAVE bumps the epoch` and
-    `a FAILED load bumps the epoch` both append exactly
-    `\n    _STATE.session_epoch += 1` to `session.py`, and the second of them
-    survived in a full run while failing correctly when run alone. That is the
-    same class of false credit the whole harness exists to eliminate, so it is
-    fixed here rather than worked around by reordering rows.
+    CPython keys a `__pycache__` entry on the source's mtime in whole seconds and
+    its size. Two rows that change a module by the same length within one second
+    would otherwise run the first row's bytecode, and the second would report
+    SURVIVOR without testing its edit.
 
     Args:
         path: The source file whose cached bytecode must go.
@@ -4927,8 +4860,7 @@ def apply(revert: Revert) -> str | None:
         str | None: The original contents, or None if the file did not exist.
 
     Raises:
-        SystemExit: If the anchor text is not in the file, which would make the
-            row silently test nothing.
+        SystemExit: If the anchor text is not in the file.
 
     """
     original = revert.path.read_text(encoding="utf-8") if revert.path.exists() else None
@@ -4961,21 +4893,11 @@ def restore(revert: Revert, original: str | None) -> None:
 
 def run_nodes(nodes: tuple[str, ...]) -> tuple[bool, str]:
     """
-    Run exactly the named nodes and report whether *every* one of them failed.
+    Run exactly the named nodes and report whether every one of them failed.
 
-    A non-zero exit code is not the question, and using it as the answer is how
-    this harness credited a row that proved nothing. Two ways that goes wrong,
-    both found by a critic reviewing the matrix rather than the code it guards:
-
-    - A revert that leaves the file unparseable makes pytest exit 4 with a
-      **collection error**. The node "fails", but for an `IndentationError`
-      rather than for the behaviour the row names - so the row demonstrates
-      nothing about the code under test. Row A2 did exactly this, undetected
-      across three critic cycles. Any `error` in the summary is now a refusal.
-    - A row naming several nodes was credited when **one** of them failed,
-      which is the per-file false credit this harness was built to eliminate,
-      surviving at row granularity. The failure count must now equal the number
-      of nodes named.
+    The exit code cannot say that. A revert that breaks parsing gives a collection
+    error, not a failure of the behaviour the row names, so any error counts as not
+    caught. A row naming several nodes needs all of them to fail, not just one.
 
     Args:
         nodes: Node ids to run.
@@ -5007,8 +4929,7 @@ def _every_node_failed(tail: str, expected: int) -> bool:
 
     Returns:
         bool: True only when the line reports `expected` failures, no errors and
-            nothing passed. A row whose nodes partly passed has not been proven,
-            and one that errored has been proven only to be broken.
+            nothing passed.
 
     """
     if re.search(r"\d+ error", tail):
@@ -5063,10 +4984,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"    UNCOVERED {node}")
         return 1 if report.gaps else 0
 
-    # Stamped before and after, because a matrix run takes ~30 minutes and the
-    # box can change underneath it. A row that "survives" on a saturated machine
-    # is a timing artefact, not evidence, and this is what lets a later reader
-    # tell the two apart without reconstructing the machine's history.
+    # A full run is hundreds of pytest runs; the load stamps show whether a survivor
+    # may be a busy machine's timing artefact.
     print(quiet_box.stamp("before"))
 
     for revert in REVERTS:

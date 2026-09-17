@@ -1,10 +1,9 @@
 """
 Transport selection for the `blender-mcp` entrypoint.
 
-stdio is the contract every existing MCP client config depends on, so it must
-stay the default. Streamable HTTP is opt-in and loopback-only: the server has no
-authentication of any kind, so its bind address is the whole of its access
-control, and every test here exists to keep that address deliberate.
+stdio stays the default because existing client configs rely on it. HTTP is
+opt-in and loopback-only: the server has no authentication, so its bind address
+is its only access control.
 """
 
 import logging
@@ -32,18 +31,16 @@ from blender_mcp.server.cli import (
 
 HTTP_ENV = {TRANSPORT_ENV: "http"}
 ALLOWED_REMOTE_ENV = {TRANSPORT_ENV: "http", HTTP_ALLOW_REMOTE_ENV: "1"}
-# An error naming a variable and quoting a clip of its value fits well inside this.
+# Room for the variable's name and a clipped quote of its value.
 MAX_SANE_ERROR_CHARS = 200
 FULLWIDTH_ZERO = 0xFF10
 
 
 def _fullwidth(digits: str) -> str:
     """
-    Rewrite ASCII digits as their full-width equivalents, U+FF10 to U+FF19.
+    Rewrite ASCII digits as full-width digits, U+FF10 to U+FF19.
 
-    Built rather than pasted because the glyphs are near-indistinguishable from
-    ASCII in a source file - which is exactly why `int()` accepting them is worth
-    a test, and why pasting them here would be its own small trap.
+    Built rather than pasted, because full-width digits look like ASCII in source.
 
     Args:
         digits: ASCII decimal digits.
@@ -78,15 +75,13 @@ def test_transport_name_ignores_case_and_whitespace() -> None:
 
 def test_http_settings_are_ignored_under_stdio(caplog: pytest.LogCaptureFixture) -> None:
     """
-    A stray port must not break the default path it has no meaning for.
+    HTTP variables under stdio are ignored, but a warning names them.
 
-    It must not pass unremarked either. Setting HTTP variables and forgetting
-    `BLENDERMCP_TRANSPORT` is the likelier mistake than misspelling the
-    transport, and it produces exactly the outcome the exit on a bad transport
-    exists to prevent: an operator watching a port nothing will ever listen on.
+    Forgetting `BLENDERMCP_TRANSPORT` is likelier than misspelling it, and would
+    leave an operator waiting on a port nothing listens on.
 
     Args:
-        caplog: Fixture used to read the warning that names the ignored variable.
+        caplog: Fixture used to read the warning.
 
     """
     with caplog.at_level(logging.WARNING):
@@ -98,7 +93,7 @@ def test_http_settings_are_ignored_under_stdio(caplog: pytest.LogCaptureFixture)
 
 def test_stdio_without_http_settings_warns_about_nothing(caplog: pytest.LogCaptureFixture) -> None:
     """
-    The default path must stay silent, or the warning above becomes noise to ignore.
+    The default path stays silent, so the warning above is not noise.
 
     Args:
         caplog: Fixture used to assert no warning was emitted.
@@ -111,7 +106,7 @@ def test_stdio_without_http_settings_warns_about_nothing(caplog: pytest.LogCaptu
 
 
 def test_unknown_transport_is_rejected() -> None:
-    """A typo must fail loudly rather than silently serving stdio nobody reads."""
+    """A typo fails loudly instead of serving stdio nobody reads."""
     with pytest.raises(ValueError, match=TRANSPORT_ENV):
         transport_from_env({TRANSPORT_ENV: "sse"})
 
@@ -132,12 +127,9 @@ def test_invalid_http_port_is_rejected(port: str) -> None:
 @pytest.mark.parametrize("port", ["8_000", "+8000", _fullwidth("123"), _fullwidth("0008000")])
 def test_port_syntax_no_port_includes_is_rejected(port: str) -> None:
     """
-    `int()` is far more liberal than port syntax, so the value logged is not the value used.
+    Reject the underscores, signs and non-ASCII digits that `int()` accepts.
 
-    It accepts PEP 515 underscores, a leading sign and any Unicode decimal digit,
-    each of which silently renames the port: `8_000` and seven full-width digits
-    both become 8000. An operator reading `8_000` back out of a config has no way
-    to tell which of those the server actually bound.
+    Each would silently turn a config value into a different-looking bound port.
 
     Args:
         port: The rejected value.
@@ -148,22 +140,17 @@ def test_port_syntax_no_port_includes_is_rejected(port: str) -> None:
 
 
 def test_padded_http_port_is_accepted() -> None:
-    """Padding is the one liberty worth keeping: compose files add it routinely."""
+    """Padding is the one liberty kept, since shell and compose files add it."""
     padded = f"  {DEFAULT_HTTP_PORT}  "
     assert transport_from_env(HTTP_ENV | {HTTP_PORT_ENV: padded}).port == DEFAULT_HTTP_PORT
 
 
 def test_a_rejected_value_is_not_echoed_whole_into_the_log() -> None:
     """
-    A variable is attacker- or accident-shaped input, so the error quotes only a clip of it.
+    An environment value is unbounded, so the error quotes only a clip of it.
 
-    Both halves are asserted, and the second one is why. A length check alone
-    could not tell this function's own error from CPython's: `int()` refuses a
-    string of more than 4300 digits with a ValueError of its own, about 140
-    characters long, which sailed under the limit while naming neither the
-    variable nor a clip of its value. The revert matrix caught that - the row
-    for the length bound survived - so the contract is now pinned by what the
-    message *says*, not only by how long it is.
+    The variable's name is checked too: past 4300 digits `int()` raises its own
+    short error, which would pass a length check alone.
     """
     with pytest.raises(ValueError) as caught:
         transport_from_env(HTTP_ENV | {HTTP_PORT_ENV: "9" * 5000})
@@ -177,12 +164,10 @@ def test_a_rejected_value_is_not_echoed_whole_into_the_log() -> None:
 @pytest.mark.parametrize("host", ["", " ", "\t\n"])
 def test_empty_http_host_is_rejected(host: str) -> None:
     """
-    A set-but-empty variable is not the default: `bind("")` binds every interface.
+    A set-but-empty host is rejected, because `bind("")` binds every interface.
 
-    `env.get(name, default)` falls back only when the key is absent, and an empty
-    value arrives from several ordinary accidents - a compose key with nothing
-    after the colon, `-e BLENDERMCP_HTTP_HOST=`, an unexpanded `${MCP_HOST}`. Each
-    one used to bind 0.0.0.0 while looking like it had asked for nothing at all.
+    `env.get` falls back to the default only when the key is absent, and an empty
+    compose key or an unexpanded `${MCP_HOST}` sets it to "".
 
     Args:
         host: The rejected value.
@@ -201,7 +186,7 @@ def test_an_empty_host_is_rejected_even_with_remote_binds_allowed() -> None:
 @pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost", "LOCALHOST"])
 def test_loopback_hosts_need_no_opt_in(host: str) -> None:
     """
-    The supported deployment binds loopback, so it must stay the frictionless one.
+    The supported deployment binds loopback, so it must take no extra step.
 
     Args:
         host: A loopback spelling, including the case DNS treats as equivalent.
@@ -213,11 +198,9 @@ def test_loopback_hosts_need_no_opt_in(host: str) -> None:
 @pytest.mark.parametrize("host", ["0", "0.0.0.0", "::", "192.168.1.5", "example.internal"])
 def test_a_non_loopback_bind_is_refused_without_the_opt_in(host: str) -> None:
     """
-    Reaching past loopback is an authentication decision, and there is no authentication.
+    Binding past loopback needs the opt-in, since there is no authentication.
 
-    `0` and `::` matter as much as `0.0.0.0`: all three are "every interface" to
-    the socket layer, so they are classified as wildcards rather than treated as
-    ordinary addresses that happen to work.
+    `0` and `::` mean every interface, just as `0.0.0.0` does.
 
     Args:
         host: A wildcard or routable address that requires the opt-in.
@@ -257,7 +240,7 @@ def test_the_opt_in_honours_the_usual_spellings_of_yes(allow: str) -> None:
 
 def test_an_allowed_non_loopback_bind_says_what_it_costs(caplog: pytest.LogCaptureFixture) -> None:
     """
-    The opt-in is granted, so the only remaining defence is the operator understanding it.
+    The opt-in is granted, so the only defence left is an operator who understands it.
 
     Args:
         caplog: Fixture used to read the warning the widened bind must emit.
@@ -302,14 +285,10 @@ def _run_python(*arguments: str) -> subprocess.CompletedProcess[str]:
 
 def test_an_http_config_without_an_address_cannot_be_built_even_under_o() -> None:
     """
-    The host/port invariant has to be structural, because `python -O` deletes `assert`.
+    `HttpConfig` cannot be built without an address, even under `python -O`.
 
-    The invariant used to be an `assert` in `main()` guarding an
-    `Optional`-shaped config, so under `-O` an HTTP config with no address was
-    constructible and `uvicorn.Config(host=None)` bound every interface on both
-    address families. Splitting the config by transport removes the state
-    instead of checking for it: `HttpConfig` cannot exist without an address, and
-    the type checker narrows on the transport literal with no `assert` to strip.
+    `-O` strips `assert`, and `uvicorn.Config(host=None)` binds every interface,
+    so the guard has to be structural.
     """
     result = _run_python("-O", "-c", "from blender_mcp.server.cli import HttpConfig; HttpConfig()")
 
@@ -329,9 +308,8 @@ def run_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     """
     Capture mcp.run() instead of serving, and restore any settings main() changes.
 
-    `mcp` is a module-level singleton shared by the whole suite, so a test that
-    let main() bind a socket would hang, and one that left `settings.host`
-    rewritten would leak into every later test that reads it.
+    `mcp` is shared by the whole suite: serving would hang the test, and a
+    rewritten `settings.host` would leak into later tests.
 
     Args:
         monkeypatch: Fixture used to restore the singleton after each test.
@@ -352,7 +330,7 @@ def run_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
 def test_main_serves_stdio_by_default(run_calls: list[dict[str, Any]]) -> None:
     """
-    The no-configuration entrypoint behaves exactly as it did before HTTP existed.
+    With no configuration, main() calls mcp.run() with no arguments, which serves stdio.
 
     Args:
         run_calls: Fixture capturing the transport mcp.run() was asked to serve.
@@ -387,11 +365,10 @@ def test_main_serves_http_on_the_configured_address(
 @pytest.mark.usefixtures("run_calls")
 def test_binding_all_interfaces_keeps_dns_rebinding_protection(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    FastMCP only enables Host-header validation when built for a loopback host.
+    Binding 0.0.0.0 keeps the Host-header check FastMCP enabled at construction.
 
-    The container binds 0.0.0.0 so Docker can forward to it; the protection
-    decided at construction must survive that, or a malicious web page could
-    drive Blender through the published port via DNS rebinding.
+    FastMCP enables it only for a loopback host. Losing it on the container's
+    bind would let a web page drive Blender through the published port.
 
     Args:
         monkeypatch: Fixture used to set the transport variables.
@@ -468,11 +445,9 @@ def status_by_host_header() -> dict[str, int]:
     """
     Post one `initialize` per `Host` header to the real ASGI app, and report the statuses.
 
-    Driven in-process through `httpx.ASGITransport`, so the whole request path
-    runs - FastMCP's transport-security middleware included - without binding a
-    socket or leaving a server to hang. Every header goes through a single app
-    and a single lifespan because `StreamableHTTPSessionManager.run()` may only
-    be entered once per instance, and `mcp` is a module-level singleton.
+    In-process through `httpx.ASGITransport`, so the security middleware runs
+    without binding a socket. All headers share one app and one lifespan because
+    `StreamableHTTPSessionManager.run()` may be entered only once per instance.
 
     Returns:
         dict[str, int]: The status answered for each `Host` header sent.
@@ -504,11 +479,10 @@ def status_by_host_header() -> dict[str, int]:
 
 def test_a_remote_host_header_is_refused_by_the_running_app(status_by_host_header: dict[str, int]) -> None:
     """
-    421 for a remote `Host` is the intended shape of a loopback-only server.
+    A remote `Host` header gets 421 from the running app.
 
-    Asserted against the app actually built from `app.py` rather than against
-    `settings.transport_security`, because the settings object only says the
-    check was configured, not that a request ever reaches it.
+    Checked on the app rather than `settings.transport_security`, which shows
+    only that the check is configured, not that requests reach it.
 
     Args:
         status_by_host_header: Fixture holding the status per `Host` header.
@@ -521,12 +495,10 @@ def test_a_forged_loopback_host_header_is_served_so_it_is_no_access_control(
     status_by_host_header: dict[str, int],
 ) -> None:
     """
-    `Host` is chosen by the client, so the same check that answers 421 lets a forgery in.
+    A forged loopback `Host` header is served, so the check is no access control.
 
-    This is the honest half of the DNS-rebinding story and the reason the bind
-    address carries the whole weight: the middleware stops a browser being used
-    as a confused deputy, and stops nothing else. A test that only asserted the
-    421 would read as proof that a widened bind is defended.
+    It stops DNS rebinding through a browser and nothing else; the bind address
+    does the protecting.
 
     Args:
         status_by_host_header: Fixture holding the status per `Host` header.

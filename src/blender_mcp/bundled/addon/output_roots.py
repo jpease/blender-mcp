@@ -1,29 +1,25 @@
 """
-Report the directories this Blender process can actually write to.
+Report the directories this Blender process can write to.
 
-Once the MCP server and Blender stop sharing a filesystem, the server has no
-way to know which paths a render or export can target - its own cwd, temp dir
-and home directory mean nothing on the other side. So the addon reports its
-own writable roots in the get_addon_info handshake and the server passes them
-on to the agent.
+When the MCP server and Blender do not share a filesystem, the server cannot
+tell which paths a render or export may target, so the addon reports its own
+writable roots in the get_addon_info handshake.
 
-The deployment-specific roots come from an environment variable rather than
-being hardcoded, so nothing here needs to know whether it is running in a
-container, a VM, or on the user's desktop.
-
-Deliberately free of `bpy`: the Blender-derived candidates are passed in.
+Deployment-specific roots come from environment variables, so this code need
+not know whether it runs in a container or on a desktop. Free of `bpy`: callers
+pass the Blender-derived candidates.
 """
 
 import os
 
 from collections.abc import Iterable, Mapping
 
-# Colon-separated (os.pathsep) list of directories a deployment wants offered
-# first - e.g. a container's mounted output volume.
+# os.pathsep-separated directories to offer first, such as a container's
+# mounted output volume.
 OUTPUT_ROOTS_ENV_VAR = "BLENDERMCP_OUTPUT_ROOTS"
-# The same format, naming the directories .blend file commands are *confined*
-# to. Separate because a canon library mount is read-only: folding it into
-# "where renders may be written" would be wrong. Falls back to the output roots.
+# Same format: the directories .blend file commands are confined to. Separate
+# because a confinement root, such as a read-only library mount, need not be
+# writable. Falls back to the output roots.
 FILE_ROOTS_ENV_VAR = "BLENDERMCP_FILE_ROOTS"
 
 
@@ -72,12 +68,10 @@ def configured_file_roots(environ: Mapping[str, str] | None = None) -> list[str]
     """
     Read the roots `.blend` file commands are enforced against.
 
-    This is the enforcing read path; everything above is advisory. It reads
-    only the deployment's variables and never the default candidates
-    `writable_roots` is given (`~`, temp dirs), because deriving a containment
-    boundary from those would make it the whole home directory. A variable that
-    is unset or holds only blanks counts as unset. An empty result means no
-    boundary is enforced - see `file_paths` for why that is the default.
+    Unlike the advisory roots above, this never uses the default candidates
+    (`~`, temp dirs): the boundary would become the whole home directory. A
+    variable holding only blanks counts as unset. An empty result means no
+    boundary is enforced; `file_paths` explains that default.
 
     Args:
         environ: Mapping to read from; defaults to the real environment.

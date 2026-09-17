@@ -444,7 +444,7 @@ def test_get_object_info_syncs_from_editmode_before_reading(monkeypatch) -> None
 def test_get_object_info_says_whether_it_resolved_an_override_or_a_linked_object(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """After Route C a name has two objects; the result says which one was read."""
+    """After a library override a name has two objects; the result says which one was read."""
     addon, bpy, _objects, _scene = _load_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_empty_object(bpy, "local_obj")
@@ -463,7 +463,7 @@ def test_get_object_info_says_whether_it_resolved_an_override_or_a_linked_object
 
 
 class _OverriddenShotObjects(dict):
-    """`bpy.data.objects` after Route C: two objects share a name; `(name, None)` is Blender's key for the local one."""
+    """`bpy.data.objects` after an override: two objects share a name; `(name, None)` keys the local one."""
 
     def get(self, key: object, default: object = None) -> object:
         if isinstance(key, tuple):
@@ -497,7 +497,7 @@ def test_the_transaction_snapshots_the_same_object_the_handler_mutates_after_an_
     """
     `_resolve_targets` feeds `mutation_transaction`, which writes state back on a failure.
 
-    Resolving it by Blender's list order while the handler resolves by `find_object` would
+    Resolving targets by Blender's list order while the handler resolves by `find_object` would
     restore state onto the linked original and leave the override holding a partial edit.
     """
     addon, bpy, _objects, _scene = _load_addon(monkeypatch)

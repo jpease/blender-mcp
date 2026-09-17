@@ -1,15 +1,10 @@
 """
 Import the tool submodules selected by BLENDER_MCP_TOOLSETS for their @mcp.tool() registration side effect.
 
-BLENDER_MCP_TOOLSETS (a comma-separated list of mode names from `..bundles.MODES`, bundle
-names from `..bundles.BUNDLES`, or `all`) selects which domains this process registers;
-`core` modules are always included. See ../bundles.py for why an advertised payload is
-permanent context cost, and for the mode/bundle tables; README.md carries the client config
-examples.
+See `..bundles` for the selection rules and why the advertised catalog is kept small.
 """
 
-# This file's job is exactly this conditional registration; the docstrings-and-reexports
-# convention doesn't apply.
+# This module exists to register tools conditionally, so the re-export convention does not apply.
 # ruff: file-ignore[non-empty-init-module]
 
 import importlib
@@ -20,6 +15,5 @@ from ..bundles import TOOLSETS_ENV_VAR, resolve_toolset_modules
 for _module_name in resolve_toolset_modules(os.getenv(TOOLSETS_ENV_VAR)):
     importlib.import_module(f".{_module_name}", package=__name__)
 
-# Imported last and only after the modules above so the documentation pass covers
-# exactly the tools this process actually registered.
+# Last, so the documentation pass sees exactly the tools registered above.
 from . import _documentation as _documentation  # ruff: ignore[module-import-not-at-top-of-file]

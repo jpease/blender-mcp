@@ -1,26 +1,24 @@
 r"""
-Drive the addon's real `transaction.py` and `session.py` through a link, a reload and a load in Blender.
+Run the addon's real `transaction.py` and `session.py` through a link, a reload and a load in Blender.
 
-Plan Task 4 Steps 5 and 5b require the rollback changes to be verified against a
-real Blender rather than the stubs in `tests/test_transaction_session_swap.py`.
-Five cases, on a fixture built here:
+`tests/test_transaction_session_swap.py` covers the same rollback with stubs.
+Expected results, on a fixture built here:
 
-A. **A failed link** inside `mutation_transaction`: the Library and every
-   datablock linked from it are removed, and every datablock that existed
-   before the transaction survives with the same session_uid.
-B. **A reload inside `replacing_library_contents`**, then a raise: the
-   `blend_import_post` handler invalidates the transaction, the linked contents
+A. A failed link inside `mutation_transaction`: the Library and everything
+   linked from it are removed, and every datablock that existed before keeps
+   its session_uid.
+B. A reload inside `replacing_library_contents`, then a raise:
+   `blend_import_post` invalidates the transaction, the linked contents
    survive, and the error carries the rollback-skipped warning.
-C. **The same reload without the flag** - the hazard B defends against: the
-   transaction removes the reloaded contents (the Library itself predates the
-   transaction and stays).
-D. **A file load inside a transaction holding a geometry backup**, then a raise:
+C. The same reload outside that context, the hazard B guards against: rollback
+   removes the reloaded contents, while the Library predates the transaction
+   and stays.
+D. A file load inside a transaction holding a geometry backup, then a raise:
    `load_post` invalidates it, the loaded file stays whole, and the freed backup
    is never passed to `remove()`.
-E. **Why libraries are removed last**: `libraries.remove` frees every datablock
-   linked from the library, and a later `remove()` on a Python reference to one
-   of them raises `ReferenceError` - which the `suppress(Exception)` in
-   `_remove_datablocks` would hide.
+E. Why libraries are removed last: `libraries.remove` frees the datablocks
+   linked from it, and a later `remove()` on a reference to one raises
+   `ReferenceError`, which `_remove_datablocks` would suppress.
 
 From the repository root::
 
@@ -39,8 +37,8 @@ import types
 import bpy
 
 ADDON_DIR = pathlib.Path(__file__).resolve().parents[2] / "src/blender_mcp/bundled/addon"
-# A bare parent package, so `session.py` and `transaction.py` import their
-# siblings relatively without executing the addon's `__init__.py`.
+# A bare parent package lets these modules import their siblings without
+# running the addon's `__init__.py`.
 _PACKAGE = types.ModuleType("probe_addon")
 _PACKAGE.__path__ = [str(ADDON_DIR)]  # type: ignore[attr-defined]
 sys.modules["probe_addon"] = _PACKAGE
@@ -70,7 +68,7 @@ def id_census() -> set[tuple[str, int, str]]:
 
 def link_canon() -> bpy.types.Library:
     """
-    Link the canon collection into the scene, as `link_canon_library` will.
+    Link the canon collection into the scene, as `link_canon_library` does.
 
     Returns:
         bpy.types.Library: The library datablock the link created.

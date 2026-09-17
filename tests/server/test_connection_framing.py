@@ -110,7 +110,7 @@ def test_response_id_mismatch_raises_and_drops_the_socket(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The session marker: the epoch is only a signal if something acts on it
+# Session marker: a changed session must invalidate the cached handshake
 # ---------------------------------------------------------------------------
 
 
@@ -160,10 +160,9 @@ def test_an_unchanged_session_marker_does_not_invalidate_the_cached_handshake(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    Re-handshaking on every response would put two commands on the wire per tool call.
+    An unchanged session marker keeps the cached handshake.
 
-    The premise the whole mechanism rests on is that the *pair* is compared, so
-    the no-change path has to be asserted as explicitly as the change path.
+    Otherwise every tool call would put a second command on the wire.
     """
     _reset_handshake_state(monkeypatch, _cached())
 
@@ -174,16 +173,10 @@ def test_an_unchanged_session_marker_does_not_invalidate_the_cached_handshake(
 
 def test_a_moved_epoch_marks_the_cached_handshake_stale(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    `connection.py:186` gates **every** command on a `capabilities` set cached once per process.
+    A moved epoch marks the cached handshake stale.
 
-    After a swap that gate is stale and nothing noticed - the exact failure the
-    epoch exists to signal. That `writable_output_roots` really does change
-    across a swap is measured by `scripts/blender_probes/session_handlers.py`,
-    whose "writable_output_roots changes across a swap" section prints the
-    before and after lists and which root was gained. **How many** roots it
-    gains is a property of the machine it runs on, not of the mechanism, so no
-    arity is asserted here - an earlier revision of this docstring named one and
-    nothing in the tree produced it.
+    `send_command` gates every command on capabilities cached once per process,
+    and those follow the open `.blend`.
     """
     _reset_handshake_state(monkeypatch, _cached())
 
@@ -196,10 +189,9 @@ def test_a_restarted_addon_at_the_same_epoch_still_marks_the_handshake_stale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    The ABA case: epoch 1 -> restart -> 0 -> one swap -> 1, and the numbers match.
+    A restarted addon back at the same epoch still marks the handshake stale.
 
-    Comparing the counter alone reads that as "nothing happened" and keeps a
-    capability set belonging to a different `.blend` in a different process.
+    Epoch 1, restart to 0, one swap back to 1: only the session id shows the change.
     """
     _reset_handshake_state(monkeypatch, _cached())
 
@@ -212,11 +204,9 @@ def test_the_marker_is_read_from_a_command_result_as_well_as_the_frame(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    The barrier's rejection carries the fields at frame level; `get_session_info` nests them.
+    The marker is read from `get_session_info`'s result as well as the frame.
 
-    A client whose commands never sat behind a swap sees only the second shape,
-    and it must be enough - but only for the two commands that are *specified*
-    to report a session, which is why the command name is passed.
+    A client whose commands never sat behind a swap sees only the nested shape.
     """
     _reset_handshake_state(monkeypatch, _cached())
 
@@ -230,13 +220,9 @@ def test_the_marker_is_read_from_a_command_result_as_well_as_the_frame(
 
 def test_an_ordinary_commands_result_cannot_trip_a_re_handshake(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    Any `result` carrying a `session_epoch` key used to force a fresh handshake.
+    A `session_epoch` key inside an ordinary command's `result` is not a marker.
 
-    That let a *command shape* decide when the process re-reads its capability
-    set: one handler returning a field of that name - a mesh dump, a scene
-    report, anything - and every call to it paid for a second round trip. The
-    frame-level pair is the addon's own stamp and is trusted unconditionally; a
-    nested `result` is read only for the commands specified to report one.
+    Otherwise any handler returning such a field would cost a re-handshake per call.
     """
     _reset_handshake_state(monkeypatch, _cached())
 
@@ -250,14 +236,10 @@ def test_an_ordinary_commands_result_cannot_trip_a_re_handshake(monkeypatch: pyt
 
 def test_a_non_conforming_epoch_does_not_re_arm_the_flag_forever(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    A JSON-string epoch made the cached pair permanently un-equal to itself.
+    A JSON-string epoch compares equal to the same cached number.
 
-    `AddonHandshake.session_marker()` holds `normalized_session_epoch` output, so
-    a peer reporting `"1"` (or `1.0`) against a cached `1` compared unequal on
-    **every** response - the flag re-armed each time and the process ran one
-    extra `get_addon_info` round trip per command, permanently. The observed pair
-    is now normalized through the same helpers before it is compared. The socket
-    is unauthenticated, so this is reachable input, not a hypothetical.
+    Compared raw, a peer's `"1"` would never equal the cached `1`, and every
+    response would re-arm the flag and cost an extra round trip.
     """
     _reset_handshake_state(monkeypatch, _cached())
 
@@ -279,19 +261,11 @@ class _SessionScriptedSocket:
     """
     A fake addon socket that answers every command with the session it is told to be in.
 
-    Built rather than reused from `ScriptedSocket` because the defect this
-    harness exists to catch is *re-entrant*: the refresh's own `get_addon_info`
-    has to travel the same `send_command_locked` path a `ping` does, so the
-    responses cannot be a fixed script - each one has to be generated from the
-    request that arrives, echoing its id.
+    Responses are built from each request, not scripted, because the refresh's
+    own `get_addon_info` travels the same path as a `ping`.
 
     Attributes:
-        wire: Every command type this socket was asked for, in order. Counting
-            `get_addon_info` here is the measurement; the previous version of
-            this test replaced `force_addon_handshake` with a plain function
-            that never went through `send_command`, so the re-entry the count is
-            about could not happen and the test's own name was a false claim
-            about production.
+        wire: Every command type sent, in order; tests count `get_addon_info` here.
         session_id: The session the addon currently reports.
         session_epoch: The epoch the addon currently reports.
 
@@ -335,7 +309,7 @@ class _SessionScriptedSocket:
         body: dict[str, object] = {
             "status": "success",
             "id": command["id"],
-            # Every frame carries the pair, which is what production does.
+            # The real addon stamps the pair on every frame.
             "session_id": self.session_id,
             "session_epoch": self.session_epoch,
         }
@@ -371,21 +345,11 @@ def test_one_swap_costs_exactly_one_re_handshake_over_a_real_round_trip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    One observed swap must put **one** extra `get_addon_info` on the wire, not two.
+    One observed swap puts exactly one extra `get_addon_info` on the wire.
 
-    The refresh's own `get_addon_info` response travels back through
-    `send_command_locked` -> `note_session_marker` while `_addon_handshake` still
-    holds the *pre*-refresh value, so the comparison found a difference and
-    re-set the flag the refresh had just cleared. Reproduced before the fix::
-
-        after ping #1: wire = ['get_addon_info', 'ping'], stale = True
-        after ping #2: wire = [..., 'get_addon_info', 'ping'], stale = False
-        get_addon_info round trips for ONE swap: 2
-
-    This drives a **real** round trip for exactly that reason: the previous test
-    stubbed `force_addon_handshake` with a function that never sent anything, so
-    the re-entry could not occur and the count it asserted was measuring the
-    stub.
+    The refresh's own response reaches `note_session_marker` while the old
+    handshake is still cached; without the re-entrancy guard it re-arms the flag.
+    The round trip is real because a stubbed `force_addon_handshake` cannot re-enter.
     """
     _reset_handshake_state(monkeypatch, _cached())
     sock = _SessionScriptedSocket("proc-a", 2, ["ping", "get_addon_info"])
@@ -393,10 +357,7 @@ def test_one_swap_costs_exactly_one_re_handshake_over_a_real_round_trip(
     blender.sock = sock
     monkeypatch.setattr(connection, "get_blender_connection", lambda: blender)
 
-    # Three, not two: with the re-entrancy guard removed the flag is re-set by
-    # the refresh's own response, and the *third* command is where that becomes
-    # a second round trip the count can see. Two pings would leave the wire
-    # assertion passing and rest the whole test on the flag assertion below.
+    # Without the guard, the second handshake goes out on the third command.
     for _call in range(3):
         blender.send_command("ping")
 
@@ -405,9 +366,7 @@ def test_one_swap_costs_exactly_one_re_handshake_over_a_real_round_trip(
     assert connection._session_marker_stale.is_set() is False, "the refresh's own response re-armed the flag"
 
 
-# Twenty commands, because the defect is *permanent*: it costs one extra round
-# trip per command for the life of the process, so the only count that tells a
-# transient retry apart from a latched one is a long one.
+# Long enough to tell a one-off retry from one repeated on every command.
 _COMMANDS_AFTER_A_DOUBLE_MOVE = 20
 
 
@@ -415,30 +374,13 @@ def test_a_refresh_that_learns_a_newer_session_than_the_one_observed_stops_retry
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    The addon moved twice; `pending` named an epoch it can never report again.
+    A refresh that finds the addon past the observed session records the newer pair.
 
-    `note_session_marker` pins `_OBSERVED_MARKER["pending"]` to the pair it saw,
-    and the refresh re-armed the staleness flag unless the refreshed handshake
-    reported **that exact pair**. But `_refreshing` suppresses
-    `note_session_marker` for the refresh's own response, so the newer pair the
-    refresh just learned was never recorded either. Two File -> Opens, a second
-    server process against the same Blender (documented behaviour - `README.md`
-    :85-89), or one arriving inside the 4.6 s `open_mainfile` window are each
-    enough to put the addon past the observed epoch, and the flag then re-armed
-    on every command forever::
-
-        get_addon_info round trips for 20 commands, before: 20
-        "staying stale so the next command retries" logged 20 times
-
-    **This is the third time in this task that a fix reintroduced its own defect
-    class**, and `note_session_marker`'s docstring claimed the class was closed.
-    The condition is now "the refresh reported a well-formed marker", not "the
-    refresh reported the stale one": a well-formed pair is by definition the
-    addon's current answer, so it is what `pending` should have held all along.
+    Requiring the observed pair instead would re-arm the flag on every command once
+    the addon had moved twice, as after two File > Opens.
     """
     _reset_handshake_state(monkeypatch, _cached(session_id="proc-a", session_epoch=1))
-    # The addon is already at epoch 3 - past the epoch the observation below
-    # names - which is the whole case.
+    # The addon is already at epoch 3, past the observed epoch 2.
     sock = _SessionScriptedSocket("proc-a", 3, ["ping", "get_addon_info"])
     blender = BlenderConnection(host="localhost", port=0)
     blender.sock = sock
@@ -467,15 +409,11 @@ def test_a_refresh_that_fails_leaves_the_staleness_signal_standing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    A failed re-handshake used to clear the signal permanently and never retry.
+    A failed re-handshake leaves the staleness signal set.
 
-    `refresh_handshake_if_session_changed` clears the flag before refreshing
-    (correct, against recursion) and nothing re-set it when the refresh produced
-    nothing - and `_maybe_handshake_addon` swallows every exception, while
-    `handshake_addon`'s fallback replaces a good handshake with a degraded one
-    whose `session_epoch` is None - which is the handshake this test installs.
-    The process then gated every later command on a capability set belonging to
-    a file that was no longer open, for the life of the process.
+    The refresh clears the flag first, and a failure yields a degraded handshake
+    with no epoch. Left cleared, later commands would be gated on the capabilities
+    of a file no longer open.
     """
     _reset_handshake_state(monkeypatch, _cached())
     degraded = AddonHandshake(
@@ -502,10 +440,9 @@ def test_a_refresh_that_fails_leaves_the_staleness_signal_standing(
 
 def test_the_command_gate_reads_the_refreshed_capability_set(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    The whole point: a command the *new* file supports must stop being refused.
+    After a refresh, a command the new file supports is no longer refused.
 
-    `capabilities` is scene-gated, so it follows the swapped `.blend`. Before
-    this, the cached set was consulted for the life of the process.
+    Capabilities follow the open `.blend`, so the gate must read the refreshed set.
     """
     _reset_handshake_state(monkeypatch, _cached(capabilities=["ping"]))
     connection._session_marker_stale.set()
@@ -530,13 +467,10 @@ def test_a_barrier_rejection_read_off_the_socket_marks_the_handshake_stale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    The observation has to be wired into the receive path, not merely available.
+    A barrier rejection read off the socket marks the handshake stale.
 
-    `note_session_marker` is correct in isolation and useless unless
-    `send_command_locked` calls it on every frame it parses. The barrier's
-    rejection is an `error` frame, so the call has to happen **before** the
-    error branch raises - which is exactly the ordering a later edit would
-    quietly get wrong.
+    The rejection is an error frame, so `send_command_locked` must note the marker
+    before its error branch raises.
     """
     _reset_handshake_state(monkeypatch, _cached())
     frame = {

@@ -1,4 +1,4 @@
-"""Chase the two 5.2.2 deviations: the compress default, and whether error shape 3 still exists."""
+"""Chase two 5.2.2 deviations from 5.2.1: the compress default, and whether error shape 3 still exists."""
 
 import gzip
 import os
@@ -22,8 +22,7 @@ for label, compress in (
     ("compress=True", True),
 ):
     path = os.path.join(work, f"{label.split()[0]}.blend")
-    # Spelled out rather than unpacked, because "omit the argument" is one of the
-    # three cases under test and a **kwargs dict cannot express it distinctly.
+    # Two calls, not **kwargs: omitting `compress` is itself one of the cases.
     if compress is None:
         bpy.ops.wm.save_as_mainfile(filepath=path, relative_remap=False)
     else:
