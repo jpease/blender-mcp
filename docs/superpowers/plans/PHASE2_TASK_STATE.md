@@ -3832,7 +3832,32 @@ alone. Critic, implementer and reviewer work ran in parallel where files did not
    `docs/superpowers/plans/phase-4-socket-authentication-work-item.md`. The P1 items for any pooled or untrusted
    deployment: socket authentication (§4.8), session auto-exec flag detection (decision 26), `enforce_roots` on
    the seven pre-existing path-taking commands, scene flags widening the command set, the MCP HTTP endpoint.
-3. **Docker parity** for Phase 2 — re-run `docker compose -f docker/blender/docker-compose.yml up --build --wait`
-   on a host with network access, then `tools/list` (expect 63 in `shot` mode) and one round-tripped tool call.
+3. ~~Docker parity~~ — **done 2026-09-16 17:55 MDT**, see "Docker supplement" below.
 4. **Override editability after reopen over the socket** — no addon command reads it by uid; a small read
    command would let the live gate assert it directly (Task 10 disclosure).
+
+### Docker supplement — run after the gate, 2026-09-16 (user ran the build on the host network)
+
+The user ran `docker compose -f docker/blender/docker-compose.yml up --build --wait` at `41b637b` outside the
+sandbox: image built (poetry install 29 packages), container **Healthy**, `127.0.0.1:8000->8000/tcp`,
+`BLENDER_MCP_TOOLSETS: shot`. The reviewer then drove the real MCP server over streamable HTTP with the `mcp`
+client (`initialize` → `tools/list` → `call_tool`):
+
+```
+tools/list count: 63 nextCursor: None
+phase 2 tools present: True
+open_shot destructive True readOnly False openWorld True
+unlink_libraries destructive True readOnly False openWorld False
+link_canon_library destructive False readOnly False openWorld True
+get_session_info isError: False
+payload: {"ok": true, "data": {"session_id": "f8cc7c96...", "session_epoch": 0, "current_filepath": null,
+          "last_load_error": null, "last_save_error": null, "session_indeterminate": false, "is_dirty": false,
+          "libraries": []}, "error": null, "warnings": [], ...}
+open_shot(missing) isError: True -> Error executing tool open_shot: path is outside the allowed file roots (BLENDERMCP_FILE_ROOTS); see file_roots in get_addon_status
+after refusal, get_session_info isError: False
+```
+
+This is the MCP-tool → socket → addon hop the gate scenario deliberately leaves to `pytest` (Task 10 ruling (b)),
+demonstrated on Linux (Xvfb, emulated linux/amd64): the served count matches `measure_catalog.py shot` (63), the
+hints match Task 9's table, a real tool call round-trips through the addon, and a refusal comes back path-free on a
+connection that keeps working. The full gate scenario was not run inside the container.
