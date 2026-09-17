@@ -2,16 +2,33 @@
 Resolve a client-supplied object name to exactly one object, deterministically.
 
 After a library override (Route C) a shot holds two objects with one name: the
-local, editable override and the linked original it was made from. Measured on
-Blender 5.2.2, `bpy.data.objects.get(name)` returns the local one because
-Blender keeps local IDs ahead of linked ones in `Main`, but that is list
-ordering, not an API contract, and when two *linked* objects share a name and
-no local one exists it picks whichever library sorted first.
+local, editable override and the linked original it was made from.
+`bpy.data.objects.get(name)` returns the local one, and the `(name, None)` key
+returns it explicitly - both measured on Blender 5.2.2 by
+`scripts/blender_probes/shot_directories_and_override_names.py` section B,
+which asserts each. The first is list ordering rather than a stated API
+contract, which is the whole reason the key is used here: the same probe
+measures that with two *linked* objects sharing a name and no local one,
+`get(name)` follows `Main` insertion (link) order - the library linked first,
+**not** the one whose name sorts first, which an earlier revision of this
+docstring asserted and the probe disproved.
 
-The rule here is explicit instead: the local object wins, looked up with the
-documented `(name, None)` key, because it is the only one of the pair a tool
-can edit; otherwise a single linked object is returned; several linked objects
-with the name and no local one are refused rather than guessed between.
+The tuple key's behaviour is measured, not documented: `bpy.data.objects.get`'s
+own `__doc__` types `key` as `str`, and the pinned stubs agree, so the probe is
+the instrument for it.
+
+The rule here is explicit: the local object wins, looked up with the
+`(name, None)` key, because it is the only one of the pair a tool can edit;
+otherwise a single linked object is returned; several linked objects with the
+name and no local one are refused rather than guessed between.
+
+**Not the same rule as `handlers/linking.resolve_unique_name`, deliberately.**
+That one refuses *any* ambiguous name and tells the caller to pass a
+`session_uid`, which is right for the linking commands, because they take one.
+The tools reached from here take no uid to pass, and only the local object is
+editable, so a refusal on every overridden name would make them unusable; the
+refusal this module does raise points at `create_override`, which is the
+uid-based route back.
 
 Free of `bpy` so it is testable without Blender: callers pass `bpy.data.objects`.
 """

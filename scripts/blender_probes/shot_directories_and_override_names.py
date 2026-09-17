@@ -143,13 +143,21 @@ def section_b(work: pathlib.Path) -> None:
     order = [(obj.name, obj.library is not None) for obj in bpy.data.objects]
     print(f"  bpy.data.objects order after reopen: {order}")
     check("two objects are named HeroCam", [name for name, _ in order].count("HeroCam") == len(("override", "linked")))
+    # Asserted, not printed: `object_lookup`'s docstring cites this probe for both
+    # claims, and a printed value a passing run does not check is not an instrument.
+    check("local IDs come before linked ones in Main", order[0] == ("HeroCam", False))
+    check("plain get(name) returns the local object", bpy.data.objects.get("HeroCam").library is None)
+    keyed = bpy.data.objects.get(("HeroCam", None))  # pyright: ignore[reportArgumentType]
+    check("the (name, None) key returns the local object", keyed.library is None)
     resolved = object_lookup.find_object(bpy.data.objects, "HeroCam")
     check("find_object returns the local override", resolved.library is None and resolved.override_library)
     check("the scene tools' _object returns the same object", scene_handlers._object("HeroCam") == resolved)
     check("a missing name is None", object_lookup.find_object(bpy.data.objects, "NoSuchObject") is None)
     check("the (name, None) key of a missing name is None", bpy.data.objects.get(("NoSuchObject", None)) is None)  # pyright: ignore[reportArgumentType]
 
-    first, second = work / "a" / "canon.blend", work / "b" / "props.blend"
+    # Linked first but sorting last, so insertion order and name order disagree and
+    # the checks below can tell which one `get(name)` actually follows.
+    first, second = work / "a" / "zeta.blend", work / "b" / "alpha.blend"
     first.parent.mkdir()
     second.parent.mkdir()
     canon(first, "PropsA", "Prop")
@@ -158,6 +166,12 @@ def section_b(work: pathlib.Path) -> None:
     for path in (first, second):
         with bpy.data.libraries.load(str(path), link=True) as (_source, linked):  # pyright: ignore[reportGeneralTypeIssues]
             linked.objects = ["Prop"]
+    print(f"  libraries: {[lib.name for lib in bpy.data.libraries]}")
+    picked = bpy.data.objects.get("Prop").library.name
+    sorted_first = sorted(lib.name for lib in bpy.data.libraries)[0]
+    print(f"  plain get('Prop') picked: {picked}; first by name: {sorted_first}")
+    check("get(name) follows Main insertion order: the library linked first", picked == "zeta.blend")
+    check("get(name) does NOT follow library name order", sorted_first == "alpha.blend" and picked != sorted_first)
     message = refusal(lambda: object_lookup.find_object(bpy.data.objects, "Prop"))
     check(f"two linked Props with no local one are refused: {message!r}", "more than one library" in message)
     check("the refusal names no directory", str(work) not in message)

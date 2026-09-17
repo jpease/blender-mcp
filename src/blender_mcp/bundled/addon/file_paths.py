@@ -232,7 +232,15 @@ def create_save_directory(path: str) -> bool:
 
     Call it only with `resolve_blend_path`'s result after `enforce_roots`: the
     path is symlink-free there, so every directory made is inside the root the
-    target was checked against.
+    target was checked against **as it was checked**. A second local process that
+    swaps an existing ancestor for a symlink in between moves the creation out of
+    the root - the same time-of-check window the save path already carries for
+    `os.path.exists` and the `<target>@` check (recorded residual,
+    `PHASE2_TASK_STATE.md`), and out of scope for the trusted-deployment model.
+
+    Runs on Blender's main thread inside the drain tick, so a dead NFS or automount
+    ancestor stalls every client for the mount timeout. That exposure is not new
+    here: `_require_save_target` stats the same directory before this is reached.
 
     Args:
         path: The canonical `.blend` target.

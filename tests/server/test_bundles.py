@@ -544,18 +544,20 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # This is a ceiling, not a target -- the policy is to minimize, so this number should only ever
 # move down from here. Raising it again requires a deliberate decision recorded in the commit
 # message. See docs/superpowers/plans/PHASE1_TASK_STATE.md's "Task 6" section for how it was
-# first measured, and PHASE2_TASK_STATE.md for this raise. Raised again by 350 B after Phase 2
-# (measured 217,718 -> 218,068): `save_shot.create_directories`, so a canon/shots layout needs
-# no pre-created directories, and `get_object_info`'s documented `library`/`is_override` fields,
+# first measured, and PHASE2_TASK_STATE.md for this raise. Raised again by 343 B after Phase 2
+# (measured 217,718 -> 218,061): `save_shot.create_directories`, so a canon/shots layout needs
+# no pre-created directories, and `get_object_info`'s measured `library`/`is_override` fields,
 # which say which object a name shared by an override and its linked original resolved to.
-SHOT_MODE_BYTE_CEILING = 218_068
+# 218,061, not the 218,068 first committed: the critic cycle's wording repairs came in 7 B
+# cheaper, and a ceiling only ever moves down.
+SHOT_MODE_BYTE_CEILING = 218_061
 
 # Added at Phase 2 Task 9 alongside the `shot` raise above: core is now where the file-lifecycle
 # growth lands, and it was previously pinned by nothing. Measured the same way, same commit:
 # default/core was 63,394 B before Task 9, 78,019 B after -- the same 14,625 B delta, since the
 # ten tools are core-only and add nothing to `shot` beyond what core already carries there.
-# Raised by the same 350 B as `shot` after Phase 2 (78,019 -> 78,369), for the same two core tools.
-DEFAULT_MODE_BYTE_CEILING = 78_369
+# Raised by the same 343 B as `shot` after Phase 2 (78,019 -> 78,362), for the same two core tools.
+DEFAULT_MODE_BYTE_CEILING = 78_362
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

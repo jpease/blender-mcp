@@ -154,6 +154,27 @@ def _required_name(value, label):
 
 
 def _object(name):
+    """
+    Resolve one object by name for every scene tool in this module.
+
+    Goes through `object_lookup.find_object`, so a name an override shares with
+    its linked original resolves to the override - the only one of the pair these
+    tools can edit - and a name linked from several libraries with no local object
+    is refused rather than guessed between. `server_core._resolve_targets` resolves
+    the transaction's snapshot by the same rule, so a rollback restores the object
+    the handler mutated.
+
+    Args:
+        name: The client-supplied object name.
+
+    Returns:
+        The one object that name means.
+
+    Raises:
+        ValueError: When the name is blank, unknown, or linked from several
+            libraries with no local object.
+
+    """
     obj = find_object(bpy.data.objects, _required_name(name, "object_name"))
     if obj is None:
         raise ValueError(f"Object not found: {name}")

@@ -607,8 +607,11 @@ class FileLifecycleHandlersMixin:
                 confirmed overwrite also replaces an existing `.blend1` backup
                 when Blender's `save_version` keeps one (measured, cycle-1 critic).
             create_directories: Create the target's missing directory and its
-                missing parents, inside the file roots. Created only once every
-                refusal has passed; a save Blender then fails leaves them in place.
+                missing parents, inside the file roots **when any are configured** -
+                with none, the boundary is permissive for this as for every other
+                path (see `file_paths`), and this is the first parameter here that
+                *creates* filesystem structure. Created only once every refusal has
+                passed; a save Blender then fails leaves them in place.
 
         Returns:
             dict[str, object]: `filepath` (the open file after the save),

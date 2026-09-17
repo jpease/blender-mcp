@@ -491,6 +491,46 @@ def test_object_name_lookups_resolve_to_the_override_even_when_the_linked_origin
     assert sys.modules["blender_mcp_addon_inspection_test.handlers.scene"]._object("HeroCam") is override
 
 
+def test_the_transaction_snapshots_the_same_object_the_handler_mutates_after_an_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    `_resolve_targets` feeds `mutation_transaction`, which writes state back on a failure.
+
+    Resolving it by Blender's list order while the handler resolves by `find_object` would
+    restore state onto the linked original and leave the override holding a partial edit.
+    """
+    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    server = addon.BlenderMCPServer()
+    linked = _new_empty_object(bpy, "linked_key")
+    linked.name = "HeroCam"
+    linked.library = types.SimpleNamespace(name="canon.blend")
+    override = _new_empty_object(bpy, "override_key")
+    override.name = "HeroCam"
+    override.override_library = object()
+    bpy.data.objects = _OverriddenShotObjects(bpy.data.objects)
+
+    targets = server._resolve_targets({"object_name": "HeroCam"})
+
+    assert targets == [override]
+    assert targets[0] is sys.modules["blender_mcp_addon_inspection_test.handlers.scene"]._object("HeroCam")
+
+
+def test_an_ambiguous_target_name_is_skipped_rather_than_raising_out_of_the_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A name linked from two libraries is skipped here; the handler's own call raises the refusal."""
+    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    server = addon.BlenderMCPServer()
+    for index in range(2):
+        obj = _new_empty_object(bpy, f"prop_key{index}")
+        obj.name = "Prop"
+        obj.library = types.SimpleNamespace(name=f"canon{index}.blend")
+    bpy.data.objects = _OverriddenShotObjects(bpy.data.objects)
+
+    assert server._resolve_targets({"object_name": "Prop"}) == []
+
+
 def test_get_object_info_reports_default_euler_rotation(monkeypatch) -> None:
     addon, bpy, _objects, _scene = _load_addon(monkeypatch)
     server = addon.BlenderMCPServer()

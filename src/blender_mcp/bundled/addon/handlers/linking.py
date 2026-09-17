@@ -195,10 +195,15 @@ def resolve_unique_name(datablocks: Iterable[object], name: str, kind: str) -> o
     Resolve a datablock by name only when exactly one has it.
 
     The plan-required name-to-uid resolver; no command calls it yet (Task 9's
-    tools may). The one sanctioned route from a name to a datablock. After a Route C
-    override a name is ambiguous by construction and `bpy.data.x[name]` returns
-    whichever Blender ordered first, so an ambiguous name is refused with every
-    candidate's uid for the caller to choose from.
+    tools may). The sanctioned route **for a caller that can supply a
+    `session_uid`**: after a Route C override a name is ambiguous by construction
+    and `bpy.data.x[name]` returns whichever Blender ordered first, so an ambiguous
+    name is refused with every candidate's uid for the caller to choose from.
+
+    `object_lookup.find_object` is the rule for the object tools, which take no uid
+    to supply; it prefers the local (editable) object and refuses only when several
+    *linked* objects share a name. The two rules differ deliberately - see that
+    module's docstring.
 
     Args:
         datablocks: The `bpy.data` collection to search.

@@ -3861,3 +3861,134 @@ This is the MCP-tool → socket → addon hop the gate scenario deliberately lea
 demonstrated on Linux (Xvfb, emulated linux/amd64): the served count matches `measure_catalog.py shot` (63), the
 hints match Task 9's table, a real tool call round-trips through the addon, and a refusal comes back path-free on a
 connection that keeps working. The full gate scenario was not run inside the container.
+
+---
+
+## Post-phase follow-up — two gaps the Docker MCP test found, 2026-09-16
+
+Not a Phase 2 task. After the end-of-phase gate, an agent driving the shipped `shot` surface through Docker
+reported two gaps and one positive. Both gaps are fixed on `main`; the record lives here because §06 step 6
+binds a change of this kind the same way it binds a task.
+
+**What the agent reported.** (1) No way to create folders: `save_shot` needed an existing directory, so
+everything went flat into `/output` and a `canon/shots` layout would have to be pre-created by the deployment.
+(2) Name-based tools are ambiguous after an override: the reopened shot holds two objects named `HeroCam` — the
+editable override and the locked linked original — and `set_object_transform` / `get_object_info` looked up by
+name, picking the override by luck rather than by rule. This is the gap Task 10's disclosure already named
+(`get_object_info` resolves by name, which is ambiguous after Route C). (3) Positive, recorded because it is
+evidence the schema layer works: a missing `scene_name` and a wrong `sections` value both came back as precise
+validation errors before anything reached Blender, which is what lets an agent correct itself.
+
+**What landed.** `c6a8c82`, then the cycle-1 repair commit that carries this entry:
+
+- `save_shot(create_directories=False)` — creates the target's missing parents via
+  `file_paths.create_save_directory`, **after** `enforce_roots` on the canonical target and after every other
+  refusal, so nothing is created by a refused save; result carries `created_directory`. A missing directory is
+  still refused by default, now naming the flag. A save Blender then fails leaves the directories in place
+  (stated in the docstring). No general mkdir primitive is added to the socket.
+- `object_lookup.find_object` — the local object wins by the `(name, None)` key; a single linked object still
+  resolves; several linked objects sharing a name are refused, naming each library through
+  `text_hygiene.client_safe_name_leaf`. Wired into `get_object_info`, `handlers/scene._object` (nine core object
+  tools) and `server_core._resolve_targets` (the transaction's snapshot). `get_object_info` also reports
+  `library` and `is_override`. Deliberately **not** the same rule as `linking.resolve_unique_name`, which
+  refuses any ambiguous name because its callers can pass a `session_uid`; these tools cannot.
+
+**Measured, not asserted** (re-measured after the cycle-1 repairs, in the commit carrying this entry): pytest **1301 passed, 1
+skipped** (`c6a8c82`: 1298/1; base `428af14`: 1287/1 — the pass count rises, it is the three *gates* that equal
+the base); `ruff check .` **9,832**; `ruff format --check` **12** unformatted; basedpyright **71 errors, 4
+warnings** — each identical to a clean worktree at `428af14` and at `c6a8c82`. Catalog: `shot` 217,718 →
+**218,061 B**, default 78,019 → **78,362 B** (+343 B each), both equal to the ceiling constants exactly. Revert
+matrix **490 rows, 0 survivors, 0 uncovered nodes**; `c6a8c82` added 17 rows and repaired **6** broken anchors
+(one further row only gained a node id — the commit message's "7 anchors broken" was wrong), and the cycle-1
+repair added 2 rows.
+
+**The matrix evidence is two runs, and the quiet-box stamps differ — stated rather than averaged.** Run 1
+(488 rows as committed + the repair's edits at that point): both stamps quiet-verified (before 0.41, after 0.29
+load per core) and it reported **1 survivor**, the ambiguous-anchor row below, which is the finding that
+matters. Run 2, after that repair (490 rows): **0 survivors, 0 uncovered**, before-stamp quiet (0.42) but
+**after-stamp 1.36 — NOT quiet-box verified**, because the user's own machine was busy (Activity Monitor,
+iCloud, VS Code; load average 15.9), not because of this run. Load credits a row falsely by making a node fail
+on timing, so run 2's per-row credit is weaker than run 1's for the timing-sensitive rows; it is the *survivor
+count* that run 2 establishes, and run 1 already covered 489 of the same rows under a verified quiet box. The
+delta between the runs is one anchor, two new rows and the checker change, and the five rows over those call
+sites were each re-run individually and fail as required. **A quiet-box full re-run is still owed** before this
+is cited as a clean 490/490. Live evidence: `scripts/blender_probes/shot_directories_and_override_names.py`, **PROBE
+PASSED** on Blender 5.2.2 LTS (`d13f752e3b9c`).
+
+### Critic cycle 1 — run after `c6a8c82` was committed, on the user's say-so
+
+Four lenses, fresh context, decision-13 triage. Scores: durability **24.5/30**, concurrency **23/25**, trust
+boundary **17/20**, evidence **12/15**, code quality **8/10** — **84.5/100**, every dimension over its gate.
+Under decision 13 the score is recorded, not gated; the stop condition is zero open bugs.
+
+**The one bug, found independently by three critics.** `server_core._resolve_targets` still resolved the
+transaction's snapshot with `bpy.data.objects.get(name)` while the handler it protects resolved with
+`find_object` — two rules for one name, agreeing on 5.2.2 only because of the list ordering this work exists to
+stop trusting. `transaction.restore_object_states` *writes state back* onto those objects, so a divergence would
+restore onto the linked original and leave the override holding a partial edit. Latent, not reproducible on
+5.2.2 (both rules were measured to agree). Fixed: `_resolve_targets` goes through `find_object`, skipping an
+ambiguous name as it already skips a missing one, since the handler's own call raises the client's refusal. Two
+revert rows and two tests pin it, including that the snapshot and `_object` return the same datablock.
+
+**Record-keeping fixed in the same pass (code frozen first).** A **false** measured claim in
+`object_lookup.py`: two linked objects are picked by `Main` insertion order, *not* by library name order — the
+probe now asserts both, and it was rewritten to link `zeta.blend` before `alpha.blend` so insertion order and
+name order disagree, because the first version of that check was a tautology that could not fail. The
+`(name, None)` key is **measured, not documented** (`get.__doc__` types `key` as `str`); the probe is its
+instrument and now checks it directly. `resolve_unique_name`'s "the one sanctioned route" corrected and
+cross-referenced. "Inside the file roots" qualified with "when any are configured" in both docstrings.
+`create_save_directory` states its time-of-check containment and its main-thread cost. `_object` gained the
+docstring carrying the resolution rule. `library` documented as a library datablock name. README's path policy
+gained the new write primitive and lost "a save target's directory must exist". Bool-refusal table extended to
+`create_directories`.
+
+**Deliberately not fixed, with the reason.** The nine tools' own MCP docstrings do not state the new refusal
+mode (Critic 4 F6): one shared sentence across nine tools costs roughly 1 KB of catalog payload and another
+ceiling raise, and `get_object_info` — the tool an agent inspects with — does carry it. Offered to the user
+rather than taken silently.
+
+### The cycle-1 repair produced a SURVIVOR, and the harness now catches its class
+
+Worth recording because the row looked fine three ways before a full run caught it. Routing
+`_resolve_targets` through `find_object` put a second `obj = find_object(bpy.data.objects, name)` in
+`server_core.py`, one indent deeper than `get_object_info`'s. `apply()` replaces only the **first**
+occurrence, and the 8-space anchor of the existing `get_object_info` row matches the 16-space copy as a
+**suffix** — so that row silently reverted `_resolve_targets` instead, left `get_object_info` intact, and its
+node passed: `[SURVIVED THE REVERT]`, i.e. a row proving nothing. `check_revert_anchors.py` reported "anchors
+intact: 490" throughout, because the anchor *was* present; the targeted `--only` re-run I did after the repair
+reproduced the survival but I read it as a pass at first. **Only the full 490-row run surfaced it**, which is
+the argument for running the whole matrix before a commit rather than the rows that look affected.
+
+Two fixes, both in the harness rather than only in the row:
+
+- The `get_object_info` row's anchor now carries its following `if not obj:` line, making it that site's alone;
+  the two new `_resolve_targets` rows anchor on the `try`/`except ValueError` block. Verified unique by count,
+  and all five rows over these call sites now fail as required.
+- `check_revert_anchors.py` gained an **ambiguous-anchor report**: any row whose `old` appears more than once
+  is listed, because `apply()` takes the first. It found **4 pre-existing rows** in this state (task 3 ×3 in
+  `session.py`, `text_hygiene.py`, `connection.py`; task 5 F7 in `file_paths.py`). Each still breaks its own
+  nodes — the first occurrence happens to be the right one — so the check reports rather than refuses, and
+  those four are fragile, not broken. The same commit also fixed the checker's parse test, which replaced
+  **every** occurrence while `apply()` replaces one: it was validating a mutation the harness never performs.
+
+### Hardening backlog additions (decision 13) — owner: Task 8 to prioritise
+
+| Task | Finding | Cost if left | Found by |
+|---|---|---|---|
+| post-phase | **`find_object`'s ambiguity refusal is unbounded in the number of libraries**: 300 libraries measured at 4,633 B, and 19,933 B with long names, against `_MAX_MESSAGE_BYTES` of 64 MiB. `handlers/linking._candidates` is the committed sibling for this exact shape and caps at `_MAX_CANDIDATES = 10` with an `", and N more"` tail **and** reports each candidate's `session_uid`. Reusing it would close this and the next row together, and is the DRY answer. | A hostile or careless canon set inflates one refusal into an N-proportional injection into an agent's context — the channel `text_hygiene`'s per-name bound exists to close. Fix: reuse `_candidates`. | Critic 3 |
+| post-phase | **The refusal dedupes after sanitisation**, so 50 libraries whose names all reduce to `the requested file` collapse to one entry: a "more than one library" sentence listing one thing, with no uid to act on. | Unactionable refusal under a hostile `.blend`. Fix: report `len(matches)` and each uid, per the handoff's uid ruling. | Critic 3 |
+| post-phase | **Every name miss now builds a full `objects.values()` list** where it was a hash lookup; only reached when the `(name, None)` key misses, so never in the override case. Precedent: `list_scene_objects` already sorts every scene object on the same thread. | Main-thread amplification on a pipelined flood of unknown names. Fix: scan only when a same-named linked object exists, or cap it. | Critics 2, 3 |
+| post-phase | **`"Object not found: {name}"` echoes the raw client string** in `server_core`, `handlers/scene` and twice in `helpers` — two lines from the name `find_object` sanitises. Pre-existing, adjacent to this change. | A newline or ESC in an attacker-chosen name reaches logs and an agent's context. Fix: all four through `client_safe_text` with the Phase 3 sweep. | Critic 3 |
+| post-phase | **`library` can carry the prose sentinel `the requested file`** in a machine-readable field when a library name has no admissible leaf; only degenerate or hostile names reach it (`キャラ.blend`, `héros.blend`, `canon.blend.001` all pass through). | A client parsing `library` sees prose. Fix: return None for an unnameable library, or document the third value. | Critic 4 |
+| post-phase | **`create_save_directory`'s containment is time-of-check**: a local peer swapping an ancestor for a symlink between `enforce_roots` and `os.makedirs` moves the creation outside the roots. Same window as Task 6's `os.path.exists` / `<target>@` row. | Directory created outside a root by someone already able to write inside one. Docstring now says "as it was checked". | Critics 3, 4 |
+| post-phase | **`find_object` is typed `objects: object` with two `# type: ignore[attr-defined]`**, and the two test stubs model the tuple key differently — `test_object_lookup.py` compares the library filepath (correct), `test_scene_object_inspection.py` compares the library object against a filepath, which works only because both are None for a local object. | Weak typing at a new seam. Fix: a four-line `Protocol` with `get`/`values`. | Critic 4 |
+
+### Phase 3 sweep — the remaining name lookups, with the scope corrected
+
+`c6a8c82`'s message said the untouched lookups were "in the specialist bundles". That was wrong in two ways,
+and Critic 4 caught it: **`get_mesh_data` is a core tool** (`viewport` is in `CORE_MODULES`) and still resolves
+through `helpers.get_mesh_object`, and `_resolve_targets` was neither specialist nor deferred — it was the bug
+above. The true remaining set is **106 direct `bpy.data.objects.get(`/`[` sites** (92 + 14, measured), of which
+`helpers.get_mesh_object` (41 callers, GitNexus impact **CRITICAL**) and `helpers.select_objects` are the
+load-bearing ones. Name-collision existence tests (`handlers/scene.py` around the collision checks) are **not**
+instances: "any object with this name" is the correct question there.

@@ -119,9 +119,9 @@ async def get_object_info(
             topology and invalidate prior indices.
 
     Returns:
-        "name", "type", "library" (linked-from file name, null when local), "is_override" (a name an override shares
-        with its linked original resolves to the override), "data_name", "location"/"rotation"/"scale" (local
-        transform - see the Note above for reading "rotation" against "rotation_mode"), "matrix_world", world-aligned
+        "name", "type", "library" (linked-from library name, null when local), "is_override" (an override was
+        resolved, not the linked original), "data_name", "location"/"rotation"/"scale" (local transform - see the
+        Note above for reading "rotation" against "rotation_mode"), "matrix_world", world-aligned
         "dimensions", parent and collection membership, selection/visibility flags, "materials" (assigned material
         names), "modifiers" (each as {"name", "type", "show_viewport", "show_render"}), and for mesh objects,
         "world_bounding_box" (world-space AABB) and "mesh" ({"vertices", "edges", "polygons"} base-mesh counts).

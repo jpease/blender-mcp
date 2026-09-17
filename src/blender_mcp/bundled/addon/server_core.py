@@ -2190,6 +2190,15 @@ class BlenderMCPServer(
         Missing objects are skipped (the handler will raise its own clear error);
         duplicates are collapsed while preserving order.
 
+        **Resolution goes through `find_object`, the same rule the handlers use.**
+        These objects are what `mutation_transaction` snapshots and what
+        `transaction.restore_object_states` writes back on a failure, so
+        resolving them by a different rule than the handler mutates by would
+        restore state onto a datablock the request never touched and leave the
+        mutated one holding a partial edit. An ambiguous name is skipped here for
+        the same reason a missing one is: the handler's own `find_object` call
+        raises the refusal the client sees.
+
         Args:
             params: The command's params dict.
 
@@ -2244,7 +2253,10 @@ class BlenderMCPServer(
             if name in seen:
                 continue
             seen.add(name)
-            obj = bpy.data.objects.get(name)
+            try:
+                obj = find_object(bpy.data.objects, name)
+            except ValueError:
+                continue
             if obj is not None:
                 objects.append(obj)
         return objects

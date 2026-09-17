@@ -169,6 +169,8 @@ NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, 
 # first two; the rest are Task 3's.
 NEW_NODES_IN_EXISTING_FILES = (
     # --- Post-Phase-2: which object a name shared with an override resolves to ---
+    f"{SOIT}::test_the_transaction_snapshots_the_same_object_the_handler_mutates_after_an_override",
+    f"{SOIT}::test_an_ambiguous_target_name_is_skipped_rather_than_raising_out_of_the_snapshot",
     f"{SOIT}::test_object_name_lookups_resolve_to_the_override_even_when_the_linked_original_is_listed_first",
     f"{SOIT}::test_get_object_info_says_whether_it_resolved_an_override_or_a_linked_object",
     f"{AMT}::test_handshake_surfaces_writable_output_roots",
@@ -4569,14 +4571,14 @@ REVERTS: list[Revert] = [
     Revert(
         "task 9: the shot ceiling constant reverted to its pre-Task-9 value",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 218_068",
+        "SHOT_MODE_BYTE_CEILING = 218_061",
         "SHOT_MODE_BYTE_CEILING = 203_094",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
         "task 9: the default ceiling constant reverted to a value the new tools already exceed",
         TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 78_369",
+        "DEFAULT_MODE_BYTE_CEILING = 78_362",
         "DEFAULT_MODE_BYTE_CEILING = 63_394",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
@@ -4615,7 +4617,10 @@ REVERTS: list[Revert] = [
         ADDON_FILE_LIFECYCLE,
         '        create_directories = _require_bool("create_directories", create_directories)\n',
         "",
-        (f"{FLT}::test_save_shot_creates_no_directory_outside_the_roots_or_on_a_refusal",),
+        (
+            f"{FLT}::test_save_shot_creates_no_directory_outside_the_roots_or_on_a_refusal",
+            f"{FLT}::test_a_flag_that_is_not_a_real_bool_is_refused[save_shot-create_directories]",
+        ),
     ),
     Revert(
         "post-phase-2: resolving a save target creates its directory before any refusal has run",
@@ -4654,14 +4659,14 @@ REVERTS: list[Revert] = [
     Revert(
         "post-phase-2: the shot ceiling reverted to before create_directories and the override fields",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 218_068",
+        "SHOT_MODE_BYTE_CEILING = 218_061",
         "SHOT_MODE_BYTE_CEILING = 217_718",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
         "post-phase-2: the default ceiling reverted to before create_directories and the override fields",
         TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 78_369",
+        "DEFAULT_MODE_BYTE_CEILING = 78_362",
         "DEFAULT_MODE_BYTE_CEILING = 78_019",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
@@ -4714,9 +4719,31 @@ REVERTS: list[Revert] = [
     Revert(
         "post-phase-2: get_object_info looks its object up by Blender's list order",
         ADDON_SERVER_CORE,
-        "        obj = find_object(bpy.data.objects, name)\n",
-        "        obj = bpy.data.objects.get(name)\n",
+        # `_resolve_targets` holds the same call one indent deeper, and `apply()`
+        # replaces only the FIRST occurrence -- which is that one, since the
+        # 8-space form matches it as a suffix. This row reverted the wrong site
+        # and its node passed (SURVIVOR, caught by a full run). The trailing
+        # `if not obj:` is what makes the anchor this site's alone.
+        "        obj = find_object(bpy.data.objects, name)\n        if not obj:\n",
+        "        obj = bpy.data.objects.get(name)\n        if not obj:\n",
         (f"{SOIT}::test_object_name_lookups_resolve_to_the_override_even_when_the_linked_original_is_listed_first",),
+    ),
+    Revert(
+        "post-phase-2 cycle 1: the transaction snapshots its targets by Blender's list order",
+        ADDON_SERVER_CORE,
+        "                obj = find_object(bpy.data.objects, name)\n",
+        "                obj = bpy.data.objects.get(name)\n",
+        (f"{SOIT}::test_the_transaction_snapshots_the_same_object_the_handler_mutates_after_an_override",),
+    ),
+    Revert(
+        "post-phase-2 cycle 1: an ambiguous target name raises out of the snapshot instead of being skipped",
+        ADDON_SERVER_CORE,
+        "            try:\n"
+        "                obj = find_object(bpy.data.objects, name)\n"
+        "            except ValueError:\n"
+        "                continue\n",
+        "            obj = find_object(bpy.data.objects, name)\n",
+        (f"{SOIT}::test_an_ambiguous_target_name_is_skipped_rather_than_raising_out_of_the_snapshot",),
     ),
     Revert(
         "post-phase-2: get_object_info does not say whether it read an override",

@@ -112,7 +112,7 @@ async def save_shot(
         compress: Write a compressed .blend. Default False: canon publishes stay uncompressed.
         relative_remap: Rewrite linked-library paths relative to the new location.
         confirm_overwrite: Required whenever the target .blend already exists.
-        create_directories: Create the target's missing directories (inside the file roots).
+        create_directories: Create the target's missing directories (inside the file roots when configured).
 
     Returns:
         filepath, saved_in_place, overwrote_existing, created_directory, compress, relative_remap,

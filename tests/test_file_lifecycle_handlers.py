@@ -560,6 +560,7 @@ def test_open_shot_reports_that_the_capability_set_followed_the_file(
         ("save_shot", "compress"),
         ("save_shot", "relative_remap"),
         ("save_shot", "confirm_overwrite"),
+        ("save_shot", "create_directories"),
         ("reset_session", "confirm"),
     ],
 )
