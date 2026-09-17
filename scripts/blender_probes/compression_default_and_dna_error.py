@@ -1,4 +1,4 @@
-"""Chase two 5.2.2 deviations from 5.2.1: the compress default, and whether error shape 3 still exists."""
+"""Print the save compression default and the error a truncated .blend produces."""
 
 import gzip
 import os

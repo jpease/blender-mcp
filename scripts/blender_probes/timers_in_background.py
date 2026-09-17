@@ -1,4 +1,4 @@
-"""Confirm bpy.app.timers still never fire under --background on 5.2.2."""
+"""Check whether bpy.app.timers fire under --background, which decides if the rig needs a GUI."""
 
 import time
 

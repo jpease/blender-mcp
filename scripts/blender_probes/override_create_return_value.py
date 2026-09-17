@@ -1,4 +1,4 @@
-"""Distinguish 'override_create failed' from 'succeeded but returns None' on 5.2.2."""
+"""Distinguish 'override_create failed' from 'succeeded but returns None'."""
 
 import os
 import tempfile

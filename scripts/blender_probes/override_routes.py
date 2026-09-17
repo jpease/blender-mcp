@@ -1,4 +1,4 @@
-"""Re-verify override_create's return value and the three override routes on 5.2.2."""
+"""Print override_create's return value and what each of the three override routes produces."""
 
 import os
 import tempfile

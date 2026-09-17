@@ -1,4 +1,4 @@
-r"""Re-verify behavioural facts first measured on 5.2.1 against 5.2.2: error shapes + magic bytes."""
+r"""Print which file-operator failures raise rather than return {'CANCELLED'}, and the .blend magic bytes."""
 
 import os
 import tempfile

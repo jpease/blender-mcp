@@ -1,4 +1,4 @@
-"""Re-verify API facts first measured on 5.2.1 against 5.2.2: introspection half."""
+"""Print the introspection API surface the add-on reads: `bl_rna`, `dir()` and operator docs."""
 
 import bpy
 

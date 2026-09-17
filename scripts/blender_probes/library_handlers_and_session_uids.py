@@ -1,4 +1,4 @@
-"""Re-verify the library handler-firing table, session_uid churn, users_id and override routes on 5.2.2."""
+"""Print the library handler-firing table, session_uid churn, users_id and the override routes."""
 
 import os
 import tempfile
