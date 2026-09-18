@@ -211,6 +211,18 @@ def test_changed_objects_move_from_the_addon_result_into_the_envelope(monkeypatc
     assert "changed_objects" not in envelope["data"]
 
 
+def test_changed_objects_are_bounded_and_the_total_is_reported(monkeypatch) -> None:
+    """Linking a whole set must not put every object name into the agent's context."""
+    names = [f"Part{index:03d}_geo" for index in range(480)]
+    connection = _Connection({"overrides": [], "changed_objects": names})
+    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+
+    envelope = asyncio.run(file_lifecycle.link_canon_library(ctx=None, filepath="/canon/house.blend"))
+
+    assert envelope["changed_objects"] == names[: file_lifecycle.CHANGED_OBJECTS_LIMIT]
+    assert any("480" in warning for warning in envelope["warnings"]), envelope["warnings"]
+
+
 def test_create_override_defaults(monkeypatch) -> None:
     connection = _Connection()
     monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
