@@ -1,6 +1,7 @@
 """Regression coverage for character control, deformation, and pose workflows."""
 
 import asyncio
+import types
 
 import pytest
 
@@ -227,3 +228,82 @@ def test_dispatch_exposes_complete_character_surface(monkeypatch) -> None:
 
     assert set(handlers) >= new_commands
     assert not new_commands & server._READ_ONLY_COMMANDS
+
+
+def _fake_armature(monkeypatch, bones, *, name="HeroRig", obj_type="ARMATURE"):
+    """Build an addon loaded against a fake `bpy` holding one armature object."""
+    flushes = []
+    armature = types.SimpleNamespace(
+        name=name,
+        type=obj_type,
+        data=types.SimpleNamespace(name=f"{name}Data", bones=list(bones)),
+        update_from_editmode=lambda: flushes.append(name),
+    )
+    addon, _bpy = _load_addon(monkeypatch, data={"objects": {name: armature}})
+    return addon.BlenderMCPServer(), flushes
+
+
+def _bone(name, parent=None, use_deform=True):
+    return types.SimpleNamespace(name=name, parent=parent, use_deform=use_deform)
+
+
+def test_bone_listing_is_registered_read_only_and_paginates(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        character_rigging,
+        "_call",
+        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+    )
+
+    _run(character_rigging.list_character_bones, armature_object_name="HeroRig", limit=200, offset=200)
+
+    assert calls == [("list_character_bones", {"armature_object_name": "HeroRig", "limit": 200, "offset": 200}, None)]
+    advertised = character_rigging.mcp._tool_manager._tools["list_character_bones"].parameters["properties"]
+    assert advertised["limit"]["maximum"] == 200
+
+    addon, _bpy = _load_addon(monkeypatch, data={})
+    server = addon.BlenderMCPServer()
+    assert "list_character_bones" in server._build_command_handlers()
+    assert "list_character_bones" in server._READ_ONLY_COMMANDS
+
+
+def test_bone_listing_validates_the_armature_object(monkeypatch) -> None:
+    mesh_server, _flushes = _fake_armature(monkeypatch, [_bone("root")], obj_type="MESH")
+
+    with pytest.raises(ValueError, match="is not an armature"):
+        mesh_server.list_character_bones("HeroRig")
+    with pytest.raises(ValueError, match="Object not found"):
+        mesh_server.list_character_bones("Missing")
+
+
+def test_bone_listing_bounds_the_requested_page(monkeypatch) -> None:
+    server, _flushes = _fake_armature(monkeypatch, [_bone("root")])
+
+    with pytest.raises(ValueError, match="bone_limit must be in"):
+        server.list_character_bones("HeroRig", limit=0)
+    with pytest.raises(ValueError, match="bone_limit must be in"):
+        server.list_character_bones("HeroRig", limit=201)
+    with pytest.raises(ValueError, match="bone_offset must be non-negative"):
+        server.list_character_bones("HeroRig", offset=-1)
+
+
+def test_bone_listing_reports_parents_deform_flags_and_continuation(monkeypatch) -> None:
+    root = _bone("root")
+    spine = _bone("DEF-spine", parent=root)
+    ctrl = _bone("CTRL-head", parent=spine, use_deform=False)
+    server, flushes = _fake_armature(monkeypatch, [root, spine, ctrl])
+
+    first = server.list_character_bones("HeroRig", limit=2)
+
+    assert first["armature_object"] == "HeroRig"
+    assert first["bones"]["items"] == [
+        {"name": "root", "parent": None, "deform": True},
+        {"name": "DEF-spine", "parent": "root", "deform": True},
+    ]
+    assert (first["bones"]["total"], first["bones"]["truncated"], first["bones"]["next_offset"]) == (3, True, 2)
+
+    second = server.list_character_bones("HeroRig", limit=2, offset=first["bones"]["next_offset"])
+
+    assert second["bones"]["items"] == [{"name": "CTRL-head", "parent": "DEF-spine", "deform": False}]
+    assert (second["bones"]["truncated"], second["bones"]["next_offset"]) == (False, None)
+    assert flushes == ["HeroRig", "HeroRig"]

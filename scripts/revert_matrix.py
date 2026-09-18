@@ -4560,8 +4560,8 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 187_679",
-        "SHOT_MODE_BYTE_CEILING = 187_678",
+        "SHOT_MODE_BYTE_CEILING = 189_318",
+        "SHOT_MODE_BYTE_CEILING = 189_317",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(

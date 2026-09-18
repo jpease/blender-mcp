@@ -6,9 +6,19 @@ import math
 import bpy
 import mathutils
 
-from .foundation import _action_fcurve_collections, _armature_object, _finite, _matrix_list
+from ...helpers import paginate, sync_from_editmode
+from .foundation import (
+    _action_fcurve_collections,
+    _armature_object,
+    _finite,
+    _matrix_list,
+    _validate_limit_offset,
+)
 
 _POSE_SPACES = {"LOCAL", "LOCAL_WITH_PARENT", "POSE", "WORLD"}
+# A page an agent can read in full without spending its context on a whole rig; the heaviest
+# production rigs here carry 187-238 bones, so two pages cover one.
+_MAX_BONE_PAGE = 200
 
 
 def _pose_matrix_from_channels(armature, pose_bone, spec, space):
@@ -162,6 +172,33 @@ def _set_action_interpolation(action, frame, interpolation):
 
 class PoseAnimationHandlersMixin:
     """Apply pose-space transforms and author named animation actions."""
+
+    def list_character_bones(self, armature_object_name, limit=100, offset=0):
+        armature = _armature_object(armature_object_name)
+        _validate_limit_offset(limit, offset, _MAX_BONE_PAGE, "bone")
+        # Rest-bone names, parents and deform flags are edited in Edit Mode, which keeps its own
+        # copy of the armature until it exits; flush it rather than report stale bones.
+        sync_from_editmode(armature)
+        bones = list(armature.data.bones)
+        start, end, truncated, next_offset = paginate(len(bones), offset, limit, _MAX_BONE_PAGE)
+        return {
+            "armature_object": armature.name,
+            "bones": {
+                "items": [
+                    {
+                        "name": bone.name,
+                        "parent": getattr(bone.parent, "name", None),
+                        "deform": bool(bone.use_deform),
+                    }
+                    for bone in bones[start:end]
+                ],
+                "total": len(bones),
+                "offset": start,
+                "limit": limit,
+                "truncated": truncated,
+                "next_offset": next_offset,
+            },
+        }
 
     def set_character_pose(
         self,

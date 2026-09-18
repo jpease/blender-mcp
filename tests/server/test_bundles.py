@@ -337,7 +337,7 @@ def test_shot_mode_lights_the_shot_but_excludes_texture_authoring_and_rig_constr
     assert "create_orbit_camera_rig" not in shot, "rig construction belongs to camera-rigs, not shot"
 
 
-POSING_TOOLS = frozenset({"set_character_pose", "keyframe_character_pose"})
+POSING_TOOLS = frozenset({"set_character_pose", "keyframe_character_pose", "list_character_bones"})
 
 
 def test_shot_mode_can_pose_a_linked_character_without_rig_construction() -> None:
@@ -353,9 +353,9 @@ def test_character_posing_bundle_adds_only_the_posing_tools() -> None:
 
 
 def test_character_rigging_bundle_keeps_every_rigging_tool_after_the_split() -> None:
-    """Existing `character-rigging` configs lose nothing: all 22 tools, posing included."""
+    """Existing `character-rigging` configs lose nothing: all 23 tools, posing included."""
     rigging = _tool_names_for_toolsets("character-rigging") - _tool_names_for_toolsets(None)
-    assert len(rigging) == 22
+    assert len(rigging) == 23  # ruff: ignore[magic-value-comparison] - the count IS the assertion
     assert rigging >= POSING_TOOLS | {"create_armature", "bind_mesh_to_armature", "add_pose_bone_constraint"}
 
 
@@ -470,7 +470,7 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 
 # A ceiling, not a target: lower it when the payload shrinks. Raising it is a decision to record
 # in the commit message.
-SHOT_MODE_BYTE_CEILING = 187_679
+SHOT_MODE_BYTE_CEILING = 189_318
 
 # The same rule for the default, core-only surface.
 DEFAULT_MODE_BYTE_CEILING = 65_537

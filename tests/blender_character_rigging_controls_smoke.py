@@ -9,6 +9,7 @@ Run with::
 # ruff: file-ignore[missing-return-type-undocumented-public-function, undocumented-public-function]
 
 import importlib
+import json
 import sys
 import types
 
@@ -284,5 +285,56 @@ blend = handler.create_ik_fk_limb(
     },
 )
 assert len(blend["blend_constraints"]) == 2
+
+# Bone discovery: an agent must be able to name real bones before posing them.
+listed = handler.list_character_bones(rig.name, limit=2)
+assert listed["armature_object"] == rig.name
+assert listed["bones"]["items"][:2] == [
+    {"name": "upper", "parent": None, "deform": True},
+    {"name": "lower", "parent": "upper", "deform": True},
+]
+assert listed["bones"]["truncated"] and listed["bones"]["next_offset"] == 2
+
+paged = []
+offset = 0
+while True:
+    page = handler.list_character_bones(rig.name, limit=2, offset=offset)
+    paged.extend(page["bones"]["items"])
+    if page["bones"]["next_offset"] is None:
+        break
+    offset = page["bones"]["next_offset"]
+assert [item["name"] for item in paged] == [bone.name for bone in rig.data.bones]
+assert {item["name"] for item in paged if not item["deform"]} == {
+    bone.name for bone in rig.data.bones if not bone.use_deform
+}
+for item in paged:
+    parent = rig.data.bones[item["name"]].parent
+    assert item["parent"] == (parent.name if parent else None)
+
+# Rest-bone edits live in Edit Mode's own copy until it exits; the listing must flush them.
+edit_rig = create_test_armature("EditModeRig")
+bpy.context.view_layer.objects.active = edit_rig
+edit_rig.select_set(True)
+bpy.ops.object.mode_set(mode="EDIT")
+try:
+    tip = edit_rig.data.edit_bones.new("tip")
+    tip.head = (0.2, 0, 2)
+    tip.tail = (0.2, 0, 3)
+    tip.parent = edit_rig.data.edit_bones["lower"]
+    live = handler.list_character_bones(edit_rig.name)
+finally:
+    bpy.ops.object.mode_set(mode="OBJECT")
+assert {"name": "tip", "parent": "lower", "deform": True} in live["bones"]["items"]
+assert bpy.context.mode == "OBJECT"
+
+try:
+    handler.list_character_bones(source.name)
+except ValueError as error:
+    assert "is not an armature" in str(error)
+else:
+    raise AssertionError("a mesh object must not list as a rig")
+
+json.dumps(listed)
+edit_rig.select_set(False)
 
 print("CHARACTER_RIGGING_CONTROLS_SMOKE_OK")

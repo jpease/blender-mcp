@@ -55,6 +55,44 @@ class BonePose(_StrictModel):
 
 
 @mcp.tool()
+async def list_character_bones(
+    ctx: Context,
+    armature_object_name: str,
+    limit: Annotated[int, Field(ge=1, le=200)] = 100,
+    offset: Annotated[int, Field(ge=0, le=99_999)] = 0,
+) -> dict:
+    """
+    List a rig's bone names, parents, and deform flags so a pose can name real bones.
+
+    No coordinates or transforms are returned; read get_character_rig_info for those.
+
+    Args:
+        ctx: MCP request context.
+        armature_object_name: An existing object of type ARMATURE; any other object is an error.
+            Rest-bone edits still open in Edit Mode are flushed before reading.
+        limit: Bones per page. A production rig carries a few hundred bones, so one page rarely
+            covers a whole rig.
+        offset: Where to resume. Pass the previous reply's next_offset while truncated is true.
+
+    Returns:
+        armature_object, and bones with items (name, parent - null for a root - and deform,
+        whether the bone deforms a bound mesh), total, offset, limit, truncated, and next_offset
+        (null on the last page). Items follow armature bone order, which lists a parent before
+        its children.
+
+    """
+    return await asyncio.to_thread(
+        _call,
+        "list_character_bones",
+        {
+            "armature_object_name": armature_object_name,
+            "limit": limit,
+            "offset": offset,
+        },
+    )
+
+
+@mcp.tool()
 async def set_character_pose(
     ctx: Context,
     armature_object_name: str,
