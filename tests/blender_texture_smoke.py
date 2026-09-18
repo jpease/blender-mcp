@@ -62,6 +62,17 @@ def main() -> None:
         saved_path = os.path.join(directory, "saved_copy.png")
         saved = handler.save_texture_image("PBR Smoke Base Color", saved_path, "PNG", "RGBA", "8")
         assert saved["file_size_bytes"] > 0
+        # `~` must mean the home directory, not a directory named `~` under Blender's working directory.
+        previous_home = os.environ.get("HOME")
+        os.environ["HOME"] = directory
+        try:
+            handler.save_texture_image("PBR Smoke Base Color", "~/tilde_copy.png", "PNG", "RGBA", "8")
+            assert os.path.isfile(os.path.join(directory, "tilde_copy.png"))
+        finally:
+            if previous_home is None:
+                del os.environ["HOME"]
+            else:
+                os.environ["HOME"] = previous_home
         texture_set = handler.apply_pbr_texture_set(
             "PBR Smoke Material", {"base_color": source_path}, uv_map_name="UVMap"
         )

@@ -139,10 +139,11 @@ class TextureImageHandlers:
         image = bpy.data.images.get(required_name(image_name, "image_name"))
         if image is None:
             raise ValueError(f"Image not found: {image_name}")
-        destination = os.path.realpath(output_path)
+        destination = os.path.realpath(os.path.expanduser(output_path))
         parent = os.path.dirname(destination)
         if not os.path.isdir(parent):
-            raise ValueError(f"Output directory does not exist: {parent}")
+            # The caller's own text, not the resolved path, which can expose Blender's working directory.
+            raise ValueError(f"Output directory does not exist: {os.path.dirname(output_path) or '.'}")
         if os.path.exists(destination) and not overwrite:
             raise ValueError(f"Output file already exists: {destination}")
         settings = bpy.context.scene.render.image_settings

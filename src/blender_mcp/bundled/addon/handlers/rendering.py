@@ -549,10 +549,11 @@ class RenderingHandlersMixin:
             raise ValueError("frame is only valid for STILL renders")
         if not isinstance(filepath, str) or not filepath.strip():
             raise ValueError("filepath must be a non-empty string")
-        output = os.path.abspath(bpy.path.abspath(filepath))
+        output = os.path.abspath(bpy.path.abspath(os.path.expanduser(filepath)))
         directory = os.path.dirname(output)
         if not directory or not os.path.isdir(directory):
-            raise ValueError(f"Output directory does not exist: {directory}")
+            # The caller's own text, not the resolved path, which can expose Blender's working directory.
+            raise ValueError(f"Output directory does not exist: {os.path.dirname(filepath) or '.'}")
         if mode == "STILL" and os.path.exists(output) and not confirm_overwrite:
             raise ValueError("Output file already exists; set confirm_overwrite=True to replace it")
         if view_layer_name and scene.view_layers.get(view_layer_name) is None:

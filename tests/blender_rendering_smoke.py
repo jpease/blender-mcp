@@ -2,6 +2,7 @@
 """Run with Blender 5.1+ to smoke-test render and view-layer handlers."""
 
 import importlib.util
+import os
 import sys
 import tempfile
 
@@ -22,6 +23,27 @@ sys.modules[package_name] = addon
 spec.loader.exec_module(addon)
 
 from blender_mcp_rendering_smoke.handlers.rendering import RenderingHandlersMixin
+
+
+def _check_output_path_resolution(handler: RenderingHandlersMixin, scene: bpy.types.Scene) -> None:
+    """`~` means the home directory, and a bad path's error does not expose Blender's working directory."""
+    with tempfile.TemporaryDirectory() as home:
+        previous_home = os.environ.get("HOME")
+        os.environ["HOME"] = home
+        try:
+            handler.render_scene(scene.name, "~/tilde.png", confirm_render=True, render_slot_policy="NEW_SLOT")
+            assert (Path(home) / "tilde.png").is_file()
+        finally:
+            if previous_home is None:
+                del os.environ["HOME"]
+            else:
+                os.environ["HOME"] = previous_home
+    try:
+        handler.render_scene(scene.name, "no_such_dir/x.png", confirm_render=True)
+    except ValueError as exc:
+        assert os.getcwd() not in str(exc), "the error exposed Blender's working directory"
+    else:
+        raise AssertionError("A render into a missing directory was accepted")
 
 
 def main() -> None:
@@ -92,6 +114,8 @@ def main() -> None:
         assert output.is_file()
         assert rendered["passes"]
         assert rendered["pass_verification"] in {"RENDER_RESULT", "VIEW_LAYER_CONFIGURATION"}
+
+    _check_output_path_resolution(handler, scene)
 
     removed = handler.manage_view_layers(scene.name, "REMOVE", "Smoke Passes", confirm_remove=True)
     assert removed["removed"] == "Smoke Passes"
