@@ -12,7 +12,7 @@ validation, and Blender behavior remain untouched.
 """
 
 # The schema vocabulary is intentionally an explicit decision table.
-# ruff: file-ignore[too-many-branches, too-many-return-statements]
+# ruff: file-ignore[too-many-return-statements]
 
 import inspect
 import re
@@ -300,15 +300,9 @@ _PARAMETER_DESCRIPTIONS: dict[str, str] = {
     ),
 }
 
-
-def _humanize(identifier: str) -> str:
-    words = identifier.strip("_").split("_")
-    return " ".join(_ACRONYMS.get(word, word) for word in words)
-
-
-def _context_text(value: str) -> str:
-    words = re.sub(r"(?<!^)(?=[A-Z])", " ", value.rstrip("."))
-    return words.lower()
+# Name tokens whose unit the JSON Schema cannot express.
+_ANGLE_TOKENS = ("angle", "azimuth", "elevation", "pan", "phase", "roll", "tilt", "yaw")
+_DISTANCE_TOKENS = ("distance", "height", "length", "radius", "size", "thickness", "width")
 
 
 def _title(identifier: str) -> str:
@@ -358,62 +352,6 @@ def _parse_docstring(docstring: str) -> tuple[str, dict[str, str], str | None]:
     return body, arguments, returns
 
 
-def _constraint_fragments(schema: Mapping[str, Any]) -> list[str]:
-    fragments: list[str] = []
-    variants = [candidate for candidate in schema.get("anyOf", []) if candidate.get("type") != "null"]
-    effective = variants[0] if len(variants) == 1 else schema
-    enum = effective.get("enum")
-    if enum:
-        fragments.append("Allowed: " + ", ".join(repr(value) for value in enum) + ".")
-    if "default" in schema:
-        fragments.append(f"Default: {schema['default']!r}.")
-
-    minimum = effective.get("minimum")
-    exclusive_minimum = effective.get("exclusiveMinimum")
-    maximum = effective.get("maximum")
-    exclusive_maximum = effective.get("exclusiveMaximum")
-    if minimum is not None and maximum is not None:
-        fragments.append(f"Range: {minimum} to {maximum}, inclusive.")
-    elif exclusive_minimum is not None and maximum is not None:
-        fragments.append(f"Range: greater than {exclusive_minimum} and at most {maximum}.")
-    elif minimum is not None and exclusive_maximum is not None:
-        fragments.append(f"Range: at least {minimum} and less than {exclusive_maximum}.")
-    elif exclusive_minimum is not None:
-        fragments.append(f"Must be greater than {exclusive_minimum}.")
-    elif minimum is not None:
-        fragments.append(f"Must be at least {minimum}.")
-    elif exclusive_maximum is not None:
-        fragments.append(f"Must be less than {exclusive_maximum}.")
-    elif maximum is not None:
-        fragments.append(f"Must be at most {maximum}.")
-
-    min_items = effective.get("minItems")
-    max_items = effective.get("maxItems")
-    if min_items is not None and max_items is not None:
-        if min_items == max_items:
-            fragments.append(f"Requires exactly {min_items} items.")
-        else:
-            fragments.append(f"Requires {min_items} to {max_items} items.")
-    elif min_items is not None:
-        fragments.append(f"Requires at least {min_items} items.")
-    elif max_items is not None:
-        fragments.append(f"Allows at most {max_items} items.")
-
-    min_length = effective.get("minLength")
-    max_length = effective.get("maxLength")
-    if min_length == 1 and max_length is None:
-        fragments.append("Must not be empty.")
-    elif min_length is not None and max_length is not None:
-        fragments.append(f"Requires {min_length} to {max_length} characters.")
-    elif min_length is not None:
-        fragments.append(f"Requires at least {min_length} characters.")
-    elif max_length is not None:
-        fragments.append(f"Allows at most {max_length} characters.")
-    if pattern := effective.get("pattern"):
-        fragments.append(f"Must match {pattern!r}.")
-    return fragments
-
-
 def _primary_type(schema: Mapping[str, Any]) -> str | None:
     direct = schema.get("type")
     if isinstance(direct, str):
@@ -422,142 +360,128 @@ def _primary_type(schema: Mapping[str, Any]) -> str | None:
     return variants[0] if len(variants) == 1 and isinstance(variants[0], str) else None
 
 
-def _base_parameter_description(
-    name: str,
-    schema: Mapping[str, Any],
-    *,
-    model_context: str | None,
-) -> str:
+def _boolean_description(name: str) -> str | None:
+    if name.startswith("confirm_"):
+        return "Must be true to perform the consequential action; false refuses it."
+    return None
+
+
+def _string_description(name: str) -> str | None:
+    if name == "resolution":
+        return "Provider resolution identifier; higher resolutions cost more bandwidth, memory, and time."
+    if name.endswith("_object_name"):
+        return "Exact name of an existing Blender object."
+    if name.endswith("_collection_name"):
+        return "Exact Blender collection name."
+    if name.endswith("_modifier_name"):
+        return "Exact Blender modifier name."
+    if name.endswith("_group_name"):
+        return "Exact vertex-group name."
+    if name.endswith("_bone_name"):
+        return "Exact armature bone name."
+    if name.endswith(("_path", "_directory")):
+        return "Explicit filesystem location; no default location is applied."
+    if name.endswith("_name"):
+        return "Exact existing Blender or provider name."
+    return None
+
+
+def _sequence_description(name: str) -> str | None:
+    if name == "rotation":
+        return "Euler angles [x, y, z] in radians."
+    if name == "scale":
+        return "Dimensionless scale factors [x, y, z]."
+    if name.endswith("_object_names"):
+        return "Exact names of existing Blender objects; selection state is not used."
+    if name.endswith("_names"):
+        return "Exact existing Blender or provider names."
+    if name.endswith("_indices"):
+        return "Base-data indices; obtain fresh ones after any topology-changing operation."
+    if name.endswith("_frames"):
+        return "Blender timeline frames."
+    return None
+
+
+def _numeric_description(name: str) -> str | None:
+    if name == "resolution":
+        return "Higher resolutions cost more memory and processing time."
+    if name == "rotation":
+        return "Angle in radians."
+    if name == "scale":
+        return "Dimensionless scale factor."
+    if name.endswith("_frame"):
+        return "Blender timeline frame."
+    if name.endswith("_limit") or name.startswith("max_"):
+        return "Upper bound; the operation refuses or truncates work beyond it."
+    if any(token in name for token in _ANGLE_TOKENS):
+        return "Angle in radians."
+    if any(token in name for token in _DISTANCE_TOKENS):
+        return "In Blender scene units."
+    return None
+
+
+def _base_parameter_description(name: str, schema: Mapping[str, Any]) -> str | None:
+    """
+    Describe a parameter no docstring covers, or decline to describe it at all.
+
+    The name and the JSON Schema are advertised beside the description, so a sentence rephrasing
+    either one only costs the agent context. Type comes first because the same name means different
+    things per type: `use_relative_path` is a flag, not a filesystem location.
+
+    Args:
+        name: The parameter name.
+        schema: The parameter's JSON Schema, which carries its type, default, enum, range, item
+            count and length already.
+
+    Returns:
+        A sentence stating something the schema cannot - a unit, a datablock that must already
+        exist, a refusal - or None when name and schema already say everything.
+
+    """
     if name in _PARAMETER_DESCRIPTIONS:
         return _PARAMETER_DESCRIPTIONS[name]
-    human_name = _humanize(name)
-    primary_type = _primary_type(schema)
-    if name == "resolution":
-        if primary_type == "string":
-            return "Provider resolution identifier; higher resolutions use more bandwidth, memory, and time."
-        return "Simulation or image resolution; higher values use more memory and processing time."
-    if name == "rotation":
-        if primary_type == "array":
-            return "Three Euler rotation angles [x, y, z] in radians in the space stated by the tool."
-        return "Rotation angle in radians."
-    if name == "scale":
-        if primary_type == "array":
-            return "Three dimensionless scale factors [x, y, z]."
-        return "Dimensionless scale factor applied by this operation."
-    if name == "offset":
-        return "Geometric offset in the units and coordinate space stated by the tool."
-    if name.startswith("confirm_"):
-        subject = human_name.removeprefix("confirm ")
-        return f"Explicit safety acknowledgement for {subject}; false refuses that consequential action."
-    if name.startswith("use_"):
-        return f"Whether to enable {human_name.removeprefix('use ')} for this operation."
-    if name.startswith("include_"):
-        return f"Whether to include {human_name.removeprefix('include ')} in the operation or result."
-    if name.startswith("clear_"):
-        return f"Whether to clear the existing {human_name.removeprefix('clear ')} assignment."
-    if name.endswith("_object_name"):
-        return f"Exact name of the existing Blender object used as the {human_name.removesuffix(' object name')}."
-    if name.endswith("_object_names"):
-        return f"Explicit existing Blender object names used as the {human_name.removesuffix(' object names')} set."
-    if name.endswith("_collection_name"):
-        return f"Exact Blender collection name used for {human_name.removesuffix(' collection name')}."
-    if name.endswith("_modifier_name"):
-        return f"Exact Blender modifier name used for {human_name.removesuffix(' modifier name')}."
-    if name.endswith("_group_name"):
-        return f"Exact vertex-group name used for {human_name.removesuffix(' group name')}."
-    if name.endswith("_bone_name"):
-        return f"Exact armature bone name used as the {human_name.removesuffix(' bone name')}."
-    if name.endswith("_indices"):
-        return f"Explicit base-data {human_name}; obtain fresh indices after any topology-changing operation."
-    if name.endswith("_frame"):
-        return f"Blender timeline frame used for {human_name.removesuffix(' frame')}."
-    if name.endswith("_frames"):
-        return f"Explicit Blender timeline frames used for {human_name.removesuffix(' frames')}."
-    if name.endswith(("_path", "_directory")):
-        return f"Explicit filesystem {human_name}; no implicit save location is used."
-    if name.endswith("_limit") or name.startswith("max_"):
-        return f"Upper bound for {human_name.removeprefix('max ')}; the operation refuses or truncates work beyond it."
-    if name.endswith("_offset"):
-        subject = human_name.removesuffix(" offset")
-        return f"Offset applied to {subject} in the units and coordinate space stated by the tool."
-    if name.endswith("_policy"):
-        return f"Policy controlling {human_name.removesuffix(' policy')} conflicts or ownership."
-    if name.endswith("_type") or name in {"type", "mode", "method", "operation", "owner", "space"}:
-        return f"Selects the {human_name} behavior for this operation."
-    if name.startswith("is_"):
-        return f"Whether the item is {human_name.removeprefix('is ')}."
-    if name.startswith("show_"):
-        return f"Whether Blender displays {human_name.removeprefix('show ')} in the viewport or camera view."
-    if name.startswith("lock_"):
-        return f"Whether to lock {human_name.removeprefix('lock ')} against the operation."
-    if name.startswith("preserve_"):
-        return f"Whether to preserve {human_name.removeprefix('preserve ')} unchanged."
-    if name.startswith("create_"):
-        return f"Whether to create {human_name.removeprefix('create ')} when it does not already exist."
-    context = (model_context or "this operation").rstrip(".").lower()
-    if name.endswith(("_point", "_vector", "_direction")):
-        return f"Three-component {human_name} in the coordinate space stated for {context}."
-    if name.endswith("_name"):
-        subject = human_name.removesuffix(" name")
-        return f"Exact Blender or provider name used as {subject} for {context}."
-    if name.endswith("_names"):
-        subject = human_name.removesuffix(" names")
-        return f"Explicit Blender or provider names used as {subject} for {context}."
-    angle_tokens = ("angle", "azimuth", "elevation", "pan", "phase", "roll", "tilt", "yaw")
-    if any(token in name for token in angle_tokens):
-        return f"Angle in radians controlling {human_name} for {context}."
-    distance_tokens = ("distance", "height", "length", "radius", "size", "thickness", "width")
-    if any(token in name for token in distance_tokens):
-        return f"{_title(name)} in Blender scene units for {context}."
-    if primary_type == "boolean":
-        return f"Whether to enable {human_name} for {context}."
-    if primary_type == "array":
-        return f"Explicit ordered {human_name} entries processed by {context}."
-    if primary_type == "object" or "$ref" in schema or any("$ref" in item for item in schema.get("anyOf", [])):
-        return f"Strict structured {human_name} configuration for {context}; unknown fields are rejected."
-    if primary_type in {"integer", "number"}:
-        return f"Numeric {human_name} for {context}; units and interpretation follow the tool description."
-    if primary_type == "string":
-        return f"Exact {human_name} identifier or selector used by {context}."
-    return f"Explicit {human_name} input for {context}."
+    match _primary_type(schema):
+        case "boolean":
+            return _boolean_description(name)
+        case "string":
+            return _string_description(name)
+        case "array":
+            return _sequence_description(name)
+        case "integer" | "number":
+            return _numeric_description(name)
+        case _:
+            return None
 
 
-def _describe_schema(
-    schema: dict[str, Any],
-    *,
-    explicit: Mapping[str, str] | None = None,
-    model_context: str | None = None,
-) -> None:
+def _describe_schema(schema: dict[str, Any], *, explicit: Mapping[str, str] | None = None) -> None:
+    """
+    Harden one object schema and give each of its parameters a description worth its bytes.
+
+    Args:
+        schema: A tool's or nested model's JSON Schema, modified in place.
+        explicit: Google-style `Args` descriptions from the owning docstring; they win outright.
+
+    """
     if schema.get("type") == "object" or "properties" in schema:
         schema.setdefault("additionalProperties", False)
     explicit = explicit or {}
-    for name, property_schema in schema.get("properties", {}).items():
+    properties = schema.get("properties", {})
+    for name, property_schema in properties.items():
         if not isinstance(property_schema, dict):
             continue
         description = explicit.get(name) or property_schema.get("description")
-        if not description and name == "offset" and "limit" in schema.get("properties", {}):
+        if not description and name == "offset" and "limit" in properties:
             description = "Zero-based index of the first record in this result page."
         if not description:
-            description = _base_parameter_description(name, property_schema, model_context=model_context)
-        fragments = _constraint_fragments(property_schema)
-        description_lower = description.lower()
-        fragments = [
-            fragment
-            for fragment in fragments
-            if not (fragment.startswith("Default:") and "default" in description_lower)
-            and not (
-                fragment.startswith("Allowed:") and ("one of" in description_lower or "allowed" in description_lower)
-            )
-            and not (fragment.startswith("Must be greater") and "positive" in description_lower)
-            and not (fragment.startswith("Must be at least") and "at least" in description_lower)
-        ]
-        property_schema["description"] = " ".join([description.rstrip(), *fragments]).strip()
+            description = _base_parameter_description(name, property_schema)
+        if description:
+            property_schema["description"] = description.rstrip()
+        else:
+            property_schema.pop("description", None)
 
     for definition in schema.get("$defs", {}).values():
-        if not isinstance(definition, dict):
-            continue
-        context = _context_text(definition.get("description") or definition.get("title") or model_context or "input")
-        _describe_schema(definition, model_context=context)
+        if isinstance(definition, dict):
+            _describe_schema(definition)
 
 
 def _is_read_only(name: str) -> bool:
@@ -635,11 +559,7 @@ def finalize_tool_documentation(mcp: FastMCP) -> None:
     for tool in mcp._tool_manager._tools.values():
         body, explicit_parameters, returns = _parse_docstring(tool.description)
         read_only = _is_read_only(tool.name)
-        _describe_schema(
-            tool.parameters,
-            explicit=explicit_parameters,
-            model_context=f"{_humanize(tool.name)} input",
-        )
+        _describe_schema(tool.parameters, explicit=explicit_parameters)
         tool.description = f"{body.rstrip()}\n\n{_tool_contract(tool.name, read_only=read_only, returns=returns)}"
         tool.title = _TOOL_TITLES.get(tool.name, _title(tool.name))
         tool.annotations = ToolAnnotations(

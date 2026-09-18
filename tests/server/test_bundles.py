@@ -470,10 +470,10 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 
 # A ceiling, not a target: lower it when the payload shrinks. Raising it is a decision to record
 # in the commit message.
-SHOT_MODE_BYTE_CEILING = 257_271
+SHOT_MODE_BYTE_CEILING = 187_679
 
 # The same rule for the default, core-only surface.
-DEFAULT_MODE_BYTE_CEILING = 78_362
+DEFAULT_MODE_BYTE_CEILING = 65_537
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:
@@ -684,3 +684,69 @@ def test_file_lifecycle_tools_blend_file_prose_is_correct() -> None:
         )
     for name in _BLEND_FILE_TOOLS_UNDER_TEST:
         assert _BLEND_FILE_EFFECTS_SENTENCE in descriptions[name], f"{name} is missing the .blend-file effects sentence"
+
+
+def _parameter_descriptions_for_toolsets(raw_value: str | None) -> dict[str, str]:
+    """
+    Read every parameter description a server process advertises, nested models included.
+
+    In a subprocess for the same reason as `_tool_descriptions_for_toolsets`.
+
+    Args:
+        raw_value: The BLENDER_MCP_TOOLSETS value to set, or None to leave it unset.
+
+    Returns:
+        "<tool>.<parameter>" mapped to its advertised description.
+
+    """
+    script = (
+        "import asyncio, json\n"
+        "from blender_mcp.server import mcp\n"
+        "def walk(schema, prefix, out):\n"
+        "    for name, property_schema in (schema.get('properties') or {}).items():\n"
+        "        if isinstance(property_schema, dict) and 'description' in property_schema:\n"
+        "            out[prefix + name] = property_schema['description']\n"
+        "    for model, definition in (schema.get('$defs') or {}).items():\n"
+        "        if isinstance(definition, dict):\n"
+        "            walk(definition, prefix + model + '.', out)\n"
+        "out = {}\n"
+        "for tool in asyncio.run(mcp.list_tools()):\n"
+        "    walk(tool.inputSchema, tool.name + '.', out)\n"
+        "print(json.dumps(out))\n"
+    )
+    return json.loads(_run_server_script(raw_value, script))
+
+
+# Prose forms of constraints the advertised JSON Schema already carries as keywords.
+_CONSTRAINT_PROSE = ("Default:", "Allowed:", "Range:", "Must be at ", "Must be greater", "Must be less", "Requires ")
+
+# Two adjacent single-letter words: what splicing a model title such as `EeveeLightingQuality`
+# into each of its parameters produced ("e e v e e", "g i").
+_SPLIT_ACRONYM_RE = re.compile(r"\b[a-z] [a-z]\b")
+
+
+@pytest.mark.parametrize("raw_value", [None, "shot"])
+def test_advertised_parameter_descriptions_do_not_restate_the_schema(raw_value: str | None) -> None:
+    """
+    Every description byte ships in each session's catalog, so repeating a keyword is pure cost.
+
+    An authored docstring may still discuss a default in prose; only the generated
+    "Default: ..."-style fragments are banned.
+    """
+    offenders = {
+        parameter: description
+        for parameter, description in _parameter_descriptions_for_toolsets(raw_value).items()
+        if any(token in description for token in _CONSTRAINT_PROSE)
+    }
+    assert not offenders, f"parameter descriptions restating schema keywords: {offenders}"
+
+
+@pytest.mark.parametrize("raw_value", [None, "shot"])
+def test_advertised_parameter_descriptions_contain_no_letter_split_words(raw_value: str | None) -> None:
+    """`EEVEE` must never reach an agent as "e e v e e"; nothing generated may splice a title in."""
+    offenders = {
+        parameter: description
+        for parameter, description in _parameter_descriptions_for_toolsets(raw_value).items()
+        if _SPLIT_ACRONYM_RE.search(description)
+    }
+    assert not offenders, f"parameter descriptions containing letter-split words: {offenders}"

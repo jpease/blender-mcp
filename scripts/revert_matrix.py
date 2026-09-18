@@ -104,6 +104,7 @@ CLIT = "tests/server/test_cli_transport.py"
 # tests): same subject, different layer.
 SFLT = "tests/server/tools/test_file_lifecycle.py"
 BUNT = "tests/server/test_bundles.py"
+TDT = "tests/server/test_tool_documentation.py"
 OLT = "tests/test_object_lookup.py"
 CANDT = "tests/test_candidates.py"
 SIT = "tests/server/test_server_instructions.py"
@@ -287,6 +288,16 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{BUNT}::test_file_lifecycle_tools_are_exactly_ten_and_reachable_from_shot_and_asset",
     f"{BUNT}::test_file_lifecycle_tools_advertise_correct_hints",
     f"{BUNT}::test_file_lifecycle_tools_blend_file_prose_is_correct",
+    # --- descriptions advertise only what the schema does not ---
+    f"{TDT}::test_schema_constraints_are_not_restated_as_prose",
+    f"{TDT}::test_a_parameter_the_schema_already_describes_carries_no_description",
+    f"{TDT}::test_units_and_datablock_semantics_survive",
+    f"{TDT}::test_a_non_numeric_parameter_is_never_labelled_with_scene_units",
+    f"{TDT}::test_a_nested_model_title_is_not_spliced_into_its_parameters",
+    f"{BUNT}::test_advertised_parameter_descriptions_do_not_restate_the_schema[None]",
+    f"{BUNT}::test_advertised_parameter_descriptions_do_not_restate_the_schema[shot]",
+    f"{BUNT}::test_advertised_parameter_descriptions_contain_no_letter_split_words[None]",
+    f"{BUNT}::test_advertised_parameter_descriptions_contain_no_letter_split_words[shot]",
 )
 
 # Nodes no single revert can break, each with the reason, so the gap check skips them.
@@ -313,6 +324,32 @@ _ROOTED_TWICE = (
     "`test_a_rooted_relative_prefix_is_not_reported_as_relative`, the component loop through "
     "`test_a_link_published_whole_names_nothing_above_its_own_shot`."
 )
+
+# The type-dispatched fallback table, and the reverted form that generates no semantics at all.
+TYPE_DISPATCHED_DESCRIPTIONS = """    match _primary_type(schema):
+        case "boolean":
+            return _boolean_description(name)
+        case "string":
+            return _string_description(name)
+        case "array":
+            return _sequence_description(name)
+        case "integer" | "number":
+            return _numeric_description(name)
+        case _:
+            return None"""
+
+DROPPED_DESCRIPTION_SEMANTICS = "    return None"
+
+# Reverted: each nested model's own prose spliced into every one of its parameters, which is where
+# "e e v e e" and "n l a" came from.
+SPLICED_MODEL_CONTEXT = '''    for definition in schema.get("$defs", {}).values():
+        if isinstance(definition, dict):
+            _describe_schema(definition)
+            source = definition.get("description") or definition.get("title") or "input"
+            spaced = re.sub(r"(?<!^)(?=[A-Z])", " ", source.rstrip(".")).lower()
+            for property_schema in (definition.get("properties") or {}).values():
+                if isinstance(property_schema, dict):
+                    property_schema["description"] = f"Numeric value for {spaced}."'''
 
 NOT_INDIVIDUALLY_FALSIFIABLE: dict[str, str] = {
     f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[protocol_version]": (
@@ -3743,8 +3780,8 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: create_override takes the scene from bpy.context",
         ADDON_LINKING,
-        "        return _override_all([collection], _scene(scene_uid))[0]\n",
-        "        return _override_all([collection], bpy.context.scene)[0]\n",
+        "        report = _override_all([collection], _scene(scene_uid))[0]\n",
+        "        report = _override_all([collection], bpy.context.scene)[0]\n",
         (f"{LKT}::test_create_override_takes_the_scene_from_bpy_data_not_bpy_context",),
     ),
     Revert(
@@ -4486,13 +4523,11 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: _call swallows an addon failure instead of propagating it",
         SERVER_FILE_LIFECYCLE_TOOL,
-        "    result = await asyncio.to_thread(get_blender_connection().send_command, command, params)\n"
-        "    return ok(result)",
+        "    result = await asyncio.to_thread(get_blender_connection().send_command, command, params)",
         "    try:\n"
         "        result = await asyncio.to_thread(get_blender_connection().send_command, command, params)\n"
         "    except Exception:\n"
-        "        result = {}\n"
-        "    return ok(result)",
+        "        result = {}",
         tuple(
             f"{SFLT}::test_addon_failure_reaches_the_client_as_a_tool_error_unchanged[{name}]"
             for name in sorted(
@@ -4518,19 +4553,79 @@ REVERTS: list[Revert] = [
         '    "animation",\n)',
         (f"{BUNT}::test_file_lifecycle_tools_are_exactly_ten_and_reachable_from_shot_and_asset",),
     ),
+    # Each ceiling constant is its mode's measured payload, so the only revert that can still
+    # falsify these two tests is one byte below it. The rows this replaced named historical
+    # ceilings (203_094, 217_718, 78_019) that the trimmed catalog now sits under, which made them
+    # SURVIVORs for an arithmetic reason rather than a behavioural one.
     Revert(
-        "server tools: the shot ceiling constant reverted to its pre-file-lifecycle value",
+        "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 218_061",
-        "SHOT_MODE_BYTE_CEILING = 203_094",
+        "SHOT_MODE_BYTE_CEILING = 187_679",
+        "SHOT_MODE_BYTE_CEILING = 187_678",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
-        "server tools: the default ceiling constant reverted to a value the new tools already exceed",
+        "server tools: the default ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 78_362",
-        "DEFAULT_MODE_BYTE_CEILING = 63_394",
+        "DEFAULT_MODE_BYTE_CEILING = 65_537",
+        "DEFAULT_MODE_BYTE_CEILING = 65_536",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
+    ),
+    Revert(
+        "server tools: the constraint keywords are appended to each parameter description again",
+        SERVER_DOCUMENTATION,
+        '        if description:\n            property_schema["description"] = description.rstrip()',
+        '        if "default" in property_schema:\n'
+        "            description = f\"{description or ''} Default: {property_schema['default']!r}.\".strip()\n"
+        "        if description:\n"
+        '            property_schema["description"] = description.rstrip()',
+        (
+            f"{TDT}::test_schema_constraints_are_not_restated_as_prose",
+            f"{BUNT}::test_advertised_parameter_descriptions_do_not_restate_the_schema[None]",
+            f"{BUNT}::test_advertised_parameter_descriptions_do_not_restate_the_schema[shot]",
+        ),
+    ),
+    Revert(
+        "server tools: a parameter the name and schema already describe gets a generated sentence again",
+        SERVER_DOCUMENTATION,
+        "    if name in _PARAMETER_DESCRIPTIONS:\n"
+        "        return _PARAMETER_DESCRIPTIONS[name]\n"
+        "    match _primary_type(schema):",
+        "    if name in _PARAMETER_DESCRIPTIONS:\n"
+        "        return _PARAMETER_DESCRIPTIONS[name]\n"
+        '    return f"Explicit {name} input for this operation."\n'
+        "    match _primary_type(schema):",
+        (f"{TDT}::test_a_parameter_the_schema_already_describes_carries_no_description",),
+    ),
+    Revert(
+        "server tools: every generated parameter semantic - unit, existing datablock, refusal - is dropped",
+        SERVER_DOCUMENTATION,
+        TYPE_DISPATCHED_DESCRIPTIONS,
+        DROPPED_DESCRIPTION_SEMANTICS,
+        (f"{TDT}::test_units_and_datablock_semantics_survive",),
+    ),
+    Revert(
+        "server tools: a name token decides the unit before the type does, so an enum is scene units again",
+        SERVER_DOCUMENTATION,
+        'def _string_description(name: str) -> str | None:\n    if name == "resolution":',
+        "def _string_description(name: str) -> str | None:\n"
+        "    if any(token in name for token in _DISTANCE_TOKENS):\n"
+        '        return "In Blender scene units."\n'
+        '    if name == "resolution":',
+        (f"{TDT}::test_a_non_numeric_parameter_is_never_labelled_with_scene_units",),
+    ),
+    Revert(
+        "server tools: a nested model's own prose is spliced into each of its parameter descriptions again",
+        SERVER_DOCUMENTATION,
+        '    for definition in schema.get("$defs", {}).values():\n'
+        "        if isinstance(definition, dict):\n"
+        "            _describe_schema(definition)",
+        SPLICED_MODEL_CONTEXT,
+        (
+            f"{TDT}::test_a_nested_model_title_is_not_spliced_into_its_parameters",
+            f"{BUNT}::test_advertised_parameter_descriptions_contain_no_letter_split_words[None]",
+            f"{BUNT}::test_advertised_parameter_descriptions_contain_no_letter_split_words[shot]",
+        ),
     ),
     Revert(
         "server tools: the five open-world tools are folded into _FILE_TOOLS instead of _BLEND_FILE_TOOLS",
@@ -4605,20 +4700,6 @@ REVERTS: list[Revert] = [
             f"{SFLT}::test_save_shot_forwards_every_parameter",
             f"{SFLT}::test_save_shot_default_filepath_is_none",
         ),
-    ),
-    Revert(
-        "create_directories: the shot ceiling reverted to before create_directories and the override fields",
-        TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 218_061",
-        "SHOT_MODE_BYTE_CEILING = 217_718",
-        (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
-    ),
-    Revert(
-        "create_directories: the default ceiling reverted to before create_directories and the override fields",
-        TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 78_362",
-        "DEFAULT_MODE_BYTE_CEILING = 78_019",
-        (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
     # --- one object per name after a library override ---
     Revert(
