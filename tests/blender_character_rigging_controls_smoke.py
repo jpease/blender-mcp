@@ -12,6 +12,7 @@ import importlib
 import sys
 import types
 
+from collections.abc import Iterable
 from pathlib import Path
 
 import bpy
@@ -93,6 +94,50 @@ pose = handler.set_character_pose(
     space="LOCAL",
 )
 assert pose["bones"][0]["bone"] == "settings"
+
+
+MATRIX_TOLERANCE = 1e-5
+MINIMUM_POSE_CHANGE = 0.1
+
+
+def rows(matrix: Iterable[Iterable[float]]) -> list[list[float]]:
+    return [list(row) for row in matrix]
+
+
+def max_difference(a: list[list[float]], b: list[list[float]]) -> float:
+    return max(abs(x - y) for row_a, row_b in zip(a, b, strict=True) for x, y in zip(row_a, row_b, strict=True))
+
+
+# A clean two-bone chain: `rig` carries an IK constraint that would move `lower` on its own.
+chain = create_test_armature("PoseChain")
+upper, lower = chain.pose.bones["upper"], chain.pose.bones["lower"]
+
+# The report must describe the evaluated result, not the matrix read before re-evaluation.
+reported = handler.set_character_pose(chain.name, [{"bone_name": "upper", "rotation_euler": (0.5, 0, 0)}])
+assert (
+    max_difference(reported["bones"][0]["after_pose_matrix"], reported["bones"][0]["before_pose_matrix"])
+    > MINIMUM_POSE_CHANGE
+)
+assert max_difference(reported["bones"][0]["after_pose_matrix"], rows(upper.matrix)) < MATRIX_TOLERANCE
+
+# Parent and child posed in POSE space in one call: the child must land where asked, not relative
+# to its parent's stale pre-call matrix.
+upper.rotation_mode = lower.rotation_mode = "XYZ"
+upper.rotation_euler, lower.rotation_euler = (0.4, 0, 0), (0, 0.6, 0)
+bpy.context.view_layer.update()
+target_upper, target_lower = rows(upper.matrix), rows(lower.matrix)
+for bone in (upper, lower):
+    bone.matrix_basis.identity()
+bpy.context.view_layer.update()
+handler.set_character_pose(
+    chain.name,
+    [{"bone_name": "upper", "matrix": target_upper}, {"bone_name": "lower", "matrix": target_lower}],
+    space="POSE",
+)
+assert max_difference(rows(upper.matrix), target_upper) < MATRIX_TOLERANCE
+assert max_difference(rows(lower.matrix), target_lower) < MATRIX_TOLERANCE, (
+    "child posed against its parent's stale matrix"
+)
 
 keyed = handler.keyframe_character_pose(
     rig.name,

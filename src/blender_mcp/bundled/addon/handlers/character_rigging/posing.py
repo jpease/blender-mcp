@@ -63,13 +63,15 @@ def _validate_pose_specs(armature, poses, space):
 
 def _apply_pose_specs(armature, prepared, space, reset_unspecified=False):
     targeted = {pose_bone.name for pose_bone, _spec, _matrix in prepared}
+    before = {pose_bone.name: pose_bone.matrix.copy() for pose_bone, _spec, _matrix in prepared}
     if reset_unspecified:
         for pose_bone in armature.pose.bones:
             if pose_bone.name not in targeted:
                 pose_bone.matrix_basis.identity()
-    records = []
-    for pose_bone, spec, input_matrix in prepared:
-        before = pose_bone.matrix.copy()
+        bpy.context.view_layer.update()
+    # `pose_bone.matrix` reads the last evaluation, so each bone is set after its parent has been
+    # re-evaluated; otherwise a child's pose- or world-space target is solved against a stale parent.
+    for pose_bone, spec, input_matrix in sorted(prepared, key=lambda item: len(item[0].parent_recursive)):
         pose_bone.matrix = armature.convert_space(
             pose_bone=pose_bone,
             matrix=input_matrix,
@@ -78,17 +80,17 @@ def _apply_pose_specs(armature, prepared, space, reset_unspecified=False):
         )
         for name, value in spec.get("custom_properties", {}).items():
             pose_bone[name] = value
-        records.append(
-            {
-                "bone": pose_bone.name,
-                "before_pose_matrix": _matrix_list(before),
-                "after_pose_matrix": _matrix_list(pose_bone.matrix),
-                "input_space": space,
-                "custom_properties": sorted(spec.get("custom_properties", {})),
-            }
-        )
-    bpy.context.view_layer.update()
-    return records
+        bpy.context.view_layer.update()
+    return [
+        {
+            "bone": pose_bone.name,
+            "before_pose_matrix": _matrix_list(before[pose_bone.name]),
+            "after_pose_matrix": _matrix_list(pose_bone.matrix),
+            "input_space": space,
+            "custom_properties": sorted(spec.get("custom_properties", {})),
+        }
+        for pose_bone, spec, _matrix in prepared
+    ]
 
 
 def _assign_named_action(armature, action_name, policy, slot_identifier=None):
