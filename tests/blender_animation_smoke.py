@@ -114,6 +114,32 @@ def main() -> None:
     assert baked["new_non_shared_action"] is True
     assert baked["sampled_key_count"] == 9
     assert baked["key_count"] == 9
+    driver_host = bpy.data.objects.new("DriverHost", None)
+    bpy.context.scene.collection.objects.link(driver_host)
+    driven = handler.manage_animation_driver(
+        {"type": "OBJECT", "name": driver_host.name},
+        "ADD",
+        "location",
+        array_index=2,
+        driver_type="SCRIPTED",
+        expression="frame * 0.25 + lift",
+        variables=[
+            {
+                "name": "lift",
+                "type": "TRANSFORMS",
+                "target": {"type": "OBJECT", "name": cube.name},
+                "transform_type": "LOC_Z",
+                "transform_space": "WORLD_SPACE",
+            }
+        ],
+    )
+    assert driven["expression"] == "frame * 0.25 + lift"
+    # Blender itself must accept the expression: a rejected one leaves the driver invalid and
+    # the channel unevaluated, so evaluate it rather than trusting the reply.
+    bpy.context.scene.frame_set(8)
+    evaluated = driver_host.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    assert abs(evaluated.location.z - (8 * 0.25 + cube.matrix_world.translation.z)) < 1e-5
+
     print("ANIMATION_SMOKE_OK")
 
 

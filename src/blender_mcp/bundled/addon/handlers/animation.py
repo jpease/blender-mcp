@@ -56,6 +56,9 @@ _SAFE_EXPRESSION_NODES = (
     ast.BinOp,
     ast.UnaryOp,
     ast.Name,
+    # `ast.walk` yields each Name's `ctx` too, and in `mode="eval"` that is always Load: without
+    # it every expression naming a variable - `frame` included - is refused.
+    ast.Load,
     ast.Constant,
     ast.Add,
     ast.Sub,
@@ -470,11 +473,14 @@ def _replace_driver_variables(driver, prepared):
         variable.name = name
         variable.type = variable_type
         target = variable.targets[0]
-        target.id_type = source_type
-        target.id = source
         if variable_type == "SINGLE_PROP":
+            # Writable only for SINGLE_PROP: a TRANSFORMS target is always an Object, and Blender
+            # exposes its `id_type` read-only, so assigning it raises AttributeError.
+            target.id_type = source_type
+            target.id = source
             target.data_path = data_path
         else:
+            target.id = source
             target.bone_target = bone_target
             target.transform_type = transform_type
             target.transform_space = transform_space

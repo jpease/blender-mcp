@@ -72,6 +72,8 @@ ADDON_OBJECT_LOOKUP = ROOT / "src/blender_mcp/bundled/addon/object_lookup.py"
 ADDON_CANDIDATES = ROOT / "src/blender_mcp/bundled/addon/candidates.py"
 SERVER_APP = ROOT / "src/blender_mcp/server/app.py"
 ADDON_SCENE = ROOT / "src/blender_mcp/bundled/addon/handlers/scene.py"
+ADDON_ANIMATION = ROOT / "src/blender_mcp/bundled/addon/handlers/animation.py"
+SERVER_ANIMATION_TOOL = ROOT / "src/blender_mcp/server/tools/animation.py"
 SERVER_DOCUMENTATION = ROOT / "src/blender_mcp/server/tools/_documentation.py"
 SERVER_BUNDLES = ROOT / "src/blender_mcp/server/bundles.py"
 TEST_BUNDLES_FILE = ROOT / "tests/server/test_bundles.py"
@@ -105,6 +107,7 @@ CLIT = "tests/server/test_cli_transport.py"
 SFLT = "tests/server/tools/test_file_lifecycle.py"
 BUNT = "tests/server/test_bundles.py"
 TDT = "tests/server/test_tool_documentation.py"
+ANIMT = "tests/test_animation_tools.py"
 OLT = "tests/test_object_lookup.py"
 CANDT = "tests/test_candidates.py"
 SIT = "tests/server/test_server_instructions.py"
@@ -298,6 +301,10 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{BUNT}::test_advertised_parameter_descriptions_do_not_restate_the_schema[shot]",
     f"{BUNT}::test_advertised_parameter_descriptions_contain_no_letter_split_words[None]",
     f"{BUNT}::test_advertised_parameter_descriptions_contain_no_letter_split_words[shot]",
+    # --- a driver expression may name frame and its declared variables ---
+    f"{ANIMT}::test_a_driver_expression_may_name_frame_and_its_declared_variables",
+    f"{ANIMT}::test_a_driver_expression_still_refuses_undeclared_names_and_calls",
+    f"{ANIMT}::test_a_scripted_driver_reaches_blender_with_its_frame_expression",
 )
 
 # Nodes no single revert can break, each with the reason, so the gap check skips them.
@@ -4626,6 +4633,27 @@ REVERTS: list[Revert] = [
             f"{BUNT}::test_advertised_parameter_descriptions_contain_no_letter_split_words[None]",
             f"{BUNT}::test_advertised_parameter_descriptions_contain_no_letter_split_words[shot]",
         ),
+    ),
+    Revert(
+        "animation: the addon's expression allowlist drops ast.Load, refusing every named variable",
+        ADDON_ANIMATION,
+        "    ast.Load,\n",
+        "",
+        (f"{ANIMT}::test_a_driver_expression_may_name_frame_and_its_declared_variables",),
+    ),
+    Revert(
+        "animation: the server's expression allowlist drops ast.Load, refusing every named variable",
+        SERVER_ANIMATION_TOOL,
+        "    ast.Load,\n",
+        "",
+        (f"{ANIMT}::test_a_scripted_driver_reaches_blender_with_its_frame_expression",),
+    ),
+    Revert(
+        "animation: the addon's expression allowlist admits every AST node, so calls pass again",
+        ADDON_ANIMATION,
+        "_SAFE_EXPRESSION_NODES = (\n    ast.Expression,",
+        "_SAFE_EXPRESSION_NODES = (\n    ast.AST,\n    ast.Expression,",
+        (f"{ANIMT}::test_a_driver_expression_still_refuses_undeclared_names_and_calls",),
     ),
     Revert(
         "server tools: the five open-world tools are folded into _FILE_TOOLS instead of _BLEND_FILE_TOOLS",

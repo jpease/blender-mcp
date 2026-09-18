@@ -34,6 +34,9 @@ _SAFE_EXPRESSION_NODES = (
     ast.BinOp,
     ast.UnaryOp,
     ast.Name,
+    # `ast.walk` yields each Name's `ctx` too, and in `mode="eval"` that is always Load: without
+    # it every expression naming a variable - `frame` included - is refused.
+    ast.Load,
     ast.Constant,
     ast.Add,
     ast.Sub,

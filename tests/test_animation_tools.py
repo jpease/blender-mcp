@@ -140,3 +140,66 @@ def test_nla_tool_requires_operation_specific_inputs(monkeypatch) -> None:
             )
         )
     assert connection.calls == []
+
+
+def test_a_driver_expression_may_name_frame_and_its_declared_variables(monkeypatch) -> None:
+    """
+    Every useful driver expression names something: `frame`, or a variable the call declares.
+
+    `ast.walk` yields each `Name`'s `ctx` node as well as the `Name`, so an allowlist without
+    `ast.Load` rejects every expression that is not a bare arithmetic constant.
+    """
+    addon, _bpy = _load_addon(monkeypatch, data={})
+    handlers = addon.handlers.animation
+
+    assert handlers._safe_expression("frame * 0.5", set()) == "frame * 0.5"
+    assert handlers._safe_expression("-(offset + frame) / 24", {"offset"}) == "-(offset + frame) / 24"
+
+
+def test_a_driver_expression_still_refuses_undeclared_names_and_calls(monkeypatch) -> None:
+    """The allowlist must keep refusing what it existed to refuse: calls, attributes, other names."""
+    addon, _bpy = _load_addon(monkeypatch, data={})
+    handlers = addon.handlers.animation
+
+    with pytest.raises(ValueError, match="undeclared variable: speed"):
+        handlers._safe_expression("speed * 2", set())
+    with pytest.raises(ValueError, match="only arithmetic"):
+        handlers._safe_expression("__import__('os').system('ls')", set())
+    with pytest.raises(ValueError, match="only arithmetic"):
+        handlers._safe_expression("frame.real", set())
+    with pytest.raises(ValueError, match="only arithmetic"):
+        handlers._safe_expression("abs(frame)", set())
+
+
+def test_a_scripted_driver_reaches_blender_with_its_frame_expression(monkeypatch) -> None:
+    """The server validates the expression before dispatch, so its allowlist gates the whole tool."""
+    connection = _Connection()
+    monkeypatch.setattr(animation, "get_blender_connection", lambda: connection)
+    target = animation.AnimationTarget(type="OBJECT", name="Cube")
+
+    asyncio.run(
+        animation.manage_animation_driver(
+            ctx=None,
+            target=target,
+            action="ADD",
+            data_path="location",
+            array_index=2,
+            driver_type="SCRIPTED",
+            expression="frame * 0.5",
+        )
+    )
+
+    assert connection.calls[-1][0] == "manage_animation_driver"
+    # `_validate_safe_expression` raises ValueError; FastMCP turns it into the client's tool error.
+    with pytest.raises(ValueError, match="undeclared variable: speed"):
+        asyncio.run(
+            animation.manage_animation_driver(
+                ctx=None,
+                target=target,
+                action="ADD",
+                data_path="location",
+                array_index=2,
+                driver_type="SCRIPTED",
+                expression="speed * 2",
+            )
+        )
