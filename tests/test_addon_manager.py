@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
+from blender_mcp import addon_manager as am
 from blender_mcp.addon_manager import (
     EXPECTED_ADDON_PROTOCOL_VERSION,
     AddonHandshake,
@@ -189,6 +190,20 @@ def test_install_updates_extensions_dir_when_addon_lives_there(tmp_path: Path, m
     assert not (scripts / "blender_mcp").exists(), (
         "installed a duplicate into scripts/addons instead of updating in place"
     )
+
+
+def test_repeat_install_over_a_package_replaces_it_in_place(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A package install is found by its `__init__.py`, whose parent is the package, not the addons dir."""
+    addons = tmp_path / "5.2" / "scripts" / "addons"
+    addons.mkdir(parents=True)
+    monkeypatch.setattr(am, "discover_blender_addon_dirs", lambda: [addons])
+
+    assert am.install_addon().success
+    assert am.install_addon().success
+
+    package = addons / "blender_mcp"
+    assert (package / "__init__.py").is_file(), "the reinstall removed the package's own __init__.py"
+    assert not (package / "blender_mcp").exists(), "the reinstall nested a second package inside the first"
 
 
 def test_repeat_install_preserves_original_backup(tmp_path: Path) -> None:

@@ -457,7 +457,12 @@ def install_addon(
         # Update where the addon already lives rather than the newest
         # scripts/addons dir.
         existing = find_existing_addon_installs(dirs)
-        addons_dir = existing[0].parent if existing else dirs[0]
+        if existing:
+            # A package install is reported by its `__init__.py`; the addons dir is one level higher.
+            found = existing[0]
+            addons_dir = found.parent.parent if found.name == "__init__.py" else found.parent
+        else:
+            addons_dir = dirs[0]
 
     addons_dir = Path(addons_dir).expanduser()
     if not addons_dir.exists():
