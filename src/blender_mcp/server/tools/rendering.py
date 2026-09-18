@@ -24,7 +24,7 @@ class RenderSettingsPatch(BaseModel):
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
-    engine: Literal["BLENDER_EEVEE_NEXT", "BLENDER_WORKBENCH", "CYCLES"] | None = None
+    engine: Literal["BLENDER_EEVEE", "BLENDER_WORKBENCH", "CYCLES"] | None = None
     resolution_x: Annotated[int | None, Field(ge=4, le=65_536)] = None
     resolution_y: Annotated[int | None, Field(ge=4, le=65_536)] = None
     resolution_percentage: Annotated[int | None, Field(ge=1, le=100)] = None

@@ -325,7 +325,7 @@ def _validate_render_patch(patch):
         if maximum is not None and value > maximum:
             raise ValueError(f"{name} must be at most {maximum}")
     allowed_values = {
-        "engine": {"BLENDER_EEVEE_NEXT", "BLENDER_WORKBENCH", "CYCLES"},
+        "engine": {"BLENDER_EEVEE", "BLENDER_WORKBENCH", "CYCLES"},
         "image_format": {"PNG", "JPEG", "OPEN_EXR", "OPEN_EXR_MULTILAYER", "TIFF", "WEBP"},
         "color_mode": {"BW", "RGB", "RGBA"},
         "color_depth": {"8", "16", "32"},
@@ -386,8 +386,8 @@ class RenderingHandlersMixin:
                     raise ValueError("cycles settings require the CYCLES render engine")
                 snapshots.append((scene.cycles, _set_supported(scene.cycles, nested["cycles"], "Cycles")))
             if nested.get("eevee"):
-                if resulting_engine != "BLENDER_EEVEE_NEXT":
-                    raise ValueError("eevee settings require the BLENDER_EEVEE_NEXT render engine")
+                if resulting_engine != "BLENDER_EEVEE":
+                    raise ValueError("eevee settings require the BLENDER_EEVEE render engine")
                 snapshots.append((scene.eevee, _set_supported(scene.eevee, nested["eevee"], "EEVEE")))
             if nested.get("motion_blur"):
                 mapping = {

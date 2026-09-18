@@ -105,6 +105,13 @@ def main() -> None:
     assert inspected["engine"] == "BLENDER_WORKBENCH"
     assert inspected["compositor"]["nodes"]["returned_count"] == 2
     assert inspected["compositor"]["links"]["returned_count"] == 1
+
+    eevee = handler.configure_render_settings(
+        scene.name,
+        {"engine": "BLENDER_EEVEE", "eevee": {"taa_render_samples": 7}},
+    )
+    assert eevee["settings"]["engine"] == "BLENDER_EEVEE"
+    assert scene.eevee.taa_render_samples == 7
     print("RENDERING_SMOKE_OK")
 
 

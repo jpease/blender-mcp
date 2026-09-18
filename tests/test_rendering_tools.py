@@ -2,6 +2,7 @@
 """Regression coverage for render, view-layer, and pass tools."""
 
 import asyncio
+import importlib
 import os
 
 import pytest
@@ -51,6 +52,22 @@ def test_render_settings_patch_is_strict_and_bounded() -> None:
         rendering.RenderSettingsPatch(frame_start=20, frame_end=10)
     with pytest.raises(ValidationError):
         rendering.RenderSettingsPatch(unknown=True)
+
+
+def test_render_settings_patch_accepts_the_blender_5_eevee_engine_name() -> None:
+    patch = rendering.RenderSettingsPatch(engine="BLENDER_EEVEE", eevee=rendering.EeveePatch(taa_render_samples=16))
+    assert patch.engine == "BLENDER_EEVEE"
+    with pytest.raises(ValidationError):
+        rendering.RenderSettingsPatch.model_validate({"engine": "BLENDER_EEVEE_NEXT"})
+
+
+def test_addon_render_validation_accepts_the_blender_5_eevee_engine_name(monkeypatch) -> None:
+    addon, _bpy = _load_addon(monkeypatch, data={})
+    handlers = importlib.import_module(f"{addon.__name__}.handlers.rendering")
+
+    assert handlers._validate_render_patch({"engine": "BLENDER_EEVEE"}) == {"engine": "BLENDER_EEVEE"}
+    with pytest.raises(ValueError, match="Unsupported engine"):
+        handlers._validate_render_patch({"engine": "BLENDER_EEVEE_NEXT"})
 
 
 def test_view_layer_patch_is_strict_and_cryptomatte_depth_is_even() -> None:
