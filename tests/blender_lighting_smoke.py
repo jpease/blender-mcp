@@ -132,6 +132,9 @@ def main() -> None:
 
     world = handler.configure_world_background(scene.name, (0.04, 0.05, 0.08), 0.7, False, "Lighting World", True)
     assert world["source"] == "BACKGROUND"
+    # A world this call created carries only the managed pair, not Blender's default nodes beside it.
+    created_types = sorted(node.bl_idname for node in bpy.data.worlds["Lighting World"].node_tree.nodes)
+    assert created_types == ["ShaderNodeBackground", "ShaderNodeOutputWorld"], created_types
 
     sky = handler.configure_procedural_sky(
         scene.name,

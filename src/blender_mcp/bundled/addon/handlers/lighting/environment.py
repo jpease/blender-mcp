@@ -99,6 +99,9 @@ def _begin_world_edit(scene, world_name, create_world):
     edit = _ManagedWorldEdit(scene, world, created_world=not world_existed)
     edit.previous_world = previous_world
     world.use_nodes = True
+    if edit.created_world:
+        # Blender's default Background/Output pair, not user nodes: left in, it sits beside the managed pair.
+        world.node_tree.nodes.clear()
     return world, edit
 
 
