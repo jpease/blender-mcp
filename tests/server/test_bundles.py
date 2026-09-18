@@ -322,18 +322,18 @@ def test_shot_and_asset_modes_share_only_the_core_surface() -> None:
     assert shot.isdisjoint(asset), f"modes overlap outside core: {sorted(shot & asset)}"
 
 
-def test_shot_mode_excludes_texture_authoring_and_light_or_rig_construction() -> None:
+def test_shot_mode_lights_the_shot_but_excludes_texture_authoring_and_rig_construction() -> None:
     """
-    Shot excludes texture authoring, rig construction and light construction.
+    Shot places and aims lights; texture authoring and camera-rig construction stay opt-in.
 
-    Those stay in opt-in bundles a shot can add when needed.
+    An interior shot has no usable light without placing one, so light construction is shot work.
     """
     shot = _tool_names_for_toolsets("shot")
-    assert "configure_hdri_environment" in shot, "lighting (minus construction) must still be in shot"
+    assert "configure_hdri_environment" in shot, "environment lighting must be in shot"
+    assert shot >= {"create_light", "configure_light", "aim_light", "configure_light_linking", "create_studio_lighting"}
     assert not {t for t in shot if t.startswith(("create_pbr_material", "apply_pbr_texture_set"))}, (
         "texture authoring must not ride along with shot"
     )
-    assert "create_studio_lighting" not in shot, "light construction belongs to lighting-construction, not shot"
     assert "create_orbit_camera_rig" not in shot, "rig construction belongs to camera-rigs, not shot"
 
 
@@ -470,7 +470,7 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 
 # A ceiling, not a target: lower it when the payload shrinks. Raising it is a decision to record
 # in the commit message.
-SHOT_MODE_BYTE_CEILING = 230_145
+SHOT_MODE_BYTE_CEILING = 257_271
 
 # The same rule for the default, core-only surface.
 DEFAULT_MODE_BYTE_CEILING = 78_362

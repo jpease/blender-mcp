@@ -76,12 +76,13 @@ TOOLSETS_ENV_VAR = "BLENDER_MCP_TOOLSETS"
 ALL_SENTINEL = "all"
 
 # Artist-facing presets, chosen once per MCP client entry before the process starts. `shot`
-# assembles, animates, lights and renders; `asset` authors or revises canon. The modes must not
+# assembles, poses, lights and renders; `asset` authors or revises canon. The modes must not
 # overlap outside core: assembling a shot authors no materials, and authoring canon lights no
-# shot. Construction bundles stay opt-in, e.g. `shot,camera-rigs`.
+# shot. Placing lights is shot work, since an interior has no usable light without it; camera-rig
+# construction stays opt-in, e.g. `shot,camera-rigs`.
 MODES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
-        "shot": ("camera", "lighting", "rendering", "character-posing"),
+        "shot": ("camera", "lighting", "lighting-construction", "rendering", "character-posing"),
         "asset": ("core-authoring", "scene-authoring", "texture", "retopology", "geometry-nodes"),
     }
 )

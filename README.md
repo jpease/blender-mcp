@@ -251,7 +251,7 @@ for fine-grained control. Modes are curated presets over bundles and compose wit
 
 | Mode | Selects |
 |---|---|
-| `shot` | assembling, posing, animating, lighting and rendering a scene: `camera`, `lighting`, `rendering`, `character-posing` |
+| `shot` | assembling, posing, animating, lighting and rendering a scene: `camera`, `lighting`, `lighting-construction`, `rendering`, `character-posing` |
 | `asset` | authoring or revising canon: `core-authoring`, `scene-authoring`, `texture`, `retopology`, `geometry-nodes` |
 
 | Bundle | Adds |
