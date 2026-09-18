@@ -902,6 +902,40 @@ def test_link_as_override_uses_route_c_not_create_liboverrides(monkeypatch: pyte
     assert [c.override_library is not None for c in world.scene.collection.children] == [True]
 
 
+def test_link_reports_the_objects_it_brought_into_the_scene(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A linked collection's members count, not only the objects named in the request."""
+    server, _bpy, world = _server(monkeypatch)
+    canonical = _canon(tmp_path, world)
+
+    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"], objects=["Crate"])
+
+    assert response["status"] == "success", response
+    assert response["result"]["changed_objects"] == ["Crate", "HeroBody"]
+
+
+def test_link_as_override_reports_the_override_objects(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The objects are the editable overrides, which the report names."""
+    server, _bpy, world = _server(monkeypatch)
+    canonical = _canon(tmp_path, world)
+
+    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"], as_override=True)
+
+    assert response["status"] == "success", response
+    assert response["result"]["changed_objects"] == ["HeroBody"]
+
+
+def test_create_override_reports_the_override_objects(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Overriding an already-linked collection reports the override's objects too."""
+    server, _bpy, world = _server(monkeypatch)
+    canonical = _canon(tmp_path, world)
+    linked = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"])["result"]
+
+    response = _run(server, "create_override", collection_uid=linked["collections"][0]["session_uid"])
+
+    assert response["status"] == "success", response
+    assert response["result"]["changed_objects"] == ["HeroBody"]
+
+
 def test_link_refuses_as_override_with_objects(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Route C overrides collection hierarchies, so an object request is refused up front."""
     server, _bpy, world = _server(monkeypatch)

@@ -561,6 +561,24 @@ def _override_hierarchy(collection: object, scene: object, unlinked: list[tuple[
     }
 
 
+def _override_object_names(reports: list[dict[str, object]]) -> list[str]:
+    """
+    Name every object inside the overrides the reports describe, unbounded, for `changed_objects`.
+
+    Args:
+        reports: `_override_hierarchy` reports.
+
+    Returns:
+        list[str]: Sorted, distinct object names.
+
+    """
+    names: set[str] = set()
+    for report in reports:
+        uid = report["override"]["session_uid"]  # type: ignore[index]
+        names.update(obj.name for obj in _by_session_uid(bpy.data.collections, uid, "collection").all_objects)  # type: ignore[attr-defined]
+    return sorted(names)
+
+
 def _refuse_nested_requests(collections: list) -> None:
     """
     Refuse a request that names a collection and a collection inside it.
@@ -880,10 +898,14 @@ class LinkingHandlersMixin:
         overrides = []
         if as_override:
             overrides = _override_all(list(linked_collections), scene)
+            changed_objects = _override_object_names(overrides)
         else:
             _link_into(scene.collection.children, linked_collections)  # type: ignore[attr-defined]
             _link_into(scene.collection.objects, linked_objects)  # type: ignore[attr-defined]
+            members = [obj for collection in linked_collections for obj in collection.all_objects]  # type: ignore[attr-defined]
+            changed_objects = sorted({obj.name for obj in [*members, *linked_objects]})  # type: ignore[attr-defined]
         return {
+            "changed_objects": changed_objects,
             "library": _library_details(library),
             "library_already_linked": library.session_uid in libraries_before,
             "scene_uid": _uid_of(scene),
@@ -914,7 +936,8 @@ class LinkingHandlersMixin:
         uid = _require_uid("collection_uid", collection_uid)
         collection = _by_session_uid(bpy.data.collections, uid, "collection")
         _refuse_scripts_auto_execute("create_override")
-        return _override_all([collection], _scene(scene_uid))[0]
+        report = _override_all([collection], _scene(scene_uid))[0]
+        return {**report, "changed_objects": _override_object_names([report])}
 
     @staticmethod
     def list_libraries(*, limit: object = DEFAULT_PAGE_SIZE, offset: object = 0) -> dict[str, object]:

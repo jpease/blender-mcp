@@ -201,6 +201,16 @@ def test_link_canon_library_defaults(monkeypatch) -> None:
     }
 
 
+def test_changed_objects_move_from_the_addon_result_into_the_envelope(monkeypatch) -> None:
+    connection = _Connection({"overrides": [], "changed_objects": ["HeroBody"]})
+    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+
+    envelope = asyncio.run(file_lifecycle.link_canon_library(ctx=None, filepath="/canon/hero.blend"))
+
+    assert envelope["changed_objects"] == ["HeroBody"]
+    assert "changed_objects" not in envelope["data"]
+
+
 def test_create_override_defaults(monkeypatch) -> None:
     connection = _Connection()
     monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)

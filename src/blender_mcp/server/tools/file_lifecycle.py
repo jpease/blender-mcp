@@ -31,7 +31,8 @@ async def _call(command: str, params: dict[str, object]) -> dict:
 
     """
     result = await asyncio.to_thread(get_blender_connection().send_command, command, params)
-    return ok(result)
+    changed_objects = result.pop("changed_objects", []) if isinstance(result, dict) else []
+    return ok(result, changed_objects=changed_objects)
 
 
 @mcp.tool()
