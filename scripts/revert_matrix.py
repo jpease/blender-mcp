@@ -17,7 +17,8 @@ substring, so the prefix is how a group of rows is selected: `session:`, `barrie
 `file roots:`, `file lifecycle:`, `save_shot`'s `create_directories:`, `linking:`,
 `candidates:`, `object lookup:`, `polyhaven:`, `output_roots:`, `get_addon_status:`,
 `server tools:`, `server instructions:`, `transport:`, `rig:`, `docker:`,
-`entrypoint:`, `quiet box:` and `boundary:`. A `... control:` row is the deliberate
+`entrypoint:`, `quiet box:`, `reply budget:`, `lighting:`, `pose:`,
+`render settings:` and `boundary:`. A `... control:` row is the deliberate
 opposite of its neighbour: it proves the same node also notices over-enforcement.
 
 Each row edits one file in place, runs its nodes, and restores the file in a
@@ -75,6 +76,17 @@ ADDON_SCENE = ROOT / "src/blender_mcp/bundled/addon/handlers/scene.py"
 ADDON_ANIMATION = ROOT / "src/blender_mcp/bundled/addon/handlers/animation.py"
 SERVER_ANIMATION_TOOL = ROOT / "src/blender_mcp/server/tools/animation.py"
 SERVER_ENVELOPE = ROOT / "src/blender_mcp/server/tools/envelope.py"
+# The lighting, posing and render-settings handlers the reply-shape work reshaped, and the
+# server-side wrappers that carry their `detail` flag across the socket.
+ADDON_LIGHTING_SHARED = ROOT / "src/blender_mcp/bundled/addon/handlers/lighting/_shared.py"
+ADDON_LIGHTING_INSPECTION = ROOT / "src/blender_mcp/bundled/addon/handlers/lighting/inspection.py"
+ADDON_LIGHTING_RENDERING = ROOT / "src/blender_mcp/bundled/addon/handlers/lighting/rendering.py"
+SERVER_LIGHTING_INSPECTION_TOOL = ROOT / "src/blender_mcp/server/tools/lighting/inspection.py"
+SERVER_LIGHTING_RENDERING_TOOL = ROOT / "src/blender_mcp/server/tools/lighting/rendering.py"
+ADDON_POSING = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/posing.py"
+SERVER_POSING_TOOL = ROOT / "src/blender_mcp/server/tools/character_rigging/posing.py"
+ADDON_RENDERING = ROOT / "src/blender_mcp/bundled/addon/handlers/rendering.py"
+SERVER_RENDERING_TOOL = ROOT / "src/blender_mcp/server/tools/rendering.py"
 SERVER_DOCUMENTATION = ROOT / "src/blender_mcp/server/tools/_documentation.py"
 SERVER_BUNDLES = ROOT / "src/blender_mcp/server/bundles.py"
 TEST_BUNDLES_FILE = ROOT / "tests/server/test_bundles.py"
@@ -115,6 +127,11 @@ CANDT = "tests/test_candidates.py"
 SIT = "tests/server/test_server_instructions.py"
 SOIT = "tests/server/tools/test_scene_object_inspection.py"
 AMT = "tests/test_addon_manager.py"
+# The reply-shape tests for lighting, posing and render settings, in files this matrix
+# does not own: their nodes are listed in NEW_NODES_IN_EXISTING_FILES.
+LIGHTT = "tests/server/tools/lighting/test_tools.py"
+CTRLT = "tests/server/tools/character_rigging/test_controls.py"
+RENDT = "tests/test_rendering_tools.py"
 # Named because inline it passes the line limit, and `ruff format` rejoins a split f-string.
 _LIST_SCALAR = "test_a_string_where_a_list_belongs_is_not_iterated_character_by_character"
 SESSIONT = "tests/test_session_state.py"
@@ -317,6 +334,28 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{ENVT}::test_the_budget_leaves_a_flat_oversized_reply_alone",
     f"{ENVT}::test_a_reply_within_the_budget_is_sent_whole",
     f"{ENVT}::test_the_keys_the_shortening_adds_are_inside_the_budget_it_measured",
+    f"{ENVT}::test_a_page_paged_under_a_prefixed_name_is_still_marked_truncated",
+    # --- a light record is trimmed to a listing's facts, with the rest behind detail ---
+    f"{LIGHTT}::test_default_light_record_is_identity_plus_the_facts_a_listing_is_asked_for",
+    f"{LIGHTT}::test_detail_records_carry_the_state_the_default_record_omits",
+    f"{LIGHTT}::test_light_transform_floats_are_rounded_to_six_decimals",
+    f"{LIGHTT}::test_light_inventories_trim_by_default_and_restore_full_records_with_detail",
+    f"{LIGHTT}::test_preview_matched_state_names_its_lights_instead_of_embedding_them",
+    f"{LIGHTT}::test_light_inventory_tools_forward_the_detail_flag",
+    f"{LIGHTT}::test_lighting_quality_expands_strict_agent_payload",
+    # --- a pose reply names what it changed; the matrices are the part that is trimmed ---
+    f"{CTRLT}::test_pose_report_rounds_the_result_and_omits_the_pre_call_matrix",
+    f"{CTRLT}::test_pose_detail_restores_the_pre_call_matrix_and_full_precision",
+    f"{CTRLT}::test_pose_record_names_the_channels_and_custom_properties_the_call_set",
+    f"{CTRLT}::test_the_budget_shortens_pose_records_but_never_the_changed_bone_names",
+    f"{CTRLT}::test_keyframed_pose_names_every_bone_and_reports_no_matrices_by_default",
+    f"{CTRLT}::test_keyframe_detail_reports_the_pose_that_was_keyed",
+    f"{CTRLT}::test_pose_tools_forward_the_detail_flag",
+    # --- configure_render_settings answers with the paths it wrote, not the whole state ---
+    f"{RENDT}::test_configure_render_settings_returns_only_the_patched_values",
+    f"{RENDT}::test_configure_render_settings_detail_returns_both_full_state_blocks",
+    f"{RENDT}::test_configure_render_settings_reports_a_patch_that_writes_nothing",
+    f"{RENDT}::test_configure_render_settings_forwards_detail",
 )
 
 # Nodes no single revert can break, each with the reason, so the gap check skips them.
@@ -1110,8 +1149,8 @@ REVERTS: list[Revert] = [
     Revert(
         "get_addon_status: get_addon_status hardcodes an empty roots list",
         SERVER_CORE_TOOL,
-        '            "writable_output_roots": result.writable_output_roots,',
-        '            "writable_output_roots": [],',
+        '        "writable_output_roots": result.writable_output_roots,',
+        '        "writable_output_roots": [],',
         (
             f"{CORET}::test_get_addon_status_reports_the_writable_output_roots",
             f"{CORET}::test_get_addon_status_reports_no_roots_for_an_addon_that_does_not_send_them",
@@ -1120,15 +1159,15 @@ REVERTS: list[Revert] = [
     Revert(
         "get_addon_status: get_addon_status reorders the roots the handshake gave it",
         SERVER_CORE_TOOL,
-        '            "writable_output_roots": result.writable_output_roots,',
-        '            "writable_output_roots": list(reversed(result.writable_output_roots)),',
+        '        "writable_output_roots": result.writable_output_roots,',
+        '        "writable_output_roots": list(reversed(result.writable_output_roots)),',
         (f"{CORET}::test_get_addon_status_reports_the_writable_output_roots",),
     ),
     Revert(
         "get_addon_status: get_addon_status invents roots for an addon that sent none",
         SERVER_CORE_TOOL,
-        '            "writable_output_roots": result.writable_output_roots,',
-        '            "writable_output_roots": result.writable_output_roots or ["/invented"],',
+        '        "writable_output_roots": result.writable_output_roots,',
+        '        "writable_output_roots": result.writable_output_roots or ["/invented"],',
         (f"{CORET}::test_get_addon_status_reports_no_roots_for_an_addon_that_does_not_send_them",),
     ),
     Revert(
@@ -1142,15 +1181,15 @@ REVERTS: list[Revert] = [
     Revert(
         "get_addon_status: the session epoch is hardcoded instead of read off the handshake",
         SERVER_CORE_TOOL,
-        '            "session_epoch": result.session_epoch,',
-        '            "session_epoch": 0,',
+        '        "session_epoch": result.session_epoch,',
+        '        "session_epoch": 0,',
         (f"{CORET}::test_get_addon_status_reports_the_session_epoch_and_the_open_file",),
     ),
     Revert(
         "get_addon_status: the open .blend is hardcoded, so the payload cannot report a swap",
         SERVER_CORE_TOOL,
-        '            "current_filepath": result.current_filepath,',
-        '            "current_filepath": None,',
+        '        "current_filepath": result.current_filepath,',
+        '        "current_filepath": None,',
         (f"{CORET}::test_get_addon_status_reports_no_epoch_for_an_addon_that_does_not_send_one",),
     ),
     # --- session state, the epoch, and the failure notes -------------
@@ -1781,7 +1820,7 @@ REVERTS: list[Revert] = [
     Revert(
         "get_addon_status: get_addon_status publishes the epoch without the id it is only comparable within",
         SERVER_CORE_TOOL,
-        '            "session_id": result.session_id,',
+        '        "session_id": result.session_id,',
         "",
         (f"{CORET}::test_get_addon_status_reports_the_session_id_the_epoch_is_only_comparable_within",),
     ),
@@ -2342,8 +2381,8 @@ REVERTS: list[Revert] = [
     Revert(
         "get_addon_status: get_addon_status carries the latch under a name its docstring never mentions",
         SERVER_CORE_TOOL,
-        '            "session_indeterminate": result.session_indeterminate,',
-        '            "session_indeterminate_x": result.session_indeterminate,',
+        '        "session_indeterminate": result.session_indeterminate,',
+        '        "session_indeterminate_x": result.session_indeterminate,',
         (
             f"{CORET}::test_get_addon_status_documents_every_key_it_returns",
             f"{CORET}::test_get_addon_status_reports_an_indeterminate_session",
@@ -3176,8 +3215,8 @@ REVERTS: list[Revert] = [
     Revert(
         "get_addon_status: get_addon_status hardcodes the policy as unenforced",
         SERVER_CORE_TOOL,
-        '            "file_roots_enforced": result.file_roots_enforced,',
-        '            "file_roots_enforced": False,',
+        '        "file_roots_enforced": result.file_roots_enforced,',
+        '        "file_roots_enforced": False,',
         (f"{CORET}::test_get_addon_status_reports_the_file_path_policy",),
     ),
     Revert(
@@ -3799,8 +3838,8 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: create_override takes the scene from bpy.context",
         ADDON_LINKING,
-        "        report = _override_all([collection], _scene(scene_uid))[0]\n",
-        "        report = _override_all([collection], bpy.context.scene)[0]\n",
+        '        report = _override_all([collection], _scene(scene_uid), detail=_require_bool("detail", detail))[0]\n',
+        '        report = _override_all([collection], bpy.context.scene, detail=_require_bool("detail", detail))[0]\n',
         (f"{LKT}::test_create_override_takes_the_scene_from_bpy_data_not_bpy_context",),
     ),
     Revert(
@@ -3919,8 +3958,8 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: the per-library datablock list is uncapped",
         ADDON_LINKING,
-        "        key: [describe(item) for item in items[:MAX_LISTED_DATABLOCKS]],",
-        "        key: [describe(item) for item in items],",
+        "    shown = items[:limit]\n",
+        "    shown = list(items)\n",
         (f"{LKT}::test_list_libraries_bounds_the_datablocks_it_lists_per_library",),
     ),
     Revert(
@@ -4114,9 +4153,12 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: create_override grows a name handle",
         ADDON_LINKING,
-        "    def create_override(collection_uid: object, *, scene_uid: object = None) -> dict[str, object]:\n",
         "    def create_override(\n"
-        "        collection_uid: object, *, scene_uid: object = None, collection_name: object = None\n"
+        "        collection_uid: object, *, scene_uid: object = None, detail: object = False\n"
+        "    ) -> dict[str, object]:\n",
+        "    def create_override(\n"
+        "        collection_uid: object, *, scene_uid: object = None, detail: object = False,\n"
+        "        collection_name: object = None,\n"
         "    ) -> dict[str, object]:\n",
         (f"{LKT}::test_no_linking_command_takes_a_datablock_name_as_a_handle",),
     ),
@@ -4206,7 +4248,7 @@ REVERTS: list[Revert] = [
         "            # Again, just before its own override: overriding a parent overrides every collection\n"
         "            # inside it, so a nested request would otherwise build a second copy (measured, section K).\n"
         "            _refuse_unoverridable(collection)\n"
-        "            reports.append(_override_hierarchy(collection, scene, unlinked))\n"
+        "            reports.append(_override_hierarchy(collection, scene, unlinked, detail=detail))\n"
         "    except Exception:\n"
         "        for parent, child in reversed(unlinked):\n"
         "            if not _has_child(parent, child):\n"
@@ -4217,7 +4259,7 @@ REVERTS: list[Revert] = [
         "    reports = []\n"
         "    for collection in collections:\n"
         "        _refuse_unoverridable(collection)\n"
-        "        reports.append(_override_hierarchy(collection, scene, unlinked))\n"
+        "        reports.append(_override_hierarchy(collection, scene, unlinked, detail=detail))\n"
         "    return reports\n",
         (
             f"{LKT}::test_a_refused_multi_collection_override_keeps_the_existing_placement",
@@ -4465,43 +4507,43 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: create_override drops scene_uid before forwarding it",
         SERVER_FILE_LIFECYCLE_TOOL,
-        '    return await _call("create_override", {"collection_uid": collection_uid, "scene_uid": scene_uid})',
-        '    return await _call("create_override", {"collection_uid": collection_uid, "scene_uid": None})',
+        '        {"collection_uid": collection_uid, "scene_uid": scene_uid, "detail": detail},',
+        '        {"collection_uid": collection_uid, "scene_uid": None, "detail": detail},',
         (f"{SFLT}::test_create_override_forwards_every_parameter",),
     ),
     Revert(
         "server tools: create_override's scene_uid=None default is unpinned",
         SERVER_FILE_LIFECYCLE_TOOL,
-        "async def create_override(ctx: Context, collection_uid: int, scene_uid: int | None = None) -> dict:",
-        "async def create_override(ctx: Context, collection_uid: int, scene_uid: int | None = 999) -> dict:",
+        "    ctx: Context, collection_uid: int, scene_uid: int | None = None, detail: bool = False\n",
+        "    ctx: Context, collection_uid: int, scene_uid: int | None = 999, detail: bool = False\n",
         (f"{SFLT}::test_create_override_defaults",),
     ),
     Revert(
         "server tools: list_libraries forces offset to 0 before forwarding it",
         SERVER_FILE_LIFECYCLE_TOOL,
-        '    return await _call("list_libraries", {"limit": limit, "offset": offset})',
-        '    return await _call("list_libraries", {"limit": limit, "offset": 0})',
+        '    return await _call("list_libraries", {"limit": limit, "offset": offset, "detail": detail})',
+        '    return await _call("list_libraries", {"limit": limit, "offset": 0, "detail": detail})',
         (f"{SFLT}::test_list_libraries_forwards_pagination",),
     ),
     Revert(
         "server tools: list_libraries' limit=25 default is unpinned",
         SERVER_FILE_LIFECYCLE_TOOL,
-        "async def list_libraries(ctx: Context, limit: int = 25, offset: int = 0) -> dict:",
-        "async def list_libraries(ctx: Context, limit: int = 10, offset: int = 0) -> dict:",
+        "async def list_libraries(ctx: Context, limit: int = 25, offset: int = 0, detail: bool = False) -> dict:",
+        "async def list_libraries(ctx: Context, limit: int = 10, offset: int = 0, detail: bool = False) -> dict:",
         (f"{SFLT}::test_list_libraries_defaults",),
     ),
     Revert(
         "server tools: reload_library does not forward library_uid",
         SERVER_FILE_LIFECYCLE_TOOL,
-        '    return await _call("reload_library", {"library_uid": library_uid})',
-        '    return await _call("reload_library", {"library_uid": 0})',
+        '    return await _call("reload_library", {"library_uid": library_uid, "detail": detail})',
+        '    return await _call("reload_library", {"library_uid": 0, "detail": detail})',
         (f"{SFLT}::test_reload_library_forwards_uid",),
     ),
     Revert(
         "server tools: relocate_library does not forward filepath",
         SERVER_FILE_LIFECYCLE_TOOL,
-        '    return await _call("relocate_library", {"library_uid": library_uid, "filepath": filepath})',
-        '    return await _call("relocate_library", {"library_uid": library_uid, "filepath": None})',
+        '        {"library_uid": library_uid, "filepath": filepath, "detail": detail},',
+        '        {"library_uid": library_uid, "filepath": None, "detail": detail},',
         (f"{SFLT}::test_relocate_library_forwards_uid_and_filepath",),
     ),
     Revert(
@@ -4579,15 +4621,15 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 189_318",
-        "SHOT_MODE_BYTE_CEILING = 189_317",
+        "SHOT_MODE_BYTE_CEILING = 193_438",
+        "SHOT_MODE_BYTE_CEILING = 193_437",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
         "server tools: the default ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 65_537",
-        "DEFAULT_MODE_BYTE_CEILING = 65_536",
+        "DEFAULT_MODE_BYTE_CEILING = 66_862",
+        "DEFAULT_MODE_BYTE_CEILING = 66_861",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
@@ -4719,7 +4761,7 @@ REVERTS: list[Revert] = [
     Revert(
         "reply budget: the pagination keys are written after the page was measured, not before",
         SERVER_ENVELOPE,
-        '        owner["next_offset"] = start + total\n',
+        '        owner[names["next_offset"]] = start + total\n',
         "",
         (f"{ENVT}::test_the_keys_the_shortening_adds_are_inside_the_budget_it_measured",),
     ),
@@ -4951,6 +4993,279 @@ REVERTS: list[Revert] = [
         '"library": client_safe_name_leaf(obj.library.name) if',
         '"library": obj.library.name if',
         (f"{SOIT}::test_get_object_info_says_whether_it_resolved_an_override_or_a_linked_object",),
+    ),
+    # --- get_addon_status summarizes the capability list instead of shipping 291 names ---
+    Revert(
+        "get_addon_status: the command names ship on every status call, asked for or not",
+        SERVER_CORE_TOOL,
+        '    if detail:\n        payload["capabilities"] = result.capabilities\n',
+        '    payload["capabilities"] = result.capabilities\n',
+        (f"{CORET}::test_get_addon_status_summarizes_the_capabilities_instead_of_listing_them",),
+    ),
+    Revert(
+        "get_addon_status: detail is ignored, so the command names cannot be retrieved at all",
+        SERVER_CORE_TOOL,
+        "    if detail:\n",
+        "    if False:\n",
+        (f"{CORET}::test_get_addon_status_lists_the_command_names_only_on_request",),
+    ),
+    Revert(
+        "get_addon_status: the capability count is hardcoded instead of counted",
+        SERVER_CORE_TOOL,
+        '        "capability_count": len(result.capabilities),\n',
+        '        "capability_count": 0,\n',
+        (
+            f"{CORET}::test_get_addon_status_summarizes_the_capabilities_instead_of_listing_them",
+            f"{CORET}::test_get_addon_status_lists_the_command_names_only_on_request",
+        ),
+    ),
+    Revert(
+        "get_addon_status: every optional integration is reported available",
+        SERVER_CORE_TOOL,
+        "            provider: command in result.capabilities for provider, command in "
+        "_INTEGRATION_CAPABILITIES.items()\n",
+        "            provider: True for provider, command in _INTEGRATION_CAPABILITIES.items()\n",
+        (
+            f"{CORET}::test_get_addon_status_summarizes_the_capabilities_instead_of_listing_them",
+            f"{CORET}::test_get_addon_status_reports_an_addon_with_no_optional_integrations",
+        ),
+    ),
+    # --- what a library links is counted by type; the names, then the records, are pages ---
+    Revert(
+        "linking: the datablock counts by type go away, leaving only how many there are",
+        ADDON_LINKING,
+        '    counts = _count_by_type(str(getattr(item, "id_type", "")) for item in items)\n'
+        "    return dict(sorted(counts.items()))\n",
+        "    return {}\n",
+        (
+            f"{LKT}::test_a_reload_reports_what_it_replaced_by_type_without_the_records[reload_library]",
+            f"{LKT}::test_a_reload_reports_what_it_replaced_by_type_without_the_records[relocate_library]",
+        ),
+    ),
+    Revert(
+        "linking: the default datablock page carries the records, not the names",
+        ADDON_LINKING,
+        '        else _record_page("names", items, _display_name, MAX_LISTED_NAMES)\n',
+        '        else _record_page("records", items, _linked_entry, MAX_LISTED_DATABLOCKS)\n',
+        (
+            f"{LKT}::test_a_reload_reports_what_it_replaced_by_type_without_the_records[reload_library]",
+            f"{LKT}::test_a_reload_reports_what_it_replaced_by_type_without_the_records[relocate_library]",
+        ),
+    ),
+    Revert(
+        "linking: detail is ignored, so a library's datablock records are unreachable",
+        ADDON_LINKING,
+        "    page = (\n"
+        '        _record_page("records", items, _linked_entry, MAX_LISTED_DATABLOCKS)\n'
+        "        if detail\n"
+        '        else _record_page("names", items, _display_name, MAX_LISTED_NAMES)\n'
+        "    )\n",
+        '    page = _record_page("names", items, _display_name, MAX_LISTED_NAMES)\n',
+        (f"{LKT}::test_list_libraries_lists_the_datablock_records_only_on_request",),
+    ),
+    Revert(
+        "linking: the default name page grows to the record cap, so a listing is ten times its size",
+        ADDON_LINKING,
+        "MAX_LISTED_NAMES = 10\n",
+        "MAX_LISTED_NAMES = 100\n",
+        (f"{LKT}::test_list_libraries_bounds_the_datablocks_it_lists_per_library",),
+    ),
+    Revert(
+        "linking: create_override lists the override's objects as records, repeating changed_objects",
+        ADDON_LINKING,
+        "    if detail:\n"
+        '        listed.update(_record_page("records", objects, _override_entry, MAX_LISTED_DATABLOCKS))\n',
+        '    listed.update(_record_page("records", objects, _override_entry, MAX_LISTED_DATABLOCKS))\n',
+        (f"{LKT}::test_create_override_counts_the_objects_it_made_and_leaves_their_names_to_changed_objects",),
+    ),
+    Revert(
+        "linking: nothing names the objects an override made, so changed_objects is empty",
+        ADDON_LINKING,
+        "    return sorted(names)\n",
+        "    return []\n",
+        (
+            f"{LKT}::test_create_override_reports_the_override_objects",
+            f"{LKT}::test_link_as_override_reports_the_override_objects",
+        ),
+    ),
+    Revert(
+        "linking: a linked collection's members are left out of changed_objects",
+        ADDON_LINKING,
+        "            members = [obj for collection in linked_collections for obj in collection.all_objects]"
+        "  # type: ignore[attr-defined]\n",
+        "            members = []\n",
+        (f"{LKT}::test_link_reports_the_objects_it_brought_into_the_scene",),
+    ),
+    # --- changed_objects crosses into the envelope, bounded, with its total named ---
+    Revert(
+        "server tools: the addon's changed_objects is left in the reply data as well as the envelope",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        '    changed_objects = result.pop("changed_objects", []) if isinstance(result, dict) else []\n',
+        '    changed_objects = result.get("changed_objects", []) if isinstance(result, dict) else []\n',
+        (f"{SFLT}::test_changed_objects_move_from_the_addon_result_into_the_envelope",),
+    ),
+    Revert(
+        "server tools: changed_objects is published whole, so linking a set floods the agent's context",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        "    return ok(result, changed_objects=changed_objects[:CHANGED_OBJECTS_LIMIT], warnings=warnings)\n",
+        "    return ok(result, changed_objects=changed_objects, warnings=warnings)\n",
+        (f"{SFLT}::test_changed_objects_are_bounded_and_the_total_is_reported",),
+    ),
+    Revert(
+        "server tools: a cut changed_objects list never says how many objects there really were",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        "    if len(changed_objects) > CHANGED_OBJECTS_LIMIT:\n",
+        "    if False:\n",
+        (f"{SFLT}::test_changed_objects_are_bounded_and_the_total_is_reported",),
+    ),
+    # --- the budget recognises a page named after its own list ---
+    Revert(
+        "reply budget: a page paged under its list's own name is not recognised as a page",
+        SERVER_ENVELOPE,
+        '    for prefix in ("", f"{key}_"):\n',
+        '    for prefix in ("",):\n',
+        (f"{ENVT}::test_a_page_paged_under_a_prefixed_name_is_still_marked_truncated",),
+    ),
+    # --- a light record is trimmed to what a listing is asked for ---
+    Revert(
+        "lighting: the default light record goes back to the full snapshot",
+        ADDON_LIGHTING_SHARED,
+        '    """Build the default inventory record: what identifies one light plus what a listing is asked for."""\n',
+        '    """Reverted: the default record is the full snapshot again."""\n    return light_snapshot(obj)\n',
+        (f"{LIGHTT}::test_default_light_record_is_identity_plus_the_facts_a_listing_is_asked_for",),
+    ),
+    Revert(
+        "lighting: detail returns the same trimmed record, so the full state is unreachable",
+        ADDON_LIGHTING_SHARED,
+        '    """Build the full record light_summary trims: every transform, setting, and link one light carries."""\n',
+        '    """Reverted: detail returns the trimmed record too."""\n    return light_summary(obj)\n',
+        (f"{LIGHTT}::test_detail_records_carry_the_state_the_default_record_omits",),
+    ),
+    Revert(
+        "lighting: the transform rounding helper returns the float unrounded",
+        ADDON_LIGHTING_SHARED,
+        "    return [round(float(value), TRANSFORM_DECIMALS) for value in values]\n",
+        "    return [float(value) for value in values]\n",
+        (f"{LIGHTT}::test_light_transform_floats_are_rounded_to_six_decimals",),
+    ),
+    Revert(
+        "lighting: list_lights ignores detail and returns the full record either way",
+        ADDON_LIGHTING_INSPECTION,
+        "        record = light_snapshot if detail else light_summary\n"
+        "        records = [record(obj) for obj in lights[start:end]]\n",
+        "        records = [light_snapshot(obj) for obj in lights[start:end]]\n",
+        (f"{LIGHTT}::test_light_inventories_trim_by_default_and_restore_full_records_with_detail",),
+    ),
+    Revert(
+        "lighting: a preview's matched_state embeds every light's full record again",
+        ADDON_LIGHTING_RENDERING,
+        '    names = sorted(obj.name for obj in scene.objects if obj.type == "LIGHT")\n',
+        '    names = [light_snapshot(obj) for obj in scene.objects if obj.type == "LIGHT"]\n',
+        (f"{LIGHTT}::test_preview_matched_state_names_its_lights_instead_of_embedding_them",),
+        # The slice dropped the import with the last call; a row has one anchor and cannot
+        # add one, and a NameError would fail the node on the wrong thing.
+        "\n\nfrom ._shared import light_snapshot\n",
+    ),
+    Revert(
+        "lighting: list_lights does not forward detail, so the full records cannot be asked for",
+        SERVER_LIGHTING_INSPECTION_TOOL,
+        '            "detail": detail,\n',
+        '            "detail": False,\n',
+        (f"{LIGHTT}::test_light_inventory_tools_forward_the_detail_flag",),
+    ),
+    Revert(
+        "lighting: configure_lighting_quality does not forward detail",
+        SERVER_LIGHTING_RENDERING_TOOL,
+        '            "detail": detail,\n',
+        '            "detail": False,\n',
+        (f"{LIGHTT}::test_lighting_quality_expands_strict_agent_payload",),
+    ),
+    # --- a pose reply names what it changed; the matrices are the part that is trimmed ---
+    Revert(
+        "pose: the pose matrix is published at full float precision",
+        ADDON_POSING,
+        "    return [[round(float(value), _POSE_MATRIX_DECIMALS) for value in row] for row in matrix]\n",
+        "    return [[float(value) for value in row] for row in matrix]\n",
+        (f"{CTRLT}::test_pose_report_rounds_the_result_and_omits_the_pre_call_matrix",),
+    ),
+    Revert(
+        "pose: detail is ignored, so the pre-call matrix and full precision are unreachable",
+        ADDON_POSING,
+        "        if detail:\n"
+        '            record["before_pose_matrix"] = _matrix_list(before[pose_bone.name])\n'
+        '            record["after_pose_matrix"] = _matrix_list(pose_bone.matrix)\n'
+        "        else:\n"
+        '            record["after_pose_matrix"] = _rounded_matrix_list(pose_bone.matrix)\n',
+        '        record["after_pose_matrix"] = _rounded_matrix_list(pose_bone.matrix)\n',
+        (
+            f"{CTRLT}::test_pose_detail_restores_the_pre_call_matrix_and_full_precision",
+            f"{CTRLT}::test_keyframe_detail_reports_the_pose_that_was_keyed",
+        ),
+    ),
+    Revert(
+        "pose: a record names the transform channels but not the custom properties it set",
+        ADDON_POSING,
+        '    channels.extend(f\'["{name}"]\' for name in sorted(spec.get("custom_properties", {})))\n',
+        "",
+        (f"{CTRLT}::test_pose_record_names_the_channels_and_custom_properties_the_call_set",),
+    ),
+    Revert(
+        "pose: changed_bones is dropped, so a shortened page of records is all the agent gets",
+        ADDON_POSING,
+        '            "changed_bones": [record["bone"] for record in records],\n',
+        "",
+        (f"{CTRLT}::test_the_budget_shortens_pose_records_but_never_the_changed_bone_names",),
+    ),
+    Revert(
+        "pose: a keyframed pose reports every bone's matrices whether or not they were asked for",
+        ADDON_POSING,
+        "        if detail:\n"
+        "            # The pose is restored before this returns, so these matrices describe what was\n"
+        "            # keyed at `frame`, not what the rig is holding now.\n"
+        '            reply["bones"] = pose_records\n',
+        '        reply["bones"] = pose_records\n',
+        (f"{CTRLT}::test_keyframed_pose_names_every_bone_and_reports_no_matrices_by_default",),
+    ),
+    Revert(
+        "pose: keyframe_character_pose does not forward detail",
+        SERVER_POSING_TOOL,
+        '            "action_slot_identifier": action_slot_identifier,\n            "detail": detail,\n',
+        '            "action_slot_identifier": action_slot_identifier,\n            "detail": False,\n',
+        (f"{CTRLT}::test_pose_tools_forward_the_detail_flag",),
+    ),
+    # --- configure_render_settings answers with the paths it wrote, not the whole state ---
+    Revert(
+        "render settings: the reply carries the whole render state again instead of what it wrote",
+        ADDON_RENDERING,
+        '            "after": {path: getattr(owner, name) for path, (owner, name) in applied.items()},\n',
+        '            "after": _render_info(scene),\n',
+        (
+            f"{RENDT}::test_configure_render_settings_returns_only_the_patched_values",
+            f"{RENDT}::test_configure_render_settings_reports_a_patch_that_writes_nothing",
+        ),
+    ),
+    Revert(
+        "render settings: changed names the patch's top-level keys, not the property paths written",
+        ADDON_RENDERING,
+        '            "changed": sorted(applied),\n'
+        '            "after": {path: getattr(owner, name) for path, (owner, name) in applied.items()},\n',
+        '            "changed": sorted(patch),\n'
+        '            "after": {path: getattr(owner, name) for path, (owner, name) in applied.items()},\n',
+        (f"{RENDT}::test_configure_render_settings_returns_only_the_patched_values",),
+    ),
+    Revert(
+        "render settings: detail is ignored, so the before/after state is unreachable",
+        ADDON_RENDERING,
+        "        if detail:\n",
+        "        if False:\n",
+        (f"{RENDT}::test_configure_render_settings_detail_returns_both_full_state_blocks",),
+    ),
+    Revert(
+        "render settings: configure_render_settings does not forward detail",
+        SERVER_RENDERING_TOOL,
+        '        {"scene_name": scene_name, "patch": patch.model_dump(exclude_none=True), "detail": detail},\n',
+        '        {"scene_name": scene_name, "patch": patch.model_dump(exclude_none=True), "detail": False},\n',
+        (f"{RENDT}::test_configure_render_settings_forwards_detail",),
     ),
 ]
 

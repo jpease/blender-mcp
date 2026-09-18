@@ -149,6 +149,28 @@ def test_the_keys_the_shortening_adds_are_inside_the_budget_it_measured() -> Non
     assert result["data"]["names"]["next_offset"] == len(result["data"]["names"]["items"])
 
 
+def test_a_page_paged_under_a_prefixed_name_is_still_marked_truncated() -> None:
+    """
+    `inspect_lighting_setup` pages its inventory as `lights_truncated`/`lights_next_offset`.
+
+    Recognizing only the bare spelling left the reply claiming `lights_truncated: false` about a
+    page the budget had just cut, with no offset to resume from.
+    """
+    data = {
+        "lights": _records(_OVER_BUDGET),
+        "lights_total": _OVER_BUDGET,
+        "lights_offset": 0,
+        "lights_truncated": False,
+        "lights_next_offset": None,
+    }
+
+    result = ok(data)
+
+    assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
+    assert result["data"]["lights_truncated"] is True
+    assert result["data"]["lights_next_offset"] == len(result["data"]["lights"])
+
+
 def test_the_largest_list_is_the_one_cut() -> None:
     """Cutting a short sibling list would not bring the reply under budget."""
     data = {

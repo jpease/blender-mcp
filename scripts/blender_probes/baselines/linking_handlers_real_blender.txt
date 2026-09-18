@@ -21,7 +21,7 @@ Info: Saved as "shot_a.blend"
   link result: {'session_uid': 513, 'name': 'canon.blend', 'filepath': 'canon.blend', 'is_relative': False, 'is_missing': False, 'version': [5, 2, 45], 'needs_liboverride_resync': False, 'users': 1} [{'session_uid': 514, 'name': 'CanonHero', 'id_type': 'COLLECTION', 'is_library_indirect': False, 'is_missing': False}]
   scene children after link: [('CanonHero', True)]
   override: {'session_uid': 517, 'name': 'CanonHero', 'is_override': True, 'is_editable': True, 'is_system_override': False, 'reference_uid': 514, 'hierarchy_root_uid': 517}  replaced_instances: 1
-  override objects: [{'session_uid': 518, 'name': 'HeroBody', 'is_override': True, 'is_editable': True, 'is_system_override': False, 'reference_uid': 515, 'hierarchy_root_uid': 517}]
+  override objects: {'total': 1, 'by_type': {'OBJECT': 1}}
   scene children after override: [('CanonHero', False)]
 Info: Saved "shot_a.blend"
   [save_shot in place] OK
@@ -95,7 +95,7 @@ Info: Read library: '<real-tmp>/t7_handlers_<rand>/canon_two.blend', '<real-tmp>
 Info: Saved as "shot_h.blend"
   [relocate_library to props.blend] OK
   library is_missing: False
-  datablocks: [{'session_uid': 1959, 'name': 'CanonHero', 'id_type': 'COLLECTION', 'is_library_indirect': False, 'is_missing': True}]
+  datablocks: {'total': 1, 'by_type': {'COLLECTION': 1}, 'offset': 0, 'limit': 10, 'returned_count': 1, 'truncated': False, 'next_offset': None, 'names': ['CanonHero']}
   warnings: ['1 datablock linked from this library is missing from its file; it is a placeholder until relinked']
 
 === I. relocate of an indirect library ===

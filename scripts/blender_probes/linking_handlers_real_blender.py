@@ -180,7 +180,7 @@ attempt("open_shot", lambda: server.open_shot(str(shot)))
 listing = server.list_libraries()
 print(
     "  REOPENED list_libraries:",
-    [(lib["name"], lib["is_missing"], lib["version"], lib["datablock_count"]) for lib in listing["libraries"]],
+    [(lib["name"], lib["is_missing"], lib["version"], lib["datablocks"]["total"]) for lib in listing["libraries"]],
 )
 print("  REOPENED objects (name, uid, linked, is_editable, is_system_override):", override_objects_state())
 print(
@@ -233,7 +233,7 @@ before = library.filepath
 attempt("relocate_library to a truncated .blend", lambda: server.relocate_library(library_uid, str(truncated)))
 print("  filepath restored:", library.filepath == before, " is_missing:", library.is_missing)
 reloaded = attempt("reload_library after the restore", lambda: server.reload_library(library_uid))
-print("  datablocks after the restore:", reloaded and [d["name"] for d in reloaded["datablocks"]])  # type: ignore[index]
+print("  datablocks after the restore:", reloaded and reloaded["datablocks"]["names"])  # type: ignore[index]
 attempt(
     "link_canon_library of a missing file",
     lambda: server.link_canon_library(str(work / "nope.blend"), collections=["X"]),
@@ -271,13 +271,14 @@ print("  libraries after:", [lib.name for lib in bpy.data.libraries])
 real_override = linking._override_hierarchy
 
 
-def failing_override(collection: object, *_rest: object) -> dict[str, object]:
+def failing_override(collection: object, *_rest: object, **_keywords: object) -> dict[str, object]:
     """
     Fail after the link succeeded, the way any later step could.
 
     Args:
         collection: Ignored.
         *_rest: Ignored.
+        **_keywords: Ignored; `_override_hierarchy` takes `detail` by keyword.
 
     Raises:
         RuntimeError: Always.
@@ -304,16 +305,18 @@ fresh_shot(work / "shot_e.blend")
 scratch = bpy.data.materials.new("UserScratchMaterial")
 first = server.link_canon_library(str(canon), collections=["CanonHero"])
 second = server.link_canon_library(str(props), collections=["Props"])
-override_report = server.create_override(first["collections"][0]["session_uid"])
+override_report = server.create_override(first["collections"][0]["session_uid"], detail=True)
 # Used only by the override object, through an ID property. The unlink frees that
 # object, so this material is the one thing the purge should take.
 paint = bpy.data.materials.new("OnlyUsedByTheOverride")
-override_body = next(o for o in bpy.data.objects if o.session_uid == override_report["objects"][0]["session_uid"])
+override_body = next(
+    o for o in bpy.data.objects if o.session_uid == override_report["objects"]["records"][0]["session_uid"]
+)
 override_body["paint"] = paint
 print("  before: OnlyUsedByTheOverride users =", paint.users, " UserScratchMaterial users =", scratch.users)
 second_uids = {
     second["library"]["session_uid"],
-    *(d["session_uid"] for d in server.list_libraries()["libraries"][1]["datablocks"]),
+    *(d["session_uid"] for d in server.list_libraries(detail=True)["libraries"][1]["datablocks"]["records"]),
 }
 attempt("unlink without confirm", lambda: server.unlink_libraries([first["library"]["session_uid"]]))
 report = server.unlink_libraries([first["library"]["session_uid"]], confirm=True, purge_orphans=True)

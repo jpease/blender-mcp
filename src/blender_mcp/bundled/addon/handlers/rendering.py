@@ -268,7 +268,7 @@ def _render_pass_info(scene, view_layer_name, render_result):
     return passes, "VIEW_LAYER_CONFIGURATION"
 
 
-def _set_properties(owner, patch, mapping=None):
+def _set_properties(owner, patch, mapping=None, applied=None, prefix=""):
     previous = {}
     mapping = mapping or {}
     try:
@@ -276,6 +276,8 @@ def _set_properties(owner, patch, mapping=None):
             property_name = mapping.get(name, name)
             previous[property_name] = getattr(owner, property_name)
             setattr(owner, property_name, value)
+            if applied is not None:
+                applied[prefix + name] = (owner, property_name)
     except Exception:
         for name, value in previous.items():
             with suppress(Exception):
@@ -284,12 +286,12 @@ def _set_properties(owner, patch, mapping=None):
     return previous
 
 
-def _set_supported(owner, patch, label, mapping=None):
+def _set_supported(owner, patch, label, mapping=None, applied=None, prefix=""):
     mapping = mapping or {}
     unavailable = sorted(name for name in patch if not hasattr(owner, mapping.get(name, name)))
     if unavailable:
         raise ValueError(f"{label} settings are unavailable in this Blender runtime: {unavailable}")
-    return _set_properties(owner, patch, mapping)
+    return _set_properties(owner, patch, mapping, applied, prefix)
 
 
 def _validate_render_patch(patch):
@@ -345,24 +347,32 @@ class RenderingHandlersMixin:
         result["compositor"] = _compositor_info(scene, graph_sections, offset, limit)
         return result
 
-    def configure_render_settings(self, scene_name, patch):
+    def configure_render_settings(self, scene_name, patch, detail=False):
         scene = _scene(scene_name)
         patch = _validate_render_patch(patch)
         resulting_start = patch.get("frame_start", scene.frame_start)
         resulting_end = patch.get("frame_end", scene.frame_end)
         if resulting_end < resulting_start:
             raise ValueError("Resulting frame_end must be greater than or equal to frame_start")
-        before = _render_info(scene)
+        before = _render_info(scene) if detail else None
+        applied = {}
         snapshots = []
         try:
             snapshots.append(
                 (
                     scene.render,
-                    _set_properties(scene.render, {k: v for k, v in patch.items() if k in _RENDER_PROPERTIES}),
+                    _set_properties(
+                        scene.render,
+                        {k: v for k, v in patch.items() if k in _RENDER_PROPERTIES},
+                        applied=applied,
+                    ),
                 )
             )
             snapshots.append(
-                (scene, _set_properties(scene, {k: v for k, v in patch.items() if k in _SCENE_PROPERTIES}))
+                (
+                    scene,
+                    _set_properties(scene, {k: v for k, v in patch.items() if k in _SCENE_PROPERTIES}, applied=applied),
+                )
             )
             snapshots.append(
                 (
@@ -371,6 +381,7 @@ class RenderingHandlersMixin:
                         scene.render.image_settings,
                         {k: v for k, v in patch.items() if k in _IMAGE_PROPERTY_MAPPING},
                         _IMAGE_PROPERTY_MAPPING,
+                        applied,
                     ),
                 )
             )
@@ -378,17 +389,26 @@ class RenderingHandlersMixin:
             if cycles_patch:
                 if not hasattr(scene, "cycles"):
                     raise ValueError("Cycles settings are unavailable in this Blender build")
-                snapshots.append((scene.cycles, _set_properties(scene.cycles, cycles_patch, _CYCLES_PROPERTY_MAPPING)))
+                snapshots.append(
+                    (
+                        scene.cycles,
+                        _set_properties(scene.cycles, cycles_patch, _CYCLES_PROPERTY_MAPPING, applied),
+                    )
+                )
             nested = {key: value for key, value in patch.items() if isinstance(value, dict)}
             resulting_engine = patch.get("engine", scene.render.engine)
             if nested.get("cycles"):
                 if resulting_engine != "CYCLES":
                     raise ValueError("cycles settings require the CYCLES render engine")
-                snapshots.append((scene.cycles, _set_supported(scene.cycles, nested["cycles"], "Cycles")))
+                snapshots.append(
+                    (scene.cycles, _set_supported(scene.cycles, nested["cycles"], "Cycles", None, applied, "cycles."))
+                )
             if nested.get("eevee"):
                 if resulting_engine != "BLENDER_EEVEE":
                     raise ValueError("eevee settings require the BLENDER_EEVEE render engine")
-                snapshots.append((scene.eevee, _set_supported(scene.eevee, nested["eevee"], "EEVEE")))
+                snapshots.append(
+                    (scene.eevee, _set_supported(scene.eevee, nested["eevee"], "EEVEE", None, applied, "eevee."))
+                )
             if nested.get("motion_blur"):
                 mapping = {
                     "enabled": "use_motion_blur",
@@ -396,20 +416,36 @@ class RenderingHandlersMixin:
                     "position": "motion_blur_position",
                 }
                 snapshots.append(
-                    (scene.render, _set_supported(scene.render, nested["motion_blur"], "motion blur", mapping))
+                    (
+                        scene.render,
+                        _set_supported(
+                            scene.render, nested["motion_blur"], "motion blur", mapping, applied, "motion_blur."
+                        ),
+                    )
                 )
             if nested.get("film"):
                 film = dict(nested["film"])
                 if "transparent" in film:
                     snapshots.append(
-                        (scene.render, _set_properties(scene.render, {"film_transparent": film.pop("transparent")}))
+                        (
+                            scene.render,
+                            _set_properties(
+                                scene.render,
+                                {"transparent": film.pop("transparent")},
+                                {"transparent": "film_transparent"},
+                                applied,
+                                "film.",
+                            ),
+                        )
                     )
                 if film:
                     mapping = {
                         "transparent_glass": "film_transparent_glass",
                         "transparent_roughness": "film_transparent_roughness",
                     }
-                    snapshots.append((scene.cycles, _set_supported(scene.cycles, film, "Cycles film", mapping)))
+                    snapshots.append(
+                        (scene.cycles, _set_supported(scene.cycles, film, "Cycles film", mapping, applied, "film."))
+                    )
             if nested.get("output"):
                 output_patch = dict(nested["output"])
                 render_patch = {
@@ -417,37 +453,71 @@ class RenderingHandlersMixin:
                     for key in tuple(output_patch)
                     if key in {"filepath", "use_file_extension", "use_overwrite", "use_placeholder"}
                 }
-                snapshots.append((scene.render, _set_supported(scene.render, render_patch, "render output")))
+                snapshots.append(
+                    (
+                        scene.render,
+                        _set_supported(scene.render, render_patch, "render output", None, applied, "output."),
+                    )
+                )
                 snapshots.append(
                     (
                         scene.render.image_settings,
                         _set_supported(
-                            scene.render.image_settings, output_patch, "image output", _IMAGE_PROPERTY_MAPPING
+                            scene.render.image_settings,
+                            output_patch,
+                            "image output",
+                            _IMAGE_PROPERTY_MAPPING,
+                            applied,
+                            "output.",
                         ),
                     )
                 )
             if nested.get("metadata"):
-                snapshots.append((scene.render, _set_supported(scene.render, nested["metadata"], "render metadata")))
+                snapshots.append(
+                    (
+                        scene.render,
+                        _set_supported(scene.render, nested["metadata"], "render metadata", None, applied, "metadata."),
+                    )
+                )
             if nested.get("multiview"):
                 multiview = dict(nested["multiview"])
                 if "enabled" in multiview:
                     snapshots.append(
                         (
                             scene.render,
-                            _set_supported(scene.render, {"use_multiview": multiview.pop("enabled")}, "multiview"),
+                            _set_supported(
+                                scene.render,
+                                {"enabled": multiview.pop("enabled")},
+                                "multiview",
+                                {"enabled": "use_multiview"},
+                                applied,
+                                "multiview.",
+                            ),
                         )
                     )
                 stereo = multiview.pop("stereo_3d_format", None)
                 snapshots.append(
                     (
                         scene.render.image_settings,
-                        _set_supported(scene.render.image_settings, multiview, "multiview image"),
+                        _set_supported(
+                            scene.render.image_settings, multiview, "multiview image", None, applied, "multiview."
+                        ),
                     )
                 )
                 if stereo is not None:
                     stereo_owner = scene.render.image_settings.stereo_3d_format
                     snapshots.append(
-                        (stereo_owner, _set_supported(stereo_owner, {"display_mode": stereo}, "stereo output"))
+                        (
+                            stereo_owner,
+                            _set_supported(
+                                stereo_owner,
+                                {"stereo_3d_format": stereo},
+                                "stereo output",
+                                {"stereo_3d_format": "display_mode"},
+                                applied,
+                                "multiview.",
+                            ),
+                        )
                     )
             if scene.frame_end < scene.frame_start:
                 raise ValueError("Resulting frame_end must be greater than or equal to frame_start")
@@ -457,11 +527,18 @@ class RenderingHandlersMixin:
                     with suppress(Exception):
                         setattr(owner, name, value)
             raise
+        if detail:
+            return {
+                "scene": scene.name,
+                "changed": sorted(applied),
+                "before": before,
+                "after": _render_info(scene),
+                "changed_resources": [scene.name],
+            }
         return {
-            "changed": sorted(patch),
-            "before": before,
-            "after": _render_info(scene),
-            "settings": _render_info(scene),
+            "scene": scene.name,
+            "changed": sorted(applied),
+            "after": {path: getattr(owner, name) for path, (owner, name) in applied.items()},
             "changed_resources": [scene.name],
         }
 

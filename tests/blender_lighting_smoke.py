@@ -170,7 +170,23 @@ def main() -> None:
             "EEVEE",
             eevee={"render_samples": 4, "shadow_ray_count": 1, "shadow_step_count": 4},
         )
-        assert quality["expanded_values"]["eevee"]["render_samples"] == 4
+        assert quality["after"] == {
+            "eevee.render_samples": 4,
+            "eevee.shadow_ray_count": 1,
+            "eevee.shadow_step_count": 4,
+        }
+        assert quality["changed"] == sorted(quality["after"])
+        assert "before" not in quality
+        raised_samples = 5
+        detailed_quality = handler.configure_lighting_quality(
+            scene.name,
+            "EEVEE",
+            eevee={"render_samples": raised_samples},
+            detail=True,
+        )
+        assert detailed_quality["changed"] == ["eevee.render_samples"]
+        assert detailed_quality["before"]["eevee"]["taa_render_samples"] == quality["after"]["eevee.render_samples"]
+        assert detailed_quality["after"]["eevee"]["taa_render_samples"] == raised_samples
 
         original_resolution = (scene.render.resolution_x, scene.render.resolution_y)
         preview_path = os.path.join(temp_directory, "lighting_preview.png")
@@ -187,6 +203,10 @@ def main() -> None:
         assert preview["outputs"][0]["size_bytes"] > 0
         assert preview["warnings"] == []
         assert (scene.render.resolution_x, scene.render.resolution_y) == original_resolution
+        matched = preview["matched_state"]
+        assert {"Key Light", "Sky Sun"}.issubset(set(matched["lights"]))
+        assert matched["light_count"] == len(matched["lights"])
+        assert all(isinstance(name, str) for name in matched["lights"])
 
     view = bpy.context.scene.view_settings.view_transform
     color = handler.configure_color_management(scene.name, view_transform=view, exposure=0.0)
@@ -194,9 +214,38 @@ def main() -> None:
 
     inventory = handler.list_lights(scene.name)
     assert inventory["total"] >= 2
+    assert inventory["detail"] is False
     assert {"Key Light", "Sky Sun"}.issubset({item["object"] for item in inventory["lights"]})
+    key_record = next(item for item in inventory["lights"] if item["object"] == "Key Light")
+    assert set(key_record) == {
+        "object",
+        "light_data",
+        "light_type",
+        "energy",
+        "color",
+        "location_world",
+        "hidden_viewport",
+        "hidden_render",
+    }
+    key_object = bpy.data.objects["Key Light"]
+    assert key_record["light_data"] == key_object.data.name
+    assert key_record["light_type"] == "AREA"
+    assert key_record["location_world"] == [round(value, 6) for value in key_object.matrix_world.translation]
+
+    detailed = handler.list_lights(scene.name, detail=True)
+    assert detailed["detail"] is True
+    detailed_key = next(item for item in detailed["lights"] if item["object"] == "Key Light")
+    assert {"transform", "settings", "light_linking", "collections", "target_constraints"} <= set(detailed_key)
+    assert detailed_key["settings"]["energy"] == key_record["energy"]
+    assert detailed_key["transform"]["world"]["location"] == key_record["location_world"]
+    world_matrix = detailed_key["transform"]["world"]["matrix"]
+    assert world_matrix == [[round(value, 6) for value in row] for row in key_object.matrix_world]
+
     inspected = handler.inspect_lighting_setup(scene.name)
     assert inspected["world"]["name"] == "Lighting World"
+    assert inspected["lights_detail"] is False
+    assert all("transform" not in record for record in inspected["lights"])
+    assert all("transform" in record for record in handler.inspect_lighting_setup(scene.name, detail=True)["lights"])
     validated = handler.validate_lighting_setup(scene.name, "EEVEE")
     assert "findings" in validated
 

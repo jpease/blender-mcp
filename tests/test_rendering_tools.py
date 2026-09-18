@@ -4,6 +4,7 @@
 import asyncio
 import importlib
 import os
+import types
 
 import pytest
 
@@ -239,3 +240,151 @@ def test_inspect_render_output_tempfile_is_removed_when_blender_fails(monkeypatc
         rendering.inspect_render_output(ctx=None)
 
     assert not rendered.exists()
+
+
+def _fake_view_layer(handlers, name="ViewLayer"):
+    layer = types.SimpleNamespace(name=name, material_override=None, world_override=None)
+    for prop in handlers._VIEW_LAYER_PROPERTIES:
+        setattr(layer, prop, 8 if prop == "pass_cryptomatte_depth" else True)
+    return layer
+
+
+def _fake_scene(handlers, name="Scene"):
+    image_settings = types.SimpleNamespace(
+        file_format="PNG",
+        color_mode="RGBA",
+        color_depth="8",
+        compression=15,
+        quality=90,
+        exr_codec="ZIP",
+        views_format="INDIVIDUAL",
+        stereo_3d_format=types.SimpleNamespace(display_mode="ANAGLYPH"),
+    )
+    render = types.SimpleNamespace(
+        engine="BLENDER_EEVEE",
+        resolution_x=1920,
+        resolution_y=1080,
+        resolution_percentage=100,
+        pixel_aspect_x=1.0,
+        pixel_aspect_y=1.0,
+        fps=24,
+        fps_base=1.0,
+        film_transparent=False,
+        filepath="/tmp/render/",
+        use_file_extension=True,
+        use_overwrite=True,
+        use_placeholder=False,
+        use_motion_blur=False,
+        motion_blur_shutter=0.5,
+        motion_blur_position="CENTER",
+        use_multiview=False,
+        use_stamp=False,
+        stamp_note_text="",
+        image_settings=image_settings,
+    )
+    return types.SimpleNamespace(
+        name=name,
+        camera=None,
+        frame_start=1,
+        frame_end=250,
+        frame_step=1,
+        use_nodes=False,
+        node_tree=None,
+        compositing_node_group=None,
+        render=render,
+        cycles=types.SimpleNamespace(
+            samples=128,
+            use_denoising=True,
+            film_transparent_glass=False,
+            film_transparent_roughness=0.1,
+        ),
+        eevee=types.SimpleNamespace(taa_samples=16, taa_render_samples=64, use_shadows=True),
+        view_layers=[_fake_view_layer(handlers)],
+    )
+
+
+def _rendering_handler(monkeypatch):
+    addon, fake_bpy = _load_addon(monkeypatch, data={"scenes": {}})
+    handlers = importlib.import_module(f"{addon.__name__}.handlers.rendering")
+    scene = _fake_scene(handlers)
+    fake_bpy.data.scenes["Scene"] = scene
+    return handlers.RenderingHandlersMixin(), scene
+
+
+def test_configure_render_settings_returns_only_the_patched_values(monkeypatch) -> None:
+    handler, scene = _rendering_handler(monkeypatch)
+
+    result = handler.configure_render_settings(
+        "Scene",
+        {
+            "engine": "CYCLES",
+            "resolution_x": 1280,
+            "output": {"image_format": "OPEN_EXR", "compression": 30},
+            "motion_blur": {"enabled": True, "shutter": 0.25},
+        },
+    )
+
+    assert result == {
+        "scene": "Scene",
+        "changed": [
+            "engine",
+            "motion_blur.enabled",
+            "motion_blur.shutter",
+            "output.compression",
+            "output.image_format",
+            "resolution_x",
+        ],
+        "after": {
+            "engine": "CYCLES",
+            "resolution_x": 1280,
+            "output.image_format": "OPEN_EXR",
+            "output.compression": 30,
+            "motion_blur.enabled": True,
+            "motion_blur.shutter": 0.25,
+        },
+        "changed_resources": ["Scene"],
+    }
+    assert scene.render.image_settings.file_format == "OPEN_EXR"
+    assert scene.render.use_motion_blur is True
+
+
+def test_configure_render_settings_detail_returns_both_full_state_blocks(monkeypatch) -> None:
+    handler, _scene = _rendering_handler(monkeypatch)
+
+    result = handler.configure_render_settings("Scene", {"engine": "CYCLES", "resolution_y": 720}, detail=True)
+
+    assert result["changed"] == ["engine", "resolution_y"]
+    assert result["before"]["engine"] == "BLENDER_EEVEE"
+    assert result["before"]["resolution"] == [1920, 1080, 100]
+    assert result["after"]["engine"] == "CYCLES"
+    assert result["after"]["resolution"] == [1920, 720, 100]
+    assert "settings" not in result
+
+
+def test_configure_render_settings_reports_a_patch_that_writes_nothing(monkeypatch) -> None:
+    handler, _scene = _rendering_handler(monkeypatch)
+
+    result = handler.configure_render_settings("Scene", {"cycles": {}})
+
+    assert result == {"scene": "Scene", "changed": [], "after": {}, "changed_resources": ["Scene"]}
+
+
+def test_configure_render_settings_forwards_detail(monkeypatch) -> None:
+    connection = _Connection()
+    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+
+    asyncio.run(
+        rendering.configure_render_settings(
+            ctx=None,
+            scene_name="Scene",
+            patch=rendering.RenderSettingsPatch(engine="CYCLES"),
+            detail=True,
+        )
+    )
+    asyncio.run(
+        rendering.configure_render_settings(
+            ctx=None, scene_name="Scene", patch=rendering.RenderSettingsPatch(engine="CYCLES")
+        )
+    )
+
+    assert [params["detail"] for _command, params in connection.calls] == [True, False]

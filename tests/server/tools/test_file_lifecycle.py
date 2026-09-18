@@ -230,18 +230,18 @@ def test_create_override_defaults(monkeypatch) -> None:
     asyncio.run(file_lifecycle.create_override(ctx=None, collection_uid=42))
 
     _command, params = connection.calls[0]
-    assert params == {"collection_uid": 42, "scene_uid": None}
+    assert params == {"collection_uid": 42, "scene_uid": None, "detail": False}
 
 
 def test_create_override_forwards_every_parameter(monkeypatch) -> None:
     connection = _Connection()
     monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
 
-    asyncio.run(file_lifecycle.create_override(ctx=None, collection_uid=42, scene_uid=7))
+    asyncio.run(file_lifecycle.create_override(ctx=None, collection_uid=42, scene_uid=7, detail=True))
 
     command, params = connection.calls[0]
     assert command == "create_override"
-    assert params == {"collection_uid": 42, "scene_uid": 7}
+    assert params == {"collection_uid": 42, "scene_uid": 7, "detail": True}
 
 
 def test_list_libraries_defaults(monkeypatch) -> None:
@@ -251,18 +251,18 @@ def test_list_libraries_defaults(monkeypatch) -> None:
     asyncio.run(file_lifecycle.list_libraries(ctx=None))
 
     _command, params = connection.calls[0]
-    assert params == {"limit": 25, "offset": 0}
+    assert params == {"limit": 25, "offset": 0, "detail": False}
 
 
 def test_list_libraries_forwards_pagination(monkeypatch) -> None:
     connection = _Connection()
     monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
 
-    asyncio.run(file_lifecycle.list_libraries(ctx=None, limit=10, offset=20))
+    asyncio.run(file_lifecycle.list_libraries(ctx=None, limit=10, offset=20, detail=True))
 
     command, params = connection.calls[0]
     assert command == "list_libraries"
-    assert params == {"limit": 10, "offset": 20}
+    assert params == {"limit": 10, "offset": 20, "detail": True}
 
 
 def test_reload_library_forwards_uid(monkeypatch) -> None:
@@ -273,18 +273,18 @@ def test_reload_library_forwards_uid(monkeypatch) -> None:
 
     command, params = connection.calls[0]
     assert command == "reload_library"
-    assert params == {"library_uid": 99}
+    assert params == {"library_uid": 99, "detail": False}
 
 
 def test_relocate_library_forwards_uid_and_filepath(monkeypatch) -> None:
     connection = _Connection()
     monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
 
-    asyncio.run(file_lifecycle.relocate_library(ctx=None, library_uid=99, filepath="/canon/new.blend"))
+    asyncio.run(file_lifecycle.relocate_library(ctx=None, library_uid=99, filepath="/canon/new.blend", detail=True))
 
     command, params = connection.calls[0]
     assert command == "relocate_library"
-    assert params == {"library_uid": 99, "filepath": "/canon/new.blend"}
+    assert params == {"library_uid": 99, "filepath": "/canon/new.blend", "detail": True}
 
 
 def test_unlink_libraries_forwards_every_parameter(monkeypatch) -> None:

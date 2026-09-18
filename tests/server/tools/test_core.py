@@ -182,3 +182,40 @@ def test_get_addon_status_reports_the_file_path_policy(monkeypatch: pytest.Monke
 
     assert payload["file_roots"] == ["/canon"]
     assert payload["file_roots_enforced"] is True
+
+
+# A handshake from an addon with both optional integrations that gate command handlers on.
+_CAPABILITIES = ["get_addon_info", "import_polyhaven_asset", "nd_boolean", "open_shot", "ping"]
+
+
+def test_get_addon_status_summarizes_the_capabilities_instead_of_listing_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """291 command names on every handshake is the list the server gates on, not something an agent acts on."""
+    _install_handshake(monkeypatch, _handshake(capabilities=_CAPABILITIES))
+
+    payload = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]
+
+    assert payload["capability_count"] == len(_CAPABILITIES)
+    assert payload["integrations_available"] == {"polyhaven": True, "sketchfab": False, "nd": True}
+    assert "capabilities" not in payload
+
+
+def test_get_addon_status_lists_the_command_names_only_on_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The full list stays reachable: an agent debugging a refused command needs the exact names."""
+    _install_handshake(monkeypatch, _handshake(capabilities=_CAPABILITIES))
+
+    payload = asyncio.run(core.get_addon_status(ctx=None, detail=True))["data"]  # pyright: ignore[reportArgumentType]
+
+    assert payload["capabilities"] == _CAPABILITIES
+    assert payload["capability_count"] == len(_CAPABILITIES)
+
+
+def test_get_addon_status_reports_an_addon_with_no_optional_integrations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """All-False catches a hardcoded True, and an empty capability list is a real handshake state."""
+    _install_handshake(monkeypatch, _handshake(capabilities=[]))
+
+    payload = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]
+
+    assert payload["capability_count"] == 0
+    assert payload["integrations_available"] == {"polyhaven": False, "sketchfab": False, "nd": False}

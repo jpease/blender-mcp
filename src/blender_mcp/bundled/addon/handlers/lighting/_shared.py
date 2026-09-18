@@ -33,6 +33,9 @@ TYPE_LIGHT_FIELDS = {
 LIGHT_TYPES = frozenset(TYPE_LIGHT_FIELDS)
 MANAGED_OWNER = "blender-mcp"
 MAX_NODE_SUMMARY = 100
+# Blender stores transforms as float32, so publishing a matrix at repr precision spends bytes on
+# digits the data never carried. Six decimals is finer than float32 resolves at scene scale.
+TRANSFORM_DECIMALS = 6
 
 
 def finite_number(value, label):
@@ -136,28 +139,38 @@ def plain(value):
         return str(value)
 
 
+def rounded(values):
+    """Serialize a float sequence at TRANSFORM_DECIMALS, the precision float32 data actually carries."""
+    return [round(float(value), TRANSFORM_DECIMALS) for value in values]
+
+
 def matrix_list(matrix):
     """Serialize a 4x4 matrix."""
-    return [[float(value) for value in row] for row in matrix]
+    return [rounded(row) for row in matrix]
+
+
+def update_view_layer():
+    """Flush pending dependency-graph updates so evaluated matrices are current."""
+    view_layer = getattr(bpy.context, "view_layer", None)
+    if view_layer is not None:
+        view_layer.update()
 
 
 def transform_snapshot(obj):
     """Serialize local and evaluated world transforms without changing scene context."""
-    view_layer = getattr(bpy.context, "view_layer", None)
-    if view_layer is not None:
-        view_layer.update()
+    update_view_layer()
     world_location, world_rotation, world_scale = obj.matrix_world.decompose()
     return {
         "local": {
-            "location": list(obj.location),
+            "location": rounded(obj.location),
             "rotation_mode": obj.rotation_mode,
-            "rotation": rotation_as_native_list(obj),
-            "scale": list(obj.scale),
+            "rotation": rounded(rotation_as_native_list(obj)),
+            "scale": rounded(obj.scale),
         },
         "world": {
-            "location": list(world_location),
-            "rotation_quaternion": list(world_rotation),
-            "scale": list(world_scale),
+            "location": rounded(world_location),
+            "rotation_quaternion": rounded(world_rotation),
+            "scale": rounded(world_scale),
             "matrix": matrix_list(obj.matrix_world),
         },
     }
@@ -272,8 +285,24 @@ def node_tree_snapshot(node_tree, maximum=MAX_NODE_SUMMARY):
     }
 
 
+def light_summary(obj):
+    """Build the default inventory record: what identifies one light plus what a listing is asked for."""
+    data = obj.data
+    update_view_layer()
+    return {
+        "object": obj.name,
+        "light_data": data.name,
+        "light_type": data.type,
+        "energy": float(data.energy),
+        "color": rounded(data.color),
+        "location_world": rounded(obj.matrix_world.translation),
+        "hidden_viewport": bool(obj.hide_viewport),
+        "hidden_render": bool(obj.hide_render),
+    }
+
+
 def light_snapshot(obj, *, include_nodes=False):
-    """Build the shared inventory/inspection record for one light object."""
+    """Build the full record light_summary trims: every transform, setting, and link one light carries."""
     data = obj.data
     targets = [
         constraint_snapshot(item)

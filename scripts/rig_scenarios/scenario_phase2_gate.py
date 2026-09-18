@@ -239,15 +239,15 @@ def _step_override(counted: _Counted, epoch: int, collection_uid: object) -> Non
         collection_uid: The linked collection's session_uid, from `_step_link`.
 
     """
-    override = counted.send("create_override", {"collection_uid": collection_uid})
+    override = counted.send("create_override", {"collection_uid": collection_uid, "detail": True})
     assert override["status"] == "success", override
     assert override["session_epoch"] == epoch, "create_override is not a swap and must not move the epoch"
     override_result = override["result"]
     assert override_result["override"]["hierarchy_root_uid"] is not None, override_result["override"]
     assert override_result["override"]["is_system_override"] is False, override_result["override"]
     override_objects = override_result["objects"]
-    assert override_objects, "create_override reported no objects inside the override"
-    probe_object = override_objects[0]
+    assert override_objects["total"], "create_override reported no objects inside the override"
+    probe_object = override_objects["records"][0]
     assert probe_object["is_editable"] is True, probe_object
     assert probe_object["is_system_override"] is False, probe_object
     print(
@@ -329,15 +329,16 @@ def _step_assert_link_survived(counted: _Counted, epoch: int, link: dict[str, ob
         link: The dict `_step_link` returned.
 
     """
-    listing = counted.send("list_libraries")["result"]
+    listing = counted.send("list_libraries", {"detail": True})["result"]
     # This filter is already the exact filepath comparison.
     matches = [lib for lib in listing["libraries"] if lib["filepath"] == link["library_filepath"]]
     assert len(matches) == 1, f"expected exactly one library with filepath {link['library_filepath']!r}: {matches}"
     reopened_library = matches[0]
     assert reopened_library["is_missing"] is False, reopened_library
 
-    candidates = [entry for entry in reopened_library.get("datablocks", []) if entry["name"] == link["collection_name"]]
-    assert len(candidates) == 1, reopened_library.get("datablocks")
+    records = reopened_library["datablocks"]["records"]
+    candidates = [entry for entry in records if entry["name"] == link["collection_name"]]
+    assert len(candidates) == 1, records
     reopened_collection_uid = candidates[0]["session_uid"]
     probe = counted.send("create_override", {"collection_uid": reopened_collection_uid})
     assert probe["status"] == "error", f"the override must still exist if it survived the round trip: {probe}"

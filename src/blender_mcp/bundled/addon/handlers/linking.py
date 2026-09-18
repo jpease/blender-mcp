@@ -25,7 +25,7 @@ Blender puts absolute paths in its error text, so every `except` sanitizes with
 
 import os
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 
 import bpy
 
@@ -47,8 +47,10 @@ from .file_lifecycle import (
 
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
-# Per library or override: a canon library can link thousands of datablocks.
-# The exact count is reported beside the cap.
+# Per library or override: a canon library can link thousands of datablocks, and every
+# record costs the agent's context for the rest of the session. The default reply reports
+# the exact count and the counts by type beside this many names; `detail` asks for records.
+MAX_LISTED_NAMES = 10
 MAX_LISTED_DATABLOCKS = 100
 MAX_LINK_NAMES = 100
 MAX_UNLINK_UIDS = 100
@@ -56,7 +58,7 @@ MAX_REPORTED_UIDS = 500
 
 _RELOAD_NOTE = (
     "Every datablock linked from this library now has a new session_uid; references read before this call "
-    "name nothing. Read the datablocks listed here, or list_libraries, before the next command."
+    "name nothing. Re-read them with detail=true here, or with list_libraries, before the next command."
 )
 
 
@@ -233,24 +235,46 @@ def _override_entry(datablock: object) -> dict[str, object]:
     }
 
 
-def _bounded_list(key: str, items: list[object], describe: object) -> dict[str, object]:
+def _type_counts(items: Iterable[object]) -> dict[str, int]:
     """
-    Publish a list with its exact count and a cap.
+    Count datablocks by the `id_type` their entries report, so a reply can state what is there.
 
     Args:
-        key: The list's result key.
-        items: Every item; only the first `MAX_LISTED_DATABLOCKS` are described.
-        describe: Turns one item into its entry.
+        items: The datablocks.
 
     Returns:
-        dict[str, object]: `<key>`, the exact count (`datablocks` reports it as
-        `datablock_count`), and `<key>_truncated`.
+        dict[str, int]: `id_type` -> count, sorted by type so the reply is stable.
 
     """
+    counts = _count_by_type(str(getattr(item, "id_type", "")) for item in items)
+    return dict(sorted(counts.items()))
+
+
+def _record_page(key: str, items: Sequence[object], describe: object, limit: int) -> dict[str, object]:
+    """
+    Publish one bounded page of a list, with the pagination keys the reply budget updates.
+
+    Args:
+        key: The page's result key.
+        items: Every item; only the first `limit` are described.
+        describe: Turns one item into its entry.
+        limit: Entries this page may carry.
+
+    Returns:
+        dict[str, object]: `offset` (always 0: a page starts at the first item),
+        `limit`, `returned_count`, `truncated`, `next_offset` (None when nothing
+        remains), and `<key>`.
+
+    """
+    shown = items[:limit]
+    truncated = len(items) > len(shown)
     return {
-        key: [describe(item) for item in items[:MAX_LISTED_DATABLOCKS]],  # type: ignore[operator]
-        f"{key.removesuffix('s')}_count": len(items),
-        f"{key}_truncated": len(items) > MAX_LISTED_DATABLOCKS,
+        "offset": 0,
+        "limit": limit,
+        "returned_count": len(shown),
+        "truncated": truncated,
+        "next_offset": len(shown) if truncated else None,
+        key: [describe(item) for item in shown],  # type: ignore[operator]
     }
 
 
@@ -275,21 +299,30 @@ def _library_details(library: object) -> dict[str, object]:
     }
 
 
-def _linked_datablocks(library: object) -> dict[str, object]:
+def _linked_datablocks(library: object, *, detail: bool) -> dict[str, object]:
     """
-    List what a library links, from `Library.users_id`.
+    Report what a library links, from `Library.users_id`.
 
     `users_id` is missing from `bl_rna.properties` but exists, and it avoids
     walking `bpy.data`.
 
     Args:
         library: A `bpy.types.Library`.
+        detail: Page the entries themselves instead of their names.
 
     Returns:
-        dict[str, object]: `datablocks`, `datablock_count`, `datablocks_truncated`.
+        dict[str, object]: `{"datablocks": {...}}` - the exact `total`, `by_type`,
+        and one page: `names` by default, `records` (uid, name, id_type, indirect
+        and missing flags) under `detail`.
 
     """
-    return _bounded_list("datablocks", list(getattr(library, "users_id", ()) or ()), _linked_entry)
+    items = list(getattr(library, "users_id", ()) or ())
+    page = (
+        _record_page("records", items, _linked_entry, MAX_LISTED_DATABLOCKS)
+        if detail
+        else _record_page("names", items, _display_name, MAX_LISTED_NAMES)
+    )
+    return {"datablocks": {"total": len(items), "by_type": _type_counts(items), **page}}
 
 
 def _missing_warnings(library: object) -> dict[str, object]:
@@ -510,7 +543,9 @@ def _refuse_unoverridable(collection: object) -> None:
         )
 
 
-def _override_hierarchy(collection: object, scene: object, unlinked: list[tuple[object, object]]) -> dict[str, object]:
+def _override_hierarchy(
+    collection: object, scene: object, unlinked: list[tuple[object, object]], *, detail: bool
+) -> dict[str, object]:
     """
     Override one linked collection's hierarchy with Route C, replacing its instances.
 
@@ -523,11 +558,13 @@ def _override_hierarchy(collection: object, scene: object, unlinked: list[tuple[
         collection: A linked `bpy.types.Collection`.
         scene: The scene, from `bpy.data`.
         unlinked: `(parent, child)` pairs this call unlinks are appended here.
+        detail: Also page the override's objects as records; their names are in
+            `changed_objects` either way.
 
     Returns:
         dict[str, object]: `override` (see `_override_entry`), `scene_uid`,
-        `replaced_instances`, and `objects` inside the override with their
-        count and truncation flag.
+        `replaced_instances`, and `objects` with their exact `total` and
+        `by_type`, plus a page of `records` under `detail`.
 
     Raises:
         RuntimeError: When Blender raised or created no override.
@@ -553,11 +590,15 @@ def _override_hierarchy(collection: object, scene: object, unlinked: list[tuple[
             parent.children.unlink(collection)  # type: ignore[attr-defined]
             unlinked.append((parent, collection))
             replaced += 1
+    objects = list(override.all_objects)
+    listed: dict[str, object] = {"total": len(objects), "by_type": _type_counts(objects)}
+    if detail:
+        listed.update(_record_page("records", objects, _override_entry, MAX_LISTED_DATABLOCKS))
     return {
         "override": _override_entry(override),
         "scene_uid": _uid_of(scene),
         "replaced_instances": replaced,
-        **_bounded_list("objects", list(override.all_objects), _override_entry),
+        "objects": listed,
     }
 
 
@@ -603,7 +644,7 @@ def _refuse_nested_requests(collections: list) -> None:
                 )
 
 
-def _override_all(collections: list, scene: object) -> list[dict[str, object]]:
+def _override_all(collections: list, scene: object, *, detail: bool) -> list[dict[str, object]]:
     """
     Override several linked collections, all or nothing for the user's placement.
 
@@ -614,6 +655,7 @@ def _override_all(collections: list, scene: object) -> list[dict[str, object]]:
     Args:
         collections: Linked `bpy.types.Collection`s.
         scene: The scene, from `bpy.data`.
+        detail: Passed to `_override_hierarchy`.
 
     Returns:
         list[dict[str, object]]: One `_override_hierarchy` report per collection.
@@ -629,7 +671,7 @@ def _override_all(collections: list, scene: object) -> list[dict[str, object]]:
             # Again, just before its own override: overriding a parent overrides every collection
             # inside it, so a nested request would otherwise build a second copy (measured, section K).
             _refuse_unoverridable(collection)
-            reports.append(_override_hierarchy(collection, scene, unlinked))
+            reports.append(_override_hierarchy(collection, scene, unlinked, detail=detail))
     except Exception:
         for parent, child in reversed(unlinked):
             if not _has_child(parent, child):
@@ -897,7 +939,7 @@ class LinkingHandlersMixin:
             raise RuntimeError("link_canon_library failed: Blender did not link every requested datablock")
         overrides = []
         if as_override:
-            overrides = _override_all(list(linked_collections), scene)
+            overrides = _override_all(list(linked_collections), scene, detail=False)
             changed_objects = _override_object_names(overrides)
         else:
             _link_into(scene.collection.children, linked_collections)  # type: ignore[attr-defined]
@@ -915,7 +957,9 @@ class LinkingHandlersMixin:
         }
 
     @staticmethod
-    def create_override(collection_uid: object, *, scene_uid: object = None) -> dict[str, object]:
+    def create_override(
+        collection_uid: object, *, scene_uid: object = None, detail: object = False
+    ) -> dict[str, object]:
         """
         Make a linked collection's hierarchy editable in the shot (Route C).
 
@@ -926,49 +970,58 @@ class LinkingHandlersMixin:
         Args:
             collection_uid: The **linked** collection's `session_uid`.
             scene_uid: The scene to override into; optional when the file has one scene.
+            detail: Also list the override's objects as records; `changed_objects`
+                names them either way.
 
         Returns:
             dict[str, object]: `override` (`session_uid`, `is_system_override`,
             `reference_uid`, `hierarchy_root_uid`, ...), `scene_uid`,
-            `replaced_instances`, and `objects` inside the override.
+            `replaced_instances`, and `objects` counted by type.
 
         """
         uid = _require_uid("collection_uid", collection_uid)
         collection = _by_session_uid(bpy.data.collections, uid, "collection")
         _refuse_scripts_auto_execute("create_override")
-        report = _override_all([collection], _scene(scene_uid))[0]
+        report = _override_all([collection], _scene(scene_uid), detail=_require_bool("detail", detail))[0]
         return {**report, "changed_objects": _override_object_names([report])}
 
     @staticmethod
-    def list_libraries(*, limit: object = DEFAULT_PAGE_SIZE, offset: object = 0) -> dict[str, object]:
+    def list_libraries(
+        *, limit: object = DEFAULT_PAGE_SIZE, offset: object = 0, detail: object = False
+    ) -> dict[str, object]:
         """
         List linked libraries, a page at a time, with what each one links.
 
         Args:
             limit: Libraries per page, 1 to `MAX_PAGE_SIZE`.
             offset: Libraries to skip.
+            detail: Page each library's datablocks as records instead of names.
 
         Returns:
             dict[str, object]: `libraries` (each `_library_summary` plus
-            `version`, `needs_liboverride_resync`, `users`, and `datablocks` with
-            uid and name, capped at `MAX_LISTED_DATABLOCKS` beside an exact
-            `datablock_count`), `total`, `offset`, `limit`, `has_more`.
+            `version`, `needs_liboverride_resync`, `users`, and `datablocks` -
+            see `_linked_datablocks`), `total`, `offset`, `limit`,
+            `returned_count`, `truncated`, `next_offset`.
 
         """
         limit = _bounded_int("limit", limit, 1, MAX_PAGE_SIZE)
         offset = _bounded_int("offset", offset, 0, None)
+        detail = _require_bool("detail", detail)
         libraries = list(bpy.data.libraries)
         page = libraries[offset : offset + limit]
+        remaining = offset + len(page) < len(libraries)
         return {
-            "libraries": [{**_library_details(lib), **_linked_datablocks(lib)} for lib in page],
+            "libraries": [{**_library_details(lib), **_linked_datablocks(lib, detail=detail)} for lib in page],
             "total": len(libraries),
             "offset": offset,
             "limit": limit,
-            "has_more": offset + len(page) < len(libraries),
+            "returned_count": len(page),
+            "truncated": remaining,
+            "next_offset": offset + len(page) if remaining else None,
         }
 
     @staticmethod
-    def reload_library(library_uid: object) -> dict[str, object]:
+    def reload_library(library_uid: object, *, detail: object = False) -> dict[str, object]:
         """
         Re-read a library from its file with `lib.reload()`.
 
@@ -978,23 +1031,25 @@ class LinkingHandlersMixin:
 
         Args:
             library_uid: The library's `session_uid`.
+            detail: Page the reloaded datablocks as records, with their new uids.
 
         Returns:
-            dict[str, object]: `library`, its `datablocks` with their new uids, and `note`.
+            dict[str, object]: `library`, `datablocks` (see `_linked_datablocks`), and `note`.
 
         """
         library = _library(library_uid)
+        detail = _require_bool("detail", detail)
         _refuse_scripts_auto_execute("reload_library")
         _reload(library, "reload_library", _library_paths(library))
         return {
             "library": _library_details(library),
-            **_linked_datablocks(library),
+            **_linked_datablocks(library, detail=detail),
             "note": _RELOAD_NOTE,
             **_missing_warnings(library),
         }
 
     @staticmethod
-    def relocate_library(library_uid: object, filepath: object) -> dict[str, object]:
+    def relocate_library(library_uid: object, filepath: object, *, detail: object = False) -> dict[str, object]:
         """
         Point a library at another `.blend` and reload it: `lib.filepath = <canonical>; lib.reload()`.
 
@@ -1007,6 +1062,7 @@ class LinkingHandlersMixin:
         Args:
             library_uid: The library's `session_uid`.
             filepath: The replacement `.blend`.
+            detail: Page the reloaded datablocks as records, with their new uids.
 
         Returns:
             dict[str, object]: As `reload_library`, plus `name_before` and `name_after`.
@@ -1017,6 +1073,7 @@ class LinkingHandlersMixin:
 
         """
         library = _library(library_uid)
+        detail = _require_bool("detail", detail)
         if _is_indirect_library(library):
             raise ValueError(
                 "that library is indirect - reached only through another library, which re-derives its path - so "
@@ -1042,7 +1099,7 @@ class LinkingHandlersMixin:
             raise
         return {
             "library": _library_details(library),
-            **_linked_datablocks(library),
+            **_linked_datablocks(library, detail=detail),
             "name_before": name_before,
             "name_after": client_safe_name_leaf(library.name),  # type: ignore[attr-defined]
             "note": _RELOAD_NOTE,

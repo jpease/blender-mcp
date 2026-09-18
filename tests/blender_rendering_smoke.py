@@ -46,6 +46,18 @@ def _check_output_path_resolution(handler: RenderingHandlersMixin, scene: bpy.ty
         raise AssertionError("A render into a missing directory was accepted")
 
 
+def _check_detail_reply(handler: RenderingHandlersMixin, scene: bpy.types.Scene) -> None:
+    """`detail=True` restores both whole-state blocks; the default reply carries neither."""
+    detailed = handler.configure_render_settings(scene.name, {"resolution_percentage": 50}, detail=True)
+    assert detailed["changed"] == ["resolution_percentage"]
+    assert detailed["before"]["resolution"] == [32, 24, 100]
+    assert detailed["after"]["resolution"] == [32, 24, 50]
+    assert detailed["after"]["output"]["compression"] == 25
+    assert detailed["after"]["film"]["transparent"] is True
+    assert "settings" not in detailed
+    handler.configure_render_settings(scene.name, {"resolution_percentage": 100})
+
+
 def main() -> None:
     """Exercise settings, passes, rollback, view layers, and a tiny still render."""
     handler = RenderingHandlersMixin()
@@ -72,9 +84,30 @@ def main() -> None:
             "metadata": {"use_stamp": True, "use_stamp_frame": True},
         },
     )
-    assert configured["settings"]["resolution"] == [32, 24, 100]
-    assert configured["settings"]["output"]["compression"] == 25
-    assert configured["settings"]["film"]["transparent"] is True
+    assert "before" not in configured
+    assert "settings" not in configured
+    assert configured["scene"] == scene.name
+    assert configured["after"] == {
+        "engine": "BLENDER_WORKBENCH",
+        "resolution_x": 32,
+        "resolution_y": 24,
+        "resolution_percentage": 100,
+        "image_format": "PNG",
+        "color_mode": "RGBA",
+        "color_depth": "8",
+        "compression": 25,
+        "quality": 80,
+        "frame_start": 1,
+        "frame_end": 2,
+        "film.transparent": True,
+        "output.filepath": "//unused-smoke-output",
+        "output.use_file_extension": True,
+        "metadata.use_stamp": True,
+        "metadata.use_stamp_frame": True,
+    }
+    assert configured["changed"] == sorted(configured["after"])
+
+    _check_detail_reply(handler, scene)
 
     original_start = scene.frame_start
     try:
@@ -134,7 +167,7 @@ def main() -> None:
         scene.name,
         {"engine": "BLENDER_EEVEE", "eevee": {"taa_render_samples": 7}},
     )
-    assert eevee["settings"]["engine"] == "BLENDER_EEVEE"
+    assert eevee["after"] == {"engine": "BLENDER_EEVEE", "eevee.taa_render_samples": 7}
     assert scene.eevee.taa_render_samples == 7
     print("RENDERING_SMOKE_OK")
 

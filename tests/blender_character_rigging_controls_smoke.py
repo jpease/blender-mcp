@@ -95,9 +95,12 @@ pose = handler.set_character_pose(
     space="LOCAL",
 )
 assert pose["bones"][0]["bone"] == "settings"
+assert pose["bones"][0]["channels"] == ["location"]
+assert pose["changed_bones"] == ["settings"]
 
 
 MATRIX_TOLERANCE = 1e-5
+ROUNDED_MATRIX_TOLERANCE = 1e-6
 MINIMUM_POSE_CHANGE = 0.1
 
 
@@ -113,13 +116,23 @@ def max_difference(a: list[list[float]], b: list[list[float]]) -> float:
 chain = create_test_armature("PoseChain")
 upper, lower = chain.pose.bones["upper"], chain.pose.bones["lower"]
 
-# The report must describe the evaluated result, not the matrix read before re-evaluation.
+# The default report must describe the evaluated result, not the matrix read before
+# re-evaluation, and must carry it rounded rather than at float64 print width.
 reported = handler.set_character_pose(chain.name, [{"bone_name": "upper", "rotation_euler": (0.5, 0, 0)}])
-assert (
-    max_difference(reported["bones"][0]["after_pose_matrix"], reported["bones"][0]["before_pose_matrix"])
-    > MINIMUM_POSE_CHANGE
-)
-assert max_difference(reported["bones"][0]["after_pose_matrix"], rows(upper.matrix)) < MATRIX_TOLERANCE
+posed = reported["bones"][0]
+assert set(posed) == {"bone", "channels", "after_pose_matrix"}
+assert reported["changed_bones"] == [posed["bone"]] == ["upper"]
+assert all(value == round(value, 6) for row in posed["after_pose_matrix"] for value in row)
+assert max_difference(posed["after_pose_matrix"], rows(upper.matrix)) < ROUNDED_MATRIX_TOLERANCE
+
+# detail=True is the only way back to the pre-call matrix and to Blender's own precision.
+detailed = handler.set_character_pose(chain.name, [{"bone_name": "upper", "rotation_euler": (0.9, 0, 0)}], detail=True)
+detailed_pose = detailed["bones"][0]
+assert max_difference(detailed_pose["after_pose_matrix"], detailed_pose["before_pose_matrix"]) > MINIMUM_POSE_CHANGE
+assert max_difference(detailed_pose["after_pose_matrix"], rows(upper.matrix)) < MATRIX_TOLERANCE
+assert any(value != round(value, 6) for row in detailed_pose["after_pose_matrix"] for value in row)
+# The rounded default matrix was the real state: this call's pre-call matrix is that one back.
+assert max_difference(detailed_pose["before_pose_matrix"], posed["after_pose_matrix"]) < ROUNDED_MATRIX_TOLERANCE
 
 # Parent and child posed in POSE space in one call: the child must land where asked, not relative
 # to its parent's stale pre-call matrix.
@@ -130,7 +143,7 @@ target_upper, target_lower = rows(upper.matrix), rows(lower.matrix)
 for bone in (upper, lower):
     bone.matrix_basis.identity()
 bpy.context.view_layer.update()
-handler.set_character_pose(
+both = handler.set_character_pose(
     chain.name,
     [{"bone_name": "upper", "matrix": target_upper}, {"bone_name": "lower", "matrix": target_lower}],
     space="POSE",
@@ -139,6 +152,8 @@ assert max_difference(rows(upper.matrix), target_upper) < MATRIX_TOLERANCE
 assert max_difference(rows(lower.matrix), target_lower) < MATRIX_TOLERANCE, (
     "child posed against its parent's stale matrix"
 )
+# Every bone the call posed is named, whatever happens to the per-bone records.
+assert both["changed_bones"] == ["upper", "lower"] == [record["bone"] for record in both["bones"]]
 
 keyed = handler.keyframe_character_pose(
     rig.name,
@@ -150,6 +165,23 @@ keyed = handler.keyframe_character_pose(
 )
 assert bpy.data.actions.get(keyed["action"]) is not None
 assert keyed["action_slot"] is not None
+assert keyed["changed_bones"] == ["settings"]
+assert "bones" not in keyed
+
+keyed_detail = handler.keyframe_character_pose(
+    rig.name,
+    "SmokePoseDetail",
+    4.5,
+    [{"bone_name": "settings", "location": (0.3, 0, 0)}],
+    space="LOCAL",
+    action_policy="CREATE",
+    detail=True,
+)
+assert keyed_detail["changed_bones"] == ["settings"]
+keyed_pose = keyed_detail["bones"][0]
+assert set(keyed_pose) == {"bone", "channels", "before_pose_matrix", "after_pose_matrix"}
+# The keyed pose moved the bone 0.2 further along X than the pose it already held.
+assert max_difference(keyed_pose["after_pose_matrix"], keyed_pose["before_pose_matrix"]) > MINIMUM_POSE_CHANGE
 
 widget = bpy.data.objects.new("Widget", None)
 bpy.context.scene.collection.objects.link(widget)

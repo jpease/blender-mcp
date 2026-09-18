@@ -71,9 +71,52 @@ def _validate_pose_specs(armature, poses, space):
     return prepared
 
 
-def _apply_pose_specs(armature, prepared, space, reset_unspecified=False):
+# Blender stores a pose matrix as float32, so the seventeen digits a full decimal expansion
+# prints are encoding noise - and those digits are most of what a per-bone matrix costs.
+_POSE_MATRIX_DECIMALS = 6
+# The channels a pose entry can set, in the order a record names them.
+_POSE_CHANNELS = ("matrix", "location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle", "scale")
+
+
+def _rounded_matrix_list(matrix):
+    return [[round(float(value), _POSE_MATRIX_DECIMALS) for value in row] for row in matrix]
+
+
+def _changed_channels(spec):
+    """
+    Name what one pose entry changed, so its record identifies the change without the request.
+
+    Args:
+        spec: One validated pose entry.
+
+    Returns:
+        list: Its transform channels in `_POSE_CHANNELS` order, then every custom property it
+        set, each spelled as the data path that keys it.
+
+    """
+    channels = [name for name in _POSE_CHANNELS if name in spec]
+    channels.extend(f'["{name}"]' for name in sorted(spec.get("custom_properties", {})))
+    return channels
+
+
+def _apply_pose_specs(armature, prepared, space, reset_unspecified=False, detail=False):
+    """
+    Pose every prepared bone and report what changed.
+
+    Args:
+        armature: The armature object being posed.
+        prepared: `(pose_bone, spec, input_matrix)` triples from `_validate_pose_specs`.
+        space: The space the input matrices are expressed in.
+        reset_unspecified: Reset every bone the call did not name to rest before posing.
+        detail: Report the pre-call matrix as well, and neither matrix rounded.
+
+    Returns:
+        list: One record per posed bone - its name, the channels the call set, and the pose
+        matrix it ended on, rounded to `_POSE_MATRIX_DECIMALS` unless `detail` is set.
+
+    """
     targeted = {pose_bone.name for pose_bone, _spec, _matrix in prepared}
-    before = {pose_bone.name: pose_bone.matrix.copy() for pose_bone, _spec, _matrix in prepared}
+    before = {pose_bone.name: pose_bone.matrix.copy() for pose_bone, _spec, _matrix in prepared} if detail else {}
     if reset_unspecified:
         for pose_bone in armature.pose.bones:
             if pose_bone.name not in targeted:
@@ -91,16 +134,16 @@ def _apply_pose_specs(armature, prepared, space, reset_unspecified=False):
         for name, value in spec.get("custom_properties", {}).items():
             pose_bone[name] = value
         bpy.context.view_layer.update()
-    return [
-        {
-            "bone": pose_bone.name,
-            "before_pose_matrix": _matrix_list(before[pose_bone.name]),
-            "after_pose_matrix": _matrix_list(pose_bone.matrix),
-            "input_space": space,
-            "custom_properties": sorted(spec.get("custom_properties", {})),
-        }
-        for pose_bone, spec, _matrix in prepared
-    ]
+    records = []
+    for pose_bone, spec, _matrix in prepared:
+        record = {"bone": pose_bone.name, "channels": _changed_channels(spec)}
+        if detail:
+            record["before_pose_matrix"] = _matrix_list(before[pose_bone.name])
+            record["after_pose_matrix"] = _matrix_list(pose_bone.matrix)
+        else:
+            record["after_pose_matrix"] = _rounded_matrix_list(pose_bone.matrix)
+        records.append(record)
+    return records
 
 
 def _assign_named_action(armature, action_name, policy, slot_identifier=None):
@@ -207,6 +250,7 @@ class PoseAnimationHandlersMixin:
         space="LOCAL",
         reset_unspecified=False,
         confirm_reset_unspecified=False,
+        detail=False,
     ):
         armature = _armature_object(armature_object_name)
         if armature.data.pose_position != "POSE":
@@ -225,14 +269,22 @@ class PoseAnimationHandlersMixin:
                 for name in spec.get("custom_properties", {})
             }
         try:
-            records = _apply_pose_specs(armature, prepared, space, reset_unspecified)
+            records = _apply_pose_specs(armature, prepared, space, reset_unspecified, detail)
         except Exception:
             for bone in affected:
                 bone.matrix_basis = matrices[bone.name]
                 for name, value in properties[bone.name].items():
                     bone[name] = value
             raise
-        return {"armature_object": armature.name, "space": space, "bones": records, "changed_objects": [armature.name]}
+        return {
+            "armature_object": armature.name,
+            "space": space,
+            # Complete, and cheap enough to stay complete: the per-bone records are what the
+            # reply budget shortens, so this is what still names every bone the call posed.
+            "changed_bones": [record["bone"] for record in records],
+            "bones": records,
+            "changed_objects": [armature.name],
+        }
 
     def keyframe_character_pose(
         self,
@@ -245,6 +297,7 @@ class PoseAnimationHandlersMixin:
         interpolation="BEZIER",
         action_policy="CREATE",
         action_slot_identifier=None,
+        detail=False,
     ):
         armature = _armature_object(armature_object_name)
         frame = _finite(frame, "frame")
@@ -266,8 +319,9 @@ class PoseAnimationHandlersMixin:
         try:
             whole_frame = math.floor(frame)
             scene.frame_set(whole_frame, subframe=frame - whole_frame)
+            pose_records = []
             if keying_policy != "REMOVE":
-                _apply_pose_specs(armature, prepared, space)
+                pose_records = _apply_pose_specs(armature, prepared, space, detail=detail)
             for pose_bone, spec, _matrix in prepared:
                 for path in _pose_key_paths(pose_bone, spec):
                     if keying_policy in {"REPLACE", "REMOVE"}:
@@ -290,13 +344,21 @@ class PoseAnimationHandlersMixin:
                 with contextlib.suppress(Exception):
                     animation.action_slot = previous_slot
             bpy.context.view_layer.update()
-        return {
+        reply = {
             "armature_object": armature.name,
             "action": action.name,
             "action_slot": written_slot_identifier,
             "keying_policy": keying_policy,
+            # The keys are the deliverable, but the page of them is what the reply budget
+            # shortens, so name every posed bone separately.
+            "changed_bones": [pose_bone.name for pose_bone, _spec, _matrix in prepared],
             "changed_keys": changed_keys,
             "interpolation_updates": interpolation_count,
             "changed_objects": [armature.name],
             "changed_resources": [{"type": "ACTION", "name": action.name}],
         }
+        if detail:
+            # The pose is restored before this returns, so these matrices describe what was
+            # keyed at `frame`, not what the rig is holding now.
+            reply["bones"] = pose_records
+        return reply

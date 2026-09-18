@@ -207,7 +207,9 @@ async def link_canon_library(
 
 
 @mcp.tool()
-async def create_override(ctx: Context, collection_uid: int, scene_uid: int | None = None) -> dict:
+async def create_override(
+    ctx: Context, collection_uid: int, scene_uid: int | None = None, detail: bool = False
+) -> dict:
     """
     Make a linked collection's hierarchy editable in the shot by overriding it (Route C).
 
@@ -220,17 +222,22 @@ async def create_override(ctx: Context, collection_uid: int, scene_uid: int | No
         ctx: MCP request context.
         collection_uid: The linked collection's session_uid.
         scene_uid: Scene to override into; only needed when the file has more than one scene.
+        detail: Also list the override's objects as records (session_uid, editability, the linked
+            original each references); changed_objects names them either way.
 
     Returns:
         override (session_uid, is_editable, is_system_override, reference_uid,
-        hierarchy_root_uid), scene_uid, replaced_instances, objects.
+        hierarchy_root_uid), scene_uid, replaced_instances, and objects (total, by_type).
 
     """
-    return await _call("create_override", {"collection_uid": collection_uid, "scene_uid": scene_uid})
+    return await _call(
+        "create_override",
+        {"collection_uid": collection_uid, "scene_uid": scene_uid, "detail": detail},
+    )
 
 
 @mcp.tool()
-async def list_libraries(ctx: Context, limit: int = 25, offset: int = 0) -> dict:
+async def list_libraries(ctx: Context, limit: int = 25, offset: int = 0, detail: bool = False) -> dict:
     """
     List libraries linked into the open shot, a page at a time, with what each one links.
 
@@ -241,38 +248,44 @@ async def list_libraries(ctx: Context, limit: int = 25, offset: int = 0) -> dict
         ctx: MCP request context.
         limit: Libraries per page, 1 to 100.
         offset: Libraries to skip.
+        detail: Page each library's linked datablocks as records - session_uid, id_type and
+            whether the datablock is indirect or missing - instead of their names.
 
     Returns:
         libraries (each with session_uid, name, filepath, is_relative, is_missing, version,
-        needs_liboverride_resync, users, datablocks), total, offset, limit, has_more.
+        needs_liboverride_resync, users, and datablocks: total, by_type and one page of
+        names, or of records under detail), total, offset, limit, returned_count, truncated,
+        next_offset.
 
     """
-    return await _call("list_libraries", {"limit": limit, "offset": offset})
+    return await _call("list_libraries", {"limit": limit, "offset": offset, "detail": detail})
 
 
 @mcp.tool()
-async def reload_library(ctx: Context, library_uid: int) -> dict:
+async def reload_library(ctx: Context, library_uid: int, detail: bool = False) -> dict:
     """
     Re-read a library from its file, replacing every datablock it links in place.
 
     Every datablock this library links gets a fresh `session_uid`: discard any held from
-    before this call and re-read them from the result or `list_libraries`. Refuses while
+    before this call and re-read them with `detail=true` or `list_libraries`. Refuses while
     Blender's script auto-execution preference is on.
 
     Args:
         ctx: MCP request context.
         library_uid: The library's session_uid, from list_libraries.
+        detail: Page the reloaded datablocks as records, carrying the new session_uid of each.
 
     Returns:
-        library, datablocks (with their new session_uids), note, and warnings when a linked
-        datablock is now missing.
+        library, datablocks (total, by_type and one page of names, or of records with their
+        new session_uids under detail), note, and warnings when a linked datablock is now
+        missing.
 
     """
-    return await _call("reload_library", {"library_uid": library_uid})
+    return await _call("reload_library", {"library_uid": library_uid, "detail": detail})
 
 
 @mcp.tool()
-async def relocate_library(ctx: Context, library_uid: int, filepath: str) -> dict:
+async def relocate_library(ctx: Context, library_uid: int, filepath: str, detail: bool = False) -> dict:
     """
     Point a library at another .blend and reload it, replacing every datablock it links.
 
@@ -285,13 +298,17 @@ async def relocate_library(ctx: Context, library_uid: int, filepath: str) -> dic
         ctx: MCP request context.
         library_uid: The library's session_uid, from list_libraries.
         filepath: The replacement .blend; absolute, ~, or // relative to a saved open file.
+        detail: Page the reloaded datablocks as records, carrying the new session_uid of each.
 
     Returns:
-        library, datablocks (with their new session_uids), name_before, name_after, note,
-        and warnings when a linked datablock is now missing.
+        library, datablocks (as reload_library), name_before, name_after, note, and warnings
+        when a linked datablock is now missing.
 
     """
-    return await _call("relocate_library", {"library_uid": library_uid, "filepath": filepath})
+    return await _call(
+        "relocate_library",
+        {"library_uid": library_uid, "filepath": filepath, "detail": detail},
+    )
 
 
 @mcp.tool()

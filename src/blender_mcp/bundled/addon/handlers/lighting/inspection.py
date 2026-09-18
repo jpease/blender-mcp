@@ -15,6 +15,7 @@ from ._shared import (
     external_file_findings,
     light_object,
     light_snapshot,
+    light_summary,
     node_tree_snapshot,
     plain,
     resolve_engine,
@@ -200,17 +201,19 @@ def _finding(severity, code, resource, message, evidence, remediation):
 class LightingInspectionHandlers:
     """Provide read-only light inventory, detailed inspection, scene snapshots, and audits."""
 
-    def list_lights(self, scene_name, collection_name=None, light_type=None, limit=50, offset=0):
-        """Return one stable page of light records."""
+    def list_lights(self, scene_name, collection_name=None, light_type=None, limit=50, offset=0, detail=False):
+        """Return one stable page of light records, trimmed unless detail is requested."""
         scene = scene_by_name(scene_name)
         collection = collection_in_scene(scene, collection_name) if collection_name else None
         lights = _scene_lights(scene, collection, light_type)
         start, end, truncated, next_offset = bounded_page(len(lights), offset, limit)
-        records = [light_snapshot(obj) for obj in lights[start:end]]
+        record = light_snapshot if detail else light_summary
+        records = [record(obj) for obj in lights[start:end]]
         return {
             "scene": scene.name,
             "collection": collection.name if collection else None,
             "light_type_filter": light_type,
+            "detail": bool(detail),
             "lights": records,
             "total": len(lights),
             "offset": start,
@@ -227,11 +230,12 @@ class LightingInspectionHandlers:
         obj = light_object(light_name, scene=scene)
         return {"scene": scene.name, **light_snapshot(obj, include_nodes=True)}
 
-    def inspect_lighting_setup(self, scene_name, limit=50, offset=0):
+    def inspect_lighting_setup(self, scene_name, limit=50, offset=0, detail=False):
         """Return a bounded, reproducible scene-level lighting snapshot."""
         scene = scene_by_name(scene_name)
         lights = _scene_lights(scene)
         start, end, truncated, next_offset = bounded_page(len(lights), offset, limit)
+        record = light_snapshot if detail else light_summary
         emissive, volumes, materials_truncated = _material_resources(scene)
         view_layer = bpy.context.view_layer if bpy.context.scene == scene else scene.view_layers[0]
         return {
@@ -246,7 +250,8 @@ class LightingInspectionHandlers:
             "camera": scene.camera.name if scene.camera else None,
             "color_management": _color_management_snapshot(scene),
             "world": _world_snapshot(scene.world),
-            "lights": [light_snapshot(obj) for obj in lights[start:end]],
+            "lights_detail": bool(detail),
+            "lights": [record(obj) for obj in lights[start:end]],
             "lights_total": len(lights),
             "lights_offset": start,
             "lights_limit": min(int(limit), 200),

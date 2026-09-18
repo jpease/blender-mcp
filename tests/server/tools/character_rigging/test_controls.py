@@ -1,14 +1,17 @@
 """Regression coverage for character control, deformation, and pose workflows."""
 
 import asyncio
+import sys
 import types
 
 import pytest
 
 from pydantic import ValidationError
+from pydantic_core import to_json
 from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import character_rigging
+from blender_mcp.server.tools.envelope import REPLY_BYTE_BUDGET, ok
 
 
 def _run(function, **kwargs):
@@ -307,3 +310,245 @@ def test_bone_listing_reports_parents_deform_flags_and_continuation(monkeypatch)
     assert second["bones"]["items"] == [{"name": "CTRL-head", "parent": "DEF-spine", "deform": False}]
     assert (second["bones"]["truncated"], second["bones"]["next_offset"]) == (False, None)
     assert flushes == ["HeroRig", "HeroRig"]
+
+
+# Full-precision floats, as Blender hands a pose matrix back: the rounding is only visible on
+# values whose seventh decimal is not zero.
+_REST_MATRIX = (
+    (1.0, 0.0, 0.0, 0.0),
+    (0.0, 1.0, 0.0, 0.3333333333333333),
+    (0.0, 0.0, 1.0, 0.0),
+    (0.0, 0.0, 0.0, 1.0),
+)
+_POSED_MATRIX = (
+    (0.8660254037844387, -0.49999999999999994, 0.0, 0.0),
+    (0.49999999999999994, 0.8660254037844387, 0.0, 0.0),
+    (0.0, 0.0, 1.0, 0.12345678901234567),
+    (0.0, 0.0, 0.0, 1.0),
+)
+_ROUNDED_POSED_MATRIX = [
+    [0.866025, -0.5, 0.0, 0.0],
+    [0.5, 0.866025, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.123457],
+    [0.0, 0.0, 0.0, 1.0],
+]
+
+
+class _FakeMatrix:
+    """
+    Stand-in for a `mathutils.Matrix`: the pose path builds one, copies it, and lists its rows.
+
+    `decompose` reports an untransformed basis so a channel spec contributes only what it set,
+    `LocRotScale` composes what that spec asked for, and no pose matrix here is singular.
+    """
+
+    def __init__(self, rows) -> None:
+        self.rows = [tuple(float(value) for value in row) for row in rows]
+
+    @staticmethod
+    def LocRotScale(location, _rotation, scale) -> "_FakeMatrix":  # ruff: ignore[invalid-function-name]
+        return _FakeMatrix(
+            [
+                (scale[0], 0.0, 0.0, location[0]),
+                (0.0, scale[1], 0.0, location[1]),
+                (0.0, 0.0, scale[2], location[2]),
+                (0.0, 0.0, 0.0, 1.0),
+            ]
+        )
+
+    @staticmethod
+    def decompose() -> tuple:
+        return (0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0), (1.0, 1.0, 1.0)
+
+    @staticmethod
+    def determinant() -> float:
+        return 1.0
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def copy(self) -> "_FakeMatrix":
+        return _FakeMatrix(self.rows)
+
+
+class _FakePoseBone:
+    """One pose bone that records the matrix, custom properties, and keys the handler writes."""
+
+    def __init__(self, name, matrix=_REST_MATRIX, custom_properties=None) -> None:
+        self.name = name
+        self.matrix = _FakeMatrix(matrix)
+        self.matrix_basis = _FakeMatrix(_REST_MATRIX)
+        self.parent_recursive = ()
+        self.rotation_mode = "QUATERNION"
+        self.custom_properties = dict(custom_properties or {})
+        self.keyed = []
+
+    def __contains__(self, key) -> bool:
+        return key in self.custom_properties
+
+    def __getitem__(self, key):
+        return self.custom_properties[key]
+
+    def __setitem__(self, key, value) -> None:
+        self.custom_properties[key] = value
+
+    def keyframe_insert(self, data_path, frame, group) -> bool:
+        self.keyed.append((data_path, frame, group))
+        return True
+
+
+class _FakeActions(dict):
+    """`bpy.data.actions`: lookup by name plus creation of a slotless, curveless action."""
+
+    def new(self, name) -> types.SimpleNamespace:
+        self[name] = types.SimpleNamespace(name=name, slots=())
+        return self[name]
+
+
+# `Object.convert_space`: no bone in these tests has a parent, so pose space is the space given.
+def _pose_space_matrix(matrix, **_unused) -> _FakeMatrix:
+    return matrix
+
+
+def _posing_server(monkeypatch, pose_bones):
+    """
+    Load the addon against a fake rig whose pose bones can be posed and keyed.
+
+    Args:
+        monkeypatch: The test's monkeypatch.
+        pose_bones: The `_FakePoseBone`s the rig carries.
+
+    Returns:
+        The server exposing the pose handlers.
+
+    """
+    armature = types.SimpleNamespace(
+        name="HeroRig",
+        type="ARMATURE",
+        data=types.SimpleNamespace(name="HeroRigData", pose_position="POSE", bones=[]),
+        pose=types.SimpleNamespace(bones={bone.name: bone for bone in pose_bones}),
+        convert_space=_pose_space_matrix,
+        animation_data_create=lambda: types.SimpleNamespace(action=None, action_slot=None, action_suitable_slots=()),
+    )
+    addon, bpy = _load_addon(monkeypatch, data={"objects": {"HeroRig": armature}, "actions": _FakeActions()})
+    bpy.context.view_layer = types.SimpleNamespace(update=lambda: None)
+    bpy.context.scene.frame_current = 1
+    bpy.context.scene.frame_set = lambda *_args, **_kwargs: None
+    mathutils = sys.modules["mathutils"]
+    monkeypatch.setattr(mathutils, "Matrix", _FakeMatrix, raising=False)
+    monkeypatch.setattr(mathutils, "Vector", tuple, raising=False)
+    return addon.BlenderMCPServer()
+
+
+def test_pose_report_rounds_the_result_and_omits_the_pre_call_matrix(monkeypatch) -> None:
+    server = _posing_server(monkeypatch, [_FakePoseBone("spine")])
+
+    reply = server.set_character_pose("HeroRig", [{"bone_name": "spine", "matrix": _POSED_MATRIX}], space="POSE")
+
+    assert reply["bones"] == [{"bone": "spine", "channels": ["matrix"], "after_pose_matrix": _ROUNDED_POSED_MATRIX}]
+    assert reply["changed_bones"] == ["spine"]
+
+
+def test_pose_detail_restores_the_pre_call_matrix_and_full_precision(monkeypatch) -> None:
+    server = _posing_server(monkeypatch, [_FakePoseBone("spine")])
+
+    reply = server.set_character_pose(
+        "HeroRig", [{"bone_name": "spine", "matrix": _POSED_MATRIX}], space="POSE", detail=True
+    )
+
+    assert reply["bones"] == [
+        {
+            "bone": "spine",
+            "channels": ["matrix"],
+            "before_pose_matrix": [list(row) for row in _REST_MATRIX],
+            "after_pose_matrix": [list(row) for row in _POSED_MATRIX],
+        }
+    ]
+
+
+def test_pose_record_names_the_channels_and_custom_properties_the_call_set(monkeypatch) -> None:
+    server = _posing_server(monkeypatch, [_FakePoseBone("hand.L", custom_properties={"ik_blend": 0.0})])
+
+    reply = server.set_character_pose(
+        "HeroRig",
+        [
+            {
+                "bone_name": "hand.L",
+                "location": (0.1, 0.0, 0.0),
+                "scale": (2.0, 2.0, 2.0),
+                "custom_properties": {"ik_blend": 1.0},
+            }
+        ],
+    )
+
+    assert reply["bones"][0]["channels"] == ["location", "scale", '["ik_blend"]']
+
+
+def test_the_budget_shortens_pose_records_but_never_the_changed_bone_names(monkeypatch) -> None:
+    bones = [_FakePoseBone(f"DEF-spine.{index:03d}") for index in range(40)]
+    server = _posing_server(monkeypatch, bones)
+
+    payload = server.set_character_pose(
+        "HeroRig", [{"bone_name": bone.name, "matrix": _POSED_MATRIX} for bone in bones], space="POSE"
+    )
+    reply = ok(payload, changed_objects=payload["changed_objects"])
+
+    assert len(to_json(reply, fallback=str, indent=2)) <= REPLY_BYTE_BUDGET
+    assert reply["data"]["changed_bones"] == [bone.name for bone in bones]
+    assert 0 < len(reply["data"]["bones"]) < len(bones)
+    assert reply["warnings"][0].startswith(f"bones was shortened to {len(reply['data']['bones'])} of 40 records")
+
+
+def test_keyframed_pose_names_every_bone_and_reports_no_matrices_by_default(monkeypatch) -> None:
+    server = _posing_server(monkeypatch, [_FakePoseBone("spine"), _FakePoseBone("hand.L")])
+    poses = [{"bone_name": "spine", "matrix": _POSED_MATRIX}, {"bone_name": "hand.L", "matrix": _POSED_MATRIX}]
+
+    reply = server.keyframe_character_pose("HeroRig", "Walk", 3.0, poses, space="POSE")
+
+    assert reply["changed_bones"] == ["spine", "hand.L"]
+    assert "bones" not in reply
+    assert {entry["data_path"] for entry in reply["changed_keys"]} == {
+        "location",
+        "rotation_quaternion",
+        "scale",
+    }
+
+
+def test_keyframe_detail_reports_the_pose_that_was_keyed(monkeypatch) -> None:
+    server = _posing_server(monkeypatch, [_FakePoseBone("spine")])
+
+    reply = server.keyframe_character_pose(
+        "HeroRig", "Walk", 3.0, [{"bone_name": "spine", "matrix": _POSED_MATRIX}], space="POSE", detail=True
+    )
+
+    assert reply["bones"] == [
+        {
+            "bone": "spine",
+            "channels": ["matrix"],
+            "before_pose_matrix": [list(row) for row in _REST_MATRIX],
+            "after_pose_matrix": [list(row) for row in _POSED_MATRIX],
+        }
+    ]
+
+
+def test_pose_tools_forward_the_detail_flag(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        character_rigging,
+        "_call",
+        lambda command, params, changed_objects=None: calls.append((command, params)) or {"ok": True},
+    )
+    pose = character_rigging.BonePose(bone_name="root", location=(0, 1, 0))
+
+    _run(character_rigging.set_character_pose, armature_object_name="Rig", poses=[pose])
+    _run(
+        character_rigging.keyframe_character_pose,
+        armature_object_name="Rig",
+        action_name="Walk",
+        frame=1.0,
+        poses=[pose],
+        detail=True,
+    )
+
+    assert calls[0][1]["detail"] is False
+    assert calls[1][1]["detail"] is True

@@ -7,7 +7,6 @@ import bpy
 
 from ._shared import (
     finite_number,
-    light_snapshot,
     object_in_scene,
     patch_properties,
     resolve_engine,
@@ -127,6 +126,18 @@ def _restore_render_result(snapshot):
         return not snapshot["pixels"] and tuple(image.size) == snapshot["size"]
 
 
+def _matched_state(scene):
+    """Name the lights and world state a preview was rendered under, without echoing their state."""
+    names = sorted(obj.name for obj in scene.objects if obj.type == "LIGHT")
+    return {
+        "world": scene.world.name if scene.world else None,
+        "exposure": float(scene.view_settings.exposure),
+        "view_transform": scene.view_settings.view_transform,
+        "lights": names,
+        "light_count": len(names),
+    }
+
+
 class LightingRenderHandlers:
     """Configure lighting-sensitive render state and produce state-restored preview images."""
 
@@ -137,6 +148,7 @@ class LightingRenderHandlers:
         preset=None,
         cycles=None,
         eevee=None,
+        detail=False,
     ):
         """Atomically patch allowlisted Cycles and/or EEVEE lighting-quality properties."""
         scene = scene_by_name(scene_name)
@@ -173,24 +185,38 @@ class LightingRenderHandlers:
         translated_eevee = _translated_eevee_patch(eevee_patch)
         _validate_quality_owner(cycles_owner, cycles_patch, CYCLES_FIELDS)
         _validate_quality_owner(eevee_owner, translated_eevee, set(EEVEE_FIELD_MAP.values()))
-        before = _quality_snapshot(scene)
+        before = _quality_snapshot(scene) if detail else None
+        applied = {}
         changes = []
         try:
-            for owner, patch in ((cycles_owner, cycles_patch), (eevee_owner, translated_eevee)):
+            for prefix, owner, patch, field_map in (
+                ("cycles.", cycles_owner, cycles_patch, {}),
+                ("eevee.", eevee_owner, eevee_patch, EEVEE_FIELD_MAP),
+            ):
                 for field, value in patch.items():
-                    changes.append((owner, field, getattr(owner, field)))
-                    setattr(owner, field, value)
+                    rna_field = field_map.get(field, field)
+                    changes.append((owner, rna_field, getattr(owner, rna_field)))
+                    setattr(owner, rna_field, value)
+                    applied[prefix + field] = (owner, rna_field)
         except Exception:
             _restore_properties(changes)
             raise
-        after = _quality_snapshot(scene)
+        if detail:
+            return {
+                "scene": scene.name,
+                "target_engine": target_engine,
+                "preset": preset,
+                "changed": sorted(applied),
+                "before": before,
+                "after": _quality_snapshot(scene),
+                "changed_resources": [scene.name],
+            }
         return {
             "scene": scene.name,
             "target_engine": target_engine,
             "preset": preset,
-            "expanded_values": {"cycles": cycles_patch, "eevee": eevee_patch},
-            "before": before,
-            "after": after,
+            "changed": sorted(applied),
+            "after": {path: getattr(owner, field) for path, (owner, field) in applied.items()},
             "changed_resources": [scene.name],
         }
 
@@ -348,12 +374,7 @@ class LightingRenderHandlers:
             "width": int(width),
             "height": int(height),
             "outputs": outputs,
-            "matched_state": {
-                "world": scene.world.name if scene.world else None,
-                "exposure": float(scene.view_settings.exposure),
-                "view_transform": scene.view_settings.view_transform,
-                "lights": [light_snapshot(obj) for obj in scene.objects if obj.type == "LIGHT"],
-            },
+            "matched_state": _matched_state(scene),
             "warnings": [restore_warning] if restore_warning else [],
             "changed_objects": [],
             "changed_resources": [],

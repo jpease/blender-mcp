@@ -111,6 +111,35 @@ def _shortening_warning(key: str, kept: int, total: int, resume: str) -> str:
     )
 
 
+def _pagination_names(owner: dict, key: str) -> dict[str, str] | None:
+    """
+    Find the pagination keys that describe one page of records.
+
+    A payload pages either with bare names beside an `items` list or with names prefixed by the
+    list's own key, which is how `inspect_lighting_setup` reports `lights_truncated`. Without
+    both spellings the shortening would leave a reply saying `truncated: false` about a page it
+    had just cut.
+
+    Args:
+        owner: The dict holding the page.
+        key: The key whose value is the list of records.
+
+    Returns:
+        The `truncated`/`offset`/`next_offset`/`returned_count` names in use, or None when the
+        page carries no pagination to update.
+
+    """
+    for prefix in ("", f"{key}_"):
+        if f"{prefix}truncated" in owner:
+            return {
+                "truncated": f"{prefix}truncated",
+                "offset": f"{prefix}offset",
+                "next_offset": f"{prefix}next_offset",
+                "returned_count": f"{prefix}returned_count",
+            }
+    return None
+
+
 def _fit_budget(reply: dict) -> None:
     """
     Shorten the longest page of records in `reply` until the encoded reply fits the budget.
@@ -137,17 +166,17 @@ def _fit_budget(reply: dict) -> None:
     owner, key = max(pages, key=lambda page: len(to_json(page[0][page[1]], fallback=str)))
     records = owner[key]
     total = len(records)
-    paged = "truncated" in owner
-    start = int(owner.get("offset") or 0) if paged else 0
-    resume = f"continue with offset={start + total}" if paged else "rerun with a narrower scope to see the rest"
+    names = _pagination_names(owner, key)
+    start = int(owner.get(names["offset"]) or 0) if names else 0
+    resume = f"continue with offset={start + total}" if names else "rerun with a narrower scope to see the rest"
     # The warning and the pagination keys are part of the reply, so both are in place, at their
     # widest, while the page is measured. Writing them afterwards would push a reply that just
     # fitted back over the budget - `next_offset` is a key some payloads do not carry at all.
-    if paged:
-        owner["truncated"] = True
-        owner["next_offset"] = start + total
-        if "returned_count" in owner:
-            owner["returned_count"] = total
+    if names:
+        owner[names["truncated"]] = True
+        owner[names["next_offset"]] = start + total
+        if names["returned_count"] in owner:
+            owner[names["returned_count"]] = total
     reply["warnings"].append(_shortening_warning(key, total, total, resume))
     # Bytes grow with the record count, so the largest page that fits is a bisection, not a walk:
     # a 500-bone pose would otherwise re-encode the whole reply 500 times.
@@ -161,11 +190,11 @@ def _fit_budget(reply: dict) -> None:
             high = middle - 1
     kept = low
     owner[key] = records[:kept]
-    if paged:
-        owner["next_offset"] = start + kept
-        if "returned_count" in owner:
-            owner["returned_count"] = kept
-        resume = f"continue with offset={owner['next_offset']}"
+    if names:
+        owner[names["next_offset"]] = start + kept
+        if names["returned_count"] in owner:
+            owner[names["returned_count"]] = kept
+        resume = f"continue with offset={owner[names['next_offset']]}"
     reply["warnings"][-1] = _shortening_warning(key, kept, total, resume)
 
 

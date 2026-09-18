@@ -470,10 +470,10 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 
 # A ceiling, not a target: lower it when the payload shrinks. Raising it is a decision to record
 # in the commit message.
-SHOT_MODE_BYTE_CEILING = 189_318
+SHOT_MODE_BYTE_CEILING = 193_438
 
 # The same rule for the default, core-only surface.
-DEFAULT_MODE_BYTE_CEILING = 65_537
+DEFAULT_MODE_BYTE_CEILING = 66_862
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

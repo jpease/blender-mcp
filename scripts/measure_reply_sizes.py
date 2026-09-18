@@ -102,22 +102,24 @@ _SOLVED_FLOATS: tuple[float, ...] = (
 )
 
 
-def _floats(count: int, offset: int = 0) -> list[float]:
+def _floats(count: int, offset: int = 0, *, decimals: int | None = None) -> list[float]:
     """
     Take `count` real Blender floats, so a fixture's digit widths match a real reply.
 
     Args:
         count: How many values to take.
         offset: Where to start in `_SOLVED_FLOATS`, so sibling fields differ.
+        decimals: Round to this many decimals, for a handler that publishes rounded floats.
 
     Returns:
         list[float]: The values, wrapping around the pool.
 
     """
-    return [_SOLVED_FLOATS[(offset + index) % len(_SOLVED_FLOATS)] for index in range(count)]
+    values = [_SOLVED_FLOATS[(offset + index) % len(_SOLVED_FLOATS)] for index in range(count)]
+    return values if decimals is None else [round(value, decimals) for value in values]
 
 
-def _matrix(offset: int = 0) -> list[list[float]]:
+def _matrix(offset: int = 0, *, decimals: int | None = None) -> list[list[float]]:
     """
     Build one 4x4 row-major matrix, as every handler publishes matrices.
 
@@ -127,15 +129,17 @@ def _matrix(offset: int = 0) -> list[list[float]]:
 
     Args:
         offset: Where to start in `_SOLVED_FLOATS`.
+        decimals: Round to this many decimals, for a handler that publishes rounded matrices.
 
     Returns:
         list[list[float]]: Three solved rows and the affine bottom row.
 
     """
-    return [*(_floats(4, offset + 4 * row) for row in range(3)), [0.0, 0.0, 0.0, 1.0]]
+    rows = (_floats(4, offset + 4 * row, decimals=decimals) for row in range(3))
+    return [*rows, [0.0, 0.0, 0.0, 1.0]]
 
 
-def _transform(offset: int = 0, *, local_matrix: bool = True) -> dict[str, object]:
+def _transform(offset: int = 0, *, local_matrix: bool = True, decimals: int | None = None) -> dict[str, object]:
     """
     Mirror `handlers/camera/_shared.py:179 _transform_info` and `lighting/_shared.py transform_snapshot`.
 
@@ -143,26 +147,28 @@ def _transform(offset: int = 0, *, local_matrix: bool = True) -> dict[str, objec
         offset: Where to start in `_SOLVED_FLOATS`.
         local_matrix: True for the camera variant, which publishes a local matrix too;
             False for the light variant, which publishes only the world one.
+        decimals: Round to this many decimals; the lighting variant rounds, the camera one
+            does not.
 
     Returns:
         dict[str, object]: `local` and `world` blocks.
 
     """
     local: dict[str, object] = {
-        "location": _floats(3, offset),
+        "location": _floats(3, offset, decimals=decimals),
         "rotation_mode": "XYZ",
-        "rotation": _floats(3, offset + 3),
-        "scale": _floats(3, offset + 6),
+        "rotation": _floats(3, offset + 3, decimals=decimals),
+        "scale": _floats(3, offset + 6, decimals=decimals),
     }
     if local_matrix:
-        local["matrix"] = _matrix(offset)
+        local["matrix"] = _matrix(offset, decimals=decimals)
     return {
         "local": local,
         "world": {
-            "location": _floats(3, offset),
-            "rotation_quaternion": _floats(4, offset + 12),
-            "scale": _floats(3, offset + 6),
-            "matrix": _matrix(offset),
+            "location": _floats(3, offset, decimals=decimals),
+            "rotation_quaternion": _floats(4, offset + 12, decimals=decimals),
+            "scale": _floats(3, offset + 6, decimals=decimals),
+            "matrix": _matrix(offset, decimals=decimals),
         },
     }
 
@@ -417,9 +423,36 @@ def _render_info(engine: str, samples: int) -> dict[str, object]:
     }
 
 
+# `handlers/lighting/_shared.py:38 TRANSFORM_DECIMALS`: every lighting transform float is rounded.
+_LIGHT_DECIMALS = 6
+
+
+def _light_summary(index: int) -> dict[str, object]:
+    """
+    Mirror `handlers/lighting/_shared.py:288 light_summary`, the default inventory record.
+
+    Args:
+        index: Which light, so names and locations differ as they do in a real scene.
+
+    Returns:
+        dict[str, object]: The trimmed light record.
+
+    """
+    return {
+        "object": f"Light_{index:03d}",
+        "light_data": f"Light_{index:03d} Light",
+        "light_type": "AREA",
+        "energy": 1000.0,
+        "color": [1.0, 1.0, 1.0],
+        "location_world": _floats(3, index, decimals=_LIGHT_DECIMALS),
+        "hidden_viewport": False,
+        "hidden_render": False,
+    }
+
+
 def _light_snapshot(index: int, *, include_nodes: bool = False) -> dict[str, object]:
     """
-    Mirror `handlers/lighting/_shared.py:275 light_snapshot`, one light's inventory record.
+    Mirror `handlers/lighting/_shared.py:304 light_snapshot`, one light's `detail=True` record.
 
     Args:
         index: Which light, so names and transforms differ as they do in a real scene.
@@ -434,7 +467,7 @@ def _light_snapshot(index: int, *, include_nodes: bool = False) -> dict[str, obj
         "object": f"Light_{index:03d}",
         "light_data": f"Light_{index:03d} Light",
         "light_type": "AREA",
-        "transform": _transform(index, local_matrix=False),
+        "transform": _transform(index, local_matrix=False, decimals=_LIGHT_DECIMALS),
         "settings": dict(_LIGHT_SETTINGS),
         "data_users": 1,
         "collections": ["Lights"],
@@ -475,45 +508,48 @@ _LIBRARY_DETAILS: Mapping[str, object] = MappingProxyType(
 )
 
 # Page sizes the handlers apply to their own record lists, mirrored here so a count above a cap
-# grows only a reply's `*_count` and `*_truncated` fields, exactly as it does in Blender.
-_MAX_LISTED_DATABLOCKS = 100  # `handlers/linking.py:52`, for every published datablock list
+# grows only a reply's count and pagination fields, exactly as it does in Blender.
+_MAX_LISTED_NAMES = 10  # `handlers/linking.py:53`, the default page of datablock names
 _MESH_ELEMENT_PAGE = 100  # `tools/viewport.py get_mesh_data` default limit
 _SCENE_OBJECT_PAGE = 25  # `tools/scene.py list_scene_objects` default limit
-_LIGHT_PAGE = 50  # `handlers/lighting/inspection.py:203 list_lights` default limit
+_LIGHT_PAGE = 50  # `handlers/lighting/inspection.py:204 list_lights` default limit
 _BONE_PAGE = 100  # `tools/character_rigging/posing.py:58 list_character_bones` default limit
 
 _LIBRARY_NOTE = (
     "Every datablock linked from this library now has a new session_uid; references read before "
-    "this call name nothing. Read the datablocks listed here, or list_libraries, before the next command."
+    "this call name nothing. Re-read them with detail=true here, or with list_libraries, before the next command."
 )
 
 
 def _linked_datablocks(total: int) -> dict[str, object]:
     """
-    Mirror `handlers/linking.py:278 _linked_datablocks` through `:250 _bounded_list`.
+    Mirror `handlers/linking.py:302 _linked_datablocks` through `:253 _record_page`, without `detail`.
+
+    The reference library links materials, meshes and the collection they hang off, so the
+    `by_type` histogram a real reply carries is three entries wide. `detail=true` would
+    replace `names` with `handlers/linking.py:192 _linked_entry` records; the default is
+    what every call that does not ask for them pays.
 
     Args:
         total: How many datablocks the library links.
 
     Returns:
-        dict[str, object]: `datablocks` (capped), `datablock_count`, `datablocks_truncated`.
+        dict[str, object]: `{"datablocks": {...}}` - the exact total, the counts by type and
+        one page of names.
 
     """
-    listed = min(total, _MAX_LISTED_DATABLOCKS)
+    listed = min(total, _MAX_LISTED_NAMES)
     return {
-        # `handlers/linking.py:190 _linked_entry`.
-        "datablocks": [
-            {
-                "session_uid": 1059 + index,
-                "name": f"prop_{index:03d}_mat",
-                "id_type": "MATERIAL",
-                "is_library_indirect": True,
-                "is_missing": False,
-            }
-            for index in range(listed)
-        ],
-        "datablock_count": total,
-        "datablocks_truncated": total > _MAX_LISTED_DATABLOCKS,
+        "datablocks": {
+            "total": total,
+            "by_type": {"COLLECTION": 1, "MATERIAL": total // 2, "MESH": total - 1 - total // 2},
+            "offset": 0,
+            "limit": _MAX_LISTED_NAMES,
+            "returned_count": listed,
+            "truncated": total > _MAX_LISTED_NAMES,
+            "next_offset": listed if total > _MAX_LISTED_NAMES else None,
+            "names": [f"prop_{index:03d}_mat" for index in range(listed)],
+        }
     }
 
 
@@ -537,11 +573,18 @@ def _bone_name(index: int) -> str:
     return stem if generation == 0 else f"{stem}.{generation:03d}"
 
 
+# `handlers/character_rigging/posing.py:76 _POSE_MATRIX_DECIMALS`: the default pose record
+# rounds its one matrix; `detail=True` publishes Blender's own precision instead.
+_POSE_DECIMALS = 6
+
+
 def _bone_pose_entries(bones: int) -> list[dict[str, object]]:
     """
-    Mirror `handlers/character_rigging/posing.py:74 _apply_pose_specs`, one entry per posed bone.
+    Mirror `handlers/character_rigging/posing.py:92 _apply_pose_specs`, one entry per posed bone.
 
-    Each entry carries the bone's pose matrix twice, before and after.
+    The default entry carries the resulting pose matrix once, rounded; `detail=True` adds the
+    pre-call matrix and drops the rounding, and is not what this measures. The captured call
+    posed each bone by `matrix`, which is why its keys cover location, rotation and scale.
 
     Args:
         bones: How many bones the call posed.
@@ -553,10 +596,8 @@ def _bone_pose_entries(bones: int) -> list[dict[str, object]]:
     return [
         {
             "bone": _bone_name(index),
-            "before_pose_matrix": _matrix(index),
-            "after_pose_matrix": _matrix(index + 2),
-            "input_space": "LOCAL",
-            "custom_properties": [],
+            "channels": ["matrix"],
+            "after_pose_matrix": _matrix(index + 2, decimals=_POSE_DECIMALS),
         }
         for index in range(bones)
     ]
@@ -906,21 +947,23 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "objects": [],
             "overrides": [],
         },
-        # `handlers/linking.py:962 list_libraries`.
+        # `handlers/linking.py:1011 list_libraries`.
         "list_libraries": lambda scale: {
             "libraries": [{**_LIBRARY_DETAILS, **_linked_datablocks(scale.linked_datablocks)}],
             "total": 1,
             "offset": 0,
             "limit": 25,
-            "has_more": False,
+            "returned_count": 1,
+            "truncated": False,
+            "next_offset": None,
         },
-        # `handlers/linking.py:989 reload_library`.
+        # `handlers/linking.py:1042 reload_library`.
         "reload_library": lambda scale: {
             "library": dict(_LIBRARY_DETAILS),
             **_linked_datablocks(scale.linked_datablocks),
             "note": _LIBRARY_NOTE,
         },
-        # `handlers/linking.py:1043 relocate_library`.
+        # `handlers/linking.py:1098 relocate_library`.
         "relocate_library": lambda scale: {
             "library": dict(_LIBRARY_DETAILS),
             **_linked_datablocks(scale.linked_datablocks),
@@ -928,7 +971,7 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "name_after": "canon.blend",
             "note": _LIBRARY_NOTE,
         },
-        # `handlers/linking.py:918 create_override`.
+        # `handlers/linking.py:960 create_override` over `:597 _override_hierarchy`.
         "create_override": lambda scale: {
             "override": {
                 "session_uid": 1139,
@@ -941,21 +984,8 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             },
             "scene_uid": 34,
             "replaced_instances": 1,
-            # `handlers/linking.py:211 _override_entry`.
-            "objects": [
-                {
-                    "session_uid": 1140 + index,
-                    "name": f"prop_{index:03d}.001",
-                    "is_override": True,
-                    "is_editable": True,
-                    "is_system_override": False,
-                    "reference_uid": 979 + index,
-                    "hierarchy_root_uid": 1139,
-                }
-                for index in range(min(scale.override_objects, _MAX_LISTED_DATABLOCKS))
-            ],
-            "object_count": scale.override_objects,
-            "objects_truncated": scale.override_objects > _MAX_LISTED_DATABLOCKS,
+            # The records are `detail`; `changed_objects` carries the names either way.
+            "objects": {"total": scale.override_objects, "by_type": {"OBJECT": scale.override_objects}},
             "changed_objects": [f"prop_{index:03d}.001" for index in range(scale.override_objects)],
         },
         "unlink_libraries": lambda scale: {
@@ -1184,7 +1214,7 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "object": "Bounce",
             "light_data": "Bounce Light",
             "light_type": "AREA",
-            "transform": _transform(local_matrix=False),
+            "transform": _transform(local_matrix=False, decimals=_LIGHT_DECIMALS),
             "settings": dict(_LIGHT_SETTINGS),
             "scene_unit_scale": 1.0,
             "changed_objects": ["Bounce"],
@@ -1202,14 +1232,15 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "changed_objects": ["Key"],
             "changed_resources": ["Key Light"],
         },
-        # `handlers/lighting/inspection.py:224 inspect_light`.
+        # `handlers/lighting/inspection.py:227 inspect_light`.
         "inspect_light": lambda _scale: {"scene": "Scene", **_light_snapshot(0, include_nodes=True)},
-        # `handlers/lighting/inspection.py:203 list_lights`.
+        # `handlers/lighting/inspection.py:204 list_lights`.
         "list_lights": lambda scale: {
             "scene": "Scene",
             "collection": None,
             "light_type_filter": None,
-            "lights": [_light_snapshot(index) for index in range(min(scale.lights, _LIGHT_PAGE))],
+            "detail": False,
+            "lights": [_light_summary(index) for index in range(min(scale.lights, _LIGHT_PAGE))],
             "total": scale.lights,
             "offset": 0,
             "limit": _LIGHT_PAGE,
@@ -1218,7 +1249,7 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "next_offset": None,
             "scene_unit_scale": 1.0,
         },
-        # `handlers/lighting/inspection.py:230 inspect_lighting_setup`.
+        # `handlers/lighting/inspection.py:233 inspect_lighting_setup`.
         "inspect_lighting_setup": lambda scale: {
             "scene": "Scene",
             "render_engine": "CYCLES",
@@ -1238,7 +1269,8 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
                 "color": [1.0, 1.0, 1.0],
                 "node_tree": dict(_MANAGED_WORLD_GRAPH),
             },
-            "lights": [_light_snapshot(index) for index in range(min(scale.lights, _LIGHT_PAGE))],
+            "lights_detail": False,
+            "lights": [_light_summary(index) for index in range(min(scale.lights, _LIGHT_PAGE))],
             "lights_total": scale.lights,
             "lights_offset": 0,
             "lights_limit": _LIGHT_PAGE,
@@ -1275,13 +1307,14 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "truncated": False,
             "next_offset": None,
         },
+        # `handlers/lighting/construction.py:218 aim_light`.
         "aim_light": lambda _scale: {
             "light": "Key",
             "method": "STATIC_ROTATION",
-            "target": _floats(3, 7),
-            "world_direction": _floats(3, 2),
+            "target": _floats(3, 7, decimals=_LIGHT_DECIMALS),
+            "world_direction": _floats(3, 2, decimals=_LIGHT_DECIMALS),
             "constraint": None,
-            "transform": _transform(local_matrix=False),
+            "transform": _transform(local_matrix=False, decimals=_LIGHT_DECIMALS),
             "changed_objects": ["Key"],
         },
         "configure_light_linking": lambda _scale: {
@@ -1311,7 +1344,7 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
                     "object": f"Hero {role.title()}",
                     "light_data": f"Hero {role.title()} Light",
                     "energy": 3307.5,
-                    "transform": _transform(index, local_matrix=False),
+                    "transform": _transform(index, local_matrix=False, decimals=_LIGHT_DECIMALS),
                 }
                 for index, role in enumerate(("key", "fill", "rim"))
             ],
@@ -1359,25 +1392,28 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "exposure_multiplier": 1.0,
             "changed_resources": ["Scene"],
         },
-        # `handlers/lighting/rendering.py:133 configure_lighting_quality`.
+        # `handlers/lighting/rendering.py:203 configure_lighting_quality`: the default reply.
+        # `detail=True` returns the two `_QUALITY_SNAPSHOT` blocks instead
+        # (`handlers/lighting/rendering.py:193`), which is the shape this entry measured before.
         "configure_lighting_quality": lambda _scale: {
             "scene": "Scene",
             "target_engine": "EEVEE",
             "preset": "FINAL",
-            "expanded_values": {
-                "cycles": {},
-                "eevee": {
-                    "render_samples": 128,
-                    "shadow_ray_count": 4,
-                    "shadow_step_count": 16,
-                    "volumetric_samples": 128,
-                },
+            "changed": [
+                "eevee.render_samples",
+                "eevee.shadow_ray_count",
+                "eevee.shadow_step_count",
+                "eevee.volumetric_samples",
+            ],
+            "after": {
+                "eevee.render_samples": 128,
+                "eevee.shadow_ray_count": 4,
+                "eevee.shadow_step_count": 16,
+                "eevee.volumetric_samples": 128,
             },
-            "before": dict(_QUALITY_SNAPSHOT),
-            "after": dict(_QUALITY_SNAPSHOT),
             "changed_resources": ["Scene"],
         },
-        # `handlers/lighting/rendering.py:238 render_lighting_preview`.
+        # `handlers/lighting/rendering.py:265 render_lighting_preview`.
         "render_lighting_preview": lambda scale: {
             "scene": "Scene",
             "camera": "Camera_Hero",
@@ -1393,18 +1429,20 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
                     "samples": 32,
                 }
             ],
+            # `handlers/lighting/rendering.py:129 _matched_state`.
             "matched_state": {
                 "world": "World",
                 "exposure": 0.0,
                 "view_transform": "AgX",
-                "lights": [_light_snapshot(index) for index in range(min(scale.lights, _LIGHT_PAGE))],
+                "lights": [f"Light_{index:03d}" for index in range(scale.lights)],
+                "light_count": scale.lights,
             },
             "warnings": [],
             "changed_objects": [],
             "changed_resources": [],
         },
         # --- character posing: handlers/character_rigging/posing.py ---------------------
-        # `handlers/character_rigging/posing.py:176 list_character_bones`, paged at 200.
+        # `handlers/character_rigging/posing.py:201 list_character_bones`, paged at 200.
         "list_character_bones": lambda scale: {
             "armature_object": "Hero_Rig",
             "bones": {
@@ -1419,20 +1457,26 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
                 "next_offset": _BONE_PAGE if scale.bones > _BONE_PAGE else None,
             },
         },
+        # `handlers/character_rigging/posing.py:228 set_character_pose`, which pages no bones:
+        # the reply budget shortens `bones`, and `changed_bones` is what stays complete.
         "set_character_pose": lambda scale: {
             "armature_object": "Hero_Rig",
             "space": "LOCAL",
+            "changed_bones": [_bone_name(index) for index in range(scale.bones)],
             "bones": _bone_pose_entries(scale.bones),
             "changed_objects": ["Hero_Rig"],
         },
+        # `handlers/character_rigging/posing.py:271 keyframe_character_pose`; its per-bone pose
+        # records are `detail=True` only, so the default reply carries the keys and the names.
         "keyframe_character_pose": lambda scale: {
             "armature_object": "Hero_Rig",
             "action": "Hero_Action",
             "action_slot": "OBHero_Rig",
             "keying_policy": "INSERT",
+            "changed_bones": [_bone_name(index) for index in range(scale.bones)],
             "changed_keys": [
-                {"bone": entry["bone"], "data_path": path, "frame": 1.0}
-                for entry in _bone_pose_entries(scale.bones)
+                {"bone": _bone_name(index), "data_path": path, "frame": 1.0}
+                for index in range(scale.bones)
                 for path in ("location", "rotation_quaternion", "scale")
             ],
             "interpolation_updates": 230,
@@ -1543,13 +1587,13 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             **_render_info("CYCLES", 256),
             "compositor": {"use_nodes": True, "node_tree": None, "node_count": 0, "link_count": 0},
         },
-        # `handlers/rendering.py:460 configure_render_settings`: `before`, `after` and
-        # `settings` are three separate `_render_info(scene)` blocks in one reply.
+        # `handlers/rendering.py:542 configure_render_settings`: the default reply carries only
+        # the patched property paths and their resulting values. `detail=True` returns the two
+        # full `_render_info(scene)` blocks instead (`handlers/rendering.py:534`).
         "configure_render_settings": lambda _scale: {
+            "scene": "Scene",
             "changed": ["cycles_samples", "engine", "resolution_x", "resolution_y"],
-            "before": _render_info("BLENDER_EEVEE", 4096),
-            "after": _render_info("CYCLES", 256),
-            "settings": _render_info("CYCLES", 256),
+            "after": {"engine": "CYCLES", "resolution_x": 1920, "resolution_y": 1080, "cycles_samples": 256},
             "changed_resources": ["Scene"],
         },
         "manage_view_layers": lambda _scale: {
@@ -2230,25 +2274,6 @@ def _shortened_pages(value: object, limit: int) -> object:
     return value
 
 
-def _named_bones_only(data: object) -> object:
-    """
-    Replace a pose reply's per-bone before/after matrix records with the bone names.
-
-    Args:
-        data: The envelope's `data` value.
-
-    Returns:
-        object: The copy, unchanged when there is no such `bones` list.
-
-    """
-    if not isinstance(data, dict) or not isinstance(data.get("bones"), list):
-        return data
-    records = data["bones"]
-    if not all(isinstance(record, dict) and "before_pose_matrix" in record for record in records):
-        return data
-    return {**data, "bones": [record["bone"] for record in records]}
-
-
 def _repriced(report: ReplyReport, rewrite: Callable[[object], object]) -> int:
     """
     Re-serialize one reply with a candidate rule applied and measure what it saved.
@@ -2311,10 +2336,6 @@ def _rule_savings(reports: Sequence[ReplyReport]) -> list[tuple[str, int, int]]:
         (
             "page every embedded record list at 10 entries instead of the handlers' 12-291",
             lambda data: _shortened_pages(data, 10),
-        ),
-        (
-            "replace the per-bone before/after 4x4 matrices in a pose reply with the bone names",
-            _named_bones_only,
         ),
     ]
     priced = []

@@ -105,6 +105,12 @@ pairs page independent result sets. A validation tool that reports truncation wi
 offset must be rerun with a narrower object or collection scope. Catalog tools without limit/offset
 return only the provider-bounded result set; do not assume the result is a complete provider catalog.
 
+Replies are bounded. A reply returns what changed, the identifiers needed to find the rest, and
+the facts the call asked for; full state is a `detail=true` request, not the default. Every reply
+is also capped at 8 KiB, so the largest page of records in it may arrive shortened - the warning
+says so and names the offset to continue from. Identifiers are never dropped to make room: a
+shortened page still carries whole records, and the names of what changed stay complete.
+
 Before editing, inspect the scene (list_scene_objects, get_object_info, get_mesh_data)
 rather than assuming which object is active or selected. Prefer non-destructive tools
 (live modifiers, ND) over apply=True/cleanup tools, which are irreversible from this

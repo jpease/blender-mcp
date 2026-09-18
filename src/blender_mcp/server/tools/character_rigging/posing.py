@@ -100,6 +100,7 @@ async def set_character_pose(
     space: Literal["LOCAL", "LOCAL_WITH_PARENT", "POSE", "WORLD"] = "LOCAL",
     reset_unspecified: bool = False,
     confirm_reset_unspecified: bool = False,
+    detail: bool = False,
 ) -> dict:
     """
     Apply explicit bone transforms without inserting animation keys.
@@ -108,6 +109,17 @@ async def set_character_pose(
     explicitly set on a pose entry are sent and changed; bones not named in poses are left as-is
     unless reset_unspecified=True (which requires confirm_reset_unspecified) resets every other
     pose bone to rest. Use keyframe_character_pose instead to record this as animation.
+
+    Args:
+        detail: Also report each bone's pre-call pose matrix, and report both matrices at
+            Blender's own precision instead of rounded to six decimal places.
+
+    Returns:
+        armature_object, space, changed_bones naming every posed bone, and bones with one
+        record per posed bone (bone, the channels the call set - a custom property appears as
+        its data path - and after_pose_matrix, the armature-space matrix it ended on). A long
+        pose shortens bones to fit the reply budget; changed_bones stays complete.
+
     """
     if reset_unspecified and not confirm_reset_unspecified:
         raise ValueError("confirm_reset_unspecified=True is required to reset unspecified pose bones")
@@ -120,6 +132,7 @@ async def set_character_pose(
             "space": space,
             "reset_unspecified": reset_unspecified,
             "confirm_reset_unspecified": confirm_reset_unspecified,
+            "detail": detail,
         },
         [armature_object_name],
     )
@@ -137,6 +150,7 @@ async def keyframe_character_pose(
     interpolation: Literal["CONSTANT", "LINEAR", "BEZIER"] = "BEZIER",
     action_policy: Literal["CREATE", "REUSE"] = "CREATE",
     action_slot_identifier: str | None = None,
+    detail: bool = False,
 ) -> dict:
     """
     Apply a pose and insert, replace, or remove exact keys in a named action.
@@ -146,7 +160,19 @@ async def keyframe_character_pose(
     bone_name must name an existing pose bone on armature_object_name. action_slot_identifier
     selects which of the action's animation slots to key by its `identifier`; it is only required
     when the action already has multiple candidate slots and none is unambiguously suitable
-    (inspect the action's slots before assuming this can be omitted).
+    (inspect the action's slots before assuming this can be omitted). The pose itself is restored
+    once the keys are written, so the action holds it and the rig does not.
+
+    Args:
+        detail: Also report, as "bones", the pose each bone was keyed at - its pre-call and
+            keyed armature-space matrices, at Blender's own precision.
+
+    Returns:
+        armature_object, action, action_slot, keying_policy, changed_bones naming every posed
+        bone, changed_keys with one entry per keyed channel (bone, data_path, frame), and
+        interpolation_updates. A long pose shortens changed_keys to fit the reply budget;
+        changed_bones stays complete.
+
     """
     if keying_policy == "REMOVE" and action_policy != "REUSE":
         raise ValueError("Removing keys requires action_policy='REUSE'")
@@ -163,6 +189,7 @@ async def keyframe_character_pose(
             "interpolation": interpolation,
             "action_policy": action_policy,
             "action_slot_identifier": action_slot_identifier,
+            "detail": detail,
         },
         [armature_object_name],
     )

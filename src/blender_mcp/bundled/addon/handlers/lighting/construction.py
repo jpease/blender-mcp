@@ -21,6 +21,7 @@ from ._shared import (
     object_in_scene,
     patch_properties,
     required_name,
+    rounded,
     scene_by_name,
     transform_snapshot,
     validate_light_patch,
@@ -265,8 +266,8 @@ class LightConstructionHandlers:
             return {
                 "light": light.name,
                 "method": method,
-                "target": list(world_target),
-                "world_direction": list(direction),
+                "target": rounded(world_target),
+                "world_direction": rounded(direction),
                 "constraint": None,
                 "transform": transform_snapshot(light),
                 "changed_objects": [light.name],
@@ -321,8 +322,8 @@ class LightConstructionHandlers:
         return {
             "light": light.name,
             "method": method,
-            "target": list(world_target),
-            "world_direction": list(direction),
+            "target": rounded(world_target),
+            "world_direction": rounded(direction),
             "constraint": {
                 "name": constraint.name,
                 "type": constraint.type,

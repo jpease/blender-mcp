@@ -59,13 +59,27 @@ async def configure_lighting_quality(
     preset: Literal["PREVIEW", "BALANCED", "FINAL"] | None = None,
     cycles: CyclesLightingQuality | None = None,
     eevee: EeveeLightingQuality | None = None,
+    detail: bool = False,
 ) -> dict:
     """Patch only render settings that materially affect lighting quality and cost.
 
-    Choose an explicit preset or supply engine-specific patches. Presets expand to concrete values
-    in the result. ``BOTH`` requires settings for both engines unless a preset is supplied. The tool
-    never changes output size, path, color management, camera, or light energy; runtime RNA checks
-    prevent unsupported settings from being silently ignored.
+    Choose an explicit preset or supply engine-specific patches. ``BOTH`` requires settings for
+    both engines unless a preset is supplied. The tool never changes output size, path, color
+    management, camera, or light energy; runtime RNA checks prevent unsupported settings from
+    being silently ignored. The reply lists the engine-qualified property paths it wrote
+    ("changed", e.g. "eevee.render_samples") and maps each to its resulting value, so a preset's
+    expansion and any clamping are visible without a second call.
+
+    Args:
+        ctx: MCP request context.
+        scene_name: Exact name of the scene whose engine quality is patched.
+        target_engine: Which engine's settings the call may touch.
+        preset: Named quality expansion applied first; explicit engine fields override it.
+        cycles: Allowlisted Cycles sampling and light-path fields.
+        eevee: Allowlisted EEVEE sampling, shadow, ray-tracing, GI, and volume fields.
+        detail: Also return the whole allowlisted Cycles and EEVEE quality state before and after
+            the patch as "before" and "after" instead of the patched paths.
+
     """
     cycles_payload = dump_input(cycles)
     eevee_payload = dump_input(eevee)
@@ -86,6 +100,7 @@ async def configure_lighting_quality(
             "preset": preset,
             "cycles": cycles_payload,
             "eevee": eevee_payload,
+            "detail": detail,
         },
     )
 
@@ -173,6 +188,8 @@ async def render_lighting_preview(
     requires ``confirm_long_render``. Existing files are overwritten only with
     ``confirm_overwrite``. Without output paths, PNGs are returned inline and temporary files are
     removed. The final content item is the normal result envelope; inspect it along with the images.
+    Its ``matched_state`` names every light the frame was rendered under rather than echoing their
+    state; call ``inspect_lighting_setup`` for that.
     """
     if target_engine in {"CYCLES", "BOTH"} and samples > 64 and not confirm_long_render:
         raise ToolError("Cycles previews above 64 samples require confirm_long_render=true")

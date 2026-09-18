@@ -203,11 +203,27 @@ async def inspect_render_setup(
 
 
 @mcp.tool()
-async def configure_render_settings(ctx: Context, scene_name: str, patch: RenderSettingsPatch) -> dict:
-    """Patch validated scene render settings without rendering or writing a file."""
+async def configure_render_settings(
+    ctx: Context, scene_name: str, patch: RenderSettingsPatch, detail: bool = False
+) -> dict:
+    """
+    Patch validated scene render settings without rendering or writing a file.
+
+    The reply names the scene, lists the property paths the patch wrote ("changed", dotted for
+    nested patches such as "output.image_format") and maps each to its resulting value.
+
+    Args:
+        ctx: MCP request context.
+        scene_name: Exact name of the scene to patch.
+        patch: Strict typed settings patch; omitted fields remain unchanged.
+        detail: Also return the whole render state before and after the patch as "before" and
+            "after" - engine, camera, resolution, frame range, film, output, engine sampling,
+            metadata, multiview, every view layer, compositor - instead of the patched paths.
+
+    """
     return await _call(
         "configure_render_settings",
-        {"scene_name": scene_name, "patch": patch.model_dump(exclude_none=True)},
+        {"scene_name": scene_name, "patch": patch.model_dump(exclude_none=True), "detail": detail},
         changed_resources=[scene_name],
     )
 

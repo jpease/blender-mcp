@@ -19,13 +19,26 @@ async def list_lights(
     light_type: LightType | None = None,
     limit: Annotated[int, Field(ge=1, le=200)] = 50,
     offset: Annotated[int, Field(ge=0, le=9999)] = 0,
+    detail: bool = False,
 ) -> dict:
     """Inventory scene lights without changing selection, mode, or the active object.
 
-    Each record identifies the object and light datablock, world transform, energy/exposure,
-    color or Kelvin temperature, shadows, type-specific shape controls, collections, target
-    constraints, light group, and receiver/blocker collections. Continue with ``next_offset``
-    while ``truncated`` is true. Filter by collection or light type when planning a focused edit.
+    Each record names the light object and its datablock and reports type, energy, color,
+    world-space location, and whether the light is hidden in the viewport or the render.
+    Continue with ``next_offset`` while ``truncated`` is true. Filter by collection or light
+    type when planning a focused edit; inspect one light with ``inspect_light``.
+
+    Args:
+        ctx: MCP request context.
+        scene_name: Exact name of the scene whose lights are listed.
+        collection_name: Restrict the inventory to lights in this scene collection.
+        light_type: Restrict the inventory to one Blender light type.
+        limit: How many light records to return in this page.
+        offset: Where in the name-sorted light list this page starts.
+        detail: Return each light's full record instead - local and world transforms, every
+            shared and type-specific setting, collections, target constraints, light group,
+            and receiver/blocker collections. Costs roughly ten times the bytes per light.
+
     """
     return await asyncio.to_thread(
         call_blender,
@@ -36,6 +49,7 @@ async def list_lights(
             "light_type": light_type,
             "limit": limit,
             "offset": offset,
+            "detail": detail,
         },
     )
 
@@ -61,17 +75,28 @@ async def inspect_lighting_setup(
     scene_name: str,
     limit: Annotated[int, Field(ge=1, le=200)] = 50,
     offset: Annotated[int, Field(ge=0, le=9999)] = 0,
+    detail: bool = False,
 ) -> dict:
     """Capture a reproducible, read-only scene-lighting snapshot.
 
-    It includes the active engine, units, camera, color management, world graph, a paginated light
-    inventory, bounded emissive/volume/probe inventories, hidden lights, light links/groups, and
-    relevant Cycles and EEVEE quality settings. Use stable returned resource names in later tools.
+    It includes the active engine, units, camera, color management, world graph, a paginated
+    light inventory in the same trimmed form ``list_lights`` returns, bounded
+    emissive/volume/probe inventories, excluded collections, and relevant Cycles and EEVEE
+    quality settings. Use stable returned resource names in later tools.
+
+    Args:
+        ctx: MCP request context.
+        scene_name: Exact name of the scene to snapshot.
+        limit: How many light records the embedded inventory returns in this page.
+        offset: Where in the name-sorted light list that page starts.
+        detail: Return each light's full record instead, as ``list_lights(detail=True)`` does.
+            Everything outside the light inventory is unaffected.
+
     """
     return await asyncio.to_thread(
         call_blender,
         "inspect_lighting_setup",
-        {"scene_name": scene_name, "limit": limit, "offset": offset},
+        {"scene_name": scene_name, "limit": limit, "offset": offset, "detail": detail},
     )
 
 

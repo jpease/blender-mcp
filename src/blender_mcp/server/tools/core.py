@@ -7,7 +7,7 @@ from typing import Literal
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 
-from ...addon_manager import EXPECTED_ADDON_PROTOCOL_VERSION
+from ...addon_manager import EXPECTED_ADDON_PROTOCOL_VERSION, AddonHandshake
 from ..app import mcp
 from ..connection import force_addon_handshake, get_blender_connection
 from .envelope import ok
@@ -21,6 +21,65 @@ _STATUS_COMMANDS: dict[Provider, str] = {
     "sketchfab": "get_sketchfab_status",
     "nd": "get_nd_status",
 }
+
+# The provider-gated command each optional integration adds to the addon's handler table
+# (`server_core.py _build_command_handlers`). Its presence in the handshake's capability
+# list is that integration being enabled for the open .blend.
+_INTEGRATION_CAPABILITIES: dict[Provider, str] = {
+    "polyhaven": "import_polyhaven_asset",
+    "sketchfab": "import_sketchfab_model",
+    "nd": "nd_boolean",
+}
+
+
+def _status_payload(result: AddonHandshake, *, detail: bool) -> dict[str, object]:
+    """
+    Turn a handshake into the status an agent reads, summarizing the capability list.
+
+    The list is 291 command names; the server itself gates every command on it
+    (`connection.py`), so an agent needs how many there are and which optional
+    integrations they cover, not the names.
+
+    Args:
+        result: The handshake, already refreshed.
+        detail: Also carry the command names themselves.
+
+    Returns:
+        dict[str, object]: The payload documented by `get_addon_status`.
+
+    """
+    payload: dict[str, object] = {
+        "up_to_date": result.up_to_date,
+        "protocol_version": result.protocol_version,
+        "expected_protocol_version": EXPECTED_ADDON_PROTOCOL_VERSION,
+        "addon_version": result.addon_version,
+        "capability_count": len(result.capabilities),
+        "integrations_available": {
+            provider: command in result.capabilities for provider, command in _INTEGRATION_CAPABILITIES.items()
+        },
+        "blender_version": result.blender_version,
+        "writable_output_roots": result.writable_output_roots,
+        "file_roots": result.file_roots,
+        "file_roots_enforced": result.file_roots_enforced,
+        "current_filepath": result.current_filepath,
+        # Both halves: the epoch restarts at 0 with the addon, so it means
+        # nothing without its session_id.
+        "session_id": result.session_id,
+        "session_epoch": result.session_epoch,
+        # After an aborted file swap the addon refuses most commands and the
+        # open .blend must not be saved; without this it looks like a broken addon.
+        "session_indeterminate": result.session_indeterminate,
+        "source": result.source,
+        "warning": result.warning,
+        "update_command": "blender-mcp install-addon",
+        "after_install": (
+            "If the addon file was updated: in Blender, Preferences → Add-ons → "
+            "disable/enable 'Interface: Blender MCP', or restart Blender, then Start MCP Server."
+        ),
+    }
+    if detail:
+        payload["capabilities"] = result.capabilities
+    return payload
 
 
 @mcp.tool()
@@ -55,16 +114,20 @@ async def get_integration_status(ctx: Context, provider: Provider | None = None)
 
 
 @mcp.tool()
-async def get_addon_status(ctx: Context) -> dict:
+async def get_addon_status(ctx: Context, detail: bool = False) -> dict:
     """
     Check whether the connected Blender addon matches this MCP server version.
 
     Args:
         ctx: MCP request context.
+        detail: Also return every command name the addon advertises; the server already refuses
+            a command it does not, so the names only explain such a refusal.
 
     Returns:
-        "up_to_date" (bool), "protocol_version"/"expected_protocol_version", "addon_version", "capabilities",
-        "blender_version", "writable_output_roots" (empty when none), "file_roots"/"file_roots_enforced" (false:
+        "up_to_date" (bool), "protocol_version"/"expected_protocol_version", "addon_version",
+        "capability_count" and "integrations_available" (per-provider, whether the addon advertises that
+        integration's commands), "capabilities" (the command names, only with detail), "blender_version",
+        "writable_output_roots" (empty when none), "file_roots"/"file_roots_enforced" (false:
         paths unconfined), "current_filepath", "session_id"/"session_epoch" (re-read capabilities if the pair
         moves), "session_indeterminate" (true: a swap aborted; most commands refused, don't save over the file),
         "source", "warning", "update_command", "after_install".
@@ -78,33 +141,7 @@ async def get_addon_status(ctx: Context) -> dict:
         result = force_addon_handshake(blender)
         if result is None:
             raise ToolError("Could not determine addon status.")
-        payload = {
-            "up_to_date": result.up_to_date,
-            "protocol_version": result.protocol_version,
-            "expected_protocol_version": EXPECTED_ADDON_PROTOCOL_VERSION,
-            "addon_version": result.addon_version,
-            "capabilities": result.capabilities,
-            "blender_version": result.blender_version,
-            "writable_output_roots": result.writable_output_roots,
-            "file_roots": result.file_roots,
-            "file_roots_enforced": result.file_roots_enforced,
-            "current_filepath": result.current_filepath,
-            # Both halves: the epoch restarts at 0 with the addon, so it means
-            # nothing without its session_id.
-            "session_id": result.session_id,
-            "session_epoch": result.session_epoch,
-            # After an aborted file swap the addon refuses most commands and the
-            # open .blend must not be saved; without this it looks like a broken addon.
-            "session_indeterminate": result.session_indeterminate,
-            "source": result.source,
-            "warning": result.warning,
-            "update_command": "blender-mcp install-addon",
-            "after_install": (
-                "If the addon file was updated: in Blender, Preferences → Add-ons → "
-                "disable/enable 'Interface: Blender MCP', or restart Blender, then Start MCP Server."
-            ),
-        }
-        return ok(payload)
+        return ok(_status_payload(result, detail=detail))
     except ToolError:
         raise
     except Exception as e:

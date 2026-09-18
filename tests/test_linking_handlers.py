@@ -52,6 +52,7 @@ _UID = itertools.count(50_000)
 PAGE = 2
 MANY = 150
 LISTED_CAP = 100
+NAME_CAP = 10
 _COLLECTIONS = (
     "objects",
     "meshes",
@@ -1080,15 +1081,29 @@ def test_create_override_reports_same_named_linked_and_override_objects_distingu
     _library, collection = _linked(server, world, _canon(tmp_path, world))
     linked_body = collection.objects[0]
 
-    result = _run(server, "create_override", collection_uid=collection.session_uid)["result"]
+    result = _run(server, "create_override", collection_uid=collection.session_uid, detail=True)["result"]
 
     assert [o.name for o in world.data["objects"]].count("HeroBody") == len(("override", "linked original"))
-    (reported,) = result["objects"]
+    (reported,) = result["objects"]["records"]
     assert reported["name"] == "HeroBody"
     assert reported["session_uid"] != linked_body.session_uid
     assert reported["reference_uid"] == linked_body.session_uid
     assert reported["is_override"] is True and reported["is_system_override"] is False
     assert result["override"]["reference_uid"] == collection.session_uid
+
+
+def test_create_override_counts_the_objects_it_made_and_leaves_their_names_to_changed_objects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Repeating the names inside `objects` would send the same list twice in one reply."""
+    server, _bpy, world = _server(monkeypatch)
+    _library, collection = _linked(server, world, _canon(tmp_path, world))
+
+    result = _run(server, "create_override", collection_uid=collection.session_uid)["result"]
+
+    assert result["objects"] == {"total": 1, "by_type": {"OBJECT": 1}}
+    assert result["changed_objects"] == ["HeroBody"]
+    assert result["override"]["session_uid"] != collection.session_uid
 
 
 def test_create_override_replaces_the_linked_instance_it_overrides(
@@ -1143,23 +1158,26 @@ def test_an_override_failure_reaches_the_client_sanitized(monkeypatch: pytest.Mo
 def test_list_libraries_paginates_and_reports_what_a_reload_decision_needs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`is_missing`, `version`, resync, users, uid, and each linked datablock with its uid."""
+    """`is_missing`, `version`, resync, users, uid, and each linked datablock with its uid under `detail`."""
     server, _bpy, world = _server(monkeypatch)
     libraries = [_linked(server, world, _canon(tmp_path, world, f"canon{index}.blend"))[0] for index in range(3)]
     libraries[1].is_missing = True
     libraries[1].needs_liboverride_resync = True
 
-    page = _run(server, "list_libraries", limit=PAGE, offset=1)["result"]
+    page = _run(server, "list_libraries", limit=PAGE, offset=1, detail=True)["result"]
 
-    assert (page["total"], page["offset"], page["limit"], page["has_more"]) == (len(libraries), 1, PAGE, False)
+    assert (page["total"], page["offset"], page["limit"]) == (len(libraries), 1, PAGE)
+    assert (page["returned_count"], page["truncated"], page["next_offset"]) == (2, False, None)
     first, second = page["libraries"]
     assert first["session_uid"] == libraries[1].session_uid
     assert first["is_missing"] is True and first["needs_liboverride_resync"] is True
     assert first["version"] == [5, 2, 44] and first["users"] == 1
-    assert {d["session_uid"] for d in first["datablocks"]} == {db.session_uid for db in libraries[1].users_id}
-    assert {d["name"] for d in first["datablocks"]} == {"CanonHero", "HeroBody"}
+    records = first["datablocks"]["records"]
+    assert {d["session_uid"] for d in records} == {db.session_uid for db in libraries[1].users_id}
+    assert {d["name"] for d in records} == {"CanonHero", "HeroBody"}
     assert second["session_uid"] == libraries[2].session_uid and second["is_missing"] is False
-    assert _run(server, "list_libraries", limit=PAGE)["result"]["has_more"] is True
+    shortened = _run(server, "list_libraries", limit=PAGE)["result"]
+    assert (shortened["truncated"], shortened["next_offset"]) == (True, PAGE)
 
 
 @pytest.mark.parametrize(
@@ -1177,7 +1195,7 @@ def test_list_libraries_bounds_its_page(monkeypatch: pytest.MonkeyPatch, params:
 def test_list_libraries_bounds_the_datablocks_it_lists_per_library(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A canon library can link thousands of datablocks; the count is exact and the list is capped."""
+    """A canon library can link thousands of datablocks; the default says how many of what, not their names."""
     server, _bpy, world = _server(monkeypatch)
     library, _collection = _linked(server, world, _canon(tmp_path, world))
     for index in range(MANY):
@@ -1185,9 +1203,31 @@ def test_list_libraries_bounds_the_datablocks_it_lists_per_library(
 
     (entry,) = _run(server, "list_libraries")["result"]["libraries"]
 
-    assert entry["datablock_count"] == MANY + len(("CanonHero", "HeroBody"))
-    assert len(entry["datablocks"]) == LISTED_CAP
-    assert entry["datablocks_truncated"] is True
+    listed = entry["datablocks"]
+    assert listed["total"] == MANY + len(("CanonHero", "HeroBody"))
+    assert listed["by_type"] == {"COLLECTION": 1, "MESH": MANY, "OBJECT": 1}
+    assert (listed["returned_count"], listed["truncated"], listed["next_offset"]) == (NAME_CAP, True, NAME_CAP)
+    assert listed["names"] == ["HeroBody", *(f"M{index}" for index in range(NAME_CAP - 1))]
+    assert "records" not in listed
+
+
+def test_list_libraries_lists_the_datablock_records_only_on_request(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`detail` is the only way to the uids, and it is still capped: the names page never carries them."""
+    server, _bpy, world = _server(monkeypatch)
+    library, _collection = _linked(server, world, _canon(tmp_path, world))
+    for index in range(MANY):
+        world.data["meshes"].append(StubID(world, f"M{index}", "MESH", library=library))
+
+    (entry,) = _run(server, "list_libraries", detail=True)["result"]["libraries"]
+
+    listed = entry["datablocks"]
+    assert listed["total"] == MANY + len(("CanonHero", "HeroBody"))
+    assert (listed["returned_count"], listed["truncated"], listed["next_offset"]) == (LISTED_CAP, True, LISTED_CAP)
+    assert len(listed["records"]) == LISTED_CAP
+    assert {record["session_uid"] for record in listed["records"]} <= {db.session_uid for db in library.users_id}
+    assert "names" not in listed
 
 
 def test_list_libraries_is_a_read_only_command_and_never_enters_a_transaction(
@@ -1212,14 +1252,35 @@ def test_reload_library_uses_the_data_api_inside_the_replace_flag(
     library, _collection = _linked(server, world, _canon(tmp_path, world))
     before = {db.session_uid for db in library.users_id}
 
-    response = _run(server, "reload_library", library_uid=library.session_uid)
+    response = _run(server, "reload_library", library_uid=library.session_uid, detail=True)
 
     assert response["status"] == "success", response
     assert world.reload_calls == [(library, True)]
     assert bpy.ops.wm.touched == []
     assert response["result"]["library"]["session_uid"] == library.session_uid
-    assert {d["session_uid"] for d in response["result"]["datablocks"]} == {db.session_uid for db in library.users_id}
+    records = response["result"]["datablocks"]["records"]
+    assert {d["session_uid"] for d in records} == {db.session_uid for db in library.users_id}
     assert before.isdisjoint(db.session_uid for db in library.users_id)
+
+
+@pytest.mark.parametrize("command", ["reload_library", "relocate_library"])
+def test_a_reload_reports_what_it_replaced_by_type_without_the_records(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str
+) -> None:
+    """The uids all changed, so the default names what was replaced and counts it; the records are `detail`."""
+    server, _bpy, world = _server(monkeypatch)
+    library, _collection = _linked(server, world, _canon(tmp_path, world))
+    extra = {"filepath": _canon(tmp_path, world, "canon_v2.blend")} if command == "relocate_library" else {}
+
+    result = _run(server, command, library_uid=library.session_uid, **extra)["result"]
+
+    listed = result["datablocks"]
+    assert listed["total"] == len(("CanonHero", "HeroBody"))
+    assert listed["by_type"] == {"COLLECTION": 1, "OBJECT": 1}
+    assert listed["names"] == ["HeroBody", "CanonHero"]
+    assert (listed["truncated"], listed["next_offset"]) == (False, None)
+    assert "records" not in listed
+    assert result["library"]["session_uid"] == library.session_uid
 
 
 def test_no_wm_lib_operator_exists_in_the_linking_module() -> None:
@@ -1604,7 +1665,7 @@ def test_no_linking_command_takes_a_datablock_name_as_a_handle(monkeypatch: pyte
     """Every handle is a uid; `collections` / `objects` name contents of the library *file*."""
     server, _bpy, _world = _server(monkeypatch)
     library_file_names = {("link_canon_library", "collections"), ("link_canon_library", "objects")}
-    non_handles = {"filepath", "limit", "offset", "confirm", "purge_orphans", "as_override", "relative"}
+    non_handles = {"filepath", "limit", "offset", "confirm", "purge_orphans", "as_override", "relative", "detail"}
 
     for command in LINKING_COMMANDS:
         for name in inspect.signature(getattr(server, command)).parameters:
@@ -1780,10 +1841,10 @@ def test_datablocks_the_file_no_longer_holds_are_reported_missing_with_a_warning
     world.files[target if command == "relocate_library" else canonical] = {"collections": {}, "objects": []}
     extra = {"filepath": target} if command == "relocate_library" else {}
 
-    result = _run(server, command, library_uid=library.session_uid, **extra)["result"]
+    result = _run(server, command, library_uid=library.session_uid, detail=True, **extra)["result"]
 
     assert result["library"]["is_missing"] is False
-    assert [entry["is_missing"] for entry in result["datablocks"]] == [True, True]
+    assert [entry["is_missing"] for entry in result["datablocks"]["records"]] == [True, True]
     assert result["warnings"] == [
         "2 datablocks linked from this library are missing from its file; they are placeholders until relinked"
     ]
@@ -1794,10 +1855,10 @@ def test_a_reload_that_finds_everything_carries_no_warning(monkeypatch: pytest.M
     server, _bpy, world = _server(monkeypatch)
     library, _collection = _linked(server, world, _canon(tmp_path, world))
 
-    result = _run(server, "reload_library", library_uid=library.session_uid)["result"]
+    result = _run(server, "reload_library", library_uid=library.session_uid, detail=True)["result"]
 
     assert "warnings" not in result
-    assert {entry["is_missing"] for entry in result["datablocks"]} == {False}
+    assert {entry["is_missing"] for entry in result["datablocks"]["records"]} == {False}
 
 
 def test_relocate_refuses_an_indirect_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

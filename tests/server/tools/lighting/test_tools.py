@@ -2,7 +2,10 @@
 
 import asyncio
 import inspect
+import sys
+import types
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -190,6 +193,13 @@ def test_lighting_quality_expands_strict_agent_payload(monkeypatch) -> None:
         cycles=lighting.CyclesLightingQuality(samples=128),
         eevee=lighting.EeveeLightingQuality(render_samples=64, use_fast_gi=True),
     )
+    run_tool(
+        lighting.configure_lighting_quality,
+        scene_name="Scene",
+        target_engine="EEVEE",
+        preset="FINAL",
+        detail=True,
+    )
 
     assert connection.calls == [
         (
@@ -200,8 +210,20 @@ def test_lighting_quality_expands_strict_agent_payload(monkeypatch) -> None:
                 "preset": None,
                 "cycles": {"samples": 128},
                 "eevee": {"render_samples": 64, "use_fast_gi": True},
+                "detail": False,
             },
-        )
+        ),
+        (
+            "configure_lighting_quality",
+            {
+                "scene_name": "Scene",
+                "target_engine": "EEVEE",
+                "preset": "FINAL",
+                "cycles": None,
+                "eevee": None,
+                "detail": True,
+            },
+        ),
     ]
 
 
@@ -226,3 +248,161 @@ def test_dispatch_advertises_lighting_and_marks_only_inspection_read_only(monkey
     assert LIGHTING_COMMANDS.issubset(commands)
     assert READ_ONLY_LIGHTING_COMMANDS.issubset(server._READ_ONLY_COMMANDS)
     assert not (LIGHTING_COMMANDS - READ_ONLY_LIGHTING_COMMANDS) & server._READ_ONLY_COMMANDS
+
+
+# A float wider than float32 carries, so a rounded field is distinguishable from an unrounded one.
+_UNROUNDED = 0.12345678912345678
+_ROUNDED = 0.123457
+
+
+class FakeMatrix:
+    """A 4x4 world matrix exposing the three members the lighting snapshots read."""
+
+    def __init__(self, location: list[float], rotation_quaternion: list[float], scale: list[float]) -> None:
+        self.translation = location
+        self._decomposed = (location, rotation_quaternion, scale)
+        self._rows = [[*location, 1.0], [*rotation_quaternion[1:], 0.0], [*scale, 0.0], [0.0, 0.0, 0.0, 1.0]]
+
+    def __iter__(self) -> Iterator[list[float]]:
+        """Yield the matrix rows, as serializing a Blender matrix does."""
+        return iter(self._rows)
+
+    def decompose(self) -> tuple[list[float], list[float], list[float]]:
+        """Return the (location, rotation quaternion, scale) triple Blender's matrices return."""
+        return self._decomposed
+
+
+def fake_light(name="Key Light", *, energy=1000.0, light_type="AREA"):
+    """Build the minimum light object the bundled lighting snapshots read."""
+    location = [_UNROUNDED, -1.2345678912345678, 5.0]
+    data = types.SimpleNamespace(
+        name=f"{name} Light",
+        type=light_type,
+        energy=energy,
+        color=[_UNROUNDED, 1.0, 1.0],
+        users=1,
+        size=0.25,
+        use_shadow=True,
+    )
+    return types.SimpleNamespace(
+        name=name,
+        type="LIGHT",
+        data=data,
+        location=location,
+        scale=[1.0, 1.0, 1.0],
+        rotation_mode="XYZ",
+        rotation_euler=types.SimpleNamespace(x=_UNROUNDED, y=0.0, z=0.0),
+        matrix_world=FakeMatrix(location, [1.0, _UNROUNDED, 0.0, 0.0], [1.0, 1.0, 1.0]),
+        hide_viewport=False,
+        hide_render=False,
+        constraints=[],
+        users_collection=[types.SimpleNamespace(name="Lighting")],
+        lightgroup="",
+        light_linking=None,
+    )
+
+
+def load_lighting_handlers(monkeypatch):
+    """Import the bundled lighting handler modules against the stub bpy module."""
+    addon, _bpy = _load_addon(monkeypatch, data={})
+    package = f"{addon.__name__}.handlers.lighting"
+    return sys.modules[f"{package}._shared"], sys.modules[f"{package}.inspection"], sys.modules[f"{package}.rendering"]
+
+
+def test_default_light_record_is_identity_plus_the_facts_a_listing_is_asked_for(monkeypatch) -> None:
+    shared, _inspection, _rendering = load_lighting_handlers(monkeypatch)
+
+    record = shared.light_summary(fake_light())
+
+    assert set(record) == {
+        "object",
+        "light_data",
+        "light_type",
+        "energy",
+        "color",
+        "location_world",
+        "hidden_viewport",
+        "hidden_render",
+    }
+    assert record["object"] == "Key Light"
+    assert record["light_data"] == "Key Light Light"
+    assert record["light_type"] == "AREA"
+    assert record["location_world"] == [_ROUNDED, -1.234568, 5.0]
+    assert record["color"] == [_ROUNDED, 1.0, 1.0]
+
+
+def test_detail_records_carry_the_state_the_default_record_omits(monkeypatch) -> None:
+    shared, _inspection, _rendering = load_lighting_handlers(monkeypatch)
+    light = fake_light()
+
+    summary = shared.light_summary(light)
+    full = shared.light_snapshot(light)
+
+    assert {"transform", "settings", "light_linking", "collections", "target_constraints"} <= set(full)
+    assert full["object"] == summary["object"]
+    assert full["settings"]["energy"] == summary["energy"]
+    assert full["transform"]["world"]["location"] == summary["location_world"]
+
+
+def test_light_transform_floats_are_rounded_to_six_decimals(monkeypatch) -> None:
+    shared, _inspection, _rendering = load_lighting_handlers(monkeypatch)
+
+    transform = shared.transform_snapshot(fake_light())
+
+    assert transform["world"]["matrix"][0] == [_ROUNDED, -1.234568, 5.0, 1.0]
+    assert transform["world"]["matrix"][3] == [0.0, 0.0, 0.0, 1.0]
+    assert transform["world"]["rotation_quaternion"] == [1.0, _ROUNDED, 0.0, 0.0]
+    assert transform["local"]["location"] == [_ROUNDED, -1.234568, 5.0]
+    assert transform["local"]["rotation"] == [_ROUNDED, 0.0, 0.0]
+
+
+def test_light_inventories_trim_by_default_and_restore_full_records_with_detail(monkeypatch) -> None:
+    _shared_module, inspection, _rendering = load_lighting_handlers(monkeypatch)
+    scene = types.SimpleNamespace(name="Scene", unit_settings=types.SimpleNamespace(scale_length=1.0))
+    lights = [fake_light("Key Light"), fake_light("Rim Light")]
+    monkeypatch.setattr(inspection, "scene_by_name", lambda _name: scene)
+    monkeypatch.setattr(inspection, "_scene_lights", lambda *_args, **_kwargs: lights)
+    handler = inspection.LightingInspectionHandlers()
+
+    trimmed = handler.list_lights("Scene")
+    detailed = handler.list_lights("Scene", detail=True)
+
+    assert [record["object"] for record in trimmed["lights"]] == ["Key Light", "Rim Light"]
+    assert [record["object"] for record in detailed["lights"]] == ["Key Light", "Rim Light"]
+    assert trimmed["detail"] is False
+    assert detailed["detail"] is True
+    assert "transform" not in trimmed["lights"][0]
+    assert "settings" not in trimmed["lights"][0]
+    assert detailed["lights"][0]["transform"]["world"]["matrix"][0] == [_ROUNDED, -1.234568, 5.0, 1.0]
+    assert trimmed["total"] == len(lights)
+    assert trimmed["returned_count"] == len(lights)
+
+
+def test_preview_matched_state_names_its_lights_instead_of_embedding_them(monkeypatch) -> None:
+    _shared_module, _inspection, rendering = load_lighting_handlers(monkeypatch)
+    scene = types.SimpleNamespace(
+        objects=[fake_light("Rim Light"), types.SimpleNamespace(name="Cube", type="MESH"), fake_light("Key Light")],
+        world=types.SimpleNamespace(name="Studio World"),
+        view_settings=types.SimpleNamespace(exposure=0.5, view_transform="AgX"),
+    )
+
+    state = rendering._matched_state(scene)
+
+    assert state["lights"] == ["Key Light", "Rim Light"]
+    assert state["light_count"] == len(state["lights"])
+    assert state["world"] == "Studio World"
+
+
+def test_light_inventory_tools_forward_the_detail_flag(monkeypatch) -> None:
+    connection = StubConnection({"lights": []})
+    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+
+    run_tool(lighting.list_lights, scene_name="Scene")
+    run_tool(lighting.list_lights, scene_name="Scene", detail=True)
+    run_tool(lighting.inspect_lighting_setup, scene_name="Scene", detail=True)
+
+    assert [(command, params["detail"]) for command, params in connection.calls] == [
+        ("list_lights", False),
+        ("list_lights", True),
+        ("inspect_lighting_setup", True),
+    ]
