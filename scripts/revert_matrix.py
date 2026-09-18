@@ -74,6 +74,7 @@ SERVER_APP = ROOT / "src/blender_mcp/server/app.py"
 ADDON_SCENE = ROOT / "src/blender_mcp/bundled/addon/handlers/scene.py"
 ADDON_ANIMATION = ROOT / "src/blender_mcp/bundled/addon/handlers/animation.py"
 SERVER_ANIMATION_TOOL = ROOT / "src/blender_mcp/server/tools/animation.py"
+SERVER_ENVELOPE = ROOT / "src/blender_mcp/server/tools/envelope.py"
 SERVER_DOCUMENTATION = ROOT / "src/blender_mcp/server/tools/_documentation.py"
 SERVER_BUNDLES = ROOT / "src/blender_mcp/server/bundles.py"
 TEST_BUNDLES_FILE = ROOT / "tests/server/test_bundles.py"
@@ -107,6 +108,7 @@ CLIT = "tests/server/test_cli_transport.py"
 SFLT = "tests/server/tools/test_file_lifecycle.py"
 BUNT = "tests/server/test_bundles.py"
 TDT = "tests/server/test_tool_documentation.py"
+ENVT = "tests/server/tools/test_envelope.py"
 ANIMT = "tests/test_animation_tools.py"
 OLT = "tests/test_object_lookup.py"
 CANDT = "tests/test_candidates.py"
@@ -305,6 +307,16 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{ANIMT}::test_a_driver_expression_may_name_frame_and_its_declared_variables",
     f"{ANIMT}::test_a_driver_expression_still_refuses_undeclared_names_and_calls",
     f"{ANIMT}::test_a_scripted_driver_reaches_blender_with_its_frame_expression",
+    # --- every reply is bounded by the per-reply byte budget ---
+    f"{ENVT}::test_an_oversized_record_page_is_cut_to_the_budget_and_stays_resumable",
+    f"{ENVT}::test_a_resumed_page_continues_from_the_offset_it_was_given",
+    f"{ENVT}::test_the_largest_list_is_the_one_cut",
+    f"{ENVT}::test_a_page_nested_inside_a_single_record_is_found",
+    f"{ENVT}::test_an_unpaginated_oversized_list_is_cut_and_says_to_narrow_the_scope",
+    f"{ENVT}::test_a_single_record_too_big_for_the_budget_is_still_reported",
+    f"{ENVT}::test_the_budget_leaves_a_flat_oversized_reply_alone",
+    f"{ENVT}::test_a_reply_within_the_budget_is_sent_whole",
+    f"{ENVT}::test_the_keys_the_shortening_adds_are_inside_the_budget_it_measured",
 )
 
 # Nodes no single revert can break, each with the reason, so the gap check skips them.
@@ -4676,6 +4688,47 @@ REVERTS: list[Revert] = [
         "    elif name in _EXTERNAL_TOOLS:",
         "    elif name in _EXTERNAL_TOOLS:",
         (f"{BUNT}::test_file_lifecycle_tools_blend_file_prose_is_correct",),
+    ),
+    # --- every reply is bounded by the per-reply byte budget ---
+    Revert(
+        "reply budget: ok() stops bounding the reply it builds",
+        SERVER_ENVELOPE,
+        "    _fit_budget(reply)\n",
+        "",
+        (
+            f"{ENVT}::test_an_oversized_record_page_is_cut_to_the_budget_and_stays_resumable",
+            f"{ENVT}::test_a_resumed_page_continues_from_the_offset_it_was_given",
+            f"{ENVT}::test_the_largest_list_is_the_one_cut",
+            f"{ENVT}::test_a_page_nested_inside_a_single_record_is_found",
+            f"{ENVT}::test_an_unpaginated_oversized_list_is_cut_and_says_to_narrow_the_scope",
+            f"{ENVT}::test_a_single_record_too_big_for_the_budget_is_still_reported",
+            f"{ENVT}::test_the_budget_leaves_a_flat_oversized_reply_alone",
+        ),
+    ),
+    Revert(
+        "reply budget: the shortening walk stops at a one-entry list instead of descending into it",
+        SERVER_ENVELOPE,
+        "                if len(value) > 1:\n"
+        "                    pages.append((current, key))\n"
+        "                pending.extend(value)",
+        "                if len(value) > 1:\n"
+        "                    pages.append((current, key))\n"
+        "                    pending.extend(value)",
+        (f"{ENVT}::test_a_page_nested_inside_a_single_record_is_found",),
+    ),
+    Revert(
+        "reply budget: the pagination keys are written after the page was measured, not before",
+        SERVER_ENVELOPE,
+        '        owner["next_offset"] = start + total\n',
+        "",
+        (f"{ENVT}::test_the_keys_the_shortening_adds_are_inside_the_budget_it_measured",),
+    ),
+    Revert(
+        "reply budget: a reply within the budget is shortened anyway",
+        SERVER_ENVELOPE,
+        "    if _wire_bytes(reply) <= REPLY_BYTE_BUDGET:\n        return\n    pages",
+        "    pages",
+        (f"{ENVT}::test_a_reply_within_the_budget_is_sent_whole",),
     ),
     # --- save_shot.create_directories ---
     Revert(

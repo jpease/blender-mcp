@@ -2268,7 +2268,20 @@ def _repriced(report: ReplyReport, rewrite: Callable[[object], object]) -> int:
     return report.wire_bytes - sum(_indented_bytes(envelope) for envelope in rewritten)
 
 
-_REPLY_BUDGET = 4096
+def _reply_budget() -> int:
+    """
+    Read the budget the server actually enforces.
+
+    Imported inside the function because `blender_mcp` must not load before the selection is
+    set in the environment.
+
+    Returns:
+        `envelope.REPLY_BYTE_BUDGET`, in wire bytes.
+
+    """
+    from blender_mcp.server.tools.envelope import REPLY_BYTE_BUDGET  # ruff: ignore[import-outside-top-level]
+
+    return REPLY_BYTE_BUDGET
 
 
 def _rule_savings(reports: Sequence[ReplyReport]) -> list[tuple[str, int, int]]:
@@ -2308,10 +2321,11 @@ def _rule_savings(reports: Sequence[ReplyReport]) -> list[tuple[str, int, int]]:
     for rule, rewrite in rules:
         savings = [_repriced(report, rewrite) for report in reports]
         priced.append((rule, sum(savings), sum(1 for saving in savings if saving)))
-    over_budget = [max(0, report.wire_bytes - _REPLY_BUDGET) for report in reports]
+    budget = _reply_budget()
+    over_budget = [max(0, report.wire_bytes - budget) for report in reports]
     priced.append(
         (
-            f"cap one reply at {_REPLY_BUDGET:,} wire bytes and report the remainder as truncated",
+            f"cap one reply at {budget:,} wire bytes and report the remainder as truncated",
             sum(over_budget),
             sum(1 for excess in over_budget if excess),
         )
@@ -2325,12 +2339,25 @@ def main() -> None:
 
     Prints the selection, the reference scene, a table of every measured reply, the
     field-level breakdown of the ten heaviest, growth per input item, the unmeasured list,
-    and the candidate budget rules priced against the measured data.
+    and the candidate budget rules priced against the measured data. With `--json`, prints
+    the enforced budget and each tool's reply bytes instead, for the regression test.
 
     """
-    selection = sys.argv[1] if len(sys.argv) > 1 else ""
+    arguments = [argument for argument in sys.argv[1:] if argument != "--json"]
+    selection = arguments[0] if arguments else ""
     reports, app = _measure(selection, REFERENCE_SCALE)
     total = sum(report.wire_bytes for report in reports)
+    if "--json" in sys.argv:
+        # The machine-readable form the reply-budget regression test reads.
+        print(
+            json.dumps(
+                {
+                    "budget": _reply_budget(),
+                    "replies": {report.tool: report.wire_bytes for report in reports},
+                }
+            )
+        )
+        return
     print(f"selection : {selection or '(core only)'}")
     print(f"scene     : {REFERENCE_SCALE}")
     print(f"tools     : {len(reports)}")
