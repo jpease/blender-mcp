@@ -1,30 +1,21 @@
 """Typed tools for armature foundations, skinning, constraints, and rig validation."""
 
 import asyncio
-import logging
-import sys
 
 from collections.abc import Sequence
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import BaseModel, Field, TypeAdapter, model_validator
 
 from ...app import mcp
-from ...connection import get_blender_connection
-from ..envelope import ok
-
-logger = logging.getLogger("BlenderMCPServer")
+from ._shared import _call, _StrictModel
 
 Vector3 = tuple[float, float, float]
 Quaternion = tuple[float, float, float, float]
 ConstraintSpace = Literal["WORLD", "CUSTOM", "POSE", "LOCAL_WITH_PARENT", "LOCAL"]
 ExistingPolicy = Literal["ERROR", "UPDATE"]
-
-
-class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class RigWorldTransform(_StrictModel):
@@ -502,25 +493,6 @@ _pose_constraint_adapter = TypeAdapter(PoseConstraintSpec)
 
 def _models(items: Sequence[BaseModel]) -> list[dict]:
     return [item.model_dump(exclude_none=True) for item in items]
-
-
-def _call(command: str, params: dict, changed_objects: list[str] | None = None) -> dict:
-    package = sys.modules.get(__package__) if __package__ is not None else None
-    package_call = getattr(package, "_call", None) if package is not None else None
-    if package_call is not None and package_call is not _call:
-        return package_call(command, params, changed_objects)
-    try:
-        result = get_blender_connection().send_command(command, params)
-        changed = result.get("changed_objects", changed_objects or []) if isinstance(result, dict) else changed_objects
-        resources = result.get("changed_resources", []) if isinstance(result, dict) else []
-        if isinstance(result, dict):
-            result = {
-                key: value for key, value in result.items() if key not in {"changed_objects", "changed_resources"}
-            }
-        return ok(result, changed_objects=changed or [], changed_resources=resources)
-    except Exception as exc:
-        logger.error("Error running %s: %s", command, exc)
-        raise ToolError(f"Error running {command}: {exc}") from exc
 
 
 @mcp.tool()

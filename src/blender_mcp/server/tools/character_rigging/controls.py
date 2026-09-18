@@ -8,7 +8,7 @@ from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ...app import mcp
-from .foundation import _call, _StrictModel
+from ._shared import _call, _StrictModel
 
 
 class ControlBoneDefinition(_StrictModel):

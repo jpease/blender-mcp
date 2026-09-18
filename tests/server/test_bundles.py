@@ -27,7 +27,7 @@ from blender_mcp.server.bundles import (
 
 # Tool modules must not be imported in-process, but these lazy packages register no tools
 # until a submodule is imported.
-from blender_mcp.server.tools import camera, lighting
+from blender_mcp.server.tools import camera, character_rigging, lighting
 
 _CORE_TODAY = (
     "core",
@@ -337,6 +337,33 @@ def test_shot_mode_excludes_texture_authoring_and_light_or_rig_construction() ->
     assert "create_orbit_camera_rig" not in shot, "rig construction belongs to camera-rigs, not shot"
 
 
+POSING_TOOLS = frozenset({"set_character_pose", "keyframe_character_pose"})
+
+
+def test_shot_mode_can_pose_a_linked_character_without_rig_construction() -> None:
+    """Posing a linked character is shot work; building or binding a rig is not."""
+    shot = _tool_names_for_toolsets("shot")
+    assert shot >= POSING_TOOLS
+    assert not shot & {"create_armature", "bind_mesh_to_armature", "create_ik_fk_limb"}
+
+
+def test_character_posing_bundle_adds_only_the_posing_tools() -> None:
+    """The posing split must not drag rig construction in through a shared import."""
+    assert _tool_names_for_toolsets("character-posing") - _tool_names_for_toolsets(None) == POSING_TOOLS
+
+
+def test_character_rigging_bundle_keeps_every_rigging_tool_after_the_split() -> None:
+    """Existing `character-rigging` configs lose nothing: all 22 tools, posing included."""
+    rigging = _tool_names_for_toolsets("character-rigging") - _tool_names_for_toolsets(None)
+    assert len(rigging) == 22
+    assert rigging >= POSING_TOOLS | {"create_armature", "bind_mesh_to_armature", "add_pose_bone_constraint"}
+
+
+def test_character_rigging_lazy_attribute_submodules_match_the_rigging_bundles() -> None:
+    """Character-rigging equivalent of `test_camera_lazy_attribute_submodules_match_the_camera_bundles`."""
+    assert set(character_rigging._SUBMODULES) == _dotted_submodule_names("character-rigging", "character-posing")
+
+
 @pytest.mark.parametrize("raw_value", ["all", "ALL"])
 def test_all_sentinel_selects_every_module(raw_value: str) -> None:
     """
@@ -443,7 +470,7 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 
 # A ceiling, not a target: lower it when the payload shrinks. Raising it is a decision to record
 # in the commit message.
-SHOT_MODE_BYTE_CEILING = 218_061
+SHOT_MODE_BYTE_CEILING = 230_145
 
 # The same rule for the default, core-only surface.
 DEFAULT_MODE_BYTE_CEILING = 78_362

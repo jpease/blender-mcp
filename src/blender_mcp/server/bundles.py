@@ -40,7 +40,14 @@ _BUNDLES_BASE: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "liquid": ("liquid",),
         "rigid-body": ("rigid_body", "scene_physics"),
         "geometry-nodes": ("geometry_nodes", "nd"),
-        "character-rigging": ("character_rigging",),
+        "character-rigging": (
+            "character_rigging.foundation",
+            "character_rigging.controls",
+            "character_rigging.deformation",
+            "character_rigging.posing",
+        ),
+        # Posing a linked character is shot work; building or binding a rig is not.
+        "character-posing": ("character_rigging.posing",),
         "retopology": ("retopology",),
         # `construction` is left to `lighting-construction`.
         "lighting": ("lighting.environment", "lighting.inspection", "lighting.rendering"),
@@ -74,7 +81,7 @@ ALL_SENTINEL = "all"
 # shot. Construction bundles stay opt-in, e.g. `shot,camera-rigs`.
 MODES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
-        "shot": ("camera", "lighting", "rendering"),
+        "shot": ("camera", "lighting", "rendering", "character-posing"),
         "asset": ("core-authoring", "scene-authoring", "texture", "retopology", "geometry-nodes"),
     }
 )

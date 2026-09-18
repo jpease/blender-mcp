@@ -251,7 +251,7 @@ for fine-grained control. Modes are curated presets over bundles and compose wit
 
 | Mode | Selects |
 |---|---|
-| `shot` | assembling, animating, lighting and rendering a scene: `camera`, `lighting`, `rendering` |
+| `shot` | assembling, posing, animating, lighting and rendering a scene: `camera`, `lighting`, `rendering`, `character-posing` |
 | `asset` | authoring or revising canon: `core-authoring`, `scene-authoring`, `texture`, `retopology`, `geometry-nodes` |
 
 | Bundle | Adds |
@@ -265,7 +265,8 @@ for fine-grained control. Modes are curated presets over bundles and compose wit
 | `liquid` | fluid/liquid simulation |
 | `rigid-body` | rigid body physics, scene physics |
 | `geometry-nodes` | geometry nodes, ND toolkit |
-| `character-rigging` | armatures, rigging |
+| `character-rigging` | armatures, rigging, posing |
+| `character-posing` | posing and pose-keying an existing rig, without rig construction |
 | `retopology` | retopology workflows |
 | `lighting` | lighting inspection, environment, render-quality settings (construction is separate, see `lighting-construction`) |
 | `lighting-construction` | creating/aiming/linking lights, studio-lighting presets (also carries all of `lighting`'s render-quality tools — `configure_lighting_quality`, `configure_color_management`, `render_lighting_preview` — since the studio-lighting preset calls the last one directly) |
