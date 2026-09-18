@@ -305,7 +305,8 @@ class _TargetingMixin:
                 camera.data.lens = minimum_lens
                 if not _frame_contains(local_points, _margin_limits(camera.data, scene, margin), perspective=True):
                     raise ValueError("Objects do not fit even at the camera's minimum supported lens")
-                low, high = minimum_lens, float(camera.data.bl_rna.properties["lens"].hard_max)
+                # `hard_max` is the float maximum; 60 halvings from there never reach a real focal length.
+                low, high = minimum_lens, float(camera.data.bl_rna.properties["lens"].soft_max)
                 for _iteration in range(60):
                     middle = (low + high) * 0.5
                     camera.data.lens = middle
