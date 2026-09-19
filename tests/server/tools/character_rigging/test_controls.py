@@ -260,7 +260,8 @@ def test_bone_listing_is_registered_read_only_and_paginates(monkeypatch) -> None
 
     _run(character_rigging.list_character_bones, armature_object_name="HeroRig", limit=200, offset=200)
 
-    assert calls == [("list_character_bones", {"armature_object_name": "HeroRig", "limit": 200, "offset": 200}, None)]
+    expected = {"armature_object_name": "HeroRig", "limit": 200, "offset": 200, "rest_axes": False}
+    assert calls == [("list_character_bones", expected, None)]
     advertised = character_rigging.mcp._tool_manager._tools["list_character_bones"].parameters["properties"]
     assert advertised["limit"]["maximum"] == 200
 
