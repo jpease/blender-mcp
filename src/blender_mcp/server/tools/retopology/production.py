@@ -1,5 +1,7 @@
 """Agent-facing tools for retopology-to-production handoff: data transfer, UVs, baking."""
 
+import asyncio
+
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
@@ -76,7 +78,7 @@ async def transfer_mesh_attributes(
     added to the destination without deleting existing slots.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    result = _call("transfer_mesh_attributes", params)
+    result = await asyncio.to_thread(_call, "transfer_mesh_attributes", params)
     return ok(result, changed_objects=[object_name])
 
 
@@ -104,7 +106,7 @@ async def unwrap_retopology_uvs(
     maps other than an explicitly replaced same-name map are untouched.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    return ok(_call("unwrap_retopology_uvs", params), changed_objects=[object_name])
+    return ok(await asyncio.to_thread(_call, "unwrap_retopology_uvs", params), changed_objects=[object_name])
 
 
 @mcp.tool()
@@ -129,7 +131,8 @@ async def create_bake_cage(
     identity, self-intersections, high-poly samples likely outside the cage,
     and bidirectional normal-ray misses; it does not silently alter the cage.
     """
-    result = _call(
+    result = await asyncio.to_thread(
+        _call,
         "create_bake_cage",
         {
             "object_name": object_name,
@@ -177,5 +180,5 @@ async def bake_retopology_maps(
     image name, dimensions, map type, and the written path only after bake and save succeed.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    result = _call("bake_retopology_maps", params)
+    result = await asyncio.to_thread(_call, "bake_retopology_maps", params)
     return ok(result, changed_objects=[object_name], changed_resources=[result["image"]])

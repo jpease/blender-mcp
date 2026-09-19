@@ -1,5 +1,6 @@
 """Direct mesh-editing tools."""
 
+import asyncio
 import logging
 
 from typing import Annotated, Literal
@@ -51,8 +52,9 @@ async def create_primitive_object(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "create_primitive",
             {
                 "primitive_type": primitive_type,
@@ -100,8 +102,9 @@ async def mesh_extrude(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "mesh_extrude",
             {
                 "object_name": object_name,
@@ -145,8 +148,9 @@ async def mesh_inset(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "mesh_inset",
             {
                 "object_name": object_name,
@@ -197,8 +201,9 @@ async def mesh_bevel(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "mesh_bevel",
             {
                 "object_name": object_name,
@@ -257,8 +262,9 @@ async def mesh_bridge(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "mesh_bridge",
             {
                 "object_name": object_name,
@@ -302,8 +308,9 @@ async def mesh_symmetrize(ctx: Context, object_name: str, direction: SymmetrizeD
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "mesh_symmetrize",
             {
                 "object_name": object_name,
@@ -346,8 +353,9 @@ async def mesh_boolean(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "mesh_boolean",
             {
                 "object_name": object_name,
@@ -391,8 +399,9 @@ async def mesh_subdivide(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "mesh_subdivide",
             {
                 "object_name": object_name,
@@ -427,8 +436,9 @@ async def mesh_remesh(ctx: Context, object_name: str, voxel_size: Annotated[floa
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "mesh_remesh",
             {
                 "object_name": object_name,
@@ -470,8 +480,9 @@ async def mesh_solidify(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "mesh_solidify",
             {
                 "object_name": object_name,
@@ -510,8 +521,8 @@ async def clear_materials(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command("clear_materials", {"object_names": object_names})
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(blender.send_command, "clear_materials", {"object_names": object_names})
         return ok(result, changed_objects=object_names)
     except Exception as e:
         logger.error(f"Error clearing materials: {e}")
@@ -540,8 +551,8 @@ async def clear_vertex_groups(ctx: Context, object_name: str) -> dict:
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command("clear_vertex_groups", {"object_name": object_name})
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(blender.send_command, "clear_vertex_groups", {"object_name": object_name})
         return ok(result, changed_objects=[object_name])
     except Exception as e:
         logger.error(f"Error clearing vertex groups: {e}")
@@ -571,8 +582,8 @@ async def clear_edge_marks(ctx: Context, object_name: str) -> dict:
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command("clear_edge_marks", {"object_name": object_name})
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(blender.send_command, "clear_edge_marks", {"object_name": object_name})
         return ok(result, changed_objects=[object_name])
     except Exception as e:
         logger.error(f"Error clearing edge marks: {e}")

@@ -1,5 +1,6 @@
 """Higher-level modeling tools built on top of mesh modifiers/operations."""
 
+import asyncio
 import logging
 
 from typing import Annotated, Literal
@@ -53,8 +54,9 @@ async def copy_object_transform(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "copy_object_transform",
             {
                 "object_name": object_name,
@@ -116,8 +118,9 @@ async def add_radial_array_modifier(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "add_radial_array_modifier",
             {
                 "object_name": object_name,
@@ -153,8 +156,8 @@ async def sync_data_name(ctx: Context, object_names: Annotated[list[str], Field(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command("sync_data_name", {"object_names": object_names})
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(blender.send_command, "sync_data_name", {"object_names": object_names})
         changed = result.get("names", object_names) if isinstance(result, dict) else object_names
         return ok(result, changed_objects=changed)
     except Exception as e:

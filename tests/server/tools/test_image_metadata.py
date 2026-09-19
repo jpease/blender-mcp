@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 import pytest
@@ -62,6 +63,8 @@ def test_screenshot_tempfile_is_removed_when_blender_fails(monkeypatch, tmp_path
     monkeypatch.setattr(viewport.tempfile, "mkstemp", fake_mkstemp)
 
     with pytest.raises(Exception, match="Screenshot failed"):
-        viewport.get_viewport_screenshot(ctx=None)
+        # The tool is async so its blocking socket work stays off the event loop;
+        # asyncio.run drives it without the suite needing an async plugin.
+        asyncio.run(viewport.get_viewport_screenshot(ctx=None))
 
     assert not screenshot.exists()

@@ -1,5 +1,7 @@
-# ruff: file-ignore[multi-line-summary-second-line, unused-async]
+# ruff: file-ignore[multi-line-summary-second-line]
 """Agent-facing specialized retopology accelerators: quadriflow, primitive fitting, surface deform, LODs."""
+
+import asyncio
 
 from typing import Annotated, Any, Literal
 
@@ -47,7 +49,7 @@ async def generate_quadriflow_draft(
     is always identified as a draft, never as deformation-ready topology.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    result = _call("generate_quadriflow_draft", params)
+    result = await asyncio.to_thread(_call, "generate_quadriflow_draft", params)
     return ok(result, changed_objects=[result["name"]])
 
 
@@ -86,7 +88,7 @@ async def fit_surface_primitive(
     residuals, projection misses, counts, and topology revision.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    result = _call("fit_surface_primitive", params)
+    result = await asyncio.to_thread(_call, "fit_surface_primitive", params)
     return ok(result, changed_objects=[result["name"]])
 
 
@@ -120,7 +122,7 @@ async def bind_surface_deformation(
     operator result and final `is_bound` state, and keep the modifier live.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    result = _call("bind_surface_deformation", params)
+    result = await asyncio.to_thread(_call, "bind_surface_deformation", params)
     changed = [object_name] if result.get("changed", True) else []
     return ok(result, changed_objects=changed)
 
@@ -172,5 +174,5 @@ async def generate_retopology_lods(
     actual counts, revision, projection misses, and validation report.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    result = _call("generate_retopology_lods", params)
+    result = await asyncio.to_thread(_call, "generate_retopology_lods", params)
     return ok(result, changed_objects=result["created_objects"])

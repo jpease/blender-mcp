@@ -1,5 +1,6 @@
 """Agent-facing tools for building new retopology geometry: guides, patches, and boundaries."""
 
+import asyncio
 import math
 
 from typing import Annotated, Any, Literal
@@ -34,7 +35,8 @@ async def create_retopology_guides(
     before any Curve object is created. Returns the projected world-space
     points and collision-safe object names.
     """
-    result = _call(
+    result = await asyncio.to_thread(
+        _call,
         "create_retopology_guides",
         {
             "source_object_name": source_object_name,
@@ -72,7 +74,7 @@ async def create_surface_section(
     intentional. The result lists every discovered component before selection.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    result = _call("create_surface_section", params)
+    result = await asyncio.to_thread(_call, "create_surface_section", params)
     return ok(result, changed_objects=[result["guide_object"]])
 
 
@@ -107,7 +109,7 @@ async def set_retopology_features(
     changes attributes but not connectivity, so valid element indices remain stable.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    return ok(_call("set_retopology_features", params), changed_objects=[object_name])
+    return ok(await asyncio.to_thread(_call, "set_retopology_features", params), changed_objects=[object_name])
 
 
 @mcp.tool()
@@ -139,7 +141,7 @@ async def add_support_loops(
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
     return ok(
-        _call("add_support_loops", params),
+        await asyncio.to_thread(_call, "add_support_loops", params),
         changed_objects=[object_name],
         warnings=[STALE_INDEX_WARNING],
     )
@@ -173,7 +175,11 @@ async def build_quad_patch(
     fresh topology revision.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    return ok(_call("build_quad_patch", params), changed_objects=[object_name], warnings=[STALE_INDEX_WARNING])
+    return ok(
+        await asyncio.to_thread(_call, "build_quad_patch", params),
+        changed_objects=[object_name],
+        warnings=[STALE_INDEX_WARNING],
+    )
 
 
 @mcp.tool()
@@ -202,7 +208,11 @@ async def extend_boundary(
     the new topology revision.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    return ok(_call("extend_boundary", params), changed_objects=[object_name], warnings=[STALE_INDEX_WARNING])
+    return ok(
+        await asyncio.to_thread(_call, "extend_boundary", params),
+        changed_objects=[object_name],
+        warnings=[STALE_INDEX_WARNING],
+    )
 
 
 @mcp.tool()
@@ -227,4 +237,8 @@ async def fill_boundary_quads(
     a generic fill. New vertices may be projected to an evaluated source.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    return ok(_call("fill_boundary_quads", params), changed_objects=[object_name], warnings=[STALE_INDEX_WARNING])
+    return ok(
+        await asyncio.to_thread(_call, "fill_boundary_quads", params),
+        changed_objects=[object_name],
+        warnings=[STALE_INDEX_WARNING],
+    )

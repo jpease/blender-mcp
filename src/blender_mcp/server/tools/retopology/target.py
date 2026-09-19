@@ -1,5 +1,7 @@
 """Agent-facing retopology target creation, inspection, and checkpoints."""
 
+import asyncio
+
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
@@ -53,7 +55,8 @@ async def create_retopology_target(
         Target name, source links, collection, base counts, modifier order, and topology revision.
 
     """
-    result = _call(
+    result = await asyncio.to_thread(
+        _call,
         "create_retopology_target",
         {
             "source_object_names": source_object_names,
@@ -95,7 +98,8 @@ async def inspect_retopology(
     Coordinates and lengths are base-mesh local space unless explicitly named world space.
     """
     return ok(
-        _call(
+        await asyncio.to_thread(
+            _call,
             "inspect_retopology",
             {
                 "object_name": object_name,
@@ -126,7 +130,8 @@ async def manage_retopology_checkpoint(
     mesh and relevant object state while keeping the checkpoint available.
     Provide `checkpoint_name` for every action except LIST.
     """
-    result = _call(
+    result = await asyncio.to_thread(
+        _call,
         "manage_retopology_checkpoint",
         {"action": action, "object_name": object_name, "checkpoint_name": checkpoint_name, "confirm": confirm},
     )

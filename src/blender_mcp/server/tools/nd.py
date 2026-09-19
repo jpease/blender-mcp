@@ -1,5 +1,6 @@
 """ND (HugeMenace) non-destructive hard-surface workflow tools."""
 
+import asyncio
 import logging
 
 from typing import Annotated, Literal
@@ -79,8 +80,9 @@ async def nd_boolean(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "nd_boolean",
             {
                 "object_name": object_name,
@@ -130,8 +132,9 @@ async def nd_mark_as_util(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "nd_mark_as_util",
             {"object_names": object_names, "unmark": unmark, "parent_to": parent_to},
         )
@@ -170,8 +173,8 @@ async def nd_clean_utils(ctx: Context, confirm: bool = False) -> dict:
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command("nd_clean_utils", {"confirm": confirm})
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(blender.send_command, "nd_clean_utils", {"confirm": confirm})
         removed = result.get("removed_objects", []) if isinstance(result, dict) else []
         return _nd_outcome(result, changed_objects=removed)
     except Exception as e:
@@ -204,8 +207,9 @@ async def nd_create_id_material(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "nd_create_id_material",
             {"object_names": object_names, "material_name": material_name},
         )
@@ -235,8 +239,10 @@ async def nd_bulk_create_id_materials(ctx: Context, object_names: ObjectNameList
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command("nd_bulk_create_id_materials", {"object_names": object_names})
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command, "nd_bulk_create_id_materials", {"object_names": object_names}
+        )
         materials = result.get("material_names", []) if isinstance(result, dict) else []
         return _nd_outcome(result, changed_objects=object_names, changed_resources=materials)
     except Exception as e:
@@ -269,8 +275,10 @@ async def nd_set_lod_suffix(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command("nd_set_lod_suffix", {"object_names": object_names, "mode": mode})
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command, "nd_set_lod_suffix", {"object_names": object_names, "mode": mode}
+        )
         changed = result.get("names", object_names) if isinstance(result, dict) else object_names
         return _nd_outcome(result, changed_objects=changed)
     except Exception as e:
@@ -301,8 +309,8 @@ async def nd_single_vertex(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command("nd_single_vertex", {"location": list(location)})
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(blender.send_command, "nd_single_vertex", {"location": list(location)})
         name = result.get("name") if isinstance(result, dict) else None
         return _nd_outcome(result, changed_objects=[name] if name else [])
     except Exception as e:
@@ -337,8 +345,8 @@ async def nd_apply_modifiers(ctx: Context, object_names: ObjectNameList) -> dict
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command("nd_apply_modifiers", {"object_names": object_names})
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(blender.send_command, "nd_apply_modifiers", {"object_names": object_names})
         return _nd_outcome(result, changed_objects=object_names)
     except Exception as e:
         logger.error(f"Error applying ND modifiers: {e}")
@@ -372,8 +380,8 @@ async def nd_pulse_viewport_toggle(ctx: Context, toggle: PulseToggle) -> dict:
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command("nd_pulse_viewport_toggle", {"toggle": toggle})
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(blender.send_command, "nd_pulse_viewport_toggle", {"toggle": toggle})
         return _nd_outcome(result)
     except Exception as e:
         logger.error(f"Error pulsing ND viewport toggle: {e}")
@@ -400,8 +408,8 @@ async def nd_capture_utils(ctx: Context) -> dict:
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command("nd_capture_utils", {})
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(blender.send_command, "nd_capture_utils", {})
         return _nd_outcome(result)
     except Exception as e:
         logger.error(f"Error capturing ND utility objects: {e}")

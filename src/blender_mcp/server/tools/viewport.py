@@ -1,5 +1,6 @@
 """Scene/object introspection and viewport screenshot tools."""
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -44,8 +45,8 @@ async def list_scene_objects(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command("list_scene_objects", {"limit": limit, "offset": offset})
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(blender.send_command, "list_scene_objects", {"limit": limit, "offset": offset})
         return ok(result)
     except Exception as e:
         logger.error(f"Error getting scene info from Blender: {e}")
@@ -76,8 +77,10 @@ async def set_viewport_overlay(ctx: Context, toggle: ViewportOverlay, enabled: b
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command("set_viewport_overlay", {"toggle": toggle, "enabled": enabled})
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command, "set_viewport_overlay", {"toggle": toggle, "enabled": enabled}
+        )
         return ok(result)
     except Exception as e:
         logger.error(f"Error toggling viewport overlay: {e}")
@@ -131,9 +134,11 @@ async def get_object_info(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
-            "get_object_info", {"name": object_name, "sections": sections, "limit": limit, "offset": offset}
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
+            "get_object_info",
+            {"name": object_name, "sections": sections, "limit": limit, "offset": offset},
         )
         return ok(result)
     except Exception as e:
@@ -189,8 +194,9 @@ async def get_mesh_data(
 
     """
     try:
-        blender = get_blender_connection()
-        result = blender.send_command(
+        blender = await asyncio.to_thread(get_blender_connection)
+        result = await asyncio.to_thread(
+            blender.send_command,
             "get_mesh_data",
             {
                 "object_name": object_name,
@@ -225,7 +231,9 @@ def _screenshot_metadata(result: dict) -> dict:
 
 
 @mcp.tool(structured_output=False)
-def get_viewport_screenshot(ctx: Context, max_size: Annotated[int, Field(ge=16, le=4096)] = 1000) -> list[Image | dict]:
+async def get_viewport_screenshot(
+    ctx: Context, max_size: Annotated[int, Field(ge=16, le=4096)] = 1000
+) -> list[Image | dict]:
     """
     Capture the current Blender 3D viewport as an image for visual inspection.
 
@@ -246,12 +254,13 @@ def get_viewport_screenshot(ctx: Context, max_size: Annotated[int, Field(ge=16, 
     """
     temp_path = None
     try:
-        blender = get_blender_connection()
+        blender = await asyncio.to_thread(get_blender_connection)
 
         descriptor, temp_path = tempfile.mkstemp(prefix="blender_mcp_viewport_", suffix=".png")
         os.close(descriptor)
 
-        result = blender.send_command(
+        result = await asyncio.to_thread(
+            blender.send_command,
             "get_viewport_screenshot",
             {"max_size": max_size, "filepath": temp_path, "format": "png"},
         )

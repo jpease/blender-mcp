@@ -1,5 +1,7 @@
 """Agent-facing tools for measuring and validating retopology quality."""
 
+import asyncio
+
 from typing import Annotated
 
 from mcp.server.fastmcp import Context
@@ -33,7 +35,8 @@ async def analyze_surface_conformity(
     conformity. A POINT/FLOAT heat-map attribute is created only when
     `create_heat_map=True`; its values always represent vertex samples.
     """
-    result = _call(
+    result = await asyncio.to_thread(
+        _call,
         "analyze_surface_conformity",
         {
             "object_name": object_name,
@@ -76,7 +79,7 @@ async def validate_retopology(
     only warnings remain, otherwise PASS.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    return ok(_call("validate_retopology", params))
+    return ok(await asyncio.to_thread(_call, "validate_retopology", params))
 
 
 @mcp.tool()
@@ -107,4 +110,4 @@ async def test_deformation(
     vertex when no joint groups are supplied). This inspection changes no datablocks.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    return ok(_call("test_deformation", params))
+    return ok(await asyncio.to_thread(_call, "test_deformation", params))
