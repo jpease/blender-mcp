@@ -21,6 +21,11 @@ Blender changes, and read the output.
 | `check_revert_anchors.py` | Reports revert-matrix rows that no longer apply to their target file. The matrix quotes source text, so editing a quoted line silently breaks a row. **Run this after editing any file the matrix reverts.** |
 | `lint_changed.py` | The enforced lint gate (`just lint`). Runs ruff over the files a branch touches and reports only the findings that land on lines the branch introduced, so the inherited upstream backlog stays out of the way without letting new work add to it. `just lint-all` is the whole backlog. Covered by `tests/test_lint_changed.py`. |
 
+`tests/blender_*_smoke.py` are the other half of this: 19 scripts that drive the
+add-on's handlers against a real headless Blender. pytest never collects them
+(they are scripts, not `test_*.py`) and CI has no Blender, so `just smoke` is the
+only thing that runs them. It takes about 20 seconds for the whole set.
+
 ### rig_scenarios/
 
 A scenario defines `run(rig)` and drives the socket through `rig.send()`. It fails by raising;

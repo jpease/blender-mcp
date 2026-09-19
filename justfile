@@ -85,3 +85,34 @@ rig scenario work="" *args:
 # The phase-2 gate against a live GUI Blender, which `just test` deliberately skips
 gate:
     BLENDERMCP_LIVE_RIG=1 {{PYTHON}} -m pytest -m phase2_gate
+
+# Every tests/blender_*_smoke.py against a real headless Blender. pytest never
+# collects these (they are scripts, not test_*.py) and CI has no Blender, so this
+# is the only thing that runs the add-on against the actual API. No GUI: each runs
+# under --background --factory-startup, and the whole set takes about 20 seconds.
+smoke blender="/opt/homebrew/bin/blender":
+    #!/usr/bin/env sh
+    set -eu
+    blender="$1"
+    if [ ! -x "$blender" ]; then
+        echo "no Blender at $blender; pass one: just smoke /path/to/blender" >&2
+        exit 1
+    fi
+    failed=0
+    log=$(mktemp)
+    trap 'rm -f "$log"' EXIT
+    for script in tests/blender_*_smoke.py; do
+        # Each script prints its own <NAME>_OK verdict line; exiting 0 is not enough,
+        # because Blender swallows a script traceback and still quits cleanly.
+        "$blender" --background --factory-startup --python "$script" >"$log" 2>&1 || true
+        if grep -q '_OK$' "$log"; then
+            echo "ok    $script"
+        else
+            echo "FAIL  $script"
+            # The tail, because a GPU-backed script can fail for reasons that have
+            # nothing to do with the add-on and a bare FAIL cannot be told apart.
+            sed 's/^/      | /' "$log" | tail -15
+            failed=1
+        fi
+    done
+    exit "$failed"

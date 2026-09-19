@@ -75,14 +75,16 @@ focus_result = handler.create_focus_pull(
 assert scene.frame_current == 7
 assert focus_result["mode"] == "DISTANCE"
 
+# Keywords, not positions: `start_at_seconds`/`end_at_seconds` were added between
+# the frame and distance parameters, so a positional call passes distances as times.
 dolly_result = handler.create_dolly_zoom(
     scene.name,
     camera.name,
     root.name,
-    1,
-    20,
-    8.0,
-    16.0,
+    start_frame=1,
+    end_frame=20,
+    start_distance=8.0,
+    end_distance=16.0,
     subject_point=(0.0, 0.0, 0.0),
     subject_reference_size=2.0,
     start_lens=80.0,
