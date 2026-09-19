@@ -289,7 +289,7 @@ class _ProductionMixin:
         validate_enclosure=True,
     ):
         obj = get_mesh_object(object_name)
-        high_objects = [get_mesh_object(value) for value in high_poly_object_names]
+        high_objects = [get_mesh_object(value) for value in (high_poly_object_names or [])]
         if not high_objects:
             raise ValueError("high_poly_object_names must contain at least one mesh")
         if obj in high_objects:

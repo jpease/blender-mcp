@@ -95,6 +95,8 @@ class MeshHandlersMixin(TextureHandlers):
         with preserve_mode_and_selection():
             op(size, tuple(location), tuple(rotation))
             obj = bpy.context.active_object
+            if obj is None:
+                raise ValueError(f"Blender left no active object after adding primitive_type '{ptype}'")
         if name:
             obj.name = name
         if dimensions is not None:

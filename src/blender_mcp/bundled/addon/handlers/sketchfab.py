@@ -390,7 +390,7 @@ class SketchfabHandlersMixin:
                 "normalized": bool(normalize_size),
                 "scale_applied": round(scale_applied, 6),
             }
-            if bounds is not None:
+            if bounds is not None and dimensions is not None:
                 response["world_bounding_box"] = bounds
                 response["dimensions"] = [round(value, 4) for value in dimensions]
             return response

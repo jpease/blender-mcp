@@ -2371,7 +2371,10 @@ class BlenderMCPServer(
             if hasattr(mesh, "calc_normals_split"):
                 mesh.calc_normals_split()
 
-            def to_dict(loop):
+            # Named and then assigned, so `to_dict` stays an ordinary variable: a
+            # `def to_dict` here would declare the loop signature for the whole
+            # function and reject the three bound methods above it.
+            def _loop_to_dict(loop):
                 normal = loop.normal
                 return {
                     "index": loop.index,
@@ -2380,6 +2383,8 @@ class BlenderMCPServer(
                     "face_index": face_of_loop.get(loop.index),
                     "normal": [normal.x, normal.y, normal.z],
                 }
+
+            to_dict = _loop_to_dict
 
         total_unfiltered = len(all_elements)
         if selected_only:

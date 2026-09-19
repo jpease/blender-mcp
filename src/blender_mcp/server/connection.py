@@ -92,7 +92,8 @@ class BlenderConnection:
 
     host: str
     port: int
-    sock: socket.socket = None  # Changed from 'socket' to 'sock' to avoid naming conflict
+    # None until connect() succeeds, and set back to None on every teardown path.
+    sock: socket.socket | None = None
     # Serializes send+receive so two commands can never interleave on one socket.
     # Without this, a second command's response can be read as the first's, and
     # the stream stays desynced until the 180s timeout fires.

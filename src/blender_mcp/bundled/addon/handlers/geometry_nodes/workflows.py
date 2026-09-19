@@ -1480,7 +1480,9 @@ class GeometryNodesWorkflowHandlersMixin:
         modifier = None
         delivery_obj = None
         delivery_data = None
-        grid_evidence = None
+        # `{}` not None: it is only ever merged into the OPENVDB result with `**`,
+        # and both the write and the merge sit behind the same delivery check.
+        grid_evidence = {}
         try:
             if source not in {"MESH", "POINTS", "CUBE"}:
                 raise ValueError("source must be MESH, POINTS, or CUBE")
