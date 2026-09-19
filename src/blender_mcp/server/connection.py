@@ -81,6 +81,58 @@ def ad_hoc_failure_message(result: object) -> str | None:
     return None
 
 
+def decode_response(frame: dict[str, Any], expected_id: str) -> dict[str, Any]:
+    """
+    Interpret one decoded response frame into the value the caller asked for.
+
+    Split out of `send_command_locked` so every interpretation rule - the id
+    match, the error envelope, the ad-hoc failure shapes - can be exercised
+    without a socket. Everything that touches state stays in the shell: the
+    socket, the session marker, and the mapping of transport failures. The two
+    `logger.error` calls stay here because each names the branch it fired from,
+    which the shell could only recover by re-running the same checks.
+
+    A frame that is not a JSON object raises `AttributeError` here, which the
+    shell maps to the same communication error as before this was extracted.
+
+    Args:
+        frame: The decoded response frame, as `json.loads` returned it.
+        expected_id: The `id` the answered request was sent with.
+
+    Returns:
+        dict[str, Any]: The frame's `result`, unwrapped.
+
+    Raises:
+        Exception: If the frame answers a different request, which means the
+            response stream has desynced.
+        BlenderOperationError: If Blender reported the operation failed, either
+            through the `{"status": "error"}` envelope or through an ad-hoc
+            failure shape inside `result`.
+
+    """
+    if frame.get("id") != expected_id:
+        # `BlenderConnection._lock` already serializes one in-flight request per
+        # connection, so this should be unreachable - but if the stream ever
+        # desyncs, fail loudly instead of silently returning another command's
+        # response.
+        raise Exception(
+            f"Response id {frame.get('id')!r} does not match request id {expected_id!r} - "
+            "the connection to Blender is desynced"
+        )
+
+    if frame.get("status") == "error":
+        logger.error(f"Blender error: {frame.get('message')}")
+        raise BlenderOperationError(frame.get("message", "Unknown error from Blender"))
+
+    result = frame.get("result", {})
+    failure_message = ad_hoc_failure_message(result)
+    if failure_message is not None:
+        logger.error(f"Blender handler reported failure without raising: {failure_message}")
+        raise BlenderOperationError(failure_message)
+
+    return result
+
+
 @dataclass
 class BlenderConnection:
     """Manage a serialized socket connection to a Blender addon."""
@@ -215,11 +267,14 @@ class BlenderConnection:
         if not self.sock and not self.connect():
             raise ConnectionError("Not connected to Blender")
 
-        command = {"id": uuid.uuid4().hex, "type": command_type, "params": params or {}}
+        # Bound to a name so the id stays a plain `str`: read back out of the
+        # command dict it would widen to the dict's union value type.
+        command_id = uuid.uuid4().hex
+        command = {"id": command_id, "type": command_type, "params": params or {}}
 
         try:
             # Log the command being sent
-            logger.info(f"Sending command: {command_type} (request {command['id']}, {len(command['params'])} params)")
+            logger.info(f"Sending command: {command_type} (request {command_id}, {len(command['params'])} params)")
 
             # Send the command. Newline-terminated - see receive_full_response
             # for why this protocol needs explicit framing.
@@ -241,27 +296,7 @@ class BlenderConnection:
             # barrier's rejection is itself an error.
             note_session_marker(response, command_type)
 
-            if response.get("id") != command["id"]:
-                # The lock already serializes one in-flight request per
-                # connection, so this should be unreachable - but if the
-                # stream ever desyncs, fail loudly instead of silently
-                # returning another command's response.
-                raise Exception(
-                    f"Response id {response.get('id')!r} does not match request id {command['id']!r} - "
-                    "the connection to Blender is desynced"
-                )
-
-            if response.get("status") == "error":
-                logger.error(f"Blender error: {response.get('message')}")
-                raise BlenderOperationError(response.get("message", "Unknown error from Blender"))
-
-            result = response.get("result", {})
-            failure_message = ad_hoc_failure_message(result)
-            if failure_message is not None:
-                logger.error(f"Blender handler reported failure without raising: {failure_message}")
-                raise BlenderOperationError(failure_message)
-
-            return result
+            return decode_response(response, command_id)
         except TimeoutError as exc:
             logger.error("Socket timeout while waiting for response from Blender")
             # Don't try to reconnect here - let the get_blender_connection handle reconnection
@@ -291,6 +326,27 @@ class BlenderConnection:
 
 # Global connection for resources (since resources can't access context)
 _blender_connection = None
+# Guards construction of that singleton. No lock was needed while every tool call
+# ran on the event loop thread; tools now dispatch through `asyncio.to_thread`, so
+# two first calls can land in threadpool workers at once, and each would build,
+# connect and publish its own `BlenderConnection` - orphaning a live socket. Only
+# construction is serialized; the steady-state path reads the reference and returns.
+_connection_lock = threading.Lock()
+
+
+def _log_handshake(handshake: AddonHandshake) -> None:
+    """
+    Report a completed handshake at the level its freshness deserves.
+
+    Args:
+        handshake: The handshake just read back from the addon.
+
+    """
+    log_line = format_handshake_log(handshake)
+    if handshake.up_to_date:
+        logger.info(log_line)
+    else:
+        logger.warning(log_line)
 
 
 def _maybe_handshake_addon(blender: BlenderConnection) -> None:
@@ -302,17 +358,19 @@ def _maybe_handshake_addon(blender: BlenderConnection) -> None:
 
     """
     global _addon_handshake, _addon_handshake_checked
+    # The latch is taken under the lock, the round trip runs outside it, and the
+    # result is published back under it. Holding the lock across the round trip
+    # would park every other caller behind a network call, while publishing
+    # outside it would let a reader tear the `(checked, handshake)` pair.
     with _addon_handshake_lock:
         if _addon_handshake_checked:
             return
         _addon_handshake_checked = True
     try:
-        _addon_handshake = handshake_addon(blender)
-        log_line = format_handshake_log(_addon_handshake)
-        if _addon_handshake.up_to_date:
-            logger.info(log_line)
-        else:
-            logger.warning(log_line)
+        handshake = handshake_addon(blender)
+        with _addon_handshake_lock:
+            _addon_handshake = handshake
+        _log_handshake(handshake)
     except Exception as e:
         logger.debug(f"Addon handshake skipped: {e}")
 
@@ -334,22 +392,34 @@ def get_blender_connection():
     # command here: that put two commands on the wire for every tool call, and
     # any overlap desynced the response stream until the socket timeout fired.
     # A dead socket is detected by the next real command and reconnected then.
-    if _blender_connection is not None and _blender_connection.sock is not None:
-        return _blender_connection
+    existing = _blender_connection
+    if existing is not None and existing.sock is not None:
+        return existing
 
-    # Create a new connection if needed
-    if _blender_connection is None:
+    with _connection_lock:
+        # Re-read under the lock, because the check above is deliberately
+        # unlocked: another thread may have built the connection in between. A
+        # connection whose socket died is still handed back as-is, for the
+        # reason above.
+        if _blender_connection is not None:
+            return _blender_connection
+
         host = os.getenv("BLENDER_HOST", DEFAULT_HOST)
         port = int(os.getenv("BLENDER_PORT", DEFAULT_PORT))
-        _blender_connection = BlenderConnection(host=host, port=port)
-        if not _blender_connection.connect():
+        blender = BlenderConnection(host=host, port=port)
+        if not blender.connect():
             logger.error("Failed to connect to Blender")
-            _blender_connection = None
             raise Exception("Could not connect to Blender. Make sure the Blender addon is running.")
+        # Published only once connected, so the unlocked fast path can never hand
+        # out a connection whose socket is still None.
+        _blender_connection = blender
         logger.info("Created new persistent connection to Blender")
-        _maybe_handshake_addon(_blender_connection)
 
-    return _blender_connection
+    # Outside the lock: the handshake is a full socket round trip, latched once
+    # per process by `_addon_handshake_lock`, and only the thread that built the
+    # connection gets here.
+    _maybe_handshake_addon(blender)
+    return blender
 
 
 def disconnect_blender() -> None:
@@ -362,10 +432,13 @@ def disconnect_blender() -> None:
     connection on shutdown needs a real function in the module that owns it.
     """
     global _blender_connection
-    if _blender_connection:
-        logger.info("Disconnecting from Blender on shutdown")
-        _blender_connection.disconnect()
-        _blender_connection = None
+    # Same lock as get_blender_connection, so a shutdown racing a first command
+    # cannot drop a connection that is still being published.
+    with _connection_lock:
+        if _blender_connection:
+            logger.info("Disconnecting from Blender on shutdown")
+            _blender_connection.disconnect()
+            _blender_connection = None
 
 
 def force_addon_handshake(blender: BlenderConnection) -> AddonHandshake | None:
