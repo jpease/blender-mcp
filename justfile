@@ -20,8 +20,15 @@ default:
 test:
     {{PYTHON}} -m pytest
 
-# Lint every tracked tree, `scripts/` and `tests/` included
-lint:
+# Lint the lines this branch introduces. This is the enforced gate: the repository
+# carries an inherited ruff backlog (see `lint-all`), so whole-tree cleanliness is
+# not a hand-off precondition yet, but no line you write may add to it. Touching a
+# legacy file does not make you responsible for the findings already in it.
+lint base="origin/main":
+    {{PYTHON}} scripts/lint_changed.py --base "$@"
+
+# The whole inherited backlog, for tracking it down over time; not a gate
+lint-all:
     {{PYTHON}} -m ruff check .
 
 # Reformat in place; `fmt-check` is the gate, this is the fix

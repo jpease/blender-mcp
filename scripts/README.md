@@ -19,6 +19,7 @@ Blender changes, and read the output.
 | `quiet_box.py` | Stamps the machine's load into an artifact, so a contended run says so itself. The threading tests carry wall-clock bounds, and this is how a failure caused by a busy machine is told apart from a real one. Covered by `tests/test_quiet_box.py`. |
 | `revert_matrix.py` | Reverts the behaviour each test names and checks the test then fails. A test that still passes with its fix reverted proves nothing. 498 rows; `--only <prefix>` selects a group (`linking`, `file paths`, `barrier`, `session`, …), `--list` prints them all. A full run takes hours. |
 | `check_revert_anchors.py` | Reports revert-matrix rows that no longer apply to their target file. The matrix quotes source text, so editing a quoted line silently breaks a row. **Run this after editing any file the matrix reverts.** |
+| `lint_changed.py` | The enforced lint gate (`just lint`). Runs ruff over the files a branch touches and reports only the findings that land on lines the branch introduced, so the inherited upstream backlog stays out of the way without letting new work add to it. `just lint-all` is the whole backlog. Covered by `tests/test_lint_changed.py`. |
 
 ### rig_scenarios/
 
