@@ -131,6 +131,7 @@ AMT = "tests/test_addon_manager.py"
 # does not own: their nodes are listed in NEW_NODES_IN_EXISTING_FILES.
 LIGHTT = "tests/server/tools/lighting/test_tools.py"
 CTRLT = "tests/server/tools/character_rigging/test_controls.py"
+POSET = "tests/server/tools/character_rigging/test_posing.py"
 RENDT = "tests/test_rendering_tools.py"
 # Named because inline it passes the line limit, and `ruff format` rejoins a split f-string.
 _LIST_SCALAR = "test_a_string_where_a_list_belongs_is_not_iterated_character_by_character"
@@ -351,6 +352,26 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{CTRLT}::test_keyframed_pose_names_every_bone_and_reports_no_matrices_by_default",
     f"{CTRLT}::test_keyframe_detail_reports_the_pose_that_was_keyed",
     f"{CTRLT}::test_pose_tools_forward_the_detail_flag",
+    # --- the pose an agent authors reaches the file, and a child is solved against its parent ---
+    f"{POSET}::test_aim_points_the_named_axis_at_an_object_and_leaves_position_and_scale_alone",
+    f"{POSET}::test_aim_at_a_world_point_resolves_through_the_rig_transform",
+    f"{POSET}::test_aim_rejects_every_direction_it_cannot_define",
+    f"{POSET}::test_posing_an_aim_lands_it_on_the_target_after_the_parent_has_moved",
+    f"{POSET}::test_a_minimal_arc_aim_past_the_flip_angle_is_refused_rather_than_rolled_arbitrarily",
+    f"{POSET}::test_rotate_resolves_named_axes_and_vectors_in_degrees",
+    f"{POSET}::test_relative_rotate_composes_while_the_default_replaces",
+    f"{POSET}::test_a_resolved_rotation_keys_only_the_bones_native_channel[QUATERNION-rotation_quaternion]",
+    f"{POSET}::test_a_resolved_rotation_keys_only_the_bones_native_channel[XYZ-rotation_euler]",
+    f"{POSET}::test_a_resolved_rotation_keys_only_the_bones_native_channel[AXIS_ANGLE-rotation_axis_angle]",
+    f"{POSET}::test_an_absolute_space_child_is_resolved_against_the_parent_this_call_moved",
+    f"{POSET}::test_a_local_space_pose_is_the_channel_value_whatever_the_parent_did",
+    f"{POSET}::test_keying_leaves_the_rig_driven_by_the_action_it_authored",
+    f"{POSET}::test_keying_reports_the_action_it_displaced",
+    f"{POSET}::test_a_failed_key_hands_the_rig_back_as_it_arrived",
+    f"{POSET}::test_keying_an_aim_without_an_up_reference_is_refused",
+    f"{POSET}::test_a_keyed_aim_takes_the_short_way_round_from_the_previous_key",
+    f"{POSET}::test_a_keyed_euler_aim_stays_on_the_previous_keys_branch",
+    f"{POSET}::test_rest_axes_are_reported_only_when_asked_for",
     # --- configure_render_settings answers with the paths it wrote, not the whole state ---
     f"{RENDT}::test_configure_render_settings_returns_only_the_patched_values",
     f"{RENDT}::test_configure_render_settings_detail_returns_both_full_state_blocks",
@@ -420,6 +441,15 @@ NOT_INDIVIDUALLY_FALSIFIABLE: dict[str, str] = {
         "because that list is derived from `dataclasses.fields(AddonHandshake)`, which is the point of it: "
         "the case exists so that a future change publishing this field raw is caught, not because a revert "
         "can reach it today. The sibling fields that a single revert *can* reach each have a row."
+    ),
+    f"{POSET}::test_a_local_space_pose_is_the_channel_value_whatever_the_parent_did": (
+        "it is the control for the row above it: LOCAL is `matrix_basis`, which is parent-relative by "
+        "construction, so no revert of the apply-time resolution can move it. Measured: setting "
+        '`_PARENT_RELATIVE_SPACE = "POSE"` sends a LOCAL entry down the deferred path that the '
+        "absolute spaces take, and the node still passes, because resolving `matrix_basis` before or "
+        "after the parent moves gives the same answer. That is the claim - the fix for the absolute "
+        "spaces had to leave LOCAL alone, and this node is what says so; the sibling node for the "
+        "absolute spaces is the one a revert reaches."
     ),
     "tests/test_session_state.py::test_a_recorded_failure_names_one_bounded_leaf_and_nothing_else[newline]": (
         _DOUBLE_DEFENDED
@@ -4817,8 +4847,10 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 193_438",
-        "SHOT_MODE_BYTE_CEILING = 193_437",
+        "SHOT_MODE_BYTE_CEILING = 202_000",
+        # One byte below the *measured* payload (201,541), not below the ceiling: the ceiling has
+        # headroom by design, so reverting it to 201_999 would still pass and prove nothing.
+        "SHOT_MODE_BYTE_CEILING = 201_540",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
@@ -5435,11 +5467,11 @@ REVERTS: list[Revert] = [
     Revert(
         "pose: a keyframed pose reports every bone's matrices whether or not they were asked for",
         ADDON_POSING,
-        "        if detail:\n"
-        "            # The pose is restored before this returns, so these matrices describe what was\n"
-        "            # keyed at `frame`, not what the rig is holding now.\n"
-        '            reply["bones"] = pose_records\n',
+        "    if pose_records is not None:\n"
+        "        # The pose is restored before this returns, so these matrices describe what was keyed at\n"
+        "        # the requested frame, not what the rig is holding now.\n"
         '        reply["bones"] = pose_records\n',
+        '    reply["bones"] = pose_records\n',
         (f"{CTRLT}::test_keyframed_pose_names_every_bone_and_reports_no_matrices_by_default",),
     ),
     Revert(
@@ -5448,6 +5480,128 @@ REVERTS: list[Revert] = [
         '            "action_slot_identifier": action_slot_identifier,\n            "detail": detail,\n',
         '            "action_slot_identifier": action_slot_identifier,\n            "detail": False,\n',
         (f"{CTRLT}::test_pose_tools_forward_the_detail_flag",),
+    ),
+    # --- the pose an agent authors reaches the file, and a child is solved against its parent ---
+    Revert(
+        "pose: the keyed action is unassigned again, so Blender drops it at save",
+        ADDON_POSING,
+        "            if not keyed:\n"
+        "                # Nothing was authored, so hand the rig back exactly as it arrived.\n"
+        "                animation.action = previous_action\n",
+        "            if True:\n                animation.action = previous_action\n",
+        (
+            f"{POSET}::test_keying_leaves_the_rig_driven_by_the_action_it_authored",
+            f"{POSET}::test_keying_reports_the_action_it_displaced",
+        ),
+    ),
+    Revert(
+        "pose: an absolute-space target is built before the parent this call moves",
+        ADDON_POSING,
+        '        elif space == _PARENT_RELATIVE_SPACE and "aim_at" not in spec:\n',
+        '        elif "aim_at" not in spec:\n',
+        (f"{POSET}::test_an_absolute_space_child_is_resolved_against_the_parent_this_call_moved",),
+    ),
+    Revert(
+        "pose: aim_at resolves to nothing, so the bone keeps the rotation it had",
+        ADDON_POSING,
+        '    if "aim_at" in spec:\n'
+        "        # An aim is stated in the scene, not in the call's space, and lands in armature space.\n"
+        '        return _aim_pose_matrix(armature, pose_bone, spec["aim_at"]), "POSE"\n',
+        "",
+        (
+            f"{POSET}::test_posing_an_aim_lands_it_on_the_target_after_the_parent_has_moved",
+            f"{POSET}::test_a_keyed_aim_takes_the_short_way_round_from_the_previous_key",
+            f"{POSET}::test_a_keyed_euler_aim_stays_on_the_previous_keys_branch",
+        ),
+    ),
+    Revert(
+        "pose: a keyed aim is spelled without regard to the previous key, so it spins between them",
+        ADDON_POSING,
+        '                if "aim_at" in spec and path in _ROTATION_CHANNEL_WIDTH:\n'
+        "                    _match_previous_rotation(action, pose_bone, path, frame)\n",
+        "",
+        (
+            f"{POSET}::test_a_keyed_aim_takes_the_short_way_round_from_the_previous_key",
+            f"{POSET}::test_a_keyed_euler_aim_stays_on_the_previous_keys_branch",
+        ),
+    ),
+    Revert(
+        "pose: rest axes are withheld even when the caller asks for them",
+        ADDON_POSING,
+        '            if rest_axes:\n                item["rest_axes"] = _rest_axes(bone)\n',
+        "",
+        (f"{POSET}::test_rest_axes_are_reported_only_when_asked_for",),
+    ),
+    Revert(
+        "pose: an aim's up axis is not made perpendicular, so the basis shears",
+        ADDON_POSING,
+        "    columns = {track_letter: direction * track_sign, up_letter: residual.normalized() * up_sign}\n",
+        "    columns = {track_letter: direction * track_sign, up_letter: up_pose * up_sign}\n",
+        (f"{POSET}::test_aim_points_the_named_axis_at_an_object_and_leaves_position_and_scale_alone",),
+    ),
+    Revert(
+        "pose: an aim reads its world target as if the rig were at the origin",
+        ADDON_POSING,
+        "    world_to_pose = armature.matrix_world.inverted()\n",
+        "    world_to_pose = mathutils.Matrix.Identity(4)\n",
+        (
+            f"{POSET}::test_aim_at_a_world_point_resolves_through_the_rig_transform",
+            f"{POSET}::test_aim_points_the_named_axis_at_an_object_and_leaves_position_and_scale_alone",
+        ),
+    ),
+    Revert(
+        "pose: an aim target on the bone head is normalised instead of refused",
+        ADDON_POSING,
+        "    if distance <= _AIM_MIN_DISTANCE:\n",
+        "    if False:\n",
+        (f"{POSET}::test_aim_rejects_every_direction_it_cannot_define",),
+    ),
+    Revert(
+        "pose: a minimal-arc aim accepts a half turn and rolls the bone arbitrarily",
+        ADDON_POSING,
+        "        if swing > _AIM_MAX_MINIMAL_ARC:\n",
+        "        if False:\n",
+        (f"{POSET}::test_a_minimal_arc_aim_past_the_flip_angle_is_refused_rather_than_rolled_arbitrarily",),
+    ),
+    Revert(
+        "pose: rotate reads its angle as radians, so a degree value under-rotates",
+        ADDON_POSING,
+        '"angle": math.radians(degrees),',
+        '"angle": degrees,',
+        (f"{POSET}::test_rotate_resolves_named_axes_and_vectors_in_degrees",),
+    ),
+    Revert(
+        "pose: relative rotate replaces the rotation instead of composing with it",
+        ADDON_POSING,
+        '        rotation = (delta @ mathutils.Quaternion(rotation)) if record["relative"] else delta\n',
+        "        rotation = delta\n",
+        (f"{POSET}::test_relative_rotate_composes_while_the_default_replaces",),
+    ),
+    Revert(
+        "pose: a resolved rotation keys no channel at all, so an aim writes no curves",
+        ADDON_POSING,
+        '_ROTATION_CHANNELS = ("rotation_euler", "rotation_quaternion", "rotation_axis_angle", "rotate", "aim_at")\n',
+        '_ROTATION_CHANNELS = ("rotation_euler", "rotation_quaternion", "rotation_axis_angle")\n',
+        (
+            f"{POSET}::test_a_resolved_rotation_keys_only_the_bones_native_channel[QUATERNION-rotation_quaternion]",
+            f"{POSET}::test_a_resolved_rotation_keys_only_the_bones_native_channel[XYZ-rotation_euler]",
+            f"{POSET}::test_a_resolved_rotation_keys_only_the_bones_native_channel[AXIS_ANGLE-rotation_axis_angle]",
+        ),
+    ),
+    Revert(
+        "pose: a failed keying call leaves the half-applied pose on the rig",
+        ADDON_POSING,
+        "            for pose_bone, _spec, _matrix in prepared:\n"
+        "                pose_bone.matrix_basis = matrices[pose_bone.name]\n",
+        "",
+        (f"{POSET}::test_a_failed_key_hands_the_rig_back_as_it_arrived",),
+    ),
+    Revert(
+        "pose: keying accepts a roll-preserving aim, so two frames key two different rolls",
+        ADDON_POSING,
+        '        if "aim_at" in spec and spec["aim_at"]["up"] is None:\n',
+        "        if False:\n",
+        (f"{POSET}::test_keying_an_aim_without_an_up_reference_is_refused",),
     ),
     # --- configure_render_settings answers with the paths it wrote, not the whole state ---
     Revert(
