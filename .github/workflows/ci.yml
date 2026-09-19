@@ -13,5 +13,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The lint gate diffs against the base branch, so it needs history.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install dependencies
+        run: poetry install --with dev --no-interaction
+
+      # Not `ruff check .`: the tree carries an inherited backlog, so the gate is
+      # the lines this branch introduces. `just lint-all` reports the rest.
+      - name: Lint changed lines
+        run: poetry run python scripts/lint_changed.py --base "origin/${{ github.base_ref }}"
+
+      - name: Check formatting
+        run: poetry run ruff format --check .
+
+      - name: Type check
+        run: poetry run basedpyright
+
   test:
     uses: ./.github/workflows/tests.yml

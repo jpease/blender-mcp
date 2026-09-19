@@ -79,20 +79,29 @@ Use an add-on only after confirming it is enabled and that its operator is avail
 - Keep command dispatch, validation, and Blender-side mutation small and testable. Isolate pure validation/serialization helpers from Blender-dependent code.
 - Preserve backward-compatible tool schemas and response fields unless a breaking change is intentional, documented, and versioned.
 - Add focused regression tests for every behavior change, especially validation, connection framing, error handling, main-thread execution, and restoration of scene state.
-- Run the relevant test suite and quality checks before handing off a change:
+- Run the relevant test suite and quality checks before handing off a change.
+  `just check` runs all four, cheapest first, and the same four run in CI:
 
   ```bash
   just lint        # ruff, restricted to the lines this branch introduces
-  just fmt-check   # ruff format, whole tree; this one is clean and must stay clean
-  just typecheck   # basedpyright
+  just fmt-check   # ruff format, whole tree; clean, and must stay clean
+  just typecheck   # basedpyright, whole tree; at zero, and must stay at zero
   just test        # pytest
   ```
 
-  `just lint` is the enforced gate. The repository inherited a large ruff backlog
-  from upstream (`just lint-all` reports it in full), so whole-tree cleanliness is
-  not yet a hand-off precondition — but no line you write or rewrite may add to it.
-  Touching a legacy file does not make you responsible for the findings already in
-  it. Do not silence a finding on a line you own without a stated reason.
+  The two gates have different shapes because their histories do. ruff carries
+  an inherited backlog (`just lint-all` reports it in full), so whole-tree
+  cleanliness is not a hand-off precondition — but no line you write or rewrite
+  may add to it, and touching a legacy file does not make you responsible for the
+  findings already in it. basedpyright has no backlog left, so it is enforced
+  across the whole tree; there is nothing to ratchet and a line filter would only
+  weaken it.
+
+  Do not silence a finding on a line you own without a stated reason. bpy's
+  stubs widen collection elements and lose the concrete datablock, so
+  `reportArgumentType` is off under `src/blender_mcp/bundled` and on everywhere
+  else; a diagnostic outside that boundary is describing a state the code can
+  actually reach.
 
   If a Blender runtime change cannot be exercised in CI, state the manual Blender 5.1 verification performed or still required.
 
