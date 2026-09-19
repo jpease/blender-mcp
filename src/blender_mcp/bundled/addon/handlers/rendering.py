@@ -3,6 +3,7 @@
 
 import math
 import os
+import re
 import time
 
 from contextlib import suppress
@@ -57,6 +58,14 @@ _RENDER_PATCH_PROPERTIES = (
     | {"motion_blur", "film", "output", "metadata", "multiview", "cycles", "eevee"}
 )
 _MAX_ANIMATION_FRAMES = 10_000
+# Extensions Blender writes for the image formats this tool's patch model can select, measured on
+# 5.2 (PNG .png, JPEG .jpg, OPEN_EXR .exr, TIFF .tif, WEBP .webp) plus the alternate spellings a
+# caller types by hand. Deliberately not texture/_shared's SUPPORTED_IMAGE_EXTENSIONS: that set
+# lists images Blender can *read* and includes formats (.psd) it never renders to.
+_RENDER_OUTPUT_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".exr", ".tif", ".tiff", ".webp"})
+# Blender pads a frame number to four digits unless the frame itself needs more (measured on 5.2:
+# "sh010_" -> "sh010_0001.png", frame 12345 -> "sh010_12345.png").
+_FRAME_IN_FILENAME = re.compile(r"(?<![0-9])[0-9]{4}$")
 
 
 def _scene(name):
@@ -130,7 +139,7 @@ def _render_info(scene):
         }
         if cycles is not None
         else None,
-        "eevee": _rna_values(getattr(scene, "eevee", None), ("taa_samples", "taa_render_samples", "use_shadows")),
+        "eevee": _eevee_info(getattr(scene, "eevee", None)),
         "metadata": _rna_values(
             render,
             (
@@ -164,6 +173,40 @@ def _rna_values(owner, names):
     if owner is None:
         return None
     return {name: getattr(owner, name) for name in names if hasattr(owner, name)}
+
+
+def _eevee_info(eevee):
+    """
+    Report EEVEE sampling plus the ray-tracing state that decides whether glass renders at all.
+
+    Blender 5.2 splits these across two structs: the switch and method sit on `scene.eevee`, the
+    screen-trace controls on its `ray_tracing_options`. Both are reported because a scene with
+    `use_raytracing` off renders clear glass black, and that is otherwise invisible in this reply.
+
+    Args:
+        eevee: The scene's EEVEE settings, or None on a build without them.
+
+    Returns:
+        dict | None: Present sampling and ray-tracing values, with "ray_tracing" holding the
+        nested screen-trace options (None on a runtime that does not expose them).
+
+    """
+    if eevee is None:
+        return None
+    # `eevee` is not None here, so `_rna_values` returns a dict; `or {}` says that to the checker
+    # rather than asserting it.
+    info = (
+        _rna_values(
+            eevee,
+            ("taa_samples", "taa_render_samples", "use_shadows", "use_raytracing", "ray_tracing_method"),
+        )
+        or {}
+    )
+    info["ray_tracing"] = _rna_values(
+        getattr(eevee, "ray_tracing_options", None),
+        ("resolution_scale", "screen_trace_quality", "screen_trace_thickness", "trace_max_roughness", "use_denoise"),
+    )
+    return info
 
 
 def _page(records, offset, limit):
@@ -338,6 +381,110 @@ def _validate_render_patch(patch):
     return patch
 
 
+def _render_output_suggestion(name, extension):
+    """
+    Rebuild a filename with the scene's image-format extension, the way Blender itself would.
+
+    Measured on 5.2: a still render into "sh010.jpg" while PNG is active writes "sh010.png" - an
+    extension Blender recognises is replaced, anything else is kept and the real one appended.
+
+    Args:
+        name: Basename the caller asked for.
+        extension: Extension the scene's image format writes, leading dot included.
+
+    Returns:
+        str: The basename carrying that extension.
+
+    """
+    suffix = os.path.splitext(name)[1]
+    stem = name[: -len(suffix)] if suffix.lower() in _RENDER_OUTPUT_EXTENSIONS else name
+    return stem + extension
+
+
+def _resolve_render_output(scene, filepath, mode):
+    """
+    Resolve a caller's output path to the exact file Blender will write, or refuse its shape.
+
+    Blender never treats the render path as a container. For an ANIMATION it appends the frame
+    number after the whole path (measured on 5.2: ".../renders" -> ".../renders0001.png",
+    ".../sh010.png" -> ".../sh010.png0001.png"); for a STILL it swaps in the active format's
+    extension (".../sh010_" -> ".../sh010_.png"). Both rules put the file somewhere the reply
+    would not name, which on stage reads as a render that vanished, so the shapes that cannot be
+    honoured are refused here - before any frame is rendered - naming the path that would work.
+
+    Args:
+        scene: Scene whose render settings decide the extension.
+        filepath: The caller's requested path, used verbatim in errors so the message never
+            exposes Blender's working directory.
+        mode: Either "STILL" or "ANIMATION".
+
+    Returns:
+        str: Absolute path to assign to scene.render.filepath.
+
+    Raises:
+        ValueError: If the directory does not exist, or the path's shape would make Blender write
+            somewhere other than where the caller asked.
+
+    """
+    extension = scene.render.file_extension
+    output = os.path.abspath(bpy.path.abspath(os.path.expanduser(filepath)))
+    # os.path.abspath drops a trailing separator, so the directory intent has to be read off the
+    # caller's own text before it is normalised away.
+    if filepath.endswith(("/", os.sep)) or os.path.isdir(output):
+        shown = filepath.rstrip("/" + os.sep) or filepath
+        raise ValueError(
+            f"Output filepath is a directory: {filepath!r}. Blender appends the frame number to the "
+            f"path as given, so a directory writes files beside it and leaves it empty. Pass a "
+            f"filename prefix inside it, such as {shown + '/frame_'!r} or "
+            f"{shown + '/frame_####' + extension!r}."
+        )
+    directory = os.path.dirname(output)
+    if not directory or not os.path.isdir(directory):
+        # The caller's own text, not the resolved path, which can expose Blender's working directory.
+        raise ValueError(f"Output directory does not exist: {os.path.dirname(filepath) or '.'}")
+    name = os.path.basename(output)
+    suffix = os.path.splitext(name)[1].lower()
+    if mode == "ANIMATION":
+        looks_like_one_file = suffix in _RENDER_OUTPUT_EXTENSIONS or suffix == extension.lower()
+        # `suffix` gates the slice below: without it `name[:-0]` would silently empty the stem.
+        if suffix and "#" not in name and looks_like_one_file:
+            stem = name[: -len(suffix)]
+            raise ValueError(
+                f"Output filepath names a single file: {filepath!r}. An ANIMATION writes one file per "
+                f"frame and Blender appends the frame number after the whole path, so this would "
+                f"write {name + format(scene.frame_start, '04d') + extension!r}. Pass a frame prefix "
+                f"such as {stem + '_'!r}, or a template such as {stem + '_####' + extension!r}."
+            )
+    elif scene.render.use_file_extension and suffix != extension.lower():
+        raise ValueError(
+            f"Output filepath does not end in the scene's image-format extension {extension!r}: "
+            f"{filepath!r}. A STILL render writes one file and Blender applies that extension itself, "
+            f"so the reply would name a file that was never written. Pass "
+            f"{os.path.join(os.path.dirname(filepath), _render_output_suggestion(name, extension))!r}."
+        )
+    return output
+
+
+def _frame_from_filename(path):
+    """
+    Recover the frame number Blender encoded in a written filename, or None when it is ambiguous.
+
+    Blender writes the frame as a four-digit run immediately before the extension, so that run is
+    readable back. A longer run is not: ".../sh0100001.png" is the prefix "sh010" plus frame 1 and
+    is indistinguishable from a five-plus-digit frame, and a shorter run came from a "##" template
+    that a version suffix looks exactly like. Those stay None rather than become a guess.
+
+    Args:
+        path: Path to a file Blender rendered.
+
+    Returns:
+        int | None: The frame number, or None when the filename does not carry one unambiguously.
+
+    """
+    match = _FRAME_IN_FILENAME.search(os.path.splitext(os.path.basename(path))[0])
+    return int(match.group()) if match else None
+
+
 class RenderingHandlersMixin:
     """Expose production render configuration and bounded rendering."""
 
@@ -406,9 +553,26 @@ class RenderingHandlersMixin:
             if nested.get("eevee"):
                 if resulting_engine != "BLENDER_EEVEE":
                     raise ValueError("eevee settings require the BLENDER_EEVEE render engine")
-                snapshots.append(
-                    (scene.eevee, _set_supported(scene.eevee, nested["eevee"], "EEVEE", None, applied, "eevee."))
-                )
+                eevee_patch = dict(nested["eevee"])
+                # Blender 5.2 keeps the screen-trace controls on a nested RaytraceEEVEE struct,
+                # scene.eevee.ray_tracing_options, not on scene.eevee itself.
+                ray_tracing = eevee_patch.pop("ray_tracing", None)
+                if eevee_patch:
+                    snapshots.append(
+                        (scene.eevee, _set_supported(scene.eevee, eevee_patch, "EEVEE", None, applied, "eevee."))
+                    )
+                if ray_tracing:
+                    options = getattr(scene.eevee, "ray_tracing_options", None)
+                    if options is None:
+                        raise ValueError("EEVEE ray-tracing options are unavailable in this Blender runtime")
+                    snapshots.append(
+                        (
+                            options,
+                            _set_supported(
+                                options, ray_tracing, "EEVEE ray tracing", None, applied, "eevee.ray_tracing."
+                            ),
+                        )
+                    )
             if nested.get("motion_blur"):
                 mapping = {
                     "enabled": "use_motion_blur",
@@ -626,11 +790,7 @@ class RenderingHandlersMixin:
             raise ValueError("frame is only valid for STILL renders")
         if not isinstance(filepath, str) or not filepath.strip():
             raise ValueError("filepath must be a non-empty string")
-        output = os.path.abspath(bpy.path.abspath(os.path.expanduser(filepath)))
-        directory = os.path.dirname(output)
-        if not directory or not os.path.isdir(directory):
-            # The caller's own text, not the resolved path, which can expose Blender's working directory.
-            raise ValueError(f"Output directory does not exist: {os.path.dirname(filepath) or '.'}")
+        output = _resolve_render_output(scene, filepath, mode)
         if mode == "STILL" and os.path.exists(output) and not confirm_overwrite:
             raise ValueError("Output file already exists; set confirm_overwrite=True to replace it")
         if view_layer_name and scene.view_layers.get(view_layer_name) is None:
@@ -750,7 +910,9 @@ class RenderingHandlersMixin:
 
         Args:
             filepath: Destination path this call writes the (possibly downscaled) copy to.
-            output_path: Path to an existing rendered file on disk. Takes precedence over frame.
+            output_path: Path to an existing rendered file on disk. Takes precedence over frame;
+                the reported frame is then read back out of the filename Blender wrote, and stays
+                null when that filename does not carry one unambiguously.
             frame: Frame number the in-memory Render Result must currently hold; only
                 checked when output_path is omitted.
             max_size: Maximum size in pixels for the largest dimension of the saved copy.
@@ -772,6 +934,9 @@ class RenderingHandlersMixin:
             if not os.path.isfile(output_path):
                 raise ValueError(f"Render output file not found: {output_path}")
             source = "output_path"
+            # The caller's own `frame` is documented as ignored here, so a narration of "here is
+            # frame 24" is only backed by what Blender actually encoded in the filename.
+            frame = _frame_from_filename(output_path)
             img = bpy.data.images.load(output_path, check_existing=False)
         else:
             render_result = bpy.data.images.get("Render Result")

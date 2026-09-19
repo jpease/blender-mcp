@@ -404,7 +404,20 @@ def _render_info(engine: str, samples: int) -> dict[str, object]:
             "exr_codec": "ZIP",
         },
         "cycles": {"samples": samples, "use_denoising": True},
-        "eevee": {"taa_samples": 16, "taa_render_samples": 128, "use_shadows": True},
+        "eevee": {
+            "taa_samples": 16,
+            "taa_render_samples": 128,
+            "use_shadows": True,
+            "use_raytracing": True,
+            "ray_tracing_method": "SCREEN",
+            "ray_tracing": {
+                "resolution_scale": "2",
+                "screen_trace_quality": 0.25,
+                "screen_trace_thickness": 0.10000000149011612,
+                "trace_max_roughness": 0.5,
+                "use_denoise": True,
+            },
+        },
         "metadata": {
             "use_stamp": False,
             "use_stamp_date": True,

@@ -134,13 +134,36 @@ class CyclesPatch(BaseModel):
     denoiser: Literal["OPENIMAGEDENOISE", "OPTIX"] | None = None
 
 
+class EeveeRayTracingPatch(BaseModel):
+    """
+    EEVEE screen-trace controls, Blender 5.2's `scene.eevee.ray_tracing_options` (RaytraceEEVEE).
+
+    Separate from EeveePatch because Blender keeps them on a nested struct, not on `scene.eevee`.
+    """
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    resolution_scale: Literal["1", "2", "4", "8", "16"] | None = None
+    screen_trace_quality: Annotated[float | None, Field(ge=0, le=1)] = None
+    screen_trace_thickness: Annotated[float | None, Field(gt=0, le=10_000)] = None
+    trace_max_roughness: Annotated[float | None, Field(ge=0, le=1)] = None
+    use_denoise: bool | None = None
+
+
 class EeveePatch(BaseModel):
-    """EEVEE-only sampling controls, resolved against Blender 5.x RNA at runtime."""
+    """
+    EEVEE-only sampling and ray-tracing controls, resolved against Blender 5.x RNA at runtime.
+
+    Ray tracing is off by default in EEVEE, and clear glass renders black without it, so
+    `use_raytracing` is the switch a scene with windows needs before anything else here matters.
+    """
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     taa_samples: Annotated[int | None, Field(ge=1, le=1_000_000)] = None
     taa_render_samples: Annotated[int | None, Field(ge=1, le=1_000_000)] = None
     use_shadows: bool | None = None
+    use_raytracing: bool | None = None
+    ray_tracing_method: Literal["PROBE", "SCREEN"] | None = None
+    ray_tracing: EeveeRayTracingPatch | None = None
 
 
 RenderSettingsPatch.model_rebuild()
@@ -279,6 +302,13 @@ async def render_scene(
     at the output. To actually see this render's pixels, call
     inspect_render_output(output_path=<one of this result's "files" paths>) afterward -
     or omit output_path there to read the in-memory Render Result directly.
+
+    filepath is never a directory: Blender appends the frame number to the path as given,
+    so a trailing slash writes files beside the folder instead of inside it and is refused.
+    A STILL takes a full filename ending in the scene's image-format extension
+    ("<dir>/sh010.png"); an ANIMATION takes a per-frame prefix ("<dir>/sh010_") or an
+    explicit template ("<dir>/sh010_####.png") and is refused a plain "<dir>/sh010.png",
+    which Blender would write as "sh010.png0001.png".
     """
     if not confirm_render:
         raise ToolError("confirm_render=True is required")
@@ -409,6 +439,9 @@ async def inspect_render_output(
     Returns:
         [Image, dict]: the rendered frame, then an envelope whose data has "width",
         "height", "native_width", "native_height", "source", "source_path", "frame".
+        With output_path, "frame" is read back out of the filename Blender wrote and is
+        null when that filename carries no unambiguous frame number - so a narration of
+        "here is frame 24" is only warranted when it is not null.
 
     Raises:
         Exception: If the operation cannot be completed.

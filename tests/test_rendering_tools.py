@@ -4,6 +4,7 @@
 import asyncio
 import importlib
 import inspect
+import math
 import os
 import types
 
@@ -248,6 +249,19 @@ def test_inspect_render_output_tempfile_is_removed_when_blender_fails(monkeypatc
     assert not rendered.exists()
 
 
+class _FakeImages(dict):
+    """The three `bpy.data.images` calls inspect_render_output makes on a file read from disk."""
+
+    def load(self, filepath, check_existing=False):
+        """Return a loadable stand-in small enough that no downscale is triggered."""
+        return types.SimpleNamespace(
+            size=(64, 36), filepath_raw=filepath, file_format="PNG", save=lambda: None, scale=lambda *_size: None
+        )
+
+    def remove(self, _image):
+        """Drop the loaded datablock, as the handler does in its finally block."""
+
+
 def _fake_view_layer(handlers, name="ViewLayer"):
     layer = types.SimpleNamespace(name=name, material_override=None, world_override=None)
     for prop in handlers._VIEW_LAYER_PROPERTIES:
@@ -277,6 +291,7 @@ def _fake_scene(handlers, name="Scene"):
         fps_base=1.0,
         film_transparent=False,
         filepath="/tmp/render/",
+        file_extension=".png",
         use_file_extension=True,
         use_overwrite=True,
         use_placeholder=False,
@@ -304,21 +319,37 @@ def _fake_scene(handlers, name="Scene"):
             film_transparent_glass=False,
             film_transparent_roughness=0.1,
         ),
-        eevee=types.SimpleNamespace(taa_samples=16, taa_render_samples=64, use_shadows=True),
+        eevee=types.SimpleNamespace(
+            taa_samples=16,
+            taa_render_samples=64,
+            use_shadows=True,
+            use_raytracing=False,
+            ray_tracing_method="SCREEN",
+            ray_tracing_options=types.SimpleNamespace(
+                resolution_scale="2",
+                screen_trace_quality=0.25,
+                screen_trace_thickness=0.1,
+                trace_max_roughness=0.5,
+                use_denoise=True,
+            ),
+        ),
         view_layers=[_fake_view_layer(handlers)],
     )
 
 
 def _rendering_handler(monkeypatch):
-    addon, fake_bpy = _load_addon(monkeypatch, data={"scenes": {}})
+    addon, fake_bpy = _load_addon(monkeypatch, data={"scenes": {}, "images": _FakeImages()})
     handlers = importlib.import_module(f"{addon.__name__}.handlers.rendering")
+    # render_scene resolves "//relative" paths through Blender; outside Blender they are absolute
+    # already, so the identity keeps the resolver's own normalisation the only thing under test.
+    fake_bpy.path = types.SimpleNamespace(abspath=lambda path: path)
     scene = _fake_scene(handlers)
     fake_bpy.data.scenes["Scene"] = scene
-    return handlers.RenderingHandlersMixin(), scene
+    return handlers.RenderingHandlersMixin(), scene, handlers
 
 
 def test_configure_render_settings_returns_only_the_patched_values(monkeypatch) -> None:
-    handler, scene = _rendering_handler(monkeypatch)
+    handler, scene, _handlers = _rendering_handler(monkeypatch)
 
     result = handler.configure_render_settings(
         "Scene",
@@ -355,7 +386,7 @@ def test_configure_render_settings_returns_only_the_patched_values(monkeypatch) 
 
 
 def test_configure_render_settings_detail_returns_both_full_state_blocks(monkeypatch) -> None:
-    handler, _scene = _rendering_handler(monkeypatch)
+    handler, _scene, _handlers = _rendering_handler(monkeypatch)
 
     result = handler.configure_render_settings("Scene", {"engine": "CYCLES", "resolution_y": 720}, detail=True)
 
@@ -368,7 +399,7 @@ def test_configure_render_settings_detail_returns_both_full_state_blocks(monkeyp
 
 
 def test_configure_render_settings_reports_a_patch_that_writes_nothing(monkeypatch) -> None:
-    handler, _scene = _rendering_handler(monkeypatch)
+    handler, _scene, _handlers = _rendering_handler(monkeypatch)
 
     result = handler.configure_render_settings("Scene", {"cycles": {}})
 
@@ -394,3 +425,119 @@ def test_configure_render_settings_forwards_detail(monkeypatch) -> None:
     )
 
     assert [params["detail"] for _command, params in connection.calls] == [True, False]
+
+
+def test_render_output_path_shapes_that_blender_would_relocate_are_refused(monkeypatch, tmp_path) -> None:
+    """Measured on 5.2: Blender appends the frame after the path as given, so these three miss."""
+    handler, _scene, _handlers = _rendering_handler(monkeypatch)
+    (tmp_path / "renders").mkdir()
+
+    with pytest.raises(ValueError, match="is a directory") as trailing_slash:
+        handler.render_scene("Scene", f"{tmp_path / 'renders'}/", mode="ANIMATION", confirm_render=True)
+    with pytest.raises(ValueError, match="is a directory"):
+        handler.render_scene("Scene", str(tmp_path / "renders"), mode="STILL", confirm_render=True)
+    with pytest.raises(ValueError, match="names a single file") as animation_file:
+        handler.render_scene("Scene", str(tmp_path / "sh010.png"), mode="ANIMATION", confirm_render=True)
+    with pytest.raises(ValueError, match="image-format extension") as still_prefix:
+        handler.render_scene("Scene", str(tmp_path / "sh010_"), mode="STILL", confirm_render=True)
+
+    # Each refusal has to name the path that works, or the caller only learns they were wrong.
+    assert "/frame_####.png'" in str(trailing_slash.value)
+    assert "'sh010.png0001.png'" in str(animation_file.value)
+    assert "'sh010_####.png'" in str(animation_file.value)
+    assert str(tmp_path / "sh010_.png") in str(still_prefix.value)
+
+
+def test_render_output_path_shapes_blender_honours_are_resolved(monkeypatch, tmp_path) -> None:
+    """A frame prefix, a #### template, and a still's full filename all survive untouched."""
+    _handler, scene, handlers = _rendering_handler(monkeypatch)
+
+    for mode, name in (("ANIMATION", "sh010_"), ("ANIMATION", "sh010_####.png"), ("STILL", "sh010.png")):
+        assert handlers._resolve_render_output(scene, str(tmp_path / name), mode) == str(tmp_path / name)
+    # A prefix ending in digits is honoured too - Blender writes "sh0100001.png", which the reply names.
+    assert handlers._resolve_render_output(scene, str(tmp_path / "sh010"), "ANIMATION") == str(tmp_path / "sh010")
+    # Without use_file_extension Blender writes the still's path verbatim, so nothing is required of it.
+    scene.render.use_file_extension = False
+    assert handlers._resolve_render_output(scene, str(tmp_path / "sh010_"), "STILL") == str(tmp_path / "sh010_")
+
+
+def test_inspect_render_output_reports_the_frame_its_filename_carries(monkeypatch, tmp_path) -> None:
+    """Back "here is frame 24" only when Blender's own four-digit frame is in the name."""
+    handler, _scene, _handlers = _rendering_handler(monkeypatch)
+    destination = tmp_path / "copy.png"
+
+    def inspect(name: str) -> int | None:
+        source = tmp_path / name
+        source.write_bytes(b"")
+        return handler.inspect_render_output(str(destination), output_path=str(source))["frame"]
+
+    assert inspect("sh010_0024.png") == 24
+    assert inspect("sh010.png0001.png") == 1
+    # "sh010" + frame 1 and a five-digit frame are the same eight characters; neither is a fact.
+    assert inspect("sh0100001.png") is None
+    assert inspect("hero_shot.png") is None
+    assert inspect("sh010_12345.png") is None
+
+
+def test_eevee_ray_tracing_patch_reaches_the_nested_options_struct(monkeypatch) -> None:
+    """Blender 5.2 keeps screen-trace controls on scene.eevee.ray_tracing_options, not scene.eevee."""
+    handler, scene, _handlers = _rendering_handler(monkeypatch)
+
+    result = handler.configure_render_settings(
+        "Scene",
+        {"eevee": {"use_raytracing": True, "ray_tracing": {"resolution_scale": "1", "screen_trace_quality": 0.5}}},
+    )
+
+    assert result["after"] == {
+        "eevee.use_raytracing": True,
+        "eevee.ray_tracing.resolution_scale": "1",
+        "eevee.ray_tracing.screen_trace_quality": 0.5,
+    }
+    assert scene.eevee.use_raytracing is True
+    assert scene.eevee.ray_tracing_options.resolution_scale == "1"
+
+
+def test_a_rejected_ray_tracing_field_restores_the_whole_eevee_patch(monkeypatch) -> None:
+    handler, scene, _handlers = _rendering_handler(monkeypatch)
+
+    with pytest.raises(ValueError, match="EEVEE ray tracing settings are unavailable"):
+        handler.configure_render_settings(
+            "Scene", {"eevee": {"use_raytracing": True, "ray_tracing": {"no_such_option": 1}}}
+        )
+
+    assert scene.eevee.use_raytracing is False
+
+
+def test_render_setup_reports_whether_ray_tracing_is_on(monkeypatch) -> None:
+    """A scene whose windows render black says so here; without this the reply never mentions it."""
+    handler, _scene, _handlers = _rendering_handler(monkeypatch)
+
+    eevee = handler.inspect_render_setup("Scene")["eevee"]
+
+    assert eevee["use_raytracing"] is False
+    assert math.isclose(eevee["ray_tracing"]["screen_trace_quality"], 0.25)
+
+
+def test_eevee_patch_carries_the_ray_tracing_controls_to_blender(monkeypatch) -> None:
+    connection = _Connection()
+    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+    patch = rendering.RenderSettingsPatch(
+        engine="BLENDER_EEVEE",
+        eevee=rendering.EeveePatch(
+            use_raytracing=True,
+            ray_tracing_method="SCREEN",
+            ray_tracing=rendering.EeveeRayTracingPatch(resolution_scale="1", screen_trace_quality=0.5),
+        ),
+    )
+
+    asyncio.run(rendering.configure_render_settings(ctx=None, scene_name="Scene", patch=patch))
+
+    assert connection.calls[0][1]["patch"]["eevee"] == {
+        "use_raytracing": True,
+        "ray_tracing_method": "SCREEN",
+        "ray_tracing": {"resolution_scale": "1", "screen_trace_quality": 0.5},
+    }
+    with pytest.raises(ValidationError):
+        rendering.EeveePatch.model_validate({"ray_tracing_method": "RAYTRACE"})
+    with pytest.raises(ValidationError):
+        rendering.EeveePatch.model_validate({"ray_tracing": {"resolution_scale": "3"}})
