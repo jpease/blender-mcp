@@ -116,6 +116,7 @@ def load_addon_package(monkeypatch, name):
         monkeypatch.delitem(sys.modules, key, raising=False)
 
     spec = importlib.util.spec_from_file_location(name, ROOT_ADDON, submodule_search_locations=[str(ROOT_ADDON.parent)])
+    assert spec is not None and spec.loader is not None, f"{ROOT_ADDON} is not loadable"
     addon = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, name, addon)
     spec.loader.exec_module(addon)

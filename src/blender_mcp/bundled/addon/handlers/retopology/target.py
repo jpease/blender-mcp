@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportOptionalSubscript=false
+# pyright: reportGeneralTypeIssues=false, reportOptionalSubscript=false
 """Blender-main-thread handlers for creating retopology targets, inspecting them, and checkpointing."""
 
 import contextlib

@@ -132,11 +132,13 @@ def _select_geometry(obj, vert_indices=None, edge_indices=None, face_indices=Non
     bm.edges.ensure_lookup_table()
     bm.faces.ensure_lookup_table()
     any_given = vert_indices is not None or edge_indices is not None or face_indices is not None
-    for v in bm.verts:
+    # bmesh's sequence types are iterable at runtime; the stubs type `__iter__`
+    # as returning None, so pyright reads them as non-iterable.
+    for v in bm.verts:  # pyright: ignore[reportGeneralTypeIssues]
         v.select = not any_given
-    for e in bm.edges:
+    for e in bm.edges:  # pyright: ignore[reportGeneralTypeIssues]
         e.select = not any_given
-    for f in bm.faces:
+    for f in bm.faces:  # pyright: ignore[reportGeneralTypeIssues]
         f.select = not any_given
     mode = set()
     if vert_indices is not None:

@@ -128,7 +128,9 @@ def _load_server_class():
     source = SERVER_CORE.read_text(encoding="utf-8")
     tree = ast.parse(source)
 
-    body = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "BlenderMCPServer"]
+    body: list[ast.stmt] = [
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "BlenderMCPServer"
+    ]
     assert body, "BlenderMCPServer not found in server_core.py"
 
     main_thread = threading.current_thread()

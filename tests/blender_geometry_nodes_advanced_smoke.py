@@ -1,3 +1,8 @@
+# This script runs inside Blender against live datablocks. bpy's collection
+# stubs widen their elements to `ID`, which loses the concrete Object/Volume the
+# API actually hands back, so argument types here are stub noise rather than
+# reachable states. Same boundary as `src/blender_mcp/bundled` in pyproject.toml.
+# pyright: reportArgumentType=false
 """Run with Blender 5.1+ to smoke-test advanced Geometry Nodes workflows."""
 
 from __future__ import annotations

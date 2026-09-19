@@ -18,7 +18,7 @@ def _run(function, **kwargs):
 
 def test_cloth_patch_models_forbid_unrestricted_rna_fields() -> None:
     with pytest.raises(ValidationError, match="extra_forbidden"):
-        cloth.ClothMaterialPatch(arbitrary_rna=1)
+        cloth.ClothMaterialPatch(arbitrary_rna=1)  # pyright: ignore[reportCallIssue] - rejection is the assertion
 
 
 @pytest.mark.parametrize("weight", [-0.01, 1.01])
@@ -114,7 +114,7 @@ def test_empty_cloth_patch_is_rejected() -> None:
 
 def test_cloth_patch_forbids_unknown_section() -> None:
     with pytest.raises(ValidationError, match="extra_forbidden"):
-        cloth.ClothPatch(bogus_section={"foo": "bar"})
+        cloth.ClothPatch(bogus_section={"foo": "bar"})  # pyright: ignore[reportCallIssue] - rejection is the assertion
 
 
 def test_configure_cloth_merges_ok_false_from_any_section(monkeypatch) -> None:

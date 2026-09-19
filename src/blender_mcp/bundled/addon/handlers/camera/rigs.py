@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportOptionalSubscript=false
+# pyright: reportGeneralTypeIssues=false, reportOptionalSubscript=false
 """Reusable camera rig builders (orbit, dolly, crane, path) and rig-level transform/duplication utilities."""
 
 import math

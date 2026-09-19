@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Liquid domain guide-source setup handlers."""
 
 import contextlib

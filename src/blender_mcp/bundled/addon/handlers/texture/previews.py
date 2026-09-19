@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportAttributeAccessIssue=false
+# pyright: reportAttributeAccessIssue=false
 """Deterministic isolated PBR material preview rendering."""
 
 import os

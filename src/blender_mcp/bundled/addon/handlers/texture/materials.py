@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportUnhashable=false
+# pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportUnhashable=false
 """Material inspection, authoring, assignment, mapping, and texture-set handlers."""
 
 import os

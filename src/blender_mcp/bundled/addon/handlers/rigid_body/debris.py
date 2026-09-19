@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Deterministic linked-mesh debris generation."""
 
 import contextlib

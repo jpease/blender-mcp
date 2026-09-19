@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Keyframe animation of liquid flow-source properties."""
 
 import contextlib

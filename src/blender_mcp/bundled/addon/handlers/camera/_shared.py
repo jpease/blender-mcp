@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportOptionalSubscript=false
+# pyright: reportGeneralTypeIssues=false, reportOptionalSubscript=false
 """Validation, lookup, serialization, and constraint helpers shared by two or more camera topic modules."""
 
 import math

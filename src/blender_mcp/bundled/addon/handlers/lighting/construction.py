@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportOptionalSubscript=false
+# pyright: reportGeneralTypeIssues=false, reportOptionalSubscript=false
 """Light creation, typed configuration, parent-safe aiming, and linking handlers."""
 
 import math

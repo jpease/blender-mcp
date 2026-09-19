@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Animation handoff between authored transforms and rigid-body simulation."""
 
 import contextlib

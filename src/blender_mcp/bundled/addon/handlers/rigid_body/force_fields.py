@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Rigid-body world force-field creation and configuration."""
 
 import contextlib

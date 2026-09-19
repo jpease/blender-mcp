@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Bounded rigid-body evaluation and exact world-cache lifecycle handling."""
 
 import contextlib

@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Compound, network, fracture, chain, and animated-collider handlers."""
 
 import contextlib

@@ -43,11 +43,11 @@ def test_scene_physics_patch_is_strict_and_bounded() -> None:
     with pytest.raises(ValidationError):
         scene_physics.ScenePhysicsPatch(scale_length=1000.0)
     with pytest.raises(ValidationError):
-        scene_physics.ScenePhysicsPatch(system="METERS")
+        scene_physics.ScenePhysicsPatch(system="METERS")  # pyright: ignore[reportArgumentType] - rejection is the assertion
     with pytest.raises(ValidationError):
-        scene_physics.ScenePhysicsPatch(sync_mode="PLAY_EVERY_FRAME")
+        scene_physics.ScenePhysicsPatch(sync_mode="PLAY_EVERY_FRAME")  # pyright: ignore[reportArgumentType] - rejection is the assertion
     with pytest.raises(ValidationError):
-        scene_physics.ScenePhysicsPatch(unknown=True)
+        scene_physics.ScenePhysicsPatch(unknown=True)  # pyright: ignore[reportCallIssue] - rejection is the assertion
 
     patch = scene_physics.ScenePhysicsPatch(system="METRIC", scale_length=0.5, sync_mode="NONE")
     assert patch.scale_length == pytest.approx(0.5)

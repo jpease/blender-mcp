@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportOptionalSubscript=false
+# pyright: reportGeneralTypeIssues=false, reportOptionalSubscript=false
 """Keyframing, interpolation styling, and time-based camera effects (focus pulls, dolly zoom, shake)."""
 
 import math

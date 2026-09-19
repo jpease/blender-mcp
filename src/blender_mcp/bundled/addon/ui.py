@@ -10,7 +10,9 @@ class BLENDERMCP_AddonPreferences(bpy.types.AddonPreferences):
 
     bl_idname = ADDON_ID
 
-    sketchfab_api_key: bpy.props.StringProperty(
+    # Blender's property idiom: the annotation is a call, which is invalid as a
+    # type expression but is how bpy.props declares RNA properties.
+    sketchfab_api_key: bpy.props.StringProperty(  # pyright: ignore[reportInvalidTypeForm]
         name="Sketchfab API Key",
         subtype="PASSWORD",
         description="Persistent Sketchfab API Key",

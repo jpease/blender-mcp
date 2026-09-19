@@ -35,6 +35,19 @@ reportMissingImports = false
 reportMissingTypeStubs = false
 reportAttributeAccessIssue = false
 reportOptionalMemberAccess = false
+# `requests` ships no type information; its absence is not a finding.
+reportMissingModuleSource = false
+
+# The add-on talks to live bpy collections, whose stubs widen element types to
+# `ID`/`bpy_struct` and lose the concrete datablock. Every reportArgumentType
+# raised under this root was that widening, never a reachable state, so the rule
+# is off at the Blender boundary and stays on for the MCP server surface.
+[[tool.pyright.executionEnvironments]]
+root = "src/blender_mcp/bundled"
+reportArgumentType = false
+
+[[tool.pyright.executionEnvironments]]
+root = "."
 
 [tool.ruff]
 target-version = "py313"

@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportOptionalSubscript=false
+# pyright: reportGeneralTypeIssues=false, reportOptionalSubscript=false
 """Editorial camera markers (camera cuts) and render-gate/safe-area/guide configuration."""
 
 from ._shared import (

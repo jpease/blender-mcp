@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 # Blender RNA objects are dynamically generated; this module runs only inside Blender.
 """Blender-main-thread handlers for liquid domain inspection, setup, and validation."""
 

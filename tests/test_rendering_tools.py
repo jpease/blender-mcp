@@ -52,7 +52,7 @@ def test_render_settings_patch_is_strict_and_bounded() -> None:
     with pytest.raises(ValidationError):
         rendering.RenderSettingsPatch(frame_start=20, frame_end=10)
     with pytest.raises(ValidationError):
-        rendering.RenderSettingsPatch(unknown=True)
+        rendering.RenderSettingsPatch(unknown=True)  # pyright: ignore[reportCallIssue] - rejection is the assertion
 
 
 def test_render_settings_patch_accepts_the_blender_5_eevee_engine_name() -> None:

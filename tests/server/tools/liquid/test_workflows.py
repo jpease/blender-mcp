@@ -47,7 +47,7 @@ def test_all_sixteen_workflow_commands_are_registered() -> None:
 
 def test_workflow_models_reject_unknown_and_inconsistent_values() -> None:
     with pytest.raises(ValidationError, match="extra_forbidden"):
-        liquid.LiquidMeshPatch(smoke_only=True)  # pyright: ignore[reportArgumentType]
+        liquid.LiquidMeshPatch(smoke_only=True)  # pyright: ignore[reportCallIssue] - rejection is the assertion
     with pytest.raises(ValidationError, match="minimum must be <= maximum"):
         liquid.LiquidSecondaryParticlePatch(sndparticle_life_min=4, sndparticle_life_max=2)
     with pytest.raises(ValidationError, match="supplied together"):

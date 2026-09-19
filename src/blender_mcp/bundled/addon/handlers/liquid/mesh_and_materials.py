@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Liquid mesh, secondary-particle, diffusion, material, and render-setup handlers."""
 
 import contextlib

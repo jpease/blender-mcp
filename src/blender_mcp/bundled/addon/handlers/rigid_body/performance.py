@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Structural and bounded timing diagnostics for rigid-body simulations."""
 
 import math

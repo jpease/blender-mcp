@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportOptionalSubscript=false
+# pyright: reportGeneralTypeIssues=false, reportOptionalSubscript=false
 """Blender-main-thread handlers for asset handoff: attribute transfer, UV unwrapping, bake cages, and baking."""
 
 import contextlib

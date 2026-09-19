@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportOptionalSubscript=false
+# pyright: reportGeneralTypeIssues=false, reportOptionalSubscript=false
 """Camera object lifecycle: creation, optics/display configuration, scene-camera assignment, and depth of field."""
 
 import uuid

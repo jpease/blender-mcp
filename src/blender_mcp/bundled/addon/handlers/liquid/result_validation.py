@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Measure what a baked liquid shot actually produced, not just whether it is set up correctly."""
 
 from __future__ import annotations

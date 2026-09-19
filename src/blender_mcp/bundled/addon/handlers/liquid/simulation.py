@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Bounded liquid-domain evaluation and Mantaflow cache lifecycle handling."""
 
 import contextlib

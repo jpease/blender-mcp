@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportOptionalSubscript=false
+# pyright: reportGeneralTypeIssues=false, reportOptionalSubscript=false
 """Blender-main-thread handlers for editing existing retopology geometry: projection, rerouting, relaxing, symmetry."""
 
 import contextlib

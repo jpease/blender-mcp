@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Character ragdoll construction and pose-bone animation delivery."""
 
 import contextlib

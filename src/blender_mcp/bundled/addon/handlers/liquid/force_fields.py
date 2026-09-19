@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Liquid domain force-field and effector-weight configuration handlers."""
 
 import contextlib

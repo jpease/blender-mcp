@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Bake evaluated rigid-body transforms into editable animation actions."""
 
 import contextlib

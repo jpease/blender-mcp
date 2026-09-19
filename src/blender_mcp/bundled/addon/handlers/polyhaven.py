@@ -390,7 +390,12 @@ class PolyhavenHandlersMixin:
                             validated = _validated_download(main_file_path, temp_dir)
                             # An appended object's Python driver runs when this preference is on.
                             _refuse_scripts_auto_execute("import_polyhaven_asset")
-                            with bpy.data.libraries.load(validated, link=False) as (data_from, data_to):
+                            # `bpy.data.libraries.load` is a context manager at
+                            # runtime; the stub declares it returning None.
+                            with bpy.data.libraries.load(validated, link=False) as (  # pyright: ignore[reportGeneralTypeIssues]
+                                data_from,
+                                data_to,
+                            ):
                                 data_to.objects = data_from.objects
 
                             # Link the objects to the scene

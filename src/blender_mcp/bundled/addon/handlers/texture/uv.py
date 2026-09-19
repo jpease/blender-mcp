@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportAttributeAccessIssue=false, reportOptionalSubscript=false
+# pyright: reportAttributeAccessIssue=false, reportOptionalSubscript=false
 """UV map lifecycle, seam editing, unwrap, optimization, and audit handlers."""
 
 import math

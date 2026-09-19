@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportUnhashable=false
+# pyright: reportOptionalSubscript=false, reportUnhashable=false
 """Blender-main-thread handlers for liquid proxy, variant, delivery, and scale workflows."""
 
 import contextlib

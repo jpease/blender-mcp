@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportOptionalSubscript=false
+# pyright: reportGeneralTypeIssues=false, reportOptionalSubscript=false
 """Geometry, validation, and BVH/BMesh helpers shared by two or more retopology topic modules."""
 
 import contextlib

@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Precise removal of liquid fluid modifiers and MCP-owned helpers."""
 
 import bpy

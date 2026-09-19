@@ -284,7 +284,9 @@ for _modifier_type, _setting_names in _MODIFIER_SETTING_NAMES.items():
     _settings_model = create_model(
         f"{_modifier_type.title().replace('_', '')}ModifierSettings",
         __base__=_StrictModel,
-        **{name: (_modifier_field_type(name), None) for name in _setting_names.split()},
+        # pydantic matches `**fields` against create_model's reserved dunder
+        # keywords before it sees them as field definitions.
+        **{name: (_modifier_field_type(name), None) for name in _setting_names.split()},  # pyright: ignore[reportArgumentType]
     )
     _variant = create_model(
         f"{_modifier_type.title().replace('_', '')}ModifierSpec",

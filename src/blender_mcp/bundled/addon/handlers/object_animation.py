@@ -1,4 +1,3 @@
-# pyright: reportArgumentType=false
 # ruff: file-ignore[too-many-branches, too-many-locals, undocumented-public-method]
 """Blender-side handlers for generic object transform keyframing (location/rotation/scale)."""
 

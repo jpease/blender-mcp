@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
+# pyright: reportGeneralTypeIssues=false
 """Low-resolution physics rigs that drive preserved render objects."""
 
 import contextlib

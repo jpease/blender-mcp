@@ -904,7 +904,9 @@ def test_add_radial_array_modifier_rejects_multiple_pivot_options(monkeypatch) -
 
 
 def _pivot_rotation_matrix(pivot, axis, angle):
-    return FakeMatrix.Translation(pivot) @ FakeMatrix.Rotation(angle, 4, axis) @ FakeMatrix.Translation(-pivot)
+    # The fake mirrors mathutils.Matrix, whose `@` yields a Matrix or a Vector
+    # depending on the operand, so the chained product reads as a union.
+    return FakeMatrix.Translation(pivot) @ FakeMatrix.Rotation(angle, 4, axis) @ FakeMatrix.Translation(-pivot)  # pyright: ignore[reportOperatorIssue]
 
 
 def _assert_matrices_close(a, b) -> None:

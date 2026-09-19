@@ -72,7 +72,7 @@ def test_object_transform_keyframe_is_strict_and_bounded() -> None:
     with pytest.raises(ValidationError, match="at least one"):
         object_animation.ObjectTransformKeyframe(object_name="Cube", frame=1)
     with pytest.raises(ValidationError):
-        object_animation.ObjectTransformKeyframe(object_name="Cube", frame=1, location=(0, 0, 0), unknown=True)
+        object_animation.ObjectTransformKeyframe(object_name="Cube", frame=1, location=(0, 0, 0), unknown=True)  # pyright: ignore[reportCallIssue]
     with pytest.raises(ValidationError):
         object_animation.ObjectTransformKeyframe(object_name="Cube", frame=2_000_000, location=(0, 0, 0))
 
