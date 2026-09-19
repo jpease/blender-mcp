@@ -23,7 +23,7 @@ from .inspection_and_setup import (
 class ClothMaterialAndSolverHandlers:
     """Blender-main-thread handlers for cloth material and solver configuration."""
 
-    def _scale_warnings(obj):
+    def _scale_warnings(self, obj):
         absolute = [abs(value) for value in obj.scale]
         warnings = []
         if max(absolute) / min(absolute) > 1.01:
