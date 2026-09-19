@@ -7,18 +7,38 @@ cannot be a hand-off gate yet. This narrows the gate to the lines a branch
 actually adds or rewrites: touching a file no longer makes you responsible for
 every pre-existing finding in it, but a line you wrote must be clean.
 
+Attribution is by span, not by start line. Ruff anchors a diagnostic at the
+construct's first line, which for a multi-line construct is often a line the
+branch never touched: an import added at line 4 makes `I001` surface at line 3,
+the import block's head. Any overlap between a finding's
+`location`..`end_location` range and the owned lines counts as owned.
+
+Span overlap still cannot see whole-scope metrics (`PLR0915`, `PLR0912`,
+`PLR0914`, `C901`, ...): ruff reports those on the `def`/`class` line alone, so
+sixty statements appended to an existing function leave the finding on an
+untouched line and the gate says nothing. Those codes are attributed to the
+enclosing scope instead: the file is parsed with `ast` and the finding is owned
+when any line of that `def`'s span is owned. This is exact in both directions --
+a function the branch bloated is owned because the branch wrote lines in its
+body, while a function the branch never entered stays unowned even in a file it
+edited elsewhere. A file `ast` cannot parse yields no spans at all, so its scope
+metrics degrade to the plain start-row reading rather than being guessed at.
+
 Exit status is 1 when a finding lands on a changed line, 0 otherwise.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import subprocess
 import sys
 
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 
@@ -27,6 +47,181 @@ HUNK_PREFIX = "@@"
 
 # The post-image path line of a `--no-prefix` diff.
 NEW_FILE_PREFIX = "+++ "
+
+# Whole-scope metrics, reported on the `def`/`class` line rather than on the
+# body that trips them. Attributed by scope span; see the module docstring. Listed
+# in full even where the ruff config currently ignores one (`PLR0913`, `PLR0917`) or
+# does not select it (`C901`), so enabling it later does not silently reopen the hole.
+SCOPE_METRIC_CODES = frozenset(
+    {
+        "C901",  # complex-structure
+        "PLR0904",  # too-many-public-methods
+        "PLR0911",  # too-many-return-statements
+        "PLR0912",  # too-many-branches
+        "PLR0913",  # too-many-arguments
+        "PLR0914",  # too-many-locals
+        "PLR0915",  # too-many-statements
+        "PLR0916",  # too-many-boolean-expressions
+        "PLR0917",  # too-many-positional-arguments
+    }
+)
+
+# git's C-style escapes, minus `\nnn` octal which is decoded numerically.
+_PATH_ESCAPES = {
+    "a": "\a",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+    "\\": "\\",
+    '"': '"',
+}
+
+
+def _decode_git_path(raw: str) -> str:
+    """
+    Undo the two ways git obscures an awkward path name in its plumbing output.
+
+    A name holding a space or tab is terminated by a literal tab so the reader
+    can find its end; a name holding non-ASCII bytes, a quote or a backslash is
+    wrapped in double quotes with C-style escapes. Ruff reports the plain name,
+    so neither form would match without this.
+
+    Args:
+        raw: Path text as git printed it.
+
+    Returns:
+        str: The path git meant.
+
+    """
+    path = raw.removesuffix("\t")
+    # The closing quote is searched for past the opening one, so a lone `"` is a name, not a wrapper.
+    if not (path.startswith('"') and path[1:].endswith('"')):
+        return path
+
+    # Escapes encode bytes, not characters, so a multi-byte character arrives as
+    # several `\nnn` groups and can only be decoded once the run is reassembled.
+    body = path[1:-1]
+    decoded = bytearray()
+    index = 0
+    while index < len(body):
+        character = body[index]
+        if character != "\\" or index + 1 == len(body):
+            decoded.extend(character.encode("utf-8"))
+            index += 1
+        elif body[index + 1] in "01234567":
+            decoded.append(int(body[index + 1 : index + 4], 8))
+            index += 4
+        else:
+            decoded.extend(_PATH_ESCAPES.get(body[index + 1], body[index + 1]).encode("utf-8"))
+            index += 2
+    return decoded.decode("utf-8", errors="replace")
+
+
+def parse_unified_diff(diff: str) -> dict[str, set[int]]:
+    """
+    Read the post-image line numbers out of a `--unified=0 --no-prefix` diff.
+
+    Args:
+        diff: Raw `git diff` text.
+
+    Returns:
+        dict[str, set[int]]: Repository-relative path to the lines the diff adds
+        or rewrites. Files whose only hunks delete lines are absent, so every
+        value is a non-empty set.
+
+    """
+    owned: dict[str, set[int]] = defaultdict(set)
+    current: str | None = None
+    for line in diff.split("\n"):
+        if line.startswith(NEW_FILE_PREFIX):
+            current = _decode_git_path(line.removeprefix(NEW_FILE_PREFIX))
+        elif line.startswith(HUNK_PREFIX) and current is not None:
+            span = line.split("+", 1)[1].split(" ", 1)[0]
+            start_text, _, count_text = span.partition(",")
+            start, count = int(start_text), int(count_text or "1")
+            # A pure deletion has count 0; recording the key would hand ruff a
+            # file with nothing owned in it.
+            if count:
+                owned[current].update(range(start, start + count))
+    return dict(owned)
+
+
+def scope_spans(source: str) -> dict[int, range]:
+    """
+    Map each `def`/`class` line in a module to the lines that definition covers.
+
+    The key is the `def`/`class` line rather than a decorator, because that is
+    where ruff anchors a whole-scope metric.
+
+    Args:
+        source: Python module text.
+
+    Returns:
+        dict[int, range]: Definition line to the definition's full line span,
+        empty when `source` does not parse.
+
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        # A branch mid-edit, or a file written for a newer grammar than this
+        # interpreter. Callers fall back to start-row attribution.
+        return {}
+
+    spans: dict[int, range] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            # `end_lineno` is only None on a node built by hand, never by `parse`.
+            spans[node.lineno] = range(node.lineno, (node.end_lineno or node.lineno) + 1)
+    return spans
+
+
+def owned_findings(
+    findings: Sequence[Mapping[str, Any]],
+    owned: Mapping[str, set[int]],
+    repository_root: Path,
+    scopes: Mapping[str, Mapping[int, range]],
+) -> list[dict[str, Any]]:
+    """
+    Keep the findings this branch is answerable for.
+
+    A finding counts when any line of its span is owned. For a whole-scope metric
+    the span is widened to the whole definition it was reported on; the module
+    docstring explains why.
+
+    Args:
+        findings: Ruff JSON findings, each with an absolute `filename`.
+        owned: Repository-relative path to the line numbers the branch owns.
+        repository_root: Root the findings' absolute paths are relative to.
+        scopes: Repository-relative path to that file's `scope_spans` result.
+            A path absent here, or a file that did not parse, leaves its scope
+            metrics on the start-row reading.
+
+    Returns:
+        list[dict[str, Any]]: The subset of `findings` the branch owns, in order.
+
+    """
+    hits: list[dict[str, Any]] = []
+    for finding in findings:
+        path = str(Path(finding["filename"]).relative_to(repository_root))
+        lines = owned.get(path)
+        if not lines:
+            continue
+        start: int = finding["location"]["row"]
+        # `end_location` is absent on a finding ruff cannot bound, and never
+        # precedes the start, so a single-line span is the safe reading.
+        end = max(start, (finding.get("end_location") or {}).get("row", start))
+        span = range(start, end + 1)
+        if finding.get("code") in SCOPE_METRIC_CODES:
+            file_scopes = scopes.get(path)
+            if file_scopes is not None:
+                span = file_scopes.get(start, span)
+        if not lines.isdisjoint(span):
+            hits.append(dict(finding))
+    return hits
 
 
 def _git(*arguments: str) -> str:
@@ -90,31 +285,25 @@ def _added_lines(base_commit: str) -> dict[str, set[int]]:
         dict[str, set[int]]: Repository-relative path to owned line numbers.
 
     """
-    owned: dict[str, set[int]] = defaultdict(set)
-
     # `--no-prefix` because this repository enables `diff.mnemonicPrefix`, which
     # replaces the usual `a/`/`b/` with per-source letters such as `c/` and `w/`.
-    diff = _git("diff", "--unified=0", "--no-prefix", "--diff-filter=ACMR", base_commit, "--", "*.py")
-    current: str | None = None
-    for line in diff.split("\n"):
-        if line.startswith(NEW_FILE_PREFIX):
-            current = line.removeprefix(NEW_FILE_PREFIX)
-        elif line.startswith(HUNK_PREFIX) and current is not None:
-            span = line.split("+", 1)[1].split(" ", 1)[0]
-            start_text, _, count_text = span.partition(",")
-            start, count = int(start_text), int(count_text or "1")
-            owned[current].update(range(start, start + count))
+    owned = parse_unified_diff(
+        _git("diff", "--unified=0", "--no-prefix", "--diff-filter=ACMR", base_commit, "--", "*.py")
+    )
 
-    for path in _git("ls-files", "--others", "--exclude-standard", "--", "*.py").split("\n"):
-        if not path:
+    for listed in _git("ls-files", "--others", "--exclude-standard", "--", "*.py").split("\n"):
+        if not listed:
             continue
+        path = _decode_git_path(listed)
         text = (REPOSITORY_ROOT / path).read_text(encoding="utf-8", errors="replace")
-        owned[path].update(range(1, len(text.splitlines()) + 1))
+        length = len(text.splitlines())
+        if length:
+            owned.setdefault(path, set()).update(range(1, length + 1))
 
     return owned
 
 
-def _findings(paths: list[str]) -> list[dict]:
+def _findings(paths: list[str]) -> list[dict[str, Any]]:
     """
     Run ruff over the given paths.
 
@@ -122,7 +311,7 @@ def _findings(paths: list[str]) -> list[dict]:
         paths: Repository-relative Python file paths.
 
     Returns:
-        list[dict]: Ruff's JSON findings, empty when ruff reports nothing.
+        list[dict[str, Any]]: Ruff's JSON findings, empty when ruff reports nothing.
 
     Raises:
         SystemExit: When ruff cannot be executed or emits unparsable output.
@@ -139,6 +328,27 @@ def _findings(paths: list[str]) -> list[dict]:
         return json.loads(completed.stdout or "[]")
     except json.JSONDecodeError:
         sys.exit(f"ruff produced no usable output: {completed.stderr.strip()}")
+
+
+def _scopes(findings: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[int, range]]:
+    """
+    Read and parse only the files that actually carry a whole-scope metric.
+
+    Args:
+        findings: Ruff JSON findings, each with an absolute `filename`.
+
+    Returns:
+        dict[str, Mapping[int, range]]: Repository-relative path to its
+        `scope_spans` result, for the files needing scope attribution.
+
+    """
+    named = {finding["filename"] for finding in findings if finding.get("code") in SCOPE_METRIC_CODES}
+    return {
+        str(Path(name).relative_to(REPOSITORY_ROOT)): scope_spans(
+            Path(name).read_text(encoding="utf-8", errors="replace")
+        )
+        for name in named
+    }
 
 
 def main() -> int:
@@ -158,11 +368,8 @@ def main() -> int:
         print(f"no Python changes against {arguments.base}")
         return 0
 
-    hits = [
-        finding
-        for finding in _findings(sorted(owned))
-        if finding["location"]["row"] in owned.get(str(Path(finding["filename"]).relative_to(REPOSITORY_ROOT)), set())
-    ]
+    findings = _findings(sorted(owned))
+    hits = owned_findings(findings, owned, REPOSITORY_ROOT, _scopes(findings))
 
     scanned = f"{len(owned)} changed file(s), {sum(len(lines) for lines in owned.values())} owned line(s)"
     if not hits:
