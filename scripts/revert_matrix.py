@@ -497,6 +497,32 @@ def _reverted_unallowlisted_name(value: object) -> str:
     return client_safe_text(value)
 '''
 
+# Appended by the four `stats Library.name` rows. `client_safe_leaf` no longer probes
+# anything - the caller that holds the path passes `is_directory` in - so a revert that
+# merely swapped the two leaf rules would be a no-op and its node would keep passing.
+# This writes the probe back out. It imports `os` itself and leans on the
+# `client_safe_name_leaf` every one of those call sites already has in scope: a row has
+# one anchor and cannot add an import.
+REVERTED_STATTING_NAME = '''
+
+def _reverted_statting_name(name: object) -> str:
+    """
+    Reverted: the leaf rule as it was when it stat-ed the name itself.
+
+    Args:
+        name: The raw `Library.name`.
+
+    Returns:
+        str: The leaf, or `the requested file` when the filesystem calls the name a directory.
+
+    """
+    import os
+
+    if os.path.isdir(str(name or "")):
+        return "the requested file"
+    return client_safe_name_leaf(name)
+'''
+
 # `_bare_connect` exists only for the readiness revert; it is appended with it.
 BARE_CONNECT = '''
 
@@ -1046,50 +1072,66 @@ REVERTS: list[Revert] = [
     Revert(
         "output_roots: the environment variable is no longer split on os.pathsep",
         ADDON_OUTPUT_ROOTS,
-        "raw.split(os.pathsep)",
-        "[raw]",
+        '(raw or "").split(os.pathsep)',
+        '[raw or ""]',
         (f"{ROOTST}::test_configured_roots_splits_the_environment_variable",),
     ),
+    # The whole line, because `split_roots` reads the same variable for the file roots:
+    # a bare `get(OUTPUT_ROOTS_ENV_VAR)` anchor matches twice.
     Revert(
         "output_roots: an unset variable falls back to a hardcoded root",
         ADDON_OUTPUT_ROOTS,
-        'get(OUTPUT_ROOTS_ENV_VAR, "")',
-        'get(OUTPUT_ROOTS_ENV_VAR, "/default")',
+        "    return split_roots((os.environ if environ is None else environ).get(OUTPUT_ROOTS_ENV_VAR))",
+        '    return split_roots((os.environ if environ is None else environ).get(OUTPUT_ROOTS_ENV_VAR, "/default"))',
         (f"{ROOTST}::test_configured_roots_is_empty_when_unset",),
     ),
     Revert(
         "output_roots: blank entries are no longer stripped out",
         ADDON_OUTPUT_ROOTS,
-        "return [entry.strip() for entry in raw.split(os.pathsep) if entry.strip()]",
-        "return [entry for entry in raw.split(os.pathsep) if entry]",
-        (f"{ROOTST}::test_configured_roots_ignores_blank_entries",),
+        '    return [entry.strip() for entry in (raw or "").split(os.pathsep) if entry.strip()]',
+        '    return [entry for entry in (raw or "").split(os.pathsep) if entry]',
+        (
+            f"{ROOTST}::test_configured_roots_ignores_blank_entries",
+            # The same revert at the pure helper both readers share: without the
+            # `.strip()` a padded entry stays padded and `"  "` stays a root.
+            f"{ROOTST}::test_split_roots_trims_each_entry_and_drops_the_blanks",
+        ),
+    ),
+    Revert(
+        "output_roots: an unset variable is stringified, so a variable nobody set reads as one root named None",
+        ADDON_OUTPUT_ROOTS,
+        '    return [entry.strip() for entry in (raw or "").split(os.pathsep) if entry.strip()]',
+        '    return [entry.strip() for entry in f"{raw}".split(os.pathsep) if entry.strip()]',
+        (f"{ROOTST}::test_split_roots_reads_an_unset_variable_as_no_roots",),
     ),
     Revert(
         "output_roots control: writable_roots keeps nothing at all",
         ADDON_OUTPUT_ROOTS,
-        "        seen.add(path)\n        roots.append(path)",
+        "        seen.add(path)\n        normalized.append(path)",
         "        seen.add(path)",
         (f"{ROOTST}::test_writable_roots_keeps_existing_writable_directories",),
     ),
+    # The next three share an anchor - the one comprehension `writable_roots` is now -
+    # and revert that one line three different ways.
     Revert(
         "output_roots: a path that does not exist is kept",
         ADDON_OUTPUT_ROOTS,
-        "        if not os.path.isdir(path) or not os.access(path, os.W_OK):",
-        "        if os.path.isfile(path) or (os.path.isdir(path) and not os.access(path, os.W_OK)):",
+        "if os.path.isdir(path) and os.access(path, os.W_OK)]",
+        "if not (os.path.isfile(path) or (os.path.isdir(path) and not os.access(path, os.W_OK)))]",
         (f"{ROOTST}::test_writable_roots_drops_paths_that_do_not_exist",),
     ),
     Revert(
         "output_roots: a plain file is accepted as a root",
         ADDON_OUTPUT_ROOTS,
-        "        if not os.path.isdir(path) or not os.access(path, os.W_OK):",
-        "        if not os.path.exists(path) or not os.access(path, os.W_OK):",
+        "if os.path.isdir(path) and os.access(path, os.W_OK)]",
+        "if os.path.exists(path) and os.access(path, os.W_OK)]",
         (f"{ROOTST}::test_writable_roots_drops_files",),
     ),
     Revert(
         "output_roots: a read-only directory is offered as writable",
         ADDON_OUTPUT_ROOTS,
-        "        if not os.path.isdir(path) or not os.access(path, os.W_OK):",
-        "        if not os.path.isdir(path):",
+        "if os.path.isdir(path) and os.access(path, os.W_OK)]",
+        "if os.path.isdir(path)]",
         (f"{ROOTST}::test_writable_roots_drops_read_only_directories",),
     ),
     Revert(
@@ -1112,6 +1154,15 @@ REVERTS: list[Revert] = [
         "        if not candidate:\n            continue\n",
         "",
         (f"{ROOTST}::test_writable_roots_ignores_empty_candidates",),
+    ),
+    # `normalized_candidates` is the half of `writable_roots` that touches nothing, so
+    # its own test uses paths that do not exist: a probe put back in empties the result.
+    Revert(
+        "output_roots: the pure half probes the filesystem again, so a root is dropped before it is offered",
+        ADDON_OUTPUT_ROOTS,
+        "        seen.add(path)\n        normalized.append(path)",
+        "        seen.add(path)\n        if os.path.isdir(path):\n            normalized.append(path)",
+        (f"{ROOTST}::test_normalized_candidates_expand_and_dedupe_without_probing_anything",),
     ),
     Revert(
         "output_roots wiring: the handshake ignores the deployment-configured roots",
@@ -1196,8 +1247,8 @@ REVERTS: list[Revert] = [
     Revert(
         "session: a completed load stops moving the epoch, so no client learns its capabilities are stale",
         ADDON_SESSION,
-        "    _STATE.session_epoch += 1",
-        "    _STATE.session_epoch += 0",
+        "        session_epoch=state.session_epoch + 1,\n        current_filepath=_reported_path(file_path),",
+        "        session_epoch=state.session_epoch + 0,\n        current_filepath=_reported_path(file_path),",
         (
             f"{SESSIONT}::test_a_completed_load_moves_the_session_epoch_exactly_once",
             f"{SESSIONT}::test_resetting_the_session_moves_the_epoch_through_load_post_alone",
@@ -1210,8 +1261,11 @@ REVERTS: list[Revert] = [
     Revert(
         "session: a FAILED load bumps the epoch, forcing a re-handshake storm on an event that changed nothing",
         ADDON_SESSION,
-        '    _STATE.last_load_error = _failure_note("Loading", file_path)',
-        '    _STATE.last_load_error = _failure_note("Loading", file_path)\n    _STATE.session_epoch += 1',
+        '        last_load_error=_failure_note("Loading", file_path, is_directory=is_directory),',
+        (
+            '        last_load_error=_failure_note("Loading", file_path, is_directory=is_directory),\n'
+            "        session_epoch=state.session_epoch + 1,"
+        ),
         (
             f"{SESSIONT}::test_a_failed_load_does_not_move_the_session_epoch",
             f"{SESSIONT}::test_get_session_info_reports_a_load_failure_without_moving_the_epoch",
@@ -1220,15 +1274,15 @@ REVERTS: list[Revert] = [
     Revert(
         "session: a successful SAVE bumps the epoch, invalidating every client cache for nothing",
         ADDON_SESSION,
-        "    written = _reported_path(file_path)",
-        "    written = _reported_path(file_path)\n    _STATE.session_epoch += 1",
+        "        current_filepath=now_open,",
+        "        current_filepath=now_open,\n        session_epoch=state.session_epoch + 1,",
         (f"{SESSIONT}::test_a_successful_save_does_not_move_the_session_epoch",),
     ),
     Revert(
         "session: save_post trusts its argument, so save_as_mainfile(copy=True) names a file nobody has open",
         ADDON_SESSION,
-        '    _STATE.current_filepath = _reported_path(getattr(bpy.data, "filepath", ""))',
-        "    _STATE.current_filepath = written",
+        "    now_open = _reported_path(open_path)",
+        "    now_open = _reported_path(written)",
         (
             f"{SESSIONT}::test_a_save_copy_does_not_make_the_state_name_a_file_nobody_has_open",
             f"{SESSIONT}::test_a_save_copy_does_not_clear_a_failure_belonging_to_a_different_file",
@@ -1237,12 +1291,66 @@ REVERTS: list[Revert] = [
     Revert(
         "session: a failed save records nothing, so a blocked checkpoint looks like a clean one",
         ADDON_SESSION,
-        '    _STATE.last_save_error = _failure_note("Saving", file_path)',
-        "    _STATE.last_save_error = None",
+        '    return replace(state, last_save_error=_failure_note("Saving", file_path, is_directory=is_directory))',
+        "    return replace(state, last_save_error=None)",
         (
             f"{SESSIONT}::test_a_failed_save_records_the_error_without_moving_the_epoch",
             f"{SESSIONT}::test_a_later_success_clears_the_recorded_failure",
         ),
+    ),
+    # --- the transitions read as a table: what each event may and may not move ---
+    Revert(
+        "session: load_pre moves the epoch too, so announcing a load invalidates every cache before anything is",
+        ADDON_SESSION,
+        "    return replace(state, load_in_flight=True)",
+        "    return replace(state, load_in_flight=True, session_epoch=state.session_epoch + 1)",
+        (f"{SESSIONT}::test_the_epoch_moves_in_exactly_the_transitions_that_may_have_replaced_the_database",),
+    ),
+    Revert(
+        "session: a completed load stops accounting for the load it completed, leaving it in flight forever",
+        ADDON_SESSION,
+        "        load_in_flight=False,\n        session_indeterminate=False,",
+        "        session_indeterminate=False,",
+        (f"{SESSIONT}::test_every_transition_that_accounts_for_a_load_clears_the_in_flight_flag",),
+    ),
+    Revert(
+        "session: a failed load clears the latch, so a refused reopen reads as evidence the database is whole",
+        ADDON_SESSION,
+        '        last_load_error=_failure_note("Loading", file_path, is_directory=is_directory),',
+        (
+            '        last_load_error=_failure_note("Loading", file_path, is_directory=is_directory),\n'
+            "        session_indeterminate=False,"
+        ),
+        (f"{SESSIONT}::test_a_completed_load_is_the_only_transition_that_clears_the_indeterminate_latch",),
+    ),
+    Revert(
+        "session: any save clears the recorded failure, so a copy written elsewhere answers for the file that refused",
+        ADDON_SESSION,
+        "    saved_the_open_file = _reported_path(written) == now_open\n"
+        "    return replace(\n"
+        "        state,\n"
+        "        current_filepath=now_open,\n"
+        "        last_save_error=None if saved_the_open_file else state.last_save_error,\n"
+        "    )",
+        "    return replace(\n        state,\n        current_filepath=now_open,\n        last_save_error=None,\n    )",
+        (f"{SESSIONT}::test_a_save_copy_leaves_a_recorded_failure_belonging_to_another_file_alone",),
+    ),
+    # The atomicity the frozen state buys, stated as a property of the returned value:
+    # the revert bumps the epoch on the state it was handed, which is exactly the
+    # half-applied event a client thread could read between two assignments.
+    Revert(
+        "session: the abort bumps the epoch in place, so a reader holds the new epoch beside a False latch",
+        ADDON_SESSION,
+        "    return replace(\n"
+        "        state,\n"
+        "        session_epoch=state.session_epoch + 1,\n"
+        "        last_load_error=INDETERMINATE_SESSION_NOTE,",
+        '    object.__setattr__(state, "session_epoch", state.session_epoch + 1)\n'
+        "    return replace(\n"
+        "        state,\n"
+        "        session_epoch=state.session_epoch,\n"
+        "        last_load_error=INDETERMINATE_SESSION_NOTE,",
+        (f"{SESSIONT}::test_an_abort_reaches_a_snapshot_whole_or_not_at_all",),
     ),
     Revert(
         "text hygiene: the leaf split goes back to os.path.basename, which on posix splits on / only",
@@ -1269,11 +1377,13 @@ REVERTS: list[Revert] = [
             f"{SESSIONT}::test_a_recorded_failure_names_one_bounded_leaf_and_nothing_else[c1-control]",
         ),
     ),
+    # `safe_relative_link` bounds its own length the same way, so the anchor carries the
+    # line above it to name `client_safe_text`'s bound and not that one.
     Revert(
         "text hygiene: the note's length bound goes away, so a 400-character name ships whole",
         ADDON_TEXT_HYGIENE,
-        "    if len(text) > max_chars:",
-        "    if False:",
+        "    text = strip_unsafe(value)\n    if len(text) > max_chars:",
+        "    text = strip_unsafe(value)\n    if False:",
         (f"{SESSIONT}::test_a_recorded_failure_names_one_bounded_leaf_and_nothing_else[over-long]",),
     ),
     Revert(
@@ -1287,11 +1397,13 @@ REVERTS: list[Revert] = [
             f"{SESSIONT}::test_a_recorded_failure_names_one_bounded_leaf_and_nothing_else[trailing-separator]",
         ),
     ),
+    # The `isdir` probe is `session._names_a_directory`'s, not `text_hygiene`'s: that module
+    # touches no filesystem, so the caller holding the path does the stat.
     Revert(
         "text hygiene: a directory is named in a failure note - which for an empty path is the server's own CWD",
-        ADDON_TEXT_HYGIENE,
-        "        if os.path.isdir(raw):",
-        "        if False:",
+        ADDON_SESSION,
+        '        return os.path.isdir(str(file_path or ""))',
+        "        return False",
         (f"{SESSIONT}::test_a_directory_is_never_named_in_a_recorded_failure",),
     ),
     Revert(
@@ -1585,11 +1697,13 @@ REVERTS: list[Revert] = [
         "        return (None, self.session_epoch)",
         (f"{AMT}::test_handshake_surfaces_the_session_id_so_the_epoch_survives_a_restart",),
     ),
+    # The re-handshake's own "stayed stale" path sets the same event, so the anchor carries
+    # the line above it to name the observation site and not that one.
     Revert(
         "rehandshake: a reported session change no longer marks the cached handshake stale",
         SERVER_CONNECTION,
-        "    _session_marker_stale.set()",
-        "    return",
+        '    _OBSERVED_MARKER["pending"] = observed\n    _session_marker_stale.set()',
+        '    _OBSERVED_MARKER["pending"] = observed\n    return',
         (
             f"{CONNT}::test_a_moved_epoch_marks_the_cached_handshake_stale",
             f"{CONNT}::test_the_marker_is_read_from_a_command_result_as_well_as_the_frame",
@@ -1731,15 +1845,15 @@ REVERTS: list[Revert] = [
     Revert(
         "session: a swap across a disable/enable cycle is observed and discarded",
         ADDON_SESSION,
-        "    if observed != _STATE.current_filepath:\n        _STATE.session_epoch += 1",
-        "    if False:\n        _STATE.session_epoch += 1",
+        "    missed_a_swap = observed != state.current_filepath",
+        "    missed_a_swap = False",
         (f"{SESSIONT}::test_a_swap_while_the_addon_was_disabled_still_moves_the_marker",),
     ),
     Revert(
         "session: every registration bumps the epoch, so a plain Blender start invalidates every cache",
         ADDON_SESSION,
-        "    if observed != _STATE.current_filepath:\n        _STATE.session_epoch += 1",
-        "    if True:\n        _STATE.session_epoch += 1",
+        "    missed_a_swap = observed != state.current_filepath",
+        "    missed_a_swap = True",
         (f"{SESSIONT}::test_re_enabling_on_the_same_file_does_not_move_the_marker",),
     ),
     Revert(
@@ -2201,8 +2315,8 @@ REVERTS: list[Revert] = [
     Revert(
         "session: an aborted swap latches nothing, so the state stays advisory and nothing reads it",
         ADDON_SESSION,
-        "    _STATE.session_indeterminate = True\n    _STATE.current_filepath = None",
-        "    _STATE.session_indeterminate = False\n    _STATE.current_filepath = None",
+        "        session_indeterminate=True,\n        current_filepath=None,",
+        "        session_indeterminate=False,\n        current_filepath=None,",
         (
             f"{SESSIONT}::test_an_aborted_swap_latches_a_state_a_client_can_read",
             f"{SESSIONT}::test_only_a_completed_load_clears_the_indeterminate_latch",
@@ -2212,15 +2326,15 @@ REVERTS: list[Revert] = [
     Revert(
         "session: an aborted session still names the shot it was replacing, which save_shot would write over",
         ADDON_SESSION,
-        "    _STATE.session_indeterminate = True\n    _STATE.current_filepath = None",
-        "    _STATE.session_indeterminate = True",
+        "        session_indeterminate=True,\n        current_filepath=None,",
+        "        session_indeterminate=True,",
         (f"{SESSIONT}::test_an_aborted_swap_latches_a_state_a_client_can_read",),
     ),
     Revert(
         "session: a completed load stops clearing the latch, so the addon wedges after one abort",
         ADDON_SESSION,
-        "    _STATE.load_in_flight = False\n    _STATE.session_indeterminate = False",
-        "    _STATE.load_in_flight = False",
+        "        load_in_flight=False,\n        session_indeterminate=False,",
+        "        load_in_flight=False,",
         (
             f"{SESSIONT}::test_only_a_completed_load_clears_the_indeterminate_latch",
             f"{THREADT}::test_the_commands_that_report_or_repair_an_indeterminate_session_still_run",
@@ -2229,7 +2343,7 @@ REVERTS: list[Revert] = [
     Revert(
         "session: the snapshot stops publishing the latch, so no client can see why it is being refused",
         ADDON_SESSION,
-        '        "session_indeterminate": _STATE.session_indeterminate,',
+        '        "session_indeterminate": state.session_indeterminate,',
         '        "session_indeterminate": False,',
         (
             f"{SESSIONT}::test_an_aborted_swap_latches_a_state_a_client_can_read",
@@ -2442,8 +2556,8 @@ REVERTS: list[Revert] = [
     Revert(
         "session: a clean load_post_fail stops accounting for its load, so it reads as an abort",
         ADDON_SESSION,
-        "    _STATE.load_failures += 1\n    _STATE.load_in_flight = False",
-        "    _STATE.load_failures += 1",
+        "        load_failures=state.load_failures + 1,\n        load_in_flight=False,",
+        "        load_failures=state.load_failures + 1,",
         (
             f"{THREADT}::test_a_failed_load_then_an_abort_does_not_claim_a_known_clean_database_is_half_replaced",
             f"{THREADT}::test_a_second_identical_failure_then_an_abort_is_still_not_indeterminate",
@@ -2589,8 +2703,8 @@ REVERTS: list[Revert] = [
     Revert(
         "session: load_pre stops recording that a load began, so no abort is ever indeterminate",
         ADDON_SESSION,
-        "    _STATE.load_in_flight = True",
-        "    _STATE.load_in_flight = False",
+        "    return replace(state, load_in_flight=True)",
+        "    return replace(state, load_in_flight=False)",
         (
             f"{THREADT}::test_an_aborted_swap_invalidates_the_stamps_taken_during_its_load",
             f"{THREADT}::test_an_aborted_swap_publishes_an_indeterminate_note_every_client_can_poll",
@@ -2610,13 +2724,13 @@ REVERTS: list[Revert] = [
         "session: an abort stops accounting for its own load, so the next abort latches on the strength of it",
         ADDON_SESSION,
         (
-            "    # call - so leaving the flag set would make the *next* abort, however\n"
-            "    # unrelated, latch on the strength of this one.\n"
-            "    _STATE.load_in_flight = False"
+            "        # this transition - so leaving the flag set would make the *next* abort,\n"
+            "        # however unrelated, latch on the strength of this one.\n"
+            "        load_in_flight=False,"
         ),
         (
-            "    # call - so leaving the flag set would make the *next* abort, however\n"
-            "    # unrelated, latch on the strength of this one."
+            "        # this transition - so leaving the flag set would make the *next* abort,\n"
+            "        # however unrelated, latch on the strength of this one."
         ),
         (f"{THREADT}::test_a_second_abort_that_began_no_load_does_not_bump_the_marker_again",),
     ),
@@ -2737,8 +2851,8 @@ REVERTS: list[Revert] = [
     Revert(
         "transaction: load_post stops invalidating the open transaction",
         ADDON_SESSION,
-        "    invalidate_active_transaction()\n    _STATE.session_epoch += 1\n",
-        "    _STATE.session_epoch += 1\n",
+        "    invalidate_active_transaction()\n    _STORE.state = applied_load_post(_STORE.state, file_path)\n",
+        "    _STORE.state = applied_load_post(_STORE.state, file_path)\n",
         (
             f"{TSWAPT}::test_a_swap_inside_an_open_transaction_is_not_rolled_back_and_says_so",
             f"{TSWAPT}::test_an_invalidated_geometry_backup_is_dropped_without_remove",
@@ -2893,17 +3007,52 @@ REVERTS: list[Revert] = [
         "    return os.path.realpath(os.path.abspath(path))",
         (f"{FPT}::test_tilde_expands_to_the_home_directory",),
     ),
+    # The prefix test now lives in `contains`, the pure predicate `enforce_roots` calls, so
+    # the row reverts the predicate and the predicate's own test notices alongside the walk's.
     Revert(
         "file paths: containment by string prefix (the /output-evil bug)",
         ADDON_FILE_PATHS,
-        "            if os.path.commonpath((canonical_root, candidate)) == canonical_root:",
-        "            if candidate.startswith(canonical_root):",
-        (f"{FPT}::test_a_sibling_directory_sharing_the_roots_prefix_is_refused",),
+        "        return os.path.commonpath((canonical_root, canonical_candidate)) == canonical_root",
+        "        return canonical_candidate.startswith(canonical_root)",
+        (
+            f"{FPT}::test_a_sibling_directory_sharing_the_roots_prefix_is_refused",
+            f"{FPT}::test_a_sibling_sharing_the_roots_spelling_is_not_contained",
+        ),
+    ),
+    Revert(
+        "file paths: a root no longer contains itself, so a save into the root directory is refused",
+        ADDON_FILE_PATHS,
+        "        return os.path.commonpath((canonical_root, canonical_candidate)) == canonical_root",
+        "        return (\n"
+        "            os.path.commonpath((canonical_root, canonical_candidate)) == canonical_root\n"
+        "            and canonical_candidate != canonical_root\n"
+        "        )",
+        (f"{FPT}::test_a_root_contains_itself_and_what_lies_under_it",),
+    ),
+    # `commonpath` raises on two drive letters only under `ntpath`; on posix that pair is
+    # two relative spellings sharing no component, and it returns "". So the row swaps the
+    # module as well as the refusal: with the raise treated as containment, the drive case
+    # and the absolute/relative case both come back contained. `also` adds the import
+    # because a row has one anchor and cannot add one.
+    Revert(
+        "file paths: a comparison that cannot be made counts as contained, so the refusal fails open",
+        ADDON_FILE_PATHS,
+        "        return os.path.commonpath((canonical_root, canonical_candidate)) == canonical_root\n"
+        "    except ValueError:\n"
+        "        return False  # different drives on Windows: not contained by spelling",
+        "        return ntpath.commonpath((canonical_root, canonical_candidate)) == canonical_root\n"
+        "    except ValueError:\n"
+        "        return True  # a comparison that cannot be made is read as containment",
+        (
+            f"{FPT}::test_a_root_on_another_windows_drive_contains_nothing",
+            f"{FPT}::test_paths_that_cannot_be_compared_are_reported_as_not_contained",
+        ),
+        also="\nimport ntpath\n",
     ),
     Revert(
         "file paths: no configured roots refuses everything instead of enforcing nothing",
         ADDON_FILE_PATHS,
-        "    if not roots:\n        return\n",
+        "    if not roots:\n        return  # the permissive default costs no syscall\n",
         "",
         (f"{FPT}::test_no_configured_roots_enforces_nothing",),
     ),
@@ -2951,7 +3100,7 @@ REVERTS: list[Revert] = [
     Revert(
         "file paths: the magic-byte check is skipped",
         ADDON_FILE_PATHS,
-        "    if not header.startswith(BLEND_MAGIC_PREFIXES):",
+        "    if not is_blend_header(header):",
         "    if False:",
         (
             f"{FPT}::test_a_file_whose_magic_bytes_are_not_a_blend_is_refused",
@@ -3007,16 +3156,55 @@ REVERTS: list[Revert] = [
         'BLEND_MAGIC_UNCOMPRESSED = b"BLENDER17-01"',
         (f"{FPT}::test_a_pre_5x_blend_header_is_accepted",),
     ),
+    # The `max()` moved out of the `read()` call into `BLEND_HEADER_BYTES`; the read is
+    # still what this row shortens.
     Revert(
         "file paths: the header read is shorter than the longest prefix",
         ADDON_FILE_PATHS,
-        "handle.read(max(len(prefix) for prefix in BLEND_MAGIC_PREFIXES))",
-        "handle.read(len(BLEND_MAGIC_GZIP))",
+        "BLEND_HEADER_BYTES = max(len(prefix) for prefix in BLEND_MAGIC_PREFIXES)",
+        "BLEND_HEADER_BYTES = len(BLEND_MAGIC_GZIP)",
         (
             f"{FPT}::test_an_uncompressed_blend_is_accepted",
             f"{FPT}::test_a_zstd_compressed_blend_is_accepted",
             f"{FPT}::test_a_pre_5x_blend_header_is_accepted",
         ),
+    ),
+    # The predicate the file check is built on has its own tests, which reach it with
+    # bytes rather than a file: the rows above revert the constants it reads, these four
+    # revert the comparison itself.
+    Revert(
+        "file paths: the header must equal a magic exactly, so the version digits every real header carries reject it",
+        ADDON_FILE_PATHS,
+        "    return header.startswith(BLEND_MAGIC_PREFIXES)",
+        "    return header in BLEND_MAGIC_PREFIXES",
+        tuple(
+            f"{FPT}::test_every_header_form_blender_writes_is_recognised[{case}]"
+            for case in ("5x-uncompressed", "pre-5x-uncompressed", "zstd", "gzip-with-an-fname")
+        ),
+    ),
+    Revert(
+        "file paths: the header comparison runs the other way round, so a short read matches every magic",
+        ADDON_FILE_PATHS,
+        "    return header.startswith(BLEND_MAGIC_PREFIXES)",
+        "    return any(prefix.startswith(header) for prefix in BLEND_MAGIC_PREFIXES)",
+        tuple(
+            f"{FPT}::test_anything_that_is_not_a_header_is_rejected[{case}]"
+            for case in ("empty-file", "truncated-to-inside-the-magic")
+        ),
+    ),
+    Revert(
+        "file paths: the magic is matched case-insensitively, so a lowercased near-miss is read as a .blend",
+        ADDON_FILE_PATHS,
+        "    return header.startswith(BLEND_MAGIC_PREFIXES)",
+        "    return header.upper().startswith(BLEND_MAGIC_PREFIXES)",
+        (f"{FPT}::test_anything_that_is_not_a_header_is_rejected[lowercased-near-miss]",),
+    ),
+    Revert(
+        "file paths: the zstd magic truncated to three bytes, so a frame one byte off it is accepted",
+        ADDON_FILE_PATHS,
+        r'BLEND_MAGIC_ZSTD = b"\x28\xb5\x2f\xfd"',
+        r'BLEND_MAGIC_ZSTD = b"\x28\xb5\x2f"',
+        (f"{FPT}::test_anything_that_is_not_a_header_is_rejected[one-byte-off-zstd]",),
     ),
     Revert(
         "file paths: the sanitizer is bypassed and Blender's text goes out raw",
@@ -3133,18 +3321,20 @@ REVERTS: list[Revert] = [
         '{"error": f"Failed to import model: {e!s}"}',
         (f"{PHT}::test_a_failed_blend_load_reports_no_absolute_path",),
     ),
+    # All four re-anchor onto the single line `configured_file_roots` is now: one
+    # `split_roots` call per variable, and the `or` between them is the fallback.
     Revert(
         "file roots: file roots ignore their own variable when the output roots are set",
         ADDON_OUTPUT_ROOTS,
-        "    return file_roots or configured_roots(source)",
-        "    return configured_roots(source) or file_roots",
+        "    return split_roots(source.get(FILE_ROOTS_ENV_VAR)) or split_roots(source.get(OUTPUT_ROOTS_ENV_VAR))",
+        "    return split_roots(source.get(OUTPUT_ROOTS_ENV_VAR)) or split_roots(source.get(FILE_ROOTS_ENV_VAR))",
         (f"{ROOTST}::test_configured_file_roots_read_their_own_variable_first",),
     ),
     Revert(
         "file roots: file roots do not fall back to the output roots",
         ADDON_OUTPUT_ROOTS,
-        "    return file_roots or configured_roots(source)",
-        "    return file_roots",
+        "    return split_roots(source.get(FILE_ROOTS_ENV_VAR)) or split_roots(source.get(OUTPUT_ROOTS_ENV_VAR))",
+        "    return split_roots(source.get(FILE_ROOTS_ENV_VAR))",
         (
             f"{ROOTST}::test_configured_file_roots_fall_back_to_the_output_roots",
             f"{ROOTST}::test_a_blank_file_roots_variable_counts_as_unset",
@@ -3153,15 +3343,17 @@ REVERTS: list[Revert] = [
     Revert(
         "file roots: a blank file-roots variable counts as set, so the deployment silently goes permissive",
         ADDON_OUTPUT_ROOTS,
-        "    return file_roots or configured_roots(source)",
-        "    return file_roots if FILE_ROOTS_ENV_VAR in source else configured_roots(source)",
+        "    return split_roots(source.get(FILE_ROOTS_ENV_VAR)) or split_roots(source.get(OUTPUT_ROOTS_ENV_VAR))",
+        "    return split_roots(source.get(FILE_ROOTS_ENV_VAR)) if FILE_ROOTS_ENV_VAR in source "
+        "else split_roots(source.get(OUTPUT_ROOTS_ENV_VAR))",
         (f"{ROOTST}::test_a_blank_file_roots_variable_counts_as_unset",),
     ),
     Revert(
         "file roots: the enforced roots borrow the advisory home-directory default",
         ADDON_OUTPUT_ROOTS,
-        "    return file_roots or configured_roots(source)",
-        '    return file_roots or configured_roots(source) or [os.path.expanduser("~")]',
+        "    return split_roots(source.get(FILE_ROOTS_ENV_VAR)) or split_roots(source.get(OUTPUT_ROOTS_ENV_VAR))",
+        "    return split_roots(source.get(FILE_ROOTS_ENV_VAR)) or split_roots(source.get(OUTPUT_ROOTS_ENV_VAR))"
+        ' or [os.path.expanduser("~")]',
         (f"{ROOTST}::test_configured_file_roots_never_include_the_advisory_defaults",),
     ),
     Revert(
@@ -3248,11 +3440,13 @@ REVERTS: list[Revert] = [
         r"(?=\S)\S*",
         (f"{FPT}::test_sanitizer_leaves_punctuation_after_a_bare_path",),
     ),
+    # The library-name pattern closes on the same punctuation set, so the anchor carries the
+    # back-reference that only the quoted-path alternative has.
     Revert(
         "file paths: a quoted path closed by '?', ')' or '>' is not recognised as quoted",
         ADDON_FILE_PATHS,
-        r"[\s:;,.?!)\]>])",
-        r"[\s:;,.)\]])",
+        r"(?P=quote)(?=$|[\s:;,.?!)\]>])",
+        r"(?P=quote)(?=$|[\s:;,.)\]])",
         (f"{FPT}::test_sanitizer_keeps_punctuation_closing_a_quoted_path",),
     ),
     Revert(
@@ -3279,10 +3473,13 @@ REVERTS: list[Revert] = [
         "key=len)",
         (f"{FPT}::test_sanitizer_replaces_the_derived_temp_name_of_a_known_path",),
     ),
+    # The ancestor walk is one pass over the roots now, after every root has been tried by
+    # spelling, so the row deletes that pass rather than a root's turn in the first loop.
     Revert(
         "file paths: containment compares spellings only, refusing a case variant on APFS",
         ADDON_FILE_PATHS,
-        "        if _has_ancestor_directory(candidate, canonical_root):\n            return\n",
+        "    if any(_has_ancestor_directory(candidate, canonical_root) for canonical_root in canonical_roots):\n"
+        "        return\n",
         "",
         (f"{FPT}::test_a_root_spelled_in_another_case_still_contains_its_files",),
     ),
@@ -4094,19 +4291,19 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: the removal report counts only the libraries",
         ADDON_LINKING,
-        '            "removed_by_type": _count_by_type(before[uid][0] for uid in removed),\n',
+        '            "removed_by_type": summarize_type_counts(before[uid][0] for uid in removed),\n',
         '            "removed_by_type": {"libraries": len(removed_libraries)},\n',
         (f"{LKT}::test_unlink_reports_exactly_what_it_removed",),
     ),
+    # One node, not two: `_newly_orphaned` keys its candidates by uid now, so a doubled walk
+    # can no longer hand `batch_remove` duplicates and the purge test stopped noticing this
+    # revert. The removal report still does - every uid's collection name becomes `all_ids`.
     Revert(
         "linking: the census walks bpy.data.all_ids, counting everything twice",
         ADDON_LINKING,
         '        aggregate = getattr(getattr(prop, "fixed_type", None), "identifier", None) == "ID"\n',
         "        aggregate = False\n",
-        (
-            f"{LKT}::test_unlink_reports_exactly_what_it_removed",
-            f"{LKT}::test_unlink_purges_only_when_asked_and_only_what_it_orphaned",
-        ),
+        (f"{LKT}::test_unlink_reports_exactly_what_it_removed",),
     ),
     Revert(
         "linking: an indirect library is unlinked",
@@ -4125,9 +4322,15 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: the purge also takes datablocks that were orphans before the unlink",
         ADDON_LINKING,
-        "        if previous and previous[1] > 0 and datablock.users == 0",
-        "        if datablock.users == 0",
-        (f"{LKT}::test_unlink_purges_only_when_asked_and_only_what_it_orphaned",),
+        'if users == 0 and before.get(uid, ("", 0))[1] > 0]',
+        "if users == 0]",
+        (
+            f"{LKT}::test_unlink_purges_only_when_asked_and_only_what_it_orphaned",
+            # The same clause at `compute_orphaned`, the pure rule the purge is built on:
+            # without it every zero-user datablock is this unlink's orphan, which is the
+            # mistake `orphans_purge` makes.
+            f"{LKT}::test_only_a_datablock_this_unlink_emptied_counts_as_orphaned",
+        ),
     ),
     Revert(
         "linking: a library is removed through a reference an earlier removal may have freed",
@@ -4143,13 +4346,9 @@ REVERTS: list[Revert] = [
         "            message = str(exc)\n",
         (f"{LKT}::test_an_unlink_failure_reaches_the_client_sanitized",),
     ),
-    Revert(
-        "linking: the name helper returns the first of several matches",
-        ADDON_LINKING,
-        "    if len(matches) > 1:\n",
-        "    if False:\n",
-        (f"{LKT}::test_the_name_resolution_helper_refuses_ambiguity_listing_uids",),
-    ),
+    # `linking: the name helper returns the first of several matches` stood here. The helper
+    # it guarded, `resolve_unique_name`, is gone: no command took a datablock name as a
+    # handle, so nothing called it and its test went with it.
     Revert(
         "linking: create_override grows a name handle",
         ADDON_LINKING,
@@ -4339,6 +4538,7 @@ REVERTS: list[Revert] = [
         "{match['name']}",
         (
             f"{FPT}::test_sanitizer_reduces_a_library_name_holding_an_absolute_path_to_its_leaf",
+            f"{FPT}::test_sanitizer_reduces_a_library_name_without_touching_the_filesystem",
             *(
                 f"{FPT}::test_sanitizer_reduces_every_quoted_library_name_shape_to_its_leaf[{case}]"
                 for case in ("relocate-indirect", "delete-indirect", "from-library")
@@ -4360,14 +4560,10 @@ REVERTS: list[Revert] = [
         '>]))"\n',
         (f"{FPT}::test_sanitizer_reduces_a_library_name_containing_a_newline",),
     ),
-    Revert(
-        "file paths: a library name is reduced with the isdir-checking leaf rule",
-        ADDON_FILE_PATHS,
-        "{client_safe_name_leaf(match['name'])}",
-        "{client_safe_leaf(match['name'])}",
-        (f"{FPT}::test_sanitizer_reduces_a_library_name_without_touching_the_filesystem",),
-        also="\nfrom .text_hygiene import client_safe_leaf\n",
-    ),
+    # `file paths: a library name is reduced with the isdir-checking leaf rule` stood here.
+    # `client_safe_leaf` stats nothing any more - the caller that holds the path passes
+    # `is_directory` in - so swapping the leaf rules no longer probes the filesystem and the
+    # row could not make its node fail. The node moved to the row above, which still can.
     Revert(
         "linking: an absolute library name is not a known path",
         ADDON_LINKING,
@@ -4397,34 +4593,34 @@ REVERTS: list[Revert] = [
         "linking: the library summary stats Library.name",
         ADDON_FILE_LIFECYCLE,
         '        "name": client_safe_name_leaf(getattr(library, "name", "")),',
-        '        "name": client_safe_leaf(getattr(library, "name", "")),',
+        '        "name": _reverted_statting_name(getattr(library, "name", "")),',
         (f"{LKT}::test_library_names_are_reduced_without_touching_the_filesystem",),
+        also=REVERTED_STATTING_NAME,
     ),
     Revert(
         "linking: relocate stats Library.name for name_before",
         ADDON_LINKING,
         "        name_before = client_safe_name_leaf(library.name)",
-        "        name_before = client_safe_leaf(library.name)",
+        "        name_before = _reverted_statting_name(library.name)",
         (f"{LKT}::test_library_names_are_reduced_without_touching_the_filesystem",),
-        also="\nfrom ..text_hygiene import client_safe_leaf\n",
+        also=REVERTED_STATTING_NAME,
     ),
     Revert(
         "linking: relocate stats Library.name for name_after",
         ADDON_LINKING,
         '            "name_after": client_safe_name_leaf(library.name),',
-        '            "name_after": client_safe_leaf(library.name),',
+        '            "name_after": _reverted_statting_name(library.name),',
         (f"{LKT}::test_library_names_are_reduced_without_touching_the_filesystem",),
-        also="\nfrom ..text_hygiene import client_safe_leaf\n",
+        also=REVERTED_STATTING_NAME,
     ),
     Revert(
         "linking: a refusal's candidate list stats Library.name",
-        # `candidates.display_name`, imported by linking as `_display_name`. The
-        # module sits at the addon root, hence `.` rather than `..`.
+        # `candidates.display_name`, imported by linking as `_display_name`.
         ADDON_CANDIDATES,
         "        return client_safe_name_leaf(name)\n",
-        "        return client_safe_leaf(name)\n",
+        "        return _reverted_statting_name(name)\n",
         (f"{LKT}::test_library_names_are_reduced_without_touching_the_filesystem",),
-        also="\nfrom .text_hygiene import client_safe_leaf\n",
+        also=REVERTED_STATTING_NAME,
     ),
     # --- the ten server-side file-lifecycle/linking tools ---
     Revert(
@@ -5034,12 +5230,29 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: the datablock counts by type go away, leaving only how many there are",
         ADDON_LINKING,
-        '    counts = _count_by_type(str(getattr(item, "id_type", "")) for item in items)\n'
-        "    return dict(sorted(counts.items()))\n",
-        "    return {}\n",
+        '    return {"datablocks": {"total": len(items), "by_type": summarize_type_counts(type_names), **page}}\n',
+        '    return {"datablocks": {"total": len(items), **page}}\n',
         (
             f"{LKT}::test_a_reload_reports_what_it_replaced_by_type_without_the_records[reload_library]",
             f"{LKT}::test_a_reload_reports_what_it_replaced_by_type_without_the_records[relocate_library]",
+        ),
+    ),
+    Revert(
+        "linking: the type counts keep the order the datablocks arrived in, so one mix reads two ways",
+        ADDON_LINKING,
+        "    return dict(sorted(counts.items()))",
+        "    return counts",
+        (f"{LKT}::test_type_counts_are_ordered_by_type_whatever_order_the_datablocks_arrived_in",),
+    ),
+    Revert(
+        "linking: a bounded sub-list offers an offset to resume from, which every one of these commands rejects",
+        ADDON_LINKING,
+        '        "limit": limit,\n        "returned_count": len(shown),',
+        '        "limit": limit,\n        "offset": 0,\n        "next_offset": len(shown),\n'
+        '        "returned_count": len(shown),',
+        tuple(
+            f"{LKT}::test_a_truncated_datablock_page_offers_no_offset_to_resume_from[{case}]"
+            for case in ("names", "records")
         ),
     ),
     Revert(
@@ -5097,25 +5310,28 @@ REVERTS: list[Revert] = [
         (f"{LKT}::test_link_reports_the_objects_it_brought_into_the_scene",),
     ),
     # --- changed_objects crosses into the envelope, bounded, with its total named ---
+    # All three moved to `envelope.py`: the twelve `_call` copies were unified onto
+    # `envelope_for`, which owns the extraction, the bound and the warning. The behaviour
+    # each row guards, and the tool-level node that notices, are unchanged.
     Revert(
         "server tools: the addon's changed_objects is left in the reply data as well as the envelope",
-        SERVER_FILE_LIFECYCLE_TOOL,
-        '    changed_objects = result.pop("changed_objects", []) if isinstance(result, dict) else []\n',
-        '    changed_objects = result.get("changed_objects", []) if isinstance(result, dict) else []\n',
+        SERVER_ENVELOPE,
+        "        data = {key: value for key, value in reply.items() if key not in _CHANGE_KEYS}\n",
+        "        data = dict(reply)\n",
         (f"{SFLT}::test_changed_objects_move_from_the_addon_result_into_the_envelope",),
     ),
     Revert(
         "server tools: changed_objects is published whole, so linking a set floods the agent's context",
-        SERVER_FILE_LIFECYCLE_TOOL,
-        "    return ok(result, changed_objects=changed_objects[:CHANGED_OBJECTS_LIMIT], warnings=warnings)\n",
-        "    return ok(result, changed_objects=changed_objects, warnings=warnings)\n",
+        SERVER_ENVELOPE,
+        "        objects = objects[:limit]\n",
+        "",
         (f"{SFLT}::test_changed_objects_are_bounded_and_the_total_is_reported",),
     ),
     Revert(
         "server tools: a cut changed_objects list never says how many objects there really were",
-        SERVER_FILE_LIFECYCLE_TOOL,
-        "    if len(changed_objects) > CHANGED_OBJECTS_LIMIT:\n",
-        "    if False:\n",
+        SERVER_ENVELOPE,
+        '        notices.append(f"changed_objects lists the first {limit} of {len(objects)} objects")\n',
+        "",
         (f"{SFLT}::test_changed_objects_are_bounded_and_the_total_is_reported",),
     ),
     # --- the budget recognises a page named after its own list ---
