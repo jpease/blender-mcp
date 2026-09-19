@@ -1037,7 +1037,12 @@ class LiquidInspectionAndSetupHandlers:
             sync_from_editmode(obj)
             if not obj.data.vertices or not obj.data.polygons:
                 raise ValueError(f"Domain mesh '{object_name}' must contain vertices and faces")
-            if any(not math.isfinite(float(value)) or float(value) == 0.0 for value in obj.scale):
+            if any(
+                # Exact zero, deliberately: zero round-trips exactly through
+                # float32, and this rejects a degenerate axis, not a small one.
+                not math.isfinite(float(value)) or float(value) == 0.0  # ruff: ignore[float-equality-comparison]
+                for value in obj.scale
+            ):
                 raise ValueError(f"Domain mesh '{object_name}' has zero or non-finite scale")
             old_tag = obj.get("blendermcp_liquid_domain")
             old_uuid = obj.get(_LIQUID_UUID_PROPERTY)

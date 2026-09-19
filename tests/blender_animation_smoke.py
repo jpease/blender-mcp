@@ -2,6 +2,7 @@
 """Run with Blender 5.1+ to smoke-test generic layered Action handlers."""
 
 import importlib.util
+import math
 import sys
 
 from pathlib import Path
@@ -81,7 +82,7 @@ def main() -> None:
     )
     assert strip["strip"] == "Take 01"
     nla = handler.inspect_animation({"type": "OBJECT", "name": cube.name})["nla_tracks"]
-    assert nla[0]["strips"][0]["repeat"] == 2.0
+    assert math.isclose(nla[0]["strips"][0]["repeat"], 2.0)
 
     camera = bpy.data.objects["Camera"]
     duplicated = handler.manage_animation_action(

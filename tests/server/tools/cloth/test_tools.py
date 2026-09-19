@@ -312,8 +312,8 @@ def test_handler_rna_patch_preflights_every_value_before_mutation(monkeypatch) -
     with pytest.raises(ValueError, match="outside Blender's RNA range"):
         handler._patch_rna(owner, {"first": 5.0, "second": 99.0}, {"first", "second"})
 
-    assert owner.first == 1.0
-    assert owner.second == 2.0
+    assert owner.first == pytest.approx(1.0)
+    assert owner.second == pytest.approx(2.0)
 
 
 def test_handler_maps_every_public_weight_role(monkeypatch) -> None:
@@ -457,7 +457,7 @@ def test_rna_patch_rolls_back_when_assignment_fails(monkeypatch) -> None:
         )
 
         def __setattr__(self, name, value) -> None:
-            if name == "second" and value == 4.0:
+            if name == "second" and value == pytest.approx(4.0):
                 raise RuntimeError("assignment failed")
             object.__setattr__(self, name, value)
 
@@ -465,8 +465,8 @@ def test_rna_patch_rolls_back_when_assignment_fails(monkeypatch) -> None:
     with pytest.raises(RuntimeError, match="assignment failed"):
         handler._patch_rna(owner, {"first": 3.0, "second": 4.0}, {"first", "second"})
 
-    assert owner.first == 1.0
-    assert owner.second == 2.0
+    assert owner.first == pytest.approx(1.0)
+    assert owner.second == pytest.approx(2.0)
 
 
 def test_layered_action_uses_owner_slot_channelbag(monkeypatch) -> None:
@@ -759,7 +759,7 @@ def test_proxy_rig_serializes_explicit_topology_permission(monkeypatch) -> None:
     command, params, _changed_objects = calls[0]
     assert command == "create_cloth_proxy_rig"
     assert params["allow_topology_change"] is True
-    assert params["decimate_ratio"] == 0.2
+    assert params["decimate_ratio"] == pytest.approx(0.2)
     assert params["validation_frames"] == [1, 12, 24]
 
 

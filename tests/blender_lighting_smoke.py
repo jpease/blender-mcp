@@ -86,7 +86,7 @@ def main() -> None:
     bpy.data.objects["Key Light"].constraints.remove(conflicting_constraint)
 
     configured = handler.configure_light("Key Light", {"exposure": 1.0, "use_shadow": True})
-    assert configured["new"]["exposure"] == 1.0
+    assert math.isclose(configured["new"]["exposure"], 1.0)
 
     aimed = handler.aim_light(scene.name, "Key Light", target_point=(0.0, 0.0, 0.0))
     assert aimed["method"] == "STATIC_ROTATION"

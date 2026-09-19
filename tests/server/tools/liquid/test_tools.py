@@ -158,8 +158,8 @@ def test_liquid_handler_preflights_entire_patch_before_mutation(monkeypatch) -> 
     with pytest.raises(ValueError, match="outside Blender's RNA range"):
         handler._patch_rna(owner, {"first": 5.0, "second": 99.0}, {"first", "second"})
 
-    assert owner.first == 1.0
-    assert owner.second == 2.0
+    assert owner.first == pytest.approx(1.0)
+    assert owner.second == pytest.approx(2.0)
 
 
 def test_liquid_commands_dispatch_and_read_only_classification(monkeypatch) -> None:

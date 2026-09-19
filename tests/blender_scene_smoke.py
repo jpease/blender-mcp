@@ -1,6 +1,7 @@
 """Run with Blender 5.1+ to smoke-test declarative scene composition handlers."""
 
 import importlib.util
+import math
 import sys
 import tempfile
 
@@ -63,7 +64,7 @@ def main() -> None:
     )
     assert curve["type"] == "CURVE"
     curve_data = bpy.data.objects[curve["name"]].data
-    assert curve_data.splines[0].bezier_points[0].radius == 0.5
+    assert math.isclose(curve_data.splines[0].bezier_points[0].radius, 0.5)
     assert curve_data.splines[0].bezier_points[0].handle_left_type == "VECTOR"
 
     try:

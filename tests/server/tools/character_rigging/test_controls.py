@@ -164,7 +164,7 @@ def test_pose_keyframe_serializes_typed_channels(monkeypatch) -> None:
     assert calls[0][0] == "keyframe_character_pose"
     assert calls[0][1]["poses"][0]["rotation_quaternion"] == (1.0, 0.0, 0.0, 0.0)
     assert calls[0][1]["space"] == "WORLD"
-    assert calls[0][1]["frame"] == 12.5
+    assert calls[0][1]["frame"] == pytest.approx(12.5)
 
 
 def test_shape_key_control_modes_are_typed_and_serialized(monkeypatch) -> None:

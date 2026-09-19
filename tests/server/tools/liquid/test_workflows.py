@@ -140,8 +140,8 @@ def test_hollow_container_proxy_tool_serializes_new_params(monkeypatch) -> None:
 
     assert result["command"] == "create_liquid_proxy_rig"
     assert result["params"]["geometry"] == "HOLLOW_CONTAINER"
-    assert result["params"]["wall_thickness"] == 0.02
-    assert result["params"]["bottom_thickness"] == 0.08
+    assert result["params"]["wall_thickness"] == pytest.approx(0.02)
+    assert result["params"]["bottom_thickness"] == pytest.approx(0.08)
     assert result["params"]["rim_axis"] == "NEGATIVE_Z"
 
 
@@ -162,7 +162,7 @@ def test_hollow_container_proxy_tool_defaults(monkeypatch) -> None:
         role="EFFECTOR",
     )
 
-    assert result["params"]["wall_thickness"] == 0.05
+    assert result["params"]["wall_thickness"] == pytest.approx(0.05)
     assert result["params"]["bottom_thickness"] is None
     assert result["params"]["rim_axis"] == "Z"
 

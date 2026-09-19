@@ -101,7 +101,7 @@ def test_material_patch_requires_volume_fields_together():
     with pytest.raises(ValidationError):
         texture.PBRMaterialSettings(volume_absorption_color=(1.2, 1.0, 1.0, 1.0), volume_density=0.1)
     settings = texture.PBRMaterialSettings(volume_absorption_color=(0.5, 0.5, 0.5, 1.0), volume_density=0.1)
-    assert settings.volume_density == 0.1
+    assert settings.volume_density == pytest.approx(0.1)
 
 
 def test_create_material_forwards_preset_and_volume_settings(monkeypatch):

@@ -205,14 +205,14 @@ def test_spill_box_extends_below_rim_with_margin(monkeypatch) -> None:
 def test_spill_margin_defaults_to_widest_lateral_extent(monkeypatch) -> None:
     _addon, handler = _load_liquid_handler(monkeypatch)
     bounds = {"dimensions": (1.0, 3.0, 2.0)}
-    assert handler.shot._spill_margin(bounds, "Z") == 3.0
-    assert handler.shot._spill_margin(bounds, "X") == 3.0
+    assert handler.shot._spill_margin(bounds, "Z") == pytest.approx(3.0)
+    assert handler.shot._spill_margin(bounds, "X") == pytest.approx(3.0)
 
 
 def test_spill_margin_floors_at_a_tiny_value_for_degenerate_bounds(monkeypatch) -> None:
     _addon, handler = _load_liquid_handler(monkeypatch)
     bounds = {"dimensions": (0.0, 0.0, 1.0)}
-    assert handler.shot._spill_margin(bounds, "Z") == 1e-4
+    assert handler.shot._spill_margin(bounds, "Z") == pytest.approx(1e-4)
 
 
 def test_box_object_builds_centered_hidden_wireframe_box(monkeypatch) -> None:

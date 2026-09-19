@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import uuid
 
 import bpy
@@ -30,6 +31,28 @@ from .inspection_and_setup import (
     _topology_summary,
     _validate_rna_value,
 )
+
+
+# Blender stores RNA floats as C floats. A request carrying a double such as 4.1
+# reads back as 4.099999904632568, so comparing a stored setting to the value
+# that produced it must tolerate one float32 round trip. float32 keeps about
+# seven significant digits.
+_STORED_FLOAT_TOLERANCE = 1e-6
+
+
+def _matches_stored_float(stored, requested):
+    """
+    Report whether a modifier's stored float is the one that was requested.
+
+    Args:
+        stored: The value read back from the RNA property.
+        requested: The value the caller asked for.
+
+    Returns:
+        bool: True when the two agree to within one float32 round trip.
+
+    """
+    return math.isclose(float(stored), float(requested), rel_tol=_STORED_FLOAT_TOLERANCE)
 
 
 def _remove_created_object(obj, copied_data=None, copied_materials=(), copied_actions=()):
@@ -236,7 +259,7 @@ class ClothProxyRigHandlers:
                 created_bind = True
             if bind_modifier.is_bound:
                 expected_setting = (
-                    float(bind_modifier.falloff) == float(surface_deform_falloff)
+                    _matches_stored_float(bind_modifier.falloff, surface_deform_falloff)
                     if bind_type == "SURFACE_DEFORM"
                     else int(bind_modifier.precision) == int(mesh_deform_precision)
                 )

@@ -53,7 +53,7 @@ def test_volume_of_bounds_clamps_inverted_extents_to_zero(monkeypatch) -> None:
     _addon, handler = _load_liquid_handler(monkeypatch)
     bounds = {"minimum": [5.0, 0.0, 0.0], "maximum": [1.0, 1.0, 1.0]}
 
-    assert handler.result_validation._volume_of_bounds(bounds) == 0.0
+    assert handler.result_validation._volume_of_bounds(bounds) == pytest.approx(0.0)
 
 
 def test_union_bounds_takes_componentwise_min_and_max(monkeypatch) -> None:
@@ -268,8 +268,8 @@ def test_measure_container_classifies_samples_by_bounds_precedence(monkeypatch) 
     assert result["sample_counts"] == {"FILL": 4, "SPILL": 4, "WALL_PENETRATION": 0, "ESCAPED": 0}
     assert result["fill_volume"] == pytest.approx(6.0)
     assert result["spill_volume"] == pytest.approx(6.0)
-    assert result["wall_penetration_volume"] == 0.0
-    assert result["escaped_volume_near_container"] == 0.0
+    assert result["wall_penetration_volume"] == pytest.approx(0.0)
+    assert result["escaped_volume_near_container"] == pytest.approx(0.0)
     assert result["interior_volume"] == pytest.approx(1.0)
     assert result["fill_fraction"] == pytest.approx(6.0)
 
@@ -289,7 +289,7 @@ def test_measure_container_reports_none_fill_fraction_for_degenerate_interior(mo
     )
 
     assert result["fill_fraction"] is None
-    assert "spill_volume" in result and result["spill_volume"] == 0.0
+    assert "spill_volume" in result and result["spill_volume"] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------

@@ -118,7 +118,7 @@ def test_legacy_curve_points_and_surface_dimensions_are_typed() -> None:
         handle_right=(2, 2, 3),
     )
     spline = scene_authoring.SplineRecord(type="BEZIER", points=[point])
-    assert spline.points[0].radius == 0.5
+    assert spline.points[0].radius == pytest.approx(0.5)
     with pytest.raises(ValidationError, match="point_count_u"):
         scene_authoring.SplineRecord(type="NURBS", points=[(0, 0, 0), (1, 0, 0)], point_count_u=2, point_count_v=2)
 

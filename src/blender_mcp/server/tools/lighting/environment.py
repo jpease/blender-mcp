@@ -30,7 +30,11 @@ class ProceduralSkySettings(StrictLightingInput):
 
     @model_validator(mode="after")
     def validate_model_controls(self) -> "ProceduralSkySettings":
+        # These defaults are exactly representable and every value here is parsed
+        # from the request rather than computed, so "differs from its default" is
+        # an exact question.
         if self.sky_type not in {"MULTIPLE_SCATTERING", "SINGLE_SCATTERING"} and (
+            # ruff: ignore[float-equality-comparison]
             self.altitude != 0.0 or self.air_density != 1.0 or self.dust_density != 1.0 or self.ozone_density != 1.0
         ):
             raise ValueError("altitude and air/dust/ozone density require a scattering sky model")
