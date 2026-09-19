@@ -1,5 +1,6 @@
 """Core/meta tools: addon status and integration status."""
 
+import asyncio
 import logging
 
 from typing import Literal
@@ -82,6 +83,49 @@ def _status_payload(result: AddonHandshake, *, detail: bool) -> dict[str, object
     return payload
 
 
+def _collect_integration_status(provider: Provider | None) -> dict:
+    """
+    Ask the addon which optional integrations are enabled.
+
+    Blocking: the socket round-trip runs in a worker thread so the MCP event loop
+    stays responsive, matching every other tool module.
+
+    Args:
+        provider: A single provider to query, or None for all of them.
+
+    Returns:
+        dict: The provider's status, or a mapping of provider name to status.
+
+    """
+    blender = get_blender_connection()
+    if provider is not None:
+        return blender.send_command(_STATUS_COMMANDS[provider])
+    return {name: blender.send_command(command) for name, command in _STATUS_COMMANDS.items()}
+
+
+def _collect_addon_status(*, detail: bool) -> dict[str, object]:
+    """
+    Force a fresh handshake and render it as the status payload.
+
+    Blocking: the handshake round-trip runs in a worker thread.
+
+    Args:
+        detail: Include every advertised command name.
+
+    Returns:
+        dict[str, object]: The addon status payload.
+
+    Raises:
+        ToolError: When the addon does not answer the handshake.
+
+    """
+    blender = get_blender_connection()
+    result = force_addon_handshake(blender)
+    if result is None:
+        raise ToolError("Could not determine addon status.")
+    return _status_payload(result, detail=detail)
+
+
 @mcp.tool()
 async def get_integration_status(ctx: Context, provider: Provider | None = None) -> dict:
     """
@@ -102,12 +146,7 @@ async def get_integration_status(ctx: Context, provider: Provider | None = None)
 
     """
     try:
-        blender = get_blender_connection()
-        if provider is not None:
-            result = blender.send_command(_STATUS_COMMANDS[provider])
-            return ok(result)
-        results = {name: blender.send_command(command) for name, command in _STATUS_COMMANDS.items()}
-        return ok(results)
+        return ok(await asyncio.to_thread(_collect_integration_status, provider))
     except Exception as e:
         logger.error(f"Error checking integration status: {e}")
         raise ToolError(f"Error checking integration status: {e}") from e
@@ -137,11 +176,7 @@ async def get_addon_status(ctx: Context, detail: bool = False) -> dict:
 
     """
     try:
-        blender = get_blender_connection()
-        result = force_addon_handshake(blender)
-        if result is None:
-            raise ToolError("Could not determine addon status.")
-        return ok(_status_payload(result, detail=detail))
+        return ok(await asyncio.to_thread(_collect_addon_status, detail=detail))
     except ToolError:
         raise
     except Exception as e:
