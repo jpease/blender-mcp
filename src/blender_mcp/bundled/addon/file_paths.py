@@ -33,14 +33,6 @@ from collections.abc import Iterable
 
 from .text_hygiene import client_safe_name_leaf
 
-# Prefixes, and their lengths matter: a longer prefix rejects valid files.
-# Every header version starts with `BLENDER`, and gzip's fourth byte varies, so
-# only its two magic bytes are checked.
-BLEND_MAGIC_UNCOMPRESSED = b"BLENDER"
-BLEND_MAGIC_ZSTD = b"\x28\xb5\x2f\xfd"
-BLEND_MAGIC_GZIP = b"\x1f\x8b"
-BLEND_MAGIC_PREFIXES = (BLEND_MAGIC_UNCOMPRESSED, BLEND_MAGIC_ZSTD, BLEND_MAGIC_GZIP)
-
 BLEND_SUFFIX = ".blend"
 BLENDER_RELATIVE_PREFIX = "//"
 PATH_PLACEHOLDER = "<path>"
@@ -110,6 +102,33 @@ def _has_blend_suffix(path: str) -> bool:
     return leaf.lower().endswith(BLEND_SUFFIX) and len(leaf) > len(BLEND_SUFFIX)
 
 
+# Prefixes, and their lengths matter: a longer prefix rejects valid files.
+# Every header version starts with `BLENDER`, and gzip's fourth byte varies, so
+# only its two magic bytes are checked.
+BLEND_MAGIC_UNCOMPRESSED = b"BLENDER"
+BLEND_MAGIC_ZSTD = b"\x28\xb5\x2f\xfd"
+BLEND_MAGIC_GZIP = b"\x1f\x8b"
+BLEND_MAGIC_PREFIXES = (BLEND_MAGIC_UNCOMPRESSED, BLEND_MAGIC_ZSTD, BLEND_MAGIC_GZIP)
+# All the header test needs: a shorter read cannot match the longest prefix.
+BLEND_HEADER_BYTES = max(len(prefix) for prefix in BLEND_MAGIC_PREFIXES)
+
+
+def is_blend_header(header: bytes) -> bool:
+    """
+    Report whether a file's first bytes are one of Blender's `.blend` headers.
+
+    Args:
+        header: The first `BLEND_HEADER_BYTES` of the file. A short read, from a
+            truncated or empty file, matches no prefix.
+
+    Returns:
+        bool: True for an uncompressed, zstd-compressed or gzip-compressed
+        `.blend`.
+
+    """
+    return header.startswith(BLEND_MAGIC_PREFIXES)
+
+
 def _require_blend_file(path: str) -> None:
     """
     Refuse a path that is not an existing, readable file with a `.blend` header.
@@ -127,11 +146,11 @@ def _require_blend_file(path: str) -> None:
         raise ValueError("file does not exist")
     try:
         with open(path, "rb") as handle:
-            header = handle.read(max(len(prefix) for prefix in BLEND_MAGIC_PREFIXES))
+            header = handle.read(BLEND_HEADER_BYTES)
     except OSError as exc:
         # OSError's own text carries the path, so it is chained, not quoted.
         raise ValueError("file could not be read") from exc
-    if not header.startswith(BLEND_MAGIC_PREFIXES):
+    if not is_blend_header(header):
         raise ValueError("file is not a .blend file (unrecognised header)")
 
 
@@ -236,14 +255,40 @@ def create_save_directory(path: str) -> bool:
     return True
 
 
+def contains(canonical_root: str, canonical_candidate: str) -> bool:
+    """
+    Decide by spelling alone whether a canonical root holds a canonical candidate.
+
+    `os.path.commonpath` rather than a string prefix test, which accepts
+    `/output-evil` for root `/output`. Both sides must already be canonical:
+    unresolved forms let a symlink inside a root point anywhere. Pure, so the
+    decision is testable without a filesystem; the case-insensitive volume that
+    spells one directory two ways needs `_has_ancestor_directory` instead.
+
+    Args:
+        canonical_root: A root in `canonical_path` form.
+        canonical_candidate: The path to place, in `canonical_path` form.
+
+    Returns:
+        bool: True when the root is the candidate itself or one of its ancestors.
+
+    """
+    try:
+        return os.path.commonpath((canonical_root, canonical_candidate)) == canonical_root
+    except ValueError:
+        return False  # different drives on Windows: not contained by spelling
+
+
 def enforce_roots(path: str, roots: Iterable[str]) -> None:
     """
     Refuse a path outside every configured root; with no roots, allow all.
 
-    Uses `os.path.commonpath` on canonical forms: a string prefix test accepts
-    `/output-evil` for root `/output`, and unresolved forms let a symlink inside a
-    root point anywhere. The refusal names neither roots nor path, since the
-    handshake already reports the roots.
+    Each root is canonicalized once per call, and every root is tried by spelling
+    (`contains`) before any root is tried by `_has_ancestor_directory`: that
+    fallback walks the candidate's ancestors with a `stat` each, so a second root
+    that plainly contains the path must not pay for the first root's walk. The
+    refusal names neither roots nor path, since the handshake already reports the
+    roots.
 
     Args:
         path: The path to check, normally `resolve_blend_path`'s result.
@@ -255,17 +300,18 @@ def enforce_roots(path: str, roots: Iterable[str]) -> None:
     """
     roots = list(roots)
     if not roots:
-        return
+        return  # the permissive default costs no syscall
     candidate = canonical_path(path)
+    canonical_roots: list[str] = []
     for root in roots:
         canonical_root = canonical_path(root)
-        try:
-            if os.path.commonpath((canonical_root, candidate)) == canonical_root:
-                return
-        except ValueError:
-            pass  # different drives on Windows: not contained by spelling
-        if _has_ancestor_directory(candidate, canonical_root):
+        if contains(canonical_root, candidate):
             return
+        canonical_roots.append(canonical_root)
+    # Only once no root contains the path by spelling: this walks the candidate's
+    # ancestors with a `stat` each, and answers the case-insensitive volume.
+    if any(_has_ancestor_directory(candidate, canonical_root) for canonical_root in canonical_roots):
+        return
     raise ValueError(
         "path is outside the allowed file roots (BLENDERMCP_FILE_ROOTS); see file_roots in get_addon_status"
     )

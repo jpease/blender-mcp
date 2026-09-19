@@ -52,6 +52,33 @@ def test_configured_roots_ignores_blank_entries() -> None:
     assert output_roots.configured_roots(environ) == ["/output"]
 
 
+def test_split_roots_trims_each_entry_and_drops_the_blanks() -> None:
+    """Both readers share this: a stray space must not become a root that contains everything."""
+    output_roots = _load_output_roots()
+
+    assert output_roots.split_roots(os.pathsep.join([" /output ", "", "  ", "/renders"])) == ["/output", "/renders"]
+
+
+def test_split_roots_reads_an_unset_variable_as_no_roots() -> None:
+    """`Mapping.get` returns None for a variable nobody set, and that is not one blank root."""
+    output_roots = _load_output_roots()
+
+    assert output_roots.split_roots(None) == []
+
+
+def test_normalized_candidates_expand_and_dedupe_without_probing_anything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pure half of `writable_roots`: none of these paths exists, and the rules still apply."""
+    output_roots = _load_output_roots()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    candidates = output_roots.normalized_candidates([None, "", "nested", "~/renders", "nested", str(tmp_path)])
+
+    assert candidates == [str(tmp_path / "nested"), str(tmp_path / "home" / "renders"), str(tmp_path)]
+
+
 def test_writable_roots_keeps_existing_writable_directories(tmp_path: Path) -> None:
     """The happy path: a real, writable directory survives the filter."""
     output_roots = _load_output_roots()

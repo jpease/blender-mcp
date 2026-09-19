@@ -441,6 +441,67 @@ def test_a_pre_5x_blend_header_is_accepted(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# is_blend_header, the pure predicate the file check is built on
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        pytest.param(b"BLENDER17-01v050", id="5x-uncompressed"),
+        pytest.param(b"BLENDER-v293", id="pre-5x-uncompressed"),
+        pytest.param(b"\x28\xb5\x2f\xfd\x60\x38", id="zstd"),
+        pytest.param(b"\x1f\x8b\x08\x08\x00\x00", id="gzip-with-an-fname"),
+    ],
+)
+def test_every_header_form_blender_writes_is_recognised(header: bytes) -> None:
+    """Each prefix is only as long as it must be: the version digits and gzip's FLG byte vary."""
+    assert _file_paths().is_blend_header(header) is True
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        pytest.param(b"", id="empty-file"),
+        pytest.param(b"BLEND", id="truncated-to-inside-the-magic"),
+        pytest.param(b"blender17-01v050", id="lowercased-near-miss"),
+        pytest.param(b"\x28\xb5\x2f\xfc\x60\x38", id="one-byte-off-zstd"),
+    ],
+)
+def test_anything_that_is_not_a_header_is_rejected(header: bytes) -> None:
+    """A short read must not be generous: a truncated or empty file is not a `.blend`."""
+    assert _file_paths().is_blend_header(header) is False
+
+
+# ---------------------------------------------------------------------------
+# contains, the pure spelling half of the containment check
+# ---------------------------------------------------------------------------
+
+
+def test_a_root_contains_itself_and_what_lies_under_it() -> None:
+    """Saving into the root directory itself is inside it, as is any depth below."""
+    module = _file_paths()
+
+    assert module.contains("/output", "/output") is True
+    assert module.contains("/output", "/output/shots/fx/x.blend") is True
+
+
+def test_a_sibling_sharing_the_roots_spelling_is_not_contained() -> None:
+    """The `startswith` bug, at the predicate: `/output-evil` is not under `/output`."""
+    assert _file_paths().contains("/output", "/output-evil/x.blend") is False
+
+
+def test_a_root_on_another_windows_drive_contains_nothing() -> None:
+    """Two drive letters have no common path; on posix they simply share no component."""
+    assert _file_paths().contains("C:\\output", "D:\\output\\x.blend") is False
+
+
+def test_paths_that_cannot_be_compared_are_reported_as_not_contained() -> None:
+    """`commonpath` raises on an absolute and a relative path; that must not escape as the refusal."""
+    assert _file_paths().contains("/output", "relative/x.blend") is False
+
+
+# ---------------------------------------------------------------------------
 # enforce_roots
 # ---------------------------------------------------------------------------
 

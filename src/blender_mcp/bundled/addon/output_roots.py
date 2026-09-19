@@ -23,6 +23,24 @@ OUTPUT_ROOTS_ENV_VAR = "BLENDERMCP_OUTPUT_ROOTS"
 FILE_ROOTS_ENV_VAR = "BLENDERMCP_FILE_ROOTS"
 
 
+def split_roots(raw: str | None) -> list[str]:
+    """
+    Split one `os.pathsep`-separated root list into its entries.
+
+    Pure, and the one place the variable format is spelled out, so both readers
+    below agree on it. A trailing separator or a stray space would otherwise
+    produce an empty root, which every containment test would accept.
+
+    Args:
+        raw: The variable's value, or None when it is unset.
+
+    Returns:
+        list[str]: The entries in the order given, trimmed, blanks removed.
+
+    """
+    return [entry.strip() for entry in (raw or "").split(os.pathsep) if entry.strip()]
+
+
 def configured_roots(environ: Mapping[str, str] | None = None) -> list[str]:
     """
     Read the deployment-supplied output roots from the environment.
@@ -34,13 +52,17 @@ def configured_roots(environ: Mapping[str, str] | None = None) -> list[str]:
         list[str]: Configured paths in the order given, blanks removed.
 
     """
-    raw = (os.environ if environ is None else environ).get(OUTPUT_ROOTS_ENV_VAR, "")
-    return [entry.strip() for entry in raw.split(os.pathsep) if entry.strip()]
+    return split_roots((os.environ if environ is None else environ).get(OUTPUT_ROOTS_ENV_VAR))
 
 
-def writable_roots(candidates: Iterable[str | None]) -> list[str]:
+def normalized_candidates(candidates: Iterable[str | None]) -> list[str]:
     """
-    Reduce candidate paths to the existing directories that are writable.
+    Absolutize and deduplicate candidate roots without touching the filesystem.
+
+    No filesystem call, so the ordering and dedup rules are testable without
+    creating directories; `~` and a relative candidate are still resolved against
+    process state (`HOME`, the working directory). Order is the preference
+    ranking, so a repeat must not demote its first appearance.
 
     Args:
         candidates: Paths to consider, most preferred first; blanks are ignored.
@@ -49,19 +71,34 @@ def writable_roots(candidates: Iterable[str | None]) -> list[str]:
         list[str]: Absolute paths, deduplicated, original order preserved.
 
     """
-    roots = []
-    seen = set()
+    normalized: list[str] = []
+    seen: set[str] = set()
     for candidate in candidates:
         if not candidate:
             continue
         path = os.path.abspath(os.path.expanduser(str(candidate)))
         if path in seen:
             continue
-        if not os.path.isdir(path) or not os.access(path, os.W_OK):
-            continue
         seen.add(path)
-        roots.append(path)
-    return roots
+        normalized.append(path)
+    return normalized
+
+
+def writable_roots(candidates: Iterable[str | None]) -> list[str]:
+    """
+    Reduce candidate paths to the existing directories that are writable.
+
+    The probing shell over `normalized_candidates`: two stats per distinct
+    candidate, which is why the handshake caches the result (`server_core`).
+
+    Args:
+        candidates: Paths to consider, most preferred first; blanks are ignored.
+
+    Returns:
+        list[str]: Absolute paths, deduplicated, original order preserved.
+
+    """
+    return [path for path in normalized_candidates(candidates) if os.path.isdir(path) and os.access(path, os.W_OK)]
 
 
 def configured_file_roots(environ: Mapping[str, str] | None = None) -> list[str]:
@@ -82,5 +119,4 @@ def configured_file_roots(environ: Mapping[str, str] | None = None) -> list[str]
 
     """
     source = os.environ if environ is None else environ
-    file_roots = configured_roots({OUTPUT_ROOTS_ENV_VAR: source.get(FILE_ROOTS_ENV_VAR, "")})
-    return file_roots or configured_roots(source)
+    return split_roots(source.get(FILE_ROOTS_ENV_VAR)) or split_roots(source.get(OUTPUT_ROOTS_ENV_VAR))
