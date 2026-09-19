@@ -39,12 +39,13 @@ specific to that tool, `returned_count`, `truncated`, and `next_offset`. When `t
 is true, call again with `offset=next_offset` to continue.
 
 Every reply is bounded by `REPLY_BYTE_BUDGET`. A reply stays in the agent's context for the
-rest of the session, so `ok()` shortens the longest page of records in `data` until the
-encoded reply fits, marks that page `truncated` with the `next_offset` to resume from, and
-says so in `warnings`. Identifiers are never dropped to make room: a page keeps at least one
-record, and a payload with no record list to shorten is sent whole with a warning. Tools
-return what changed plus the identifiers to find the rest; full state is a `detail=True`
-request, not the default.
+rest of the session, so `ok()` shortens the pages of records in `data`, longest first and on
+into the next until the encoded reply fits, marks each shortened page `truncated` with the
+`next_offset` to resume from, and says so in `warnings`. Identifiers are never dropped to make
+room: a page keeps at least one record, a payload with no record list to shorten is sent whole
+with a warning, and a reply still over the budget with every page down to its last record says
+so instead of offering an offset. Tools return what changed plus the identifiers to find the
+rest; full state is a `detail=True` request, not the default.
 
 No tool module shapes this dict itself: `envelope_for` lifts `changed_objects` and
 `changed_resources` out of an addon reply, bounds the object list at `CHANGED_OBJECTS_LIMIT`, and
@@ -154,43 +155,68 @@ def _pagination_names(owner: dict, key: str) -> dict[str, str] | None:
     return None
 
 
-def _fit_budget(reply: dict) -> None:
-    """
-    Shorten the longest page of records in `reply` until the encoded reply fits the budget.
+# What a shortened page's warning says instead of a resume point once every page is down to its
+# last record and the reply is still too big: the next page of one record would be over the
+# budget too, and so would the one after it, so an offset is not a way out of this reply.
+_NO_RESUME = "the reply is over the budget even with every page cut to one record - request a narrower scope"
 
-    The warning is part of the reply, so it is in place while the page is measured: appending it
-    afterwards would push a just-fitting reply back over the budget.
+
+def _page_bytes(page: tuple[dict, str]) -> int:
+    """
+    Measure one page's records on their own, the ordering key for which page to shorten first.
+
+    Args:
+        page: The (owning dict, key) pair naming the list of records.
+
+    Returns:
+        The encoded byte length of that list.
+
+    """
+    owner, key = page
+    return len(to_json(owner[key], fallback=str))
+
+
+def _shorten_page(reply: dict, owner: dict, key: str, current_bytes: int) -> tuple[int, str, int, int] | None:
+    """
+    Cut one page to the most records that leave `reply` inside the budget, never below one.
+
+    The warning and the pagination keys are part of the reply, so both are in place, at their
+    widest, while the page is measured. Writing them afterwards would push a reply that just
+    fitted back over the budget - `next_offset` is a key some payloads do not carry at all.
 
     The page's own `offset` is what `next_offset` counts from, so a resumed page continues
     where this one stopped rather than restarting.
 
     Args:
         reply: The envelope, modified in place.
+        owner: The dict holding the page.
+        key: The key whose value is the list of records.
+        current_bytes: What `reply` encodes to right now, already measured by the caller.
+
+    Returns:
+        The (warning index, key, kept, total) of the shortening, or None when the page costs the
+        reply nothing at all.
 
     """
-    if _wire_bytes(reply) <= REPLY_BYTE_BUDGET:
-        return
-    pages = _record_pages(reply["data"])
-    if not pages:
-        reply["warnings"].append(
-            f"This reply is {_wire_bytes(reply)} bytes, over the {REPLY_BYTE_BUDGET}-byte reply budget, and holds "
-            "no page of records to shorten; request a narrower scope."
-        )
-        return
-    owner, key = max(pages, key=lambda page: len(to_json(page[0][page[1]], fallback=str)))
     records = owner[key]
+    # `_record_pages` walks the payload before anything is cut, so a page nested inside a record
+    # that a larger page has since dropped is no longer on the wire: cutting it buys no bytes and
+    # its warning would name records this reply never carried.
+    owner[key] = records[:1]
+    reachable = _wire_bytes(reply) < current_bytes
+    owner[key] = records
+    if not reachable:
+        return None
     total = len(records)
     names = _pagination_names(owner, key)
     start = int(owner.get(names["offset"]) or 0) if names else 0
     resume = f"continue with offset={start + total}" if names else "rerun with a narrower scope to see the rest"
-    # The warning and the pagination keys are part of the reply, so both are in place, at their
-    # widest, while the page is measured. Writing them afterwards would push a reply that just
-    # fitted back over the budget - `next_offset` is a key some payloads do not carry at all.
     if names:
         owner[names["truncated"]] = True
         owner[names["next_offset"]] = start + total
         if names["returned_count"] in owner:
             owner[names["returned_count"]] = total
+    index = len(reply["warnings"])
     reply["warnings"].append(_shortening_warning(key, total, total, resume))
     # Bytes grow with the record count, so the largest page that fits is a bisection, not a walk:
     # a 500-bone pose would otherwise re-encode the whole reply 500 times.
@@ -209,7 +235,51 @@ def _fit_budget(reply: dict) -> None:
         if names["returned_count"] in owner:
             owner[names["returned_count"]] = kept
         resume = f"continue with offset={owner[names['next_offset']]}"
-    reply["warnings"][-1] = _shortening_warning(key, kept, total, resume)
+    reply["warnings"][index] = _shortening_warning(key, kept, total, resume)
+    return index, key, kept, total
+
+
+def _fit_budget(reply: dict) -> None:
+    """
+    Shorten pages of records in `reply`, longest first, until the encoded reply fits the budget.
+
+    One page is not always enough. An ANIMATION `render_scene` reply carries `files` and
+    `progress` side by side; cutting only the longer of the two left a 250-frame reply at 29,164
+    bytes - 3.6x the budget - holding a single usable file path, because the untouched sibling
+    was most of the weight. Shortening therefore walks on into the next-largest page.
+
+    Args:
+        reply: The envelope, modified in place.
+
+    """
+    if _wire_bytes(reply) <= REPLY_BYTE_BUDGET:
+        return
+    pages = _record_pages(reply["data"])
+    if not pages:
+        reply["warnings"].append(
+            f"This reply is {_wire_bytes(reply)} bytes, over the {REPLY_BYTE_BUDGET}-byte reply budget, and holds "
+            "no page of records to shorten; request a narrower scope."
+        )
+        return
+    # Sorting once is enough: draining a page down to its last record only makes it smaller, so no
+    # page can overtake one this ordering already placed ahead of it.
+    shortened: list[tuple[int, str, int, int]] = []
+    for owner, key in sorted(pages, key=_page_bytes, reverse=True):
+        measured = _wire_bytes(reply)
+        if measured <= REPLY_BYTE_BUDGET:
+            return
+        cut = _shorten_page(reply, owner, key, measured)
+        if cut is not None:
+            shortened.append(cut)
+    # The loop returns as soon as a shortening is enough, so reaching here means every page has
+    # been visited and only the last one's result is still unmeasured.
+    if _wire_bytes(reply) <= REPLY_BYTE_BUDGET:
+        return
+    # Every page is down to its last record and the reply is still too big. Each warning already
+    # names what it kept; what it must not also do is hand back an offset, which would send the
+    # agent round a loop of replies every one of which is over the budget.
+    for index, key, kept, total in shortened:
+        reply["warnings"][index] = _shortening_warning(key, kept, total, _NO_RESUME)
 
 
 def ok(

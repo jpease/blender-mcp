@@ -189,6 +189,88 @@ def test_the_largest_list_is_the_one_cut() -> None:
     assert result["data"]["domains_checked"] == ["lighting", "cameras", "geometry"]
 
 
+def test_a_second_page_is_shortened_when_cutting_the_first_one_is_not_enough() -> None:
+    """
+    An ANIMATION `render_scene` reply carries `files` and `progress` side by side.
+
+    Cutting only the longer of the two left the 250-frame default at 29,164 bytes - 3.6x the
+    budget - holding a single usable file path, because the untouched sibling was most of the
+    weight. Both pages have to come down, and both have to stay resumable from their own offset.
+    """
+    data = {
+        "files": _records(_OVER_BUDGET),
+        "files_total": _OVER_BUDGET,
+        "files_offset": 0,
+        "files_truncated": False,
+        "progress": _records(_OVER_BUDGET // 2),
+        "progress_total": 900,
+        "progress_offset": _RESUMED_OFFSET,
+        "progress_truncated": False,
+    }
+
+    result = ok(data)
+    payload = result["data"]
+
+    assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
+    assert 0 < len(payload["files"]) < _OVER_BUDGET
+    assert 0 < len(payload["progress"]) < _OVER_BUDGET // 2
+    assert payload["files_truncated"] is True
+    assert payload["files_next_offset"] == len(payload["files"])
+    assert payload["progress_truncated"] is True
+    assert payload["progress_next_offset"] == _RESUMED_OFFSET + len(payload["progress"])
+    assert len([warning for warning in result["warnings"] if "was shortened to" in warning]) == 2
+
+
+def test_a_reply_too_big_at_one_record_per_page_says_so_rather_than_offering_an_offset() -> None:
+    """
+    A reply that cannot fit says so, instead of naming an offset to resume from.
+
+    Some replies cannot be brought inside the budget without dropping identifiers, which the
+    shortening never does. `continue with offset=1` would be a false way out: the next page of
+    one record would be over the budget too, and so would the one after that.
+    """
+    heavy = [{"note": "x" * REPLY_BYTE_BUDGET}, {"note": "y" * REPLY_BYTE_BUDGET}]
+    data = {
+        "findings": list(heavy),
+        "findings_offset": 0,
+        "findings_truncated": False,
+        "samples": list(heavy),
+        "samples_offset": 0,
+        "samples_truncated": False,
+    }
+
+    result = ok(data)
+
+    assert len(result["data"]["findings"]) == 1
+    assert len(result["data"]["samples"]) == 1
+    assert _wire_bytes(result) > REPLY_BYTE_BUDGET
+    assert not any("offset=" in warning for warning in result["warnings"])
+    floor = "over the budget even with every page cut to one record - request a narrower scope."
+    assert [warning.endswith(floor) for warning in result["warnings"]] == [True, True]
+
+
+def test_a_page_inside_a_dropped_record_is_not_reported_as_shortened() -> None:
+    """
+    Walking on to the next page has to skip one that is no longer in the reply.
+
+    `_record_pages` lists every page before anything is cut, so the pages inside the records an
+    outer shortening dropped cost the reply nothing; announcing a shortening of one of them
+    would name a total the client never had a single record of.
+    """
+    data = {
+        "groups": [
+            {"name": "kept", "items": _records(_OVER_BUDGET // 2)},
+            {"name": "dropped", "items": _records(_OVER_BUDGET)},
+        ]
+    }
+
+    result = ok(data)
+
+    assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
+    assert [group["name"] for group in result["data"]["groups"]] == ["kept"]
+    assert not any(f"of {_OVER_BUDGET} records" in warning for warning in result["warnings"])
+
+
 def test_a_page_nested_inside_a_single_record_is_found() -> None:
     """
     `list_libraries` returns one library record whose own datablock list is the whole payload.
