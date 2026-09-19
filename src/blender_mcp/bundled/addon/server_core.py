@@ -9,6 +9,7 @@ import threading
 import time
 import traceback
 
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 
 import bpy
@@ -124,6 +125,143 @@ def _handler_failure_message(result):
         if error:
             return str(error)
     return None
+
+
+def extract_frames(buffer: bytes, max_message_bytes: int) -> tuple[list[bytes], bytes, bool]:
+    r"""
+    Split a receive buffer into the complete `\n`-delimited frames it holds.
+
+    A single json.loads() over the whole buffer cannot tell "incomplete
+    message" apart from "complete message plus the start of the next one":
+    both raise json.JSONDecodeError, and treating the second as "wait for
+    more" means the buffer can never parse again, since the trailing bytes are
+    never valid on their own. Splitting on the newline terminator each side
+    appends removes the ambiguity - each complete line is exactly one message.
+    An empty line is a stray terminator, not a frame, and is skipped.
+
+    Both size rules live here, because both are the same protocol violation
+    seen at different moments: a frame larger than the cap, and a remainder
+    larger than it with no terminator in sight. Without the second, a client
+    that never terminates a message would grow the buffer forever.
+
+    Scans each byte once (`find` from where the last frame ended, rather than
+    re-splitting the tail per frame), so a pipelined burst costs one pass.
+
+    Args:
+        buffer: Everything received on this connection and not yet consumed.
+        max_message_bytes: The largest single frame, and the largest
+            terminator-less remainder, this server accepts.
+
+    Returns:
+        tuple[list[bytes], bytes, bool]: The complete frames, terminator
+        excluded; the bytes left for the next `recv`; and whether the
+        connection must be dropped. Frames that arrived intact before an
+        oversized one are still returned - they are worth answering.
+
+    """
+    frames: list[bytes] = []
+    start = 0
+    while True:
+        end = buffer.find(b"\n", start)
+        if end < 0:
+            break
+        line = buffer[start:end]
+        start = end + 1
+        if not line:
+            continue
+        if len(line) > max_message_bytes:
+            return frames, buffer[start:], True
+        frames.append(line)
+    return frames, buffer[start:], len(buffer) - start > max_message_bytes
+
+
+def parse_command_frame(line: bytes) -> tuple[dict[str, object] | None, str | None, str | None]:
+    """
+    Decide whether one frame is a command this server can queue.
+
+    Transport shape only - `id`, `type` and `params` - which is all this layer
+    can judge: it runs on a client thread, where reading bpy data is not
+    allowed. Any well-shaped frame is queued and judged further by the main
+    thread.
+
+    Pure: the caller owns the socket write, the session stamp and the queue.
+
+    Args:
+        line: One frame's bytes, terminator excluded.
+
+    Returns:
+        tuple[dict | None, str | None, str | None]: The command, or None when
+        the frame is not one; the id to answer under, or None when the frame
+        never produced a usable one; and a client-safe protocol error, or None
+        when the frame is acceptable.
+
+    """
+    try:
+        command = json.loads(line.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None, None, "Malformed UTF-8 JSON command"
+
+    if not isinstance(command, dict):
+        return None, None, "Command must be a JSON object"
+    request_id = command.get("id")
+    if request_id is not None and not isinstance(request_id, str):
+        # No id to answer under: a non-string one cannot be echoed back as the
+        # protocol's `id`, and inventing one would match nothing on the client.
+        return None, None, "Command id must be a string when provided"
+    if not isinstance(command.get("type"), str) or not command["type"].strip():
+        return None, request_id, "Command type must be a non-empty string"
+    if not isinstance(command.get("params", {}), dict):
+        return None, request_id, "Command params must be a JSON object"
+    return command, request_id, None
+
+
+def _action(params: Mapping[str, object], default: str) -> str:
+    """
+    Read a command's `action` parameter the way its handler will.
+
+    Args:
+        params: The command's params.
+        default: The handler's own default for `action`, so a call that omits
+            it is routed as the handler will treat it.
+
+    Returns:
+        str: The action, upper-cased.
+
+    """
+    return str(params.get("action", default)).upper()
+
+
+# Naming any of these turns `manage_procedural_instances` from an inspection
+# into an edit of the instancer, so the call has to be transacted.
+_PROCEDURAL_INSTANCE_MUTATION_PARAMS = (
+    "source_type",
+    "source_name",
+    "pick_instance",
+    "rotation",
+    "scale",
+    "translation",
+    "realize_instances",
+)
+
+# Commands that are read-only for some parameters and mutating for others, so
+# `BlenderMCPServer._READ_ONLY_COMMANDS` cannot express them: one predicate per
+# command, answering "is *this* call read-only?" from its params alone.
+_READ_ONLY_WHEN: dict[str, Callable[[Mapping[str, object]], bool]] = {
+    "manage_retopology_checkpoint": lambda params: _action(params, "") in {"LIST", "COMPARE"},
+    "analyze_surface_conformity": lambda params: not params.get("create_heat_map", False),
+    "configure_cloth_sewing": lambda params: bool(params.get("dry_run", True)),
+    "manage_cloth_cache": lambda params: _action(params, "INSPECT") == "INSPECT",
+    "manage_liquid_cache": lambda params: _action(params, "STATUS") == "STATUS",
+    "analyze_liquid_performance": lambda params: not params.get("measure_replay_evaluation", False),
+    "create_camera_markers": lambda params: _action(params, "") == "LIST",
+    "manage_rigid_body_cache": lambda params: _action(params, "INSPECT") == "INSPECT",
+    "analyze_rigid_body_performance": lambda params: not params.get("sample_frames"),
+    "manage_named_attributes": lambda params: _action(params, "LIST") == "LIST",
+    "manage_geometry_nodes_bake": lambda params: _action(params, "INSPECT") == "INSPECT",
+    "manage_procedural_instances": lambda params: (
+        not any(params.get(key) is not None for key in _PROCEDURAL_INSTANCE_MUTATION_PARAMS)
+    ),
+}
 
 
 class BlenderMCPServer(
@@ -779,8 +917,12 @@ class BlenderMCPServer(
 
         The socket's `handle_client` thread is blocked in `recv()` on it at the
         same time, and a short timeout left behind would make that loop spin.
-        Never pass 0, which makes the socket non-blocking. If the timeout cannot
-        be put back, the send counts as failed, so the caller closes the socket.
+        Never pass 0, which makes the socket non-blocking. The restore is in a
+        `finally` because this runs on Blender's main thread, where Esc raises
+        KeyboardInterrupt: an `except Exception` would step over that and leave
+        a 1 ms timeout behind, spinning that client's `recv()` at ~1 kHz for
+        the rest of the connection. If the timeout cannot be put back, the send
+        counts as failed, so the caller closes the socket.
 
         Args:
             client: The socket to write to.
@@ -802,15 +944,32 @@ class BlenderMCPServer(
             delivered = False
         else:
             delivered = True
+        finally:
+            # Not a `return` in the `finally`: that would swallow the
+            # KeyboardInterrupt this block exists to survive.
+            restored = self._restore_socket_timeout(settimeout)
+        return delivered and restored
 
+    def _restore_socket_timeout(self, settimeout: Callable[[float], object] | None) -> bool:
+        """
+        Put a client socket's own timeout back after a bounded write.
+
+        Args:
+            settimeout: The socket's `settimeout`, or None when it has none
+                (a stub in the tests), in which case there is nothing to undo.
+
+        Returns:
+            bool: True when the socket is back on its own timeout.
+
+        """
         if settimeout is None:
-            return delivered
+            return True
         try:
             settimeout(self._CLIENT_SOCKET_TIMEOUT_SECONDS)
         except Exception:
             print("Could not restore a client socket's own timeout - closing it rather than leaving it spinning")
             return False
-        return delivered
+        return True
 
     def _abandon_unreachable_client(self, client: object) -> None:
         """
@@ -975,9 +1134,12 @@ class BlenderMCPServer(
         with suppress(Exception):
             self._send_frame(client, self._error_frame(request_id, message))
 
-    def _decode_and_queue_frame(self, line: bytes, client) -> bool:
+    def _decode_and_queue_frame(self, line: bytes, client) -> None:
         r"""
-        Decode one framed line, parse it as JSON, and queue it as a command.
+        Validate one framed line and queue it as a command for the main thread.
+
+        `parse_command_frame` makes the decision; this adds the socket write
+        for a rejected frame and the queue push for an accepted one.
 
         Args:
             line: The bytes of one `\n`-delimited frame (never containing
@@ -985,36 +1147,14 @@ class BlenderMCPServer(
             client: The socket the frame arrived on, passed through to the
                 queued command so its response goes back to the right peer.
 
-        Returns:
-            False if `line` exceeds `_MAX_MESSAGE_BYTES` - the caller must
-            treat this as a protocol violation and drop the connection.
-            True otherwise, including when the line is malformed (discarded,
-            not fatal).
-
         """
-        if len(line) > self._MAX_MESSAGE_BYTES:
-            print(f"Client sent an oversized frame ({len(line)} bytes) - disconnecting")
-            return False
-        try:
-            command = json.loads(line.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            print(f"Discarding malformed message: {e!s}")
-            self._send_protocol_error(client, None, "Malformed UTF-8 JSON command")
-            return True
-
-        if not isinstance(command, dict):
-            self._send_protocol_error(client, None, "Command must be a JSON object")
-            return True
-        request_id = command.get("id")
-        if request_id is not None and not isinstance(request_id, str):
-            self._send_protocol_error(client, None, "Command id must be a string when provided")
-            return True
-        if not isinstance(command.get("type"), str) or not command["type"].strip():
-            self._send_protocol_error(client, request_id, "Command type must be a non-empty string")
-            return True
-        if not isinstance(command.get("params", {}), dict):
-            self._send_protocol_error(client, request_id, "Command params must be a JSON object")
-            return True
+        command, request_id, error = parse_command_frame(line)
+        if command is None:
+            # The console gets the length the client-safe message cannot carry;
+            # the payload itself stays out of Blender's log.
+            print(f"Discarding a {len(line)}-byte frame: {error}")
+            self._send_protocol_error(client, request_id, error)
+            return
 
         # Hand off to the main thread. Never call
         # bpy.app.timers.register() from here - it is not thread-safe and
@@ -1027,7 +1167,6 @@ class BlenderMCPServer(
             self.command_queue.put_nowait((command, client))
         except queue.Full:
             self._send_protocol_error(client, request_id, "Blender command queue is full; retry later")
-        return True
 
     def handle_client(self, client) -> None:
         """
@@ -1055,33 +1194,16 @@ class BlenderMCPServer(
                         print("Client disconnected")
                         break
 
-                    buffer += data
-
-                    # A single json.loads() over the whole buffer can't tell
-                    # "incomplete message" apart from "complete message plus
-                    # the start of the next one" - both raise
-                    # json.JSONDecodeError, and treating the latter as
-                    # "incomplete, wait for more" means the buffer can never
-                    # parse again (the trailing bytes are never valid on
-                    # their own). Splitting on the newline terminator each
-                    # side appends after every message removes that
-                    # ambiguity: each complete line is exactly one message.
-                    oversized_frame = False
-                    while b"\n" in buffer:
-                        line, buffer = buffer.split(b"\n", 1)
-                        if not line:
-                            continue
-                        if not self._decode_and_queue_frame(line, client):
-                            oversized_frame = True
-                            break
-
-                    if oversized_frame:
-                        break
-
-                    if len(buffer) > self._MAX_MESSAGE_BYTES:
+                    frames, buffer, must_drop = extract_frames(buffer + data, self._MAX_MESSAGE_BYTES)
+                    for frame in frames:
+                        self._decode_and_queue_frame(frame, client)
+                    if must_drop:
+                        # Either a single frame or an unterminated remainder
+                        # went past the cap; both are protocol violations, and
+                        # the frames above arrived intact and are still queued.
                         print(
-                            f"Client sent an oversized message without a terminator "
-                            f"({len(buffer)} bytes) - disconnecting"
+                            f"Client sent a frame, or an unterminated message, over the "
+                            f"{self._MAX_MESSAGE_BYTES}-byte limit - disconnecting"
                         )
                         break
                 except TimeoutError:
@@ -1464,9 +1586,11 @@ class BlenderMCPServer(
 
         return handlers
 
-    # Commands that never mutate bpy.data. Everything else gets wrapped in
-    # mutation_transaction() - snapshotting/diffing/rolling back these would
-    # just be pointless overhead and undo-stack noise.
+    # Commands that never mutate bpy.data, whatever their params. Everything
+    # else gets wrapped in mutation_transaction() - snapshotting/diffing/rolling
+    # back these would just be pointless overhead and undo-stack noise. The
+    # commands that are read-only only for *some* params are in module-level
+    # `_READ_ONLY_WHEN`; `is_read_only_command` reads both.
     _READ_ONLY_COMMANDS = frozenset(
         {
             "list_scene_objects",
@@ -1547,6 +1671,14 @@ class BlenderMCPServer(
     # returns, so an edit later in the same tick would lose its dirty flag and
     # `open_shot`'s unsaved-work guard would let it be thrown away.
     _TICK_ENDING_COMMANDS = frozenset({"save_shot"})
+
+    # Commands that mutate nothing worth an undo checkpoint: viewport and
+    # capture toggles, and a render, whose output is a file rather than scene
+    # state. Not read-only, so they are not in `_READ_ONLY_COMMANDS`, but a
+    # transaction around them would only add undo-stack noise.
+    _NON_UNDO_COMMANDS = frozenset(
+        {"set_viewport_overlay", "nd_pulse_viewport_toggle", "nd_capture_utils", "render_scene"}
+    )
 
     def execute_command_internal(self, command):
         """
@@ -1747,6 +1879,54 @@ class BlenderMCPServer(
                 objects.append(obj)
         return objects
 
+    def is_read_only_command(self, cmd_type: str, params: Mapping[str, object]) -> bool:
+        """
+        Report whether this call reads bpy.data without changing it.
+
+        Two tables answer it: `_READ_ONLY_COMMANDS`, for commands that never
+        mutate, and `_READ_ONLY_WHEN`, for the ones whose params decide (an
+        `INSPECT` cache call, a dry-run sewing preview, a conformity analysis
+        asked for no heat map). Pure: it reads frozen tables and the params.
+
+        Args:
+            cmd_type: The MCP command type.
+            params: The command's params, as the client sent them.
+
+        Returns:
+            bool: True when the call mutates nothing.
+
+        """
+        if cmd_type in self._READ_ONLY_COMMANDS:
+            return True
+        reads_only_with = _READ_ONLY_WHEN.get(cmd_type)
+        return reads_only_with is not None and reads_only_with(params)
+
+    def bypasses_transaction(self, cmd_type: str, params: Mapping[str, object]) -> bool:
+        """
+        Report whether this call must run outside `mutation_transaction`.
+
+        Read-only and non-undo calls skip it because a snapshot, a diff and an
+        undo checkpoint would buy nothing. Swaps are not read-only, but a
+        transaction cannot describe them: after a load every id looks new, and
+        a rollback would remove the whole file. The library commands skip it
+        for the same reason; `unlink_libraries` fires no handler, so this
+        routing is its only protection.
+
+        Args:
+            cmd_type: The MCP command type.
+            params: The command's params, as the client sent them.
+
+        Returns:
+            bool: True when the handler runs unwrapped.
+
+        """
+        return (
+            self.is_read_only_command(cmd_type, params)
+            or cmd_type in self._NON_UNDO_COMMANDS
+            or cmd_type in self._SESSION_SWAP_COMMANDS
+            or cmd_type in self._DATABLOCK_REPLACING_COMMANDS
+        )
+
     def _run_handler(self, cmd_type, handler, params):
         """
         Call a resolved handler, wrapping mutating commands in mutation_transaction.
@@ -1765,62 +1945,7 @@ class BlenderMCPServer(
             Result produced by the handler.
 
         """
-        dynamic_read_only = (
-            cmd_type == "manage_retopology_checkpoint" and str(params.get("action", "")).upper() in {"LIST", "COMPARE"}
-        ) or (cmd_type == "analyze_surface_conformity" and not params.get("create_heat_map", False))
-        dynamic_read_only = dynamic_read_only or (cmd_type == "configure_cloth_sewing" and params.get("dry_run", True))
-        dynamic_read_only = dynamic_read_only or (
-            cmd_type == "manage_cloth_cache" and str(params.get("action", "INSPECT")).upper() == "INSPECT"
-        )
-        dynamic_read_only = dynamic_read_only or (
-            cmd_type == "manage_liquid_cache" and str(params.get("action", "STATUS")).upper() == "STATUS"
-        )
-        dynamic_read_only = dynamic_read_only or (
-            cmd_type == "analyze_liquid_performance" and not params.get("measure_replay_evaluation", False)
-        )
-        dynamic_read_only = dynamic_read_only or (
-            cmd_type == "create_camera_markers" and str(params.get("action", "")).upper() == "LIST"
-        )
-        dynamic_read_only = dynamic_read_only or (
-            cmd_type == "manage_rigid_body_cache" and str(params.get("action", "INSPECT")).upper() == "INSPECT"
-        )
-        dynamic_read_only = dynamic_read_only or (
-            cmd_type == "analyze_rigid_body_performance" and not params.get("sample_frames")
-        )
-        dynamic_read_only = dynamic_read_only or (
-            cmd_type == "manage_named_attributes" and str(params.get("action", "LIST")).upper() == "LIST"
-        )
-        dynamic_read_only = dynamic_read_only or (
-            cmd_type == "manage_geometry_nodes_bake" and str(params.get("action", "INSPECT")).upper() == "INSPECT"
-        )
-        dynamic_read_only = dynamic_read_only or (
-            cmd_type == "manage_procedural_instances"
-            and not any(
-                params.get(key) is not None
-                for key in (
-                    "source_type",
-                    "source_name",
-                    "pick_instance",
-                    "rotation",
-                    "scale",
-                    "translation",
-                    "realize_instances",
-                )
-            )
-        )
-        non_undo_commands = {"set_viewport_overlay", "nd_pulse_viewport_toggle", "nd_capture_utils", "render_scene"}
-        # Swaps are not read-only, but a transaction cannot describe them: after
-        # a load every id looks new, and a rollback would remove the whole file.
-        # The library commands skip it for the same reason; `unlink_libraries`
-        # fires no handler, so this routing is its only protection.
-        bypasses_transaction = (
-            cmd_type in self._READ_ONLY_COMMANDS
-            or dynamic_read_only
-            or cmd_type in non_undo_commands
-            or cmd_type in self._SESSION_SWAP_COMMANDS
-            or cmd_type in self._DATABLOCK_REPLACING_COMMANDS
-        )
-        if bypasses_transaction:
+        if self.bypasses_transaction(cmd_type, params):
             return handler(**params)
 
         targets = self._resolve_targets(params)

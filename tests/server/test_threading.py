@@ -14,6 +14,8 @@ socket timeout.
 from __future__ import annotations
 
 import ast
+import dataclasses
+import functools
 import json
 import socket
 import sys
@@ -21,6 +23,7 @@ import threading
 import time
 import types
 
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 
 import pytest
@@ -113,14 +116,19 @@ class _StubWindowManagerOps:
         raise KeyboardInterrupt("stub open_mainfile: aborted part-way through the load")
 
 
-def _load_server_class():
+def _load_server_core():
     """
-    Compile BlenderMCPServer from server_core.py against stub modules.
+    Compile server_core.py's module body from source against stub modules.
 
     execute_command is overridden per-instance by every test in this file (see
     _make_server), so the real dispatch table and handler mixins are never
     invoked - only __init__/start/stop/the socket loop are exercised. The
     mixins only need to exist as base classes for the ClassDef to compile.
+
+    Everything except the imports is lifted, not just `BlenderMCPServer`: the
+    class calls module-level helpers (`extract_frames`, `parse_command_frame`)
+    and reads module-level tables (`_READ_ONLY_WHEN`), which would be missing
+    names at call time if only the ClassDef were executed.
 
     `session.py` is the exception: the real module runs against the same `bpy`
     stub, so barrier tests see the epoch a stub swap moves.
@@ -128,10 +136,10 @@ def _load_server_class():
     source = SERVER_CORE.read_text(encoding="utf-8")
     tree = ast.parse(source)
 
-    body: list[ast.stmt] = [
-        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "BlenderMCPServer"
-    ]
-    assert body, "BlenderMCPServer not found in server_core.py"
+    body: list[ast.stmt] = [node for node in tree.body if not isinstance(node, (ast.Import, ast.ImportFrom))]
+    assert any(isinstance(node, ast.ClassDef) and node.name == "BlenderMCPServer" for node in body), (
+        "BlenderMCPServer not found in server_core.py"
+    )
 
     main_thread = threading.current_thread()
     registered: list[object] = []
@@ -221,6 +229,11 @@ def _load_server_class():
 
     namespace = {
         "bpy": bpy,
+        # Evaluated while the module body executes: two lru_cache decorators and
+        # the annotations on the pure helpers and their tables.
+        "functools": functools,
+        "Callable": Callable,
+        "Mapping": Mapping,
         "socket": socket,
         "threading": threading,
         "json": json,
@@ -241,10 +254,15 @@ def _load_server_class():
         **{name: type(name, (), {}) for name in mixin_names},
     }
     exec(compile(ast.Module(body=body, type_ignores=[]), "<addon>", "exec"), namespace)
-    return namespace["BlenderMCPServer"], registered, session, window_manager_ops
+    return namespace, registered, session, window_manager_ops
 
 
-BlenderMCPServer, _registered, _session, _window_manager_ops = _load_server_class()
+_core, _registered, _session, _window_manager_ops = _load_server_core()
+BlenderMCPServer = _core["BlenderMCPServer"]
+# The pure halves of framing and dispatch, re-exported so the suites that test
+# them directly (tests/server/test_socket_unicode.py) need no second loader.
+extract_frames = _core["extract_frames"]
+parse_command_frame = _core["parse_command_frame"]
 
 
 def _free_port():
@@ -1028,7 +1046,9 @@ def _decode(server: object, client: object, cmd_type: str, request_id: str, **pa
 
     """
     frame = json.dumps({"type": cmd_type, "id": request_id, "params": params}).encode("utf-8")
-    assert server._decode_and_queue_frame(frame, client) is True
+    queued = server.command_queue.qsize()
+    server._decode_and_queue_frame(frame, client)
+    assert server.command_queue.qsize() == queued + 1, f"the fixture's {cmd_type} frame was rejected, not queued"
 
 
 def test_a_command_queued_before_a_swap_that_lands_elsewhere_is_rejected_at_dequeue() -> None:
@@ -1517,6 +1537,64 @@ def test_a_socket_whose_timeout_cannot_be_restored_is_dropped_not_left_spinning(
 
     assert victim.shut_down, "a socket left at the rejection path's timeout was kept in the registry"
     assert victim not in server._clients
+
+
+class _InterruptedClient:
+    """
+    A peer whose write is cut short by Esc, the way Blender's main thread sees it.
+
+    Attributes:
+        timeouts: Every value handed to `settimeout`, in order.
+
+    """
+
+    def __init__(self) -> None:
+        """Start with no timeout ever set."""
+        self.timeouts: list[float] = []
+
+    def settimeout(self, value: float) -> None:
+        """
+        Record the timeout the server asked for.
+
+        Args:
+            value: Seconds the socket should block for.
+
+        """
+        self.timeouts.append(value)
+
+    def sendall(self, _payload: bytes) -> None:
+        """
+        Raise the way a write interrupted by Esc does.
+
+        Args:
+            _payload: Ignored; the write never happens.
+
+        Raises:
+            KeyboardInterrupt: Always.
+
+        """
+        raise KeyboardInterrupt("Esc during the write")
+
+
+def test_a_write_interrupted_by_esc_still_puts_the_sockets_own_timeout_back() -> None:
+    """
+    A KeyboardInterrupt out of the write must not leave the 1 ms timeout behind.
+
+    `_discard_superseded` borrows the socket for a bounded write on Blender's
+    main thread, where Esc raises `KeyboardInterrupt`. Restoring only on the
+    `Exception` path left that peer's `handle_client` loop spinning through
+    `recv()` at ~1 kHz for the rest of the connection.
+    """
+    server = _make_server()
+    client = _InterruptedClient()
+
+    with pytest.raises(KeyboardInterrupt):
+        server._send_bounded(client, b"{}\n", server._PAST_BUDGET_SEND_TIMEOUT_SECONDS)
+
+    assert client.timeouts == [
+        server._PAST_BUDGET_SEND_TIMEOUT_SECONDS,
+        server._CLIENT_SOCKET_TIMEOUT_SECONDS,
+    ]
 
 
 def test_a_command_that_reached_the_queue_unstamped_is_rejected_not_run() -> None:
@@ -2143,8 +2221,11 @@ def _clear_the_indeterminate_latch() -> object:
         object: Nothing; this fixture exists for its side effect.
 
     """
-    _session._STATE.session_indeterminate = False
-    _session._STATE.load_in_flight = False
+    # The state is frozen and published as one attribute, so a reset is a
+    # whole-value assignment, exactly as the handlers do it.
+    _session._STORE.state = dataclasses.replace(
+        _session._STORE.state, session_indeterminate=False, load_in_flight=False
+    )
     return None
 
 

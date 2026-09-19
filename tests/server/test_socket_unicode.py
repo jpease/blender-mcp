@@ -24,6 +24,11 @@ A real loopback socket won't reliably reproduce an exact byte-offset split
 (the OS may coalesce separate `sendall()` calls into one `recv()`), so this
 drives `handle_client` directly with a fake socket that returns pre-scripted
 chunks - deterministic, no network, no flakiness.
+
+The splitting itself is `extract_frames`, and the shape check is
+`parse_command_frame`; both are pure, so the boundary cases a socket can only
+reach by luck - a frame exactly at the size cap, one byte over, a remainder
+that will never be terminated - are driven directly.
 """
 
 from __future__ import annotations
@@ -32,7 +37,7 @@ import json
 
 import pytest
 
-from server.test_threading import BlenderMCPServer
+from server.test_threading import BlenderMCPServer, extract_frames, parse_command_frame
 
 
 class ScriptedSocket:
@@ -225,10 +230,117 @@ def test_full_command_queue_returns_retryable_error() -> None:
     server.command_queue = __import__("queue").Queue(maxsize=1)
     first_client = ScriptedSocket([])
     second_client = ScriptedSocket([])
-    assert server._decode_and_queue_frame(b'{"type":"ping"}', first_client)
+    server._decode_and_queue_frame(b'{"type":"ping"}', first_client)
 
-    assert server._decode_and_queue_frame(b'{"id":"two","type":"ping"}', second_client)
+    server._decode_and_queue_frame(b'{"id":"two","type":"ping"}', second_client)
 
     assert server.command_queue.qsize() == 1
     response = json.loads(second_client.sent[0])
     assert response == {"id": "two", "status": "error", "message": "Blender command queue is full; retry later"}
+
+
+_CAP = 64
+
+
+def test_a_character_split_across_chunks_waits_in_the_remainder() -> None:
+    """
+    A chunk ending mid-character yields no frame and loses no bytes.
+
+    The socket-level test above proves the connection survives it; this pins
+    the rule that makes it survive - nothing is decoded until the terminator
+    arrives, and the partial character is handed back verbatim.
+    """
+    body = json.dumps({"type": "ping", "params": {"note": "café"}}, ensure_ascii=False).encode("utf-8")
+    split = _split_after_lead_byte(body)
+
+    frames, remainder, must_drop = extract_frames(body[:split], _CAP)
+
+    assert (frames, remainder, must_drop) == ([], body[:split], False)
+    assert extract_frames(remainder + body[split:] + b"\n", _CAP) == ([body], b"", False)
+
+
+def test_every_frame_in_one_chunk_comes_back_in_order_without_the_empty_ones() -> None:
+    """Two pipelined frames, a stray terminator between them, and a partial third."""
+    frames, remainder, must_drop = extract_frames(b'{"n":1}\n\n{"n":2}\n{"n":3', _CAP)
+
+    assert frames == [b'{"n":1}', b'{"n":2}']
+    assert remainder == b'{"n":3'
+    assert must_drop is False
+
+
+def test_the_frame_size_cap_is_inclusive() -> None:
+    """A frame of exactly the cap is delivered; one byte more ends the connection."""
+    assert extract_frames(b"x" * _CAP + b"\n", _CAP) == ([b"x" * _CAP], b"", False)
+
+    frames, _remainder, must_drop = extract_frames(b"x" * (_CAP + 1) + b"\n", _CAP)
+
+    assert frames == []
+    assert must_drop is True
+
+
+def test_frames_that_arrived_before_an_oversized_one_are_still_returned() -> None:
+    """
+    The connection dies, but the frames ahead of the bad one were intact.
+
+    They are already queued when the loop breaks, so dropping them here would
+    silently lose commands the client is waiting on answers for.
+    """
+    frames, _remainder, must_drop = extract_frames(b'{"n":1}\n' + b"x" * (_CAP + 1) + b'\n{"n":2}\n', _CAP)
+
+    assert frames == [b'{"n":1}']
+    assert must_drop is True
+
+
+def test_an_unterminated_remainder_is_capped_too() -> None:
+    """
+    A client that never terminates a message must not grow the buffer forever.
+
+    The remainder is bounded by the same cap as a frame, and inclusively: at
+    the cap it is still waiting for a terminator that may yet arrive.
+    """
+    assert extract_frames(b"x" * _CAP, _CAP) == ([], b"x" * _CAP, False)
+
+    _frames, _remainder, must_drop = extract_frames(b"x" * (_CAP + 1), _CAP)
+
+    assert must_drop is True
+
+
+def test_a_well_shaped_frame_parses_to_its_command_and_id() -> None:
+    command, request_id, error = parse_command_frame(b'{"id":"a1","type":"ping","params":{"n":1}}')
+
+    assert command == {"id": "a1", "type": "ping", "params": {"n": 1}}
+    assert (request_id, error) == ("a1", None)
+
+
+@pytest.mark.parametrize(
+    ("frame", "expected_id", "message"),
+    [
+        (b'{"id":"a1","type":""}', "a1", "non-empty string"),
+        (b'{"id":"a1","type":"ping","params":[]}', "a1", "params must be a JSON object"),
+        (b'{"id":7,"type":"ping"}', None, "id must be a string"),
+        (b"[]", None, "JSON object"),
+        (b"{not json", None, "Malformed UTF-8 JSON"),
+        (b'{"type":"\xff"}', None, "Malformed UTF-8 JSON"),
+    ],
+)
+def test_a_rejected_frame_is_answered_under_the_id_it_could_be_read_from(
+    frame: bytes, expected_id: str | None, message: str
+) -> None:
+    """
+    Every rejection carries the request id when the frame yielded a usable one.
+
+    Without it the client cannot match the error to the command it sent, and
+    waits out its own timeout instead. An id that is not a string cannot be
+    echoed as one, so those rejections carry no id at all.
+
+    Args:
+        frame: The bytes of one rejected frame.
+        expected_id: The id the error must be answered under, if any.
+        message: A fragment of the client-safe explanation.
+
+    """
+    command, request_id, error = parse_command_frame(frame)
+
+    assert command is None
+    assert request_id == expected_id
+    assert error is not None and message in error

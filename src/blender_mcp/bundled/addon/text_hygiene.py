@@ -11,17 +11,16 @@ the rules here admit rather than block:
 - Publish only what an allowlist admits, and reduce anything else rather than
   repair it: a repaired name is one the caller did not choose.
 
-Nothing here imports `bpy`, so tests can load this file directly.
+Nothing here imports `bpy` and nothing here touches the filesystem, so tests can
+load this file directly, and no published name costs a stat. A caller that knows
+a path is a directory says so (`client_safe_leaf(..., is_directory=True)`).
 
 The control-character block below is duplicated in
 `src/blender_mcp/text_hygiene.py`, because neither side of the socket can import
 the other's code. A test fails if the two copies differ.
 """
 
-import os
 import unicodedata
-
-from contextlib import suppress
 
 # --- BEGIN SHARED CONTROL-CHARACTER BLOCK ---
 # Unicode categories that must not reach a client-facing string:
@@ -158,15 +157,17 @@ def _is_admissible_leaf(leaf: str) -> bool:
     )
 
 
-def client_safe_leaf(file_path: object) -> str:
+def client_safe_leaf(file_path: object, *, is_directory: bool = False) -> str:
     """
     Reduce a path Blender reported to one bounded, admissible leaf name.
 
-    A path that is a directory is refused first: given an empty path, Blender
-    reports the process working directory, which the caller never named. That
-    check tells a client whether a directory exists, one bit per probe. Naming
-    the working directory would disclose more, and the file-lifecycle tools' root
-    check is what should stop path probing.
+    A path the caller knows to be a directory is refused outright: given an empty
+    path, Blender reports the process working directory, which the caller never
+    named. Whether it is a directory is passed in rather than probed here: a stat
+    would tell a client whether a directory exists, one bit per probe, and this
+    module touches no filesystem, so the caller that already holds the path does
+    the probe. The file-lifecycle tools' root check is what should stop path
+    probing.
 
     The result is the caller's own last path component, verbatim, or
     `UNNAMEABLE`. Some look-alike names still pass (see `is_confusable`), but
@@ -174,18 +175,18 @@ def client_safe_leaf(file_path: object) -> str:
 
     Args:
         file_path: The path Blender reported.
+        is_directory: True when the caller established that the path names a
+            directory; its name is then never published.
 
     Returns:
         str: A leaf file name, or `the requested file` when no admissible leaf
         exists.
 
     """
-    raw = str(file_path or "")
     # An empty path needs no guard of its own: `NOT_A_LEAF` refuses it.
-    with suppress(OSError, ValueError):
-        if os.path.isdir(raw):
-            return UNNAMEABLE
-    return client_safe_name_leaf(raw)
+    if is_directory:
+        return UNNAMEABLE
+    return client_safe_name_leaf(file_path)
 
 
 def client_safe_name_leaf(name: object) -> str:

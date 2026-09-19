@@ -65,9 +65,9 @@ def _library_summary(library: object) -> dict[str, object]:
     reported as relative.
 
     `name` is reduced to a leaf too: Blender lets a `.blend` author set
-    `Library.name` to a path such as `/Users/victim/shots/canon.blend`. It skips
-    `client_safe_leaf`'s `isdir` check, which would reveal whether a directory by
-    that author-chosen name exists.
+    `Library.name` to a path such as `/Users/victim/shots/canon.blend`. Neither
+    field is stat'ed: both are author-chosen text, and probing one would reveal
+    whether a directory by that name exists on this machine.
 
     Args:
         library: A `bpy.types.Library`.
@@ -150,6 +150,11 @@ def _checked_blend_path(raw: object, *, must_exist: bool, create_directories: bo
     Roots come before the file checks, so a path outside them gets the same
     refusal whether it names a file, a directory or nothing; otherwise any path
     on the machine could be probed for existence.
+
+    That ordering costs one extra `realpath`, because `enforce_roots` and
+    `resolve_blend_path` each canonicalize the path they are given; resolving
+    first and enforcing on the result would save the call and answer an
+    out-of-roots path with "file does not exist" or "not a .blend" instead.
 
     Hand Blender the returned canonical path, never the raw one: Blender resolves
     the raw form's `..` before symlinks, which is not the path the roots checked.

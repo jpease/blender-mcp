@@ -1,6 +1,6 @@
 import contextlib
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
 import bpy
@@ -129,35 +129,46 @@ def _new_datablocks(before, exclude_ids: "frozenset[int] | set[int]" = frozenset
     return created
 
 
+def removal_order[T](entries: Sequence[tuple[str, T]]) -> list[tuple[str, T]]:
+    """
+    Order newly-created datablocks so each is removed before whatever frees it.
+
+    Objects come first (and in reverse creation order) since a later object
+    could reference an earlier one; everything else follows, also in reverse;
+    libraries go last, because removing a Library frees the datablocks linked
+    from it and those must already be gone.
+
+    Pure, so the ordering rule can be exercised without a `bpy.data` that can
+    only be observed through the removals it accepts.
+
+    Args:
+        entries: (collection name, datablock) pairs in creation order, as
+            returned by _new_datablocks().
+
+    Returns:
+        list[tuple[str, T]]: The same pairs, in removal order.
+
+    """
+    objects = [(coll_name, db) for coll_name, db in entries if coll_name == "objects"]
+    others = [(coll_name, db) for coll_name, db in entries if coll_name not in {"objects", "libraries"}]
+    libraries = [(coll_name, db) for coll_name, db in entries if coll_name == "libraries"]
+    return [*reversed(objects), *reversed(others), *reversed(libraries)]
+
+
 def _remove_datablocks(entries) -> None:
     """
     Best-effort removal of newly-created datablocks after a failed mutation.
 
-    Objects are removed first (and in reverse creation order) since a later
-    object could reference an earlier one; everything else follows, also in
-    reverse; libraries go last, because removing a Library frees the
-    datablocks linked from it and those must already be gone. Each removal is
-    isolated so one failure does not stop the rest.
+    Removal follows `removal_order`; each removal is isolated so one failure
+    does not stop the rest.
 
     Args:
         entries: (collection name, datablock) pairs, as returned by _new_datablocks().
 
     """
-    objects = [db for coll_name, db in entries if coll_name == "objects"]
-    others = [(coll_name, db) for coll_name, db in entries if coll_name not in {"objects", "libraries"}]
-    libraries = [db for coll_name, db in entries if coll_name == "libraries"]
-
-    for obj in reversed(objects):
+    for coll_name, datablock in removal_order(entries):
         with contextlib.suppress(Exception):
-            bpy.data.objects.remove(obj, do_unlink=True)
-
-    for coll_name, db in reversed(others):
-        with contextlib.suppress(Exception):
-            getattr(bpy.data, coll_name).remove(db, do_unlink=True)
-
-    for library in reversed(libraries):
-        with contextlib.suppress(Exception):
-            bpy.data.libraries.remove(library, do_unlink=True)
+            getattr(bpy.data, coll_name).remove(datablock, do_unlink=True)
 
 
 def _undo_unavailable_reason():
@@ -301,7 +312,7 @@ def mutation_transaction(cmd_type, targets=(), capture_geometry=False):
     """
     Wrap one mutating MCP request with identity-based rollback.
 
-    Guarantees on failure (any exception leaving the block):
+    Guarantees when an `Exception` leaves the block:
     - every datablock the request *created* is removed, identified by
       session_uid so a renamed pre-existing datablock is never deleted; and
     - the captured state of each target object is restored: name, data name,
@@ -319,11 +330,17 @@ def mutation_transaction(cmd_type, targets=(), capture_geometry=False):
     Explicitly NOT guaranteed (documented limitations, not silent gaps):
     deleted pre-existing datablocks are not resurrected; applied modifiers
     (e.g. nd_apply_modifiers) are irreversible; object state outside the
-    captured fields is not restored. Rollback
-    removes tracked datablocks directly rather than calling bpy.ops.ed.undo():
-    the undo stack is bounded (undo_steps, default 32) and evictable, is a
-    no-op in background mode / when global undo is off, and is documented
-    "internal use only" - none of which is a sound basis for correctness.
+    captured fields is not restored. Rollback removes tracked datablocks
+    directly rather than calling bpy.ops.ed.undo(): the undo stack is bounded
+    (undo_steps, default 32) and evictable, is a no-op in background mode /
+    when global undo is off, and is documented "internal use only" - none of
+    which is a sound basis for correctness.
+
+    A `BaseException` does NOT roll back. The one that reaches here in practice
+    is the `KeyboardInterrupt` Blender raises when the user presses Esc: the
+    partial mutation is left in place, `_DISPATCH.active` is still cleared by
+    the `finally`, and `drain_command_queue`'s abort guard answers the client
+    and latches the session indeterminate when the abort interrupted a load.
 
     Args:
         cmd_type: The MCP command type, used to label the undo checkpoint.
@@ -347,6 +364,11 @@ def mutation_transaction(cmd_type, targets=(), capture_geometry=False):
     _DISPATCH.active = txn
     try:
         yield txn
+    # `Exception`, not `BaseException`, deliberately: a rollback started from
+    # Esc's KeyboardInterrupt does removals and restores that a second Esc can
+    # interrupt part-way, leaving a database that is neither what the handler
+    # built nor what the snapshot describes. Leaving the partial mutation alone
+    # is the recoverable outcome, and the drain loop's abort guard reports it.
     except Exception as exc:
         warning = txn.rollback()
         if warning is None:

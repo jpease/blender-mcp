@@ -15,6 +15,7 @@ open file.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import sys
@@ -375,6 +376,136 @@ def test_resetting_the_session_moves_the_epoch_through_load_post_alone(
     assert not hasattr(session, "note_session_reset"), (
         "a separate reset bump would double-count: read_homefile already fires load_post"
     )
+
+
+# ---------------------------------------------------------------------------
+# The transitions the handlers are a thin shell over
+# ---------------------------------------------------------------------------
+
+
+def test_the_epoch_moves_in_exactly_the_transitions_that_may_have_replaced_the_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The epoch is a client's cache key, so every transition is either a swap or it is not.
+
+    The handler tests above prove this one event at a time; the transitions are
+    the only writers, so this is the one place the table can be read whole.
+    """
+    session, _bpy = _load_session(monkeypatch)
+    start = session._SessionState()
+
+    applied = {
+        "load_pre": session.applied_load_pre(start),
+        "load_post": session.applied_load_post(start, "/shots/sq010.blend"),
+        "load_post_fail": session.applied_load_failure(start, "/shots/sq010.blend"),
+        "save_post": session.applied_save_post(start, "/shots/sq010.blend", "/shots/sq010.blend"),
+        "save_post_fail": session.applied_save_failure(start, "/shots/sq010.blend"),
+        "abort": session.applied_indeterminate(start),
+    }
+
+    assert {name: state.session_epoch for name, state in applied.items()} == {
+        "load_pre": 0,
+        "load_post": 1,
+        "load_post_fail": 0,
+        "save_post": 0,
+        "save_post_fail": 0,
+        "abort": 1,
+    }
+
+
+def test_every_transition_that_accounts_for_a_load_clears_the_in_flight_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A load left in flight would make the next abort latch on the strength of this one.
+
+    `server_core._run_session_swap` reads the flag after an abort, and three
+    different outcomes account for the load `load_pre` announced.
+    """
+    session, _bpy = _load_session(monkeypatch)
+    announced = session.applied_load_pre(session._SessionState())
+    assert announced.load_in_flight is True, "the announcement itself is the only evidence a load began"
+
+    accounted = {
+        "load_post": session.applied_load_post(announced, "/shots/sq010.blend"),
+        "load_post_fail": session.applied_load_failure(announced, "/shots/sq010.blend"),
+        "abort": session.applied_indeterminate(announced),
+    }
+
+    assert {name: state.load_in_flight for name, state in accounted.items()} == dict.fromkeys(accounted, False)
+
+
+def test_a_completed_load_is_the_only_transition_that_clears_the_indeterminate_latch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The latch refuses commands, so what lifts it decides when the addon works again.
+
+    A failed load and a save leave the database as they found it, so neither is
+    evidence that the session can be named again.
+    """
+    session, _bpy = _load_session(monkeypatch)
+    latched = session.applied_indeterminate(session._SessionState(current_filepath="/shots/sq010.blend"))
+    assert latched.session_indeterminate is True
+
+    reopened = session.applied_load_post(latched, "/shots/sq020.blend")
+    refused = session.applied_load_failure(latched, "/shots/sq020.blend")
+    saved = session.applied_save_post(latched, "/shots/sq020.blend", "/shots/sq020.blend")
+
+    assert reopened.session_indeterminate is False, "a completed load did not clear the latch"
+    assert refused.session_indeterminate is True, "a failed load cleared a latch it is no evidence against"
+    assert saved.session_indeterminate is True, "a save cleared a latch it is no evidence against"
+
+
+def test_a_save_copy_leaves_a_recorded_failure_belonging_to_another_file_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Writing a copy elsewhere is no evidence the file that refused a save can be written.
+
+    `save_post` reports the file written while `bpy.data.filepath` still names
+    the file open, and the two differ only for `save_as_mainfile(copy=True)`.
+    """
+    session, _bpy = _load_session(monkeypatch)
+    refused = session.applied_save_failure(session._SessionState(), "/shots/sq010.blend")
+    assert refused.last_save_error
+
+    copied = session.applied_save_post(refused, "/backup/sq010_copy.blend", "/shots/sq010.blend")
+    assert copied.last_save_error == refused.last_save_error, "a copy cleared a failure of a different file"
+    assert copied.current_filepath == "/shots/sq010.blend", "the session followed a file nobody has open"
+
+    saved = session.applied_save_post(refused, "/shots/sq010.blend", "/shots/sq010.blend")
+    assert saved.last_save_error is None, "the real save must still clear it"
+
+
+def test_an_abort_reaches_a_snapshot_whole_or_not_at_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    The defect this guards: a snapshot pairing a bumped epoch with a still-False latch.
+
+    `server_core._drain_batch` trusts exactly that pair, and a state updated one
+    field at a time let a client thread read it between two assignments. Stated
+    as a property of the value the transition returns, so it holds however the
+    writer is scheduled: the new epoch and the latch arrive in one object, and
+    the state a reader may still be holding is left as it was.
+    """
+    session, _bpy = _load_session(monkeypatch)
+    starts = (
+        session._SessionState(),
+        session._SessionState(session_epoch=7, current_filepath="/shots/sq010.blend", load_in_flight=True),
+        session.applied_indeterminate(session._SessionState(session_epoch=3)),
+        session.applied_load_failure(session._SessionState(session_epoch=2), "/shots/sq010.blend"),
+    )
+
+    for start in starts:
+        before = dataclasses.asdict(start)
+
+        after = session.applied_indeterminate(start)
+
+        assert after.session_epoch == start.session_epoch + 1, "an abort that moved no epoch cannot be noticed"
+        assert after.session_indeterminate is True, "the epoch moved while the latch was still False"
+        assert after.current_filepath is None, "the epoch moved while the state still named the old file"
+        assert dataclasses.asdict(start) == before, "the abort reached a state a reader may still hold"
 
 
 # ---------------------------------------------------------------------------

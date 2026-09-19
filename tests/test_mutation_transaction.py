@@ -450,6 +450,41 @@ def test_checkpoint_unavailable_is_reported_not_suppressed(monkeypatch) -> None:
     assert undo_calls == []  # never attempted when undo is known-unavailable
 
 
+def test_rollback_removes_objects_first_and_libraries_last_each_in_reverse(monkeypatch) -> None:
+    """
+    The ordering rule a rollback removes by, checked on the ordering alone.
+
+    A later object can reference an earlier one, and removing a Library frees
+    every datablock linked from it, so a removal taken out of turn either
+    raises a ReferenceError that `contextlib.suppress` hides or frees a
+    datablock twice. Through `bpy.data` the order is only visible as the
+    removals that happen to succeed; `removal_order` is pure, so it is visible
+    directly.
+    """
+    addon, _bpy = _load_addon(monkeypatch, data={})
+    transaction = sys.modules[f"{addon.__name__}.transaction"]
+
+    ordered = transaction.removal_order(
+        [
+            ("meshes", "mesh1"),
+            ("objects", "obj1"),
+            ("libraries", "lib1"),
+            ("objects", "obj2"),
+            ("materials", "mat1"),
+            ("libraries", "lib2"),
+        ]
+    )
+
+    assert ordered == [
+        ("objects", "obj2"),
+        ("objects", "obj1"),
+        ("materials", "mat1"),
+        ("meshes", "mesh1"),
+        ("libraries", "lib2"),
+        ("libraries", "lib1"),
+    ]
+
+
 class FakeObject:
     def __init__(self, name) -> None:
         self.name = name
