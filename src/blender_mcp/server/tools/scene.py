@@ -422,8 +422,9 @@ async def manage_modifiers(
     if action in {"REMOVE", "APPLY"} and not confirm_destructive:
         raise ValueError("confirm_destructive=True is required for REMOVE or APPLY")
     validated_modifier = modifier_spec_adapter.validate_python(modifier)
-    warnings = [STALE_INDEX_WARNING] if action == "APPLY" else None
-    result = await asyncio.to_thread(
+    # The warning travels with the call: appending it to the returned envelope would land after
+    # `ok()` had already measured the reply against the byte budget.
+    return await asyncio.to_thread(
         _call,
         "manage_modifiers",
         {
@@ -434,10 +435,8 @@ async def manage_modifiers(
             "confirm_destructive": confirm_destructive,
         },
         [object_name],
+        warnings=[STALE_INDEX_WARNING] if action == "APPLY" else None,
     )
-    if warnings:
-        result["warnings"].extend(warnings)
-    return result
 
 
 @mcp.tool()

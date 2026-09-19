@@ -1,4 +1,3 @@
-# ruff: file-ignore[too-many-statements-in-try-clause]
 """Shared validation, serialization, and transport helpers for liquid tools."""
 
 import logging
@@ -8,7 +7,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict
 
 from ...connection import get_blender_connection
-from ..envelope import ok
+from ..envelope import envelope_for
 
 logger = logging.getLogger("BlenderMCPServer")
 
@@ -34,21 +33,10 @@ def _connection_call(command: str, params: dict, changed_objects: list[str] | No
     """Send one Blender command and normalize its response envelope."""
     try:
         result = get_blender_connection().send_command(command, params)
-        changed = result.get("changed_objects", changed_objects or []) if isinstance(result, dict) else changed_objects
-        resources = result.get("changed_resources", []) if isinstance(result, dict) else []
-        warnings = result.get("warnings", []) if isinstance(result, dict) else []
-        if isinstance(result, dict):
-            result = {
-                key: value
-                for key, value in result.items()
-                if key not in {"changed_objects", "changed_resources", "warnings"}
-            }
-        envelope = ok(result, changed_objects=changed or [], changed_resources=resources)
-        envelope["warnings"] = warnings
-        return envelope
     except Exception as exc:
         logger.error("Error running %s: %s", command, exc)
         raise ToolError(f"Error running {command}: {exc}") from exc
+    return envelope_for(result, changed_objects=changed_objects or ())
 
 
 def _call(command: str, params: dict, changed_objects: list[str] | None = None) -> dict:

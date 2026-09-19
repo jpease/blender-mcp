@@ -3,11 +3,13 @@
 
 import asyncio
 import importlib
+import inspect
 import os
 import types
 
 import pytest
 
+from mcp.server.fastmcp import Image
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
@@ -196,7 +198,10 @@ def test_render_output_metadata_defaults_missing_fields_to_none() -> None:
     }
 
 
-def test_inspect_render_output_serializes_request_and_returns_image(monkeypatch) -> None:
+def test_inspect_render_output_is_async_and_returns_the_image_with_its_envelope(monkeypatch) -> None:
+    """Its socket round-trip and tempfile both block; on the MCP event loop they would stall every other request."""
+    assert inspect.iscoroutinefunction(rendering.inspect_render_output)
+
     connection = _Connection()
 
     def fake_send_command(command, params):
@@ -208,7 +213,7 @@ def test_inspect_render_output_serializes_request_and_returns_image(monkeypatch)
     connection.send_command = fake_send_command
     monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
 
-    items = rendering.inspect_render_output(ctx=None, output_path="/tmp/render.png", max_size=500)
+    items = asyncio.run(rendering.inspect_render_output(ctx=None, output_path="/tmp/render.png", max_size=500))
 
     command, params = connection.calls[0]
     assert command == "inspect_render_output"
@@ -218,6 +223,7 @@ def test_inspect_render_output_serializes_request_and_returns_image(monkeypatch)
     assert params["format"] == "png"
 
     image, envelope = items
+    assert isinstance(image, Image)
     assert image.data == b"fake-png-bytes"
     assert envelope["data"]["source"] == "output_path"
 
@@ -237,7 +243,7 @@ def test_inspect_render_output_tempfile_is_removed_when_blender_fails(monkeypatc
     monkeypatch.setattr(rendering.tempfile, "mkstemp", fake_mkstemp)
 
     with pytest.raises(Exception, match="Render output inspection failed"):
-        rendering.inspect_render_output(ctx=None)
+        asyncio.run(rendering.inspect_render_output(ctx=None))
 
     assert not rendered.exists()
 

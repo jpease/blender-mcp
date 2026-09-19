@@ -45,8 +45,14 @@ says so in `warnings`. Identifiers are never dropped to make room: a page keeps 
 record, and a payload with no record list to shorten is sent whole with a warning. Tools
 return what changed plus the identifiers to find the rest; full state is a `detail=True`
 request, not the default.
+
+No tool module shapes this dict itself: `envelope_for` lifts `changed_objects` and
+`changed_resources` out of an addon reply, bounds the object list at `CHANGED_OBJECTS_LIMIT`, and
+calls `ok()`, which leaves each module's own `_call` holding nothing but its transport and error
+handling.
 """
 
+from collections.abc import Sequence
 from typing import Any
 
 from pydantic_core import to_json
@@ -63,6 +69,14 @@ STALE_INDEX_WARNING = (
 # 8 KiB is about 2,300 tokens, and every reply measured above it was a page of records, which
 # pagination shortens without losing anything.
 REPLY_BYTE_BUDGET = 8 * 1024
+
+# Linking a whole set changes hundreds of objects, and every name would sit in the agent's
+# context for the rest of the session; `envelope_for` keeps this many and says how many there
+# were in total.
+CHANGED_OBJECTS_LIMIT = 50
+
+# The two keys `envelope_for` lifts out of an addon reply; everything else stays in `data`.
+_CHANGE_KEYS = frozenset({"changed_objects", "changed_resources"})
 
 
 def _wire_bytes(reply: dict) -> int:
@@ -206,6 +220,25 @@ def ok(
     changed_objects: list[str] | None = None,
     changed_resources: list[str] | None = None,
 ) -> dict:
+    """
+    Wrap one tool payload in the envelope this module documents.
+
+    `ok()` takes ownership of `data`: shortening an over-budget page rewrites that list inside the
+    payload, so a caller that still needs its own dict passes a copy (which is what `envelope_for`
+    does with every addon reply).
+
+    Args:
+        data: The tool-specific payload. A `warnings` list on it is lifted into the envelope's own
+            warnings and dropped from the payload, so one notice is never reported twice.
+        success: False when the request reached Blender but produced no effect.
+        warnings: The tool's own non-fatal notices, kept ahead of the payload's.
+        changed_objects: Names of Blender objects the call created, modified, or deleted.
+        changed_resources: Names of non-object datablocks the call touched.
+
+    Returns:
+        The envelope, already shortened to fit `REPLY_BYTE_BUDGET`.
+
+    """
     merged_warnings = list(warnings or [])
     # The Blender addon surfaces non-fatal notices (e.g. that an undo checkpoint
     # could not be recorded) as a `warnings` list on its result. Lift them into
@@ -226,3 +259,49 @@ def ok(
     }
     _fit_budget(reply)
     return reply
+
+
+def envelope_for(
+    reply: object,
+    *,
+    changed_objects: Sequence[str] = (),
+    changed_resources: Sequence[str] = (),
+    warnings: Sequence[str] = (),
+    limit: int = CHANGED_OBJECTS_LIMIT,
+) -> dict:
+    """
+    Shape one addon reply into the envelope: the deterministic half of every tool module's `_call`.
+
+    Deterministic and free of transport, which is all that was ever different between the twelve
+    copies this replaced. The reply's own top level is copied before `ok()` takes ownership of it,
+    so a caller still holding its reply keeps the dict it sent; a dict nested deeper is shared, and
+    a shortening reaching that far does write its pagination keys there.
+
+    Args:
+        reply: Whatever the addon returned. A dict is copied and its `changed_objects` and
+            `changed_resources` keys move into the envelope; any other value becomes `data` as is.
+        changed_objects: Object names to report when the addon names none itself. An addon-supplied
+            list replaces this rather than extending it, so a call that changed nothing - a
+            cancelled operator, a no-op patch - reports nothing.
+        changed_resources: Non-object datablock names, under that same replacement rule.
+        warnings: Notices to carry into the envelope. They belong here rather than appended to the
+            result, which would land after `ok()` had already measured the reply against its budget.
+        limit: Most `changed_objects` names to keep; a longer list is cut to it and a warning names
+            the total.
+
+    Returns:
+        The `ok()` envelope.
+
+    """
+    data: Any = reply
+    objects: Sequence[str] = changed_objects
+    resources: Sequence[str] = changed_resources
+    if isinstance(reply, dict):
+        data = {key: value for key, value in reply.items() if key not in _CHANGE_KEYS}
+        objects = reply.get("changed_objects", objects)
+        resources = reply.get("changed_resources", resources)
+    notices = list(warnings)
+    if len(objects) > limit:
+        notices.append(f"changed_objects lists the first {limit} of {len(objects)} objects")
+        objects = objects[:limit]
+    return ok(data, warnings=notices, changed_objects=list(objects), changed_resources=list(resources))

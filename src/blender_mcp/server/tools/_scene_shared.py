@@ -5,8 +5,7 @@ Shared plumbing and cross-file types for the scene tool modules.
 other, a process selecting one would also register the other's tools.
 
 Unlike the packages' `_shared.py` modules, `_call` here neither logs failures nor
-prefixes them; FastMCP still turns them into a `ToolError`. Change every `_call` copy
-together, not this one alone.
+prefixes them; FastMCP still turns them into a `ToolError`.
 """
 
 from typing import Any
@@ -14,7 +13,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from ..connection import get_blender_connection
-from .envelope import ok
+from .envelope import envelope_for
 
 
 class _StrictModel(BaseModel):
@@ -28,7 +27,13 @@ class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
-def _call(command: str, params: dict[str, Any], changed_objects: list[str] | None = None) -> dict:
+def _call(
+    command: str,
+    params: dict[str, Any],
+    changed_objects: list[str] | None = None,
+    *,
+    warnings: list[str] | None = None,
+) -> dict:
     """
     Send one command to Blender and wrap the reply in the standard response envelope.
 
@@ -37,6 +42,9 @@ def _call(command: str, params: dict[str, Any], changed_objects: list[str] | Non
         params: JSON-serializable parameters for that command.
         changed_objects: Object names to report as changed when the add-on does not say.
             An add-on `changed_objects` key replaces this rather than extending it.
+        warnings: Notices the tool knows before the call - a destructive action's
+            stale-index warning - which must be in the reply while it is measured against
+            the byte budget.
 
     Returns:
         The `ok()` envelope, with `changed_objects` and `changed_resources` moved out of
@@ -44,10 +52,4 @@ def _call(command: str, params: dict[str, Any], changed_objects: list[str] | Non
 
     """
     result = get_blender_connection().send_command(command, params)
-    resources: list[str] = []
-    objects = changed_objects or []
-    if isinstance(result, dict):
-        result = dict(result)
-        objects = result.pop("changed_objects", objects)
-        resources = result.pop("changed_resources", resources)
-    return ok(result, changed_objects=objects, changed_resources=resources)
+    return envelope_for(result, changed_objects=changed_objects or (), warnings=warnings or ())

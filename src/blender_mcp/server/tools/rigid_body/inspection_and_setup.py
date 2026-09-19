@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from ...app import mcp
 from ...connection import get_blender_connection
-from ..envelope import ok
+from ..envelope import envelope_for
 
 logger = logging.getLogger("BlenderMCPServer")
 
@@ -28,16 +28,10 @@ ConstraintType = Literal["FIXED", "POINT", "HINGE", "SLIDER", "PISTON", "GENERIC
 def _connection_call(command: str, params: dict, changed_objects: list[str] | None = None) -> dict:
     try:
         result = get_blender_connection().send_command(command, params)
-        changed = result.get("changed_objects", changed_objects or []) if isinstance(result, dict) else changed_objects
-        resources = result.get("changed_resources", []) if isinstance(result, dict) else []
-        if isinstance(result, dict):
-            result = {
-                key: value for key, value in result.items() if key not in {"changed_objects", "changed_resources"}
-            }
-        return ok(result, changed_objects=changed or [], changed_resources=resources)
     except Exception as exc:
         logger.error("Error running %s: %s", command, exc)
         raise ToolError(f"Error running {command}: {exc}") from exc
+    return envelope_for(result, changed_objects=changed_objects or ())
 
 
 def _call(command: str, params: dict, changed_objects: list[str] | None = None) -> dict:

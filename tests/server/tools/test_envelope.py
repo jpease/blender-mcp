@@ -1,8 +1,14 @@
-"""Coverage for the envelope: lifting an addon `warnings` list, and the per-reply byte budget."""
+"""
+Coverage for the envelope: shaping an addon reply, lifting its `warnings` list, and the byte budget.
+
+`envelope_for` is the half of every tool module's `_call` that has no transport in it, so the rules
+the twelve copies used to each restate - an addon list replaces the tool's guess, the object list is
+bounded, the reply dict is left alone - are asserted here once instead of per package.
+"""
 
 from pydantic_core import to_json
 
-from blender_mcp.server.tools.envelope import REPLY_BYTE_BUDGET, ok
+from blender_mcp.server.tools.envelope import CHANGED_OBJECTS_LIMIT, REPLY_BYTE_BUDGET, envelope_for, ok
 
 # A page this long passes the budget whatever the exact record size is.
 _OVER_BUDGET = 400
@@ -235,3 +241,74 @@ def test_the_budget_leaves_a_flat_oversized_reply_alone() -> None:
 
     assert len(result["data"]["note"]) == REPLY_BYTE_BUDGET * 2
     assert any("budget" in warning for warning in result["warnings"])
+
+
+def test_an_addon_change_list_replaces_the_tools_own_guess() -> None:
+    """The addon knows what actually changed; a tool's pre-call guess is only a fallback."""
+    result = envelope_for(
+        {"object": "Cube", "changed_objects": ["Cube.001"], "changed_resources": ["Rust"]},
+        changed_objects=["Cube"],
+        changed_resources=["Metal"],
+    )
+
+    assert result["changed_objects"] == ["Cube.001"]
+    assert result["changed_resources"] == ["Rust"]
+    assert result["data"] == {"object": "Cube"}
+
+
+def test_an_addon_reporting_nothing_changed_overrides_the_guess_with_nothing() -> None:
+    """A cancelled operator returns empty lists, and reporting the requested target would be a lie."""
+    result = envelope_for({"cancelled": True, "changed_objects": []}, changed_objects=["Cube"])
+
+    assert result["changed_objects"] == []
+
+
+def test_a_tools_own_change_list_is_used_when_the_addon_names_none() -> None:
+    result = envelope_for({"object": "Cube"}, changed_objects=["Cube"], changed_resources=["Metal"])
+
+    assert result["changed_objects"] == ["Cube"]
+    assert result["changed_resources"] == ["Metal"]
+
+
+def test_a_long_change_list_is_bounded_and_the_warning_names_the_total() -> None:
+    """Linking a set changes hundreds of objects; the names would sit in the agent's context all session."""
+    names = [f"Part{index:03d}_geo" for index in range(480)]
+
+    result = envelope_for({"changed_objects": names})
+
+    assert result["changed_objects"] == names[:CHANGED_OBJECTS_LIMIT]
+    assert result["warnings"] == [f"changed_objects lists the first {CHANGED_OBJECTS_LIMIT} of 480 objects"]
+
+
+def test_a_change_list_exactly_at_the_limit_is_sent_whole_and_unremarked() -> None:
+    names = [f"Part{index:03d}_geo" for index in range(CHANGED_OBJECTS_LIMIT)]
+
+    result = envelope_for({"changed_objects": names})
+
+    assert result["changed_objects"] == names
+    assert result["warnings"] == []
+
+
+def test_a_non_dict_reply_becomes_the_payload_as_it_stands() -> None:
+    """Not every addon command answers with a dict; a list or a scalar is still the payload."""
+    assert envelope_for(["Cube", "Sphere"])["data"] == ["Cube", "Sphere"]
+    assert envelope_for(None)["data"] is None
+    assert envelope_for(7, changed_objects=["Cube"])["changed_objects"] == ["Cube"]
+
+
+def test_the_addon_reply_is_left_untouched() -> None:
+    """The reply is the caller's; shaping it in place would corrupt a retry or a shared canned reply."""
+    reply = {"object": "Cube", "changed_objects": ["Cube"], "records": _records(_OVER_BUDGET)}
+
+    envelope_for(reply)
+
+    assert set(reply) == {"object", "changed_objects", "records"}
+    assert len(reply["records"]) == _OVER_BUDGET
+
+
+def test_warnings_reach_the_envelope_before_it_is_measured() -> None:
+    """A warning appended after `ok()` returned would push a reply that just fitted back over budget."""
+    result = envelope_for({"records": _records(_OVER_BUDGET)}, warnings=["topology indices are stale"])
+
+    assert result["warnings"][0] == "topology indices are stale"
+    assert _wire_bytes(result) <= REPLY_BYTE_BUDGET

@@ -10,7 +10,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from ...connection import get_blender_connection
-from ..envelope import ok
+from ..envelope import envelope_for
 
 logger = logging.getLogger("BlenderMCPServer")
 
@@ -53,15 +53,11 @@ def call_geometry_nodes(
     """Send one validated Geometry Nodes command to Blender."""
     try:
         result = get_blender_connection().send_command(command, params)
-        objects = changed_objects or []
-        resources = changed_resources or []
-        if isinstance(result, dict):
-            objects = result.get("changed_objects", objects)
-            resources = result.get("changed_resources", resources)
-            result = {
-                key: value for key, value in result.items() if key not in {"changed_objects", "changed_resources"}
-            }
-        return ok(result, changed_objects=objects, changed_resources=resources)
     except Exception as exc:
         logger.error("Error running %s: %s", command, exc)
         raise ToolError(f"Error running {command}: {exc}") from exc
+    return envelope_for(
+        result,
+        changed_objects=changed_objects or (),
+        changed_resources=changed_resources or (),
+    )

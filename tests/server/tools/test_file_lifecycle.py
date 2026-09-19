@@ -15,6 +15,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _documentation, file_lifecycle
+from blender_mcp.server.tools.envelope import CHANGED_OBJECTS_LIMIT
 
 FILE_LIFECYCLE_COMMANDS = {
     "get_session_info",
@@ -219,7 +220,7 @@ def test_changed_objects_are_bounded_and_the_total_is_reported(monkeypatch) -> N
 
     envelope = asyncio.run(file_lifecycle.link_canon_library(ctx=None, filepath="/canon/house.blend"))
 
-    assert envelope["changed_objects"] == names[: file_lifecycle.CHANGED_OBJECTS_LIMIT]
+    assert envelope["changed_objects"] == names[:CHANGED_OBJECTS_LIMIT]
     assert any("480" in warning for warning in envelope["warnings"]), envelope["warnings"]
 
 

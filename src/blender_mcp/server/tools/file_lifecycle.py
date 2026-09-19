@@ -13,10 +13,7 @@ from mcp.server.fastmcp import Context
 
 from ..app import mcp
 from ..connection import get_blender_connection
-from .envelope import ok
-
-# Linking a whole set changes hundreds of objects; every name would sit in the agent's context.
-CHANGED_OBJECTS_LIMIT = 50
+from .envelope import envelope_for
 
 
 async def _call(command: str, params: dict[str, object]) -> dict:
@@ -33,11 +30,7 @@ async def _call(command: str, params: dict[str, object]) -> dict:
 
     """
     result = await asyncio.to_thread(get_blender_connection().send_command, command, params)
-    changed_objects = result.pop("changed_objects", []) if isinstance(result, dict) else []
-    warnings = []
-    if len(changed_objects) > CHANGED_OBJECTS_LIMIT:
-        warnings.append(f"changed_objects lists the first {CHANGED_OBJECTS_LIMIT} of {len(changed_objects)} objects")
-    return ok(result, changed_objects=changed_objects[:CHANGED_OBJECTS_LIMIT], warnings=warnings)
+    return envelope_for(result)
 
 
 @mcp.tool()

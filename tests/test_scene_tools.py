@@ -6,12 +6,14 @@ import pytest
 
 from conftest import StubFactory
 from pydantic import ValidationError
+from pydantic_core import to_json
 from test_mutation_transaction import _load_addon
 
 # These imports register tools on the process-global FastMCP app for the whole session, and
 # `scene_authoring` loads after `finalize_tool_documentation`, so its tools lack annotations.
 # Test what a selection advertises, or tool descriptions, via test_bundles.py's subprocess helper.
 from blender_mcp.server.tools import scene, scene_authoring
+from blender_mcp.server.tools.envelope import REPLY_BYTE_BUDGET, STALE_INDEX_WARNING
 
 SCENE_COMMANDS = {
     "create_geometry_object",
@@ -137,6 +139,41 @@ def test_modifier_schema_is_discriminated_and_rejects_wrong_settings() -> None:
         TypeAdapter(scene.ModifierSpecInput).validate_python(
             {"name": "Thread", "type": "SCREW", "settings": {"unknown": 1}}
         )
+
+
+def test_an_applied_modifier_reply_fits_the_budget_with_its_stale_index_warning(
+    stub_blender_connection: StubFactory,
+) -> None:
+    """
+    APPLY's warning must be in the reply while it is measured, not appended to the finished envelope.
+
+    The stub answers with a page long enough that the envelope has to shorten it, which is the only
+    place an appended warning shows: the shortening measured a reply that did not carry it yet, and
+    the warning's own 300-odd bytes then pushed the reply back over the budget.
+    """
+    stub_blender_connection(
+        {
+            "name": "Hero",
+            "applied_modifier": "Subdivision",
+            "modifiers": [
+                {"name": f"Bevel.{index:03d}", "type": "BEVEL", "show_viewport": True} for index in range(400)
+            ],
+        }
+    )
+
+    result = asyncio.run(
+        scene.manage_modifiers(
+            ctx=None,
+            object_name="Hero",
+            action="APPLY",
+            modifier={"name": "Subdivision", "type": "SUBSURF"},
+            confirm_destructive=True,
+        )
+    )
+
+    assert STALE_INDEX_WARNING in result["warnings"]
+    assert len(result["data"]["modifiers"]) < 400, "the page must have been shortened for this to prove anything"
+    assert len(to_json(result, fallback=str, indent=2)) <= REPLY_BYTE_BUDGET
 
 
 def test_breaking_tool_names_are_absent() -> None:

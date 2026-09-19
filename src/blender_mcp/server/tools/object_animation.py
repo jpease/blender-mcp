@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..app import mcp
 from ..connection import get_blender_connection
-from .envelope import ok
+from .envelope import envelope_for
 
 _MAX_FRAME = 1_048_574
 
@@ -45,11 +45,7 @@ class ObjectTransformKeyframe(BaseModel):
 
 async def _call(command: str, params: dict, *, changed_resources: list[str] | None = None) -> dict:
     result = await asyncio.to_thread(get_blender_connection().send_command, command, params)
-    resources = changed_resources or []
-    if isinstance(result, dict):
-        result = dict(result)
-        resources = result.pop("changed_resources", resources)
-    return ok(result, changed_resources=resources)
+    return envelope_for(result, changed_resources=changed_resources or ())
 
 
 @mcp.tool()

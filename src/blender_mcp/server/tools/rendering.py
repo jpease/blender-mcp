@@ -1,10 +1,12 @@
 """Typed tools for scene render configuration, view layers, passes, and rendering."""
 
 import asyncio
+import contextlib
 import logging
 import os
 import tempfile
 
+from pathlib import Path
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context, Image
@@ -13,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..app import mcp
 from ..connection import get_blender_connection
-from .envelope import ok
+from .envelope import envelope_for, ok
 
 logger = logging.getLogger("BlenderMCPServer")
 
@@ -179,11 +181,7 @@ class ViewLayerPatch(BaseModel):
 
 async def _call(command: str, params: dict, *, changed_resources: list[str] | None = None) -> dict:
     result = await asyncio.to_thread(get_blender_connection().send_command, command, params)
-    resources = changed_resources or []
-    if isinstance(result, dict):
-        result = dict(result)
-        resources = result.pop("changed_resources", resources)
-    return ok(result, changed_resources=resources)
+    return envelope_for(result, changed_resources=changed_resources or ())
 
 
 @mcp.tool()
@@ -326,8 +324,58 @@ def _render_output_metadata(result: dict) -> dict:
     }
 
 
+def _read_render_output(output_path: str | None, frame: int | None, max_size: int) -> list[Image | dict]:
+    """
+    Copy one rendered frame out of Blender and read the copy back.
+
+    Every step blocks - a socket round-trip, then a temporary file written by Blender, read here,
+    and deleted - so the whole of it lives in one function for `inspect_render_output` to hand to a
+    single `asyncio.to_thread`.
+
+    Args:
+        output_path: Exact path to an existing rendered file, or None to read the in-memory
+            Render Result.
+        frame: Frame number the Render Result must currently hold; only checked without
+            `output_path`.
+        max_size: Maximum pixel length of the returned image's largest dimension.
+
+    Returns:
+        list[Image | dict]: The rendered frame, then the envelope carrying its metadata.
+
+    Raises:
+        Exception: If Blender wrote no copy, or the command itself failed.
+
+    """
+    temp_path = None
+    try:
+        descriptor, temp_path = tempfile.mkstemp(prefix="blender_mcp_render_output_", suffix=".png")
+        os.close(descriptor)
+        result = get_blender_connection().send_command(
+            "inspect_render_output",
+            {
+                "filepath": temp_path,
+                "output_path": output_path,
+                "frame": frame,
+                "max_size": max_size,
+                "format": "png",
+            },
+        )
+        if not os.path.exists(temp_path):
+            raise Exception("Rendered-frame copy was not created")
+        return [Image(data=Path(temp_path).read_bytes(), format="png"), ok(_render_output_metadata(result))]
+    except Exception as e:
+        logger.error(f"Error inspecting render output: {e!s}")
+        raise Exception(f"Render output inspection failed: {e!s}") from e
+    finally:
+        if temp_path:
+            # Blender may never have written the copy, and the client is owed that failure rather
+            # than a cleanup error on top of it.
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(temp_path)
+
+
 @mcp.tool(structured_output=False)
-def inspect_render_output(
+async def inspect_render_output(
     ctx: Context,
     output_path: Annotated[str | None, Field(min_length=1)] = None,
     frame: int | None = None,
@@ -366,38 +414,4 @@ def inspect_render_output(
         Exception: If the operation cannot be completed.
 
     """
-    temp_path = None
-    try:
-        blender = get_blender_connection()
-
-        descriptor, temp_path = tempfile.mkstemp(prefix="blender_mcp_render_output_", suffix=".png")
-        os.close(descriptor)
-
-        result = blender.send_command(
-            "inspect_render_output",
-            {
-                "filepath": temp_path,
-                "output_path": output_path,
-                "frame": frame,
-                "max_size": max_size,
-                "format": "png",
-            },
-        )
-
-        if not os.path.exists(temp_path):
-            raise Exception("Rendered-frame copy was not created")
-
-        with open(temp_path, "rb") as f:
-            image_bytes = f.read()
-
-        return [Image(data=image_bytes, format="png"), ok(_render_output_metadata(result))]
-
-    except Exception as e:
-        logger.error(f"Error inspecting render output: {e!s}")
-        raise Exception(f"Render output inspection failed: {e!s}") from e
-    finally:
-        if temp_path:
-            try:
-                os.remove(temp_path)
-            except FileNotFoundError:
-                pass
+    return await asyncio.to_thread(_read_render_output, output_path, frame, max_size)
