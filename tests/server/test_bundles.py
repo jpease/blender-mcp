@@ -470,7 +470,14 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 
 # A ceiling, not a target: lower it when the payload shrinks. Raising it is a decision to record
 # in the commit message.
-SHOT_MODE_BYTE_CEILING = 193_438
+#
+# Raised once, from 193,438, for the animation-as-editable-data work. Measured split of the
+# 8,103 bytes: 6,053 is the `BoneAim`/`BoneRotation` JSON Schema, emitted once each by
+# `set_character_pose` and `keyframe_character_pose`, which is what lets an agent aim a bone at
+# the camera instead of guessing bone-local radians; 2,050 is Eevee's ray-tracing patch, which
+# is what stops the demo set's glass rendering black without a manual trip through Blender's UI.
+# 895 bytes of Args rows that only restated the schema were deleted in the same pass.
+SHOT_MODE_BYTE_CEILING = 202_000
 
 # The same rule for the default, core-only surface.
 DEFAULT_MODE_BYTE_CEILING = 66_862
