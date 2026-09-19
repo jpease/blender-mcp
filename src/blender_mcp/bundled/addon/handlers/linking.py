@@ -105,8 +105,13 @@ def _bounded_int(name: str, value: object, minimum: int, maximum: int | None) ->
         ValueError: If it is not an `int` in range.
 
     """
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum or (maximum and value > maximum):
-        upper = f" and at most {maximum}" if maximum else ""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < minimum
+        or (maximum is not None and value > maximum)
+    ):
+        upper = f" and at most {maximum}" if maximum is not None else ""
         raise ValueError(f"{name} must be an integer of at least {minimum}{upper}")
     return value
 
@@ -134,37 +139,6 @@ def _by_session_uid(datablocks: Iterable[object], uid: int, kind: str) -> object
         f"no {kind} has session_uid {uid} in the open session; session_uids change on every file load and "
         "library reload, so read a current one from list_libraries"
     )
-
-
-def resolve_unique_name(datablocks: Iterable[object], name: str, kind: str) -> object:
-    """
-    Resolve a datablock by name only when exactly one has it.
-
-    For a caller that can fall back to a `session_uid`: `bpy.data.x[name]` picks
-    whichever match Blender lists first, so an ambiguous name is refused with every
-    candidate's uid. No command calls it yet. The object tools take no uid and use
-    `object_lookup.find_object` instead.
-
-    Args:
-        datablocks: The `bpy.data` collection to search.
-        name: The name.
-        kind: What it is, for the message.
-
-    Returns:
-        object: The one datablock with that name.
-
-    Raises:
-        ValueError: When no datablock, or more than one, has that name.
-
-    """
-    matches = [datablock for datablock in datablocks if getattr(datablock, "name", None) == name]
-    if not matches:
-        raise ValueError(f"no {kind} is named {client_safe_text(name)!r}")
-    if len(matches) > 1:
-        raise ValueError(
-            f"more than one {kind} is named {client_safe_text(name)!r}: {_candidates(matches)}; pass a session_uid"
-        )
-    return matches[0]
 
 
 def _scene(scene_uid: object) -> object:
@@ -235,24 +209,32 @@ def _override_entry(datablock: object) -> dict[str, object]:
     }
 
 
-def _type_counts(items: Iterable[object]) -> dict[str, int]:
+def summarize_type_counts(type_names: Iterable[str]) -> dict[str, int]:
     """
-    Count datablocks by the `id_type` their entries report, so a reply can state what is there.
+    Count how many items carry each type name, so a reply can state what is there.
 
     Args:
-        items: The datablocks.
+        type_names: One type name per item - an `id_type` for the datablocks a library
+            links, a `bpy.data` collection name for the datablocks an unlink removed.
 
     Returns:
-        dict[str, int]: `id_type` -> count, sorted by type so the reply is stable.
+        dict[str, int]: Type name -> count, sorted by name so the reply is stable.
 
     """
-    counts = _count_by_type(str(getattr(item, "id_type", "")) for item in items)
+    counts: dict[str, int] = {}
+    for name in type_names:
+        counts[name] = counts.get(name, 0) + 1
     return dict(sorted(counts.items()))
 
 
 def _record_page(key: str, items: Sequence[object], describe: object, limit: int) -> dict[str, object]:
     """
-    Publish one bounded page of a list, with the pagination keys the reply budget updates.
+    Publish one bounded page of a sub-list, without the resume offset no command accepts.
+
+    The sub-lists this pages - a library's datablocks, an override's objects - belong to
+    commands that take no datablock offset, so a `next_offset` here would name a parameter
+    every one of them rejects. The exact `total` sits beside the page and `detail` is the
+    other view; a caller that needs the rest narrows the request instead of resuming.
 
     Args:
         key: The page's result key.
@@ -261,19 +243,14 @@ def _record_page(key: str, items: Sequence[object], describe: object, limit: int
         limit: Entries this page may carry.
 
     Returns:
-        dict[str, object]: `offset` (always 0: a page starts at the first item),
-        `limit`, `returned_count`, `truncated`, `next_offset` (None when nothing
-        remains), and `<key>`.
+        dict[str, object]: `limit`, `returned_count`, `truncated`, and `<key>`.
 
     """
     shown = items[:limit]
-    truncated = len(items) > len(shown)
     return {
-        "offset": 0,
         "limit": limit,
         "returned_count": len(shown),
-        "truncated": truncated,
-        "next_offset": len(shown) if truncated else None,
+        "truncated": len(items) > len(shown),
         key: [describe(item) for item in shown],  # type: ignore[operator]
     }
 
@@ -322,7 +299,8 @@ def _linked_datablocks(library: object, *, detail: bool) -> dict[str, object]:
         if detail
         else _record_page("names", items, _display_name, MAX_LISTED_NAMES)
     )
-    return {"datablocks": {"total": len(items), "by_type": _type_counts(items), **page}}
+    type_names = (str(getattr(item, "id_type", "")) for item in items)
+    return {"datablocks": {"total": len(items), "by_type": summarize_type_counts(type_names), **page}}
 
 
 def _missing_warnings(library: object) -> dict[str, object]:
@@ -591,7 +569,8 @@ def _override_hierarchy(
             unlinked.append((parent, collection))
             replaced += 1
     objects = list(override.all_objects)
-    listed: dict[str, object] = {"total": len(objects), "by_type": _type_counts(objects)}
+    type_names = (str(getattr(obj, "id_type", "")) for obj in objects)
+    listed: dict[str, object] = {"total": len(objects), "by_type": summarize_type_counts(type_names)}
     if detail:
         listed.update(_record_page("records", objects, _override_entry, MAX_LISTED_DATABLOCKS))
     return {
@@ -730,12 +709,28 @@ def _census() -> dict[int, tuple[str, int]]:
     }
 
 
+def compute_orphaned(before: dict[int, tuple[str, int]], current: dict[int, tuple[str, int]]) -> list[int]:
+    """
+    Decide which datablocks an unlink orphaned, from the census before it and the one after.
+
+    Not `orphans_purge`, which also deletes the user's unrelated zero-user datablocks: an
+    orphan of this unlink is a datablock that had users before it and has none now.
+
+    Args:
+        before: uid -> `(collection name, users)` read before the removal.
+        current: uid -> `(collection name, users)` for the datablocks still eligible now;
+            the caller has already dropped libraries, linked data and fake users.
+
+    Returns:
+        list[int]: The orphaned uids, in `current`'s order.
+
+    """
+    return [uid for uid, (_name, users) in current.items() if users == 0 and before.get(uid, ("", 0))[1] > 0]
+
+
 def _newly_orphaned(before: dict[int, tuple[str, int]]) -> list[tuple[str, object]]:
     """
     Find local datablocks that this unlink left with no users.
-
-    Not `orphans_purge`, which also deletes the user's unrelated zero-user
-    datablocks. Only datablocks that had users before the unlink are taken.
 
     Args:
         before: `_census()` read before the removal.
@@ -744,14 +739,18 @@ def _newly_orphaned(before: dict[int, tuple[str, int]]) -> list[tuple[str, objec
         list[tuple[str, object]]: `(collection name, datablock)` to remove.
 
     """
-    orphans = []
+    candidates: dict[int, tuple[str, object]] = {}
+    current: dict[int, tuple[str, int]] = {}
     for name, datablock in _iter_ids():
-        if name == "libraries" or getattr(datablock, "library", None) is not None:
+        uid = getattr(datablock, "session_uid", None)
+        if name == "libraries" or not isinstance(uid, int) or getattr(datablock, "library", None) is not None:
             continue
-        previous = before.get(getattr(datablock, "session_uid", None))  # type: ignore[arg-type]
-        if previous and previous[1] > 0 and datablock.users == 0 and not datablock.use_fake_user:  # type: ignore[attr-defined]
-            orphans.append((name, datablock))
-    return orphans
+        # A fake user keeps a datablock alive deliberately, so it is never this unlink's orphan.
+        if getattr(datablock, "use_fake_user", False):
+            continue
+        candidates[uid] = (name, datablock)
+        current[uid] = (name, int(getattr(datablock, "users", 0)))
+    return [candidates[uid] for uid in compute_orphaned(before, current)]
 
 
 def _libraries_to_unlink(library_uids: object, confirm: bool) -> list[object]:
@@ -846,23 +845,6 @@ def _purge_newly_orphaned(before: dict[int, tuple[str, int]], known_paths: tuple
         except Exception as exc:
             raise RuntimeError(_operator_failure_message("unlink_libraries purge", exc, known_paths)) from exc
     return [name for name, _datablock in orphans]
-
-
-def _count_by_type(names: Iterable[str]) -> dict[str, int]:
-    """
-    Count collection names.
-
-    Args:
-        names: One collection name per datablock.
-
-    Returns:
-        dict[str, int]: Name -> count.
-
-    """
-    counts: dict[str, int] = {}
-    for name in names:
-        counts[name] = counts.get(name, 0) + 1
-    return counts
 
 
 class LinkingHandlersMixin:
@@ -1151,10 +1133,10 @@ class LinkingHandlersMixin:
             "removed_libraries": removed_libraries,
             "already_removed_uids": already_removed,
             "removed_count": len(removed),
-            "removed_by_type": _count_by_type(before[uid][0] for uid in removed),
+            "removed_by_type": summarize_type_counts(before[uid][0] for uid in removed),
             "removed_uids": removed[:MAX_REPORTED_UIDS],
             "removed_uids_truncated": len(removed) > MAX_REPORTED_UIDS,
             "purged_orphans": len(purged),
-            "purged_by_type": _count_by_type(purged),
+            "purged_by_type": summarize_type_counts(purged),
             "other_libraries_removed": sorted(other_before - surviving),
         }

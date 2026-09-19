@@ -1206,7 +1206,7 @@ def test_list_libraries_bounds_the_datablocks_it_lists_per_library(
     listed = entry["datablocks"]
     assert listed["total"] == MANY + len(("CanonHero", "HeroBody"))
     assert listed["by_type"] == {"COLLECTION": 1, "MESH": MANY, "OBJECT": 1}
-    assert (listed["returned_count"], listed["truncated"], listed["next_offset"]) == (NAME_CAP, True, NAME_CAP)
+    assert (listed["returned_count"], listed["truncated"]) == (NAME_CAP, True)
     assert listed["names"] == ["HeroBody", *(f"M{index}" for index in range(NAME_CAP - 1))]
     assert "records" not in listed
 
@@ -1224,10 +1224,28 @@ def test_list_libraries_lists_the_datablock_records_only_on_request(
 
     listed = entry["datablocks"]
     assert listed["total"] == MANY + len(("CanonHero", "HeroBody"))
-    assert (listed["returned_count"], listed["truncated"], listed["next_offset"]) == (LISTED_CAP, True, LISTED_CAP)
+    assert (listed["returned_count"], listed["truncated"]) == (LISTED_CAP, True)
     assert len(listed["records"]) == LISTED_CAP
     assert {record["session_uid"] for record in listed["records"]} <= {db.session_uid for db in library.users_id}
     assert "names" not in listed
+
+
+@pytest.mark.parametrize("detail", [False, True], ids=["names", "records"])
+def test_a_truncated_datablock_page_offers_no_offset_to_resume_from(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, detail: bool
+) -> None:
+    """No command takes a datablock offset, so the page states the exact total rather than a resume point."""
+    server, _bpy, world = _server(monkeypatch)
+    library, _collection = _linked(server, world, _canon(tmp_path, world))
+    for index in range(MANY):
+        world.data["meshes"].append(StubID(world, f"M{index}", "MESH", library=library))
+
+    (entry,) = _run(server, "list_libraries", detail=detail)["result"]["libraries"]
+
+    listed = entry["datablocks"]
+    assert listed["truncated"] is True
+    assert listed["total"] == MANY + len(("CanonHero", "HeroBody"))
+    assert "offset" not in listed and "next_offset" not in listed
 
 
 def test_list_libraries_is_a_read_only_command_and_never_enters_a_transaction(
@@ -1278,7 +1296,8 @@ def test_a_reload_reports_what_it_replaced_by_type_without_the_records(
     assert listed["total"] == len(("CanonHero", "HeroBody"))
     assert listed["by_type"] == {"COLLECTION": 1, "OBJECT": 1}
     assert listed["names"] == ["HeroBody", "CanonHero"]
-    assert (listed["truncated"], listed["next_offset"]) == (False, None)
+    assert listed["truncated"] is False
+    assert "next_offset" not in listed
     assert "records" not in listed
     assert result["library"]["session_uid"] == library.session_uid
 
@@ -1599,27 +1618,35 @@ def test_an_unlink_failure_reaches_the_client_sanitized(monkeypatch: pytest.Monk
 
 
 # ---------------------------------------------------------------------------
-# name resolution, transaction routing, and the command contract
+# pure helpers, transaction routing, and the command contract
 # ---------------------------------------------------------------------------
 
 
-def test_the_name_resolution_helper_refuses_ambiguity_listing_uids(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_type_counts_are_ordered_by_type_whatever_order_the_datablocks_arrived_in(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A name that matches two datablocks is an error naming both uids, never the first match."""
-    server, _bpy, world = _server(monkeypatch)
-    _library, collection = _linked(server, world, _canon(tmp_path, world))
-    override_uid = _run(server, "create_override", collection_uid=collection.session_uid)["result"]["override"][
-        "session_uid"
-    ]
-    linking = sys.modules[f"{type(server).__module__.rsplit('.', 1)[0]}.handlers.linking"]
+    """`by_type` is read by an agent across replies, so two libraries holding the same mix must read the same."""
+    server, _bpy, _world = _server(monkeypatch)
+    linking = _linking_module(server)
 
-    with pytest.raises(ValueError, match="more than one") as refused:
-        linking.resolve_unique_name(world.data["collections"], "CanonHero", "collection")
-    assert str(collection.session_uid) in str(refused.value) and str(override_uid) in str(refused.value)
-    assert linking.resolve_unique_name(world.data["libraries"], "canon.blend", "library") is world.data["libraries"][0]
-    with pytest.raises(ValueError, match="no collection"):
-        linking.resolve_unique_name(world.data["collections"], "Nope", "collection")
+    forward = linking.summarize_type_counts(["OBJECT", "MESH", "OBJECT", "COLLECTION"])
+    shuffled = linking.summarize_type_counts(["COLLECTION", "OBJECT", "MESH", "OBJECT"])
+
+    assert forward == {"COLLECTION": 1, "MESH": 1, "OBJECT": 2}
+    assert list(forward) == list(shuffled) == ["COLLECTION", "MESH", "OBJECT"]
+    assert linking.summarize_type_counts(()) == {}
+
+
+def test_only_a_datablock_this_unlink_emptied_counts_as_orphaned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The rule `orphans_purge` gets wrong: a datablock the user had already left at zero users is not ours."""
+    server, _bpy, _world = _server(monkeypatch)
+    linking = _linking_module(server)
+
+    before = {1: ("objects", 2), 2: ("meshes", 0), 3: ("materials", 1)}
+    current = {1: ("objects", 0), 2: ("meshes", 0), 3: ("materials", 1), 4: ("images", 0)}
+
+    # 2 was already unused, 3 still has a user, and 4 did not exist before the unlink.
+    assert linking.compute_orphaned(before, current) == [1]
 
 
 def test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_does(

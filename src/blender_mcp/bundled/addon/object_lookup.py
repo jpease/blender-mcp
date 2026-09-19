@@ -11,9 +11,11 @@ choice follows list order rather than an API contract: among linked objects it
 returns the one linked first. The tuple key is undocumented as well: `get`
 types `key` as `str`.
 
-`handlers/linking.resolve_unique_name` refuses every ambiguous name instead.
-The tools reached from here take no `session_uid`, so that rule would make every
-overridden name unusable; this module's refusal points at `create_override`.
+Refusing every ambiguous name outright would be the safer rule, but the tools
+reached from here take no `session_uid` to disambiguate with, so it would leave
+every overridden name unusable. Hence the preference above; the refusal that
+remains - several linked objects and no local one - points at `create_override`,
+which makes one of them local and editable.
 
 Free of `bpy` so it is testable without Blender: callers pass `bpy.data.objects`.
 """
