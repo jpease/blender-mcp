@@ -22,7 +22,8 @@ async def get_camera_rig_info(
     animation_limit: Annotated[int, Field(ge=1, le=500)] = 100,
     animation_offset: Annotated[int, Field(ge=0, le=4999)] = 0,
 ) -> dict:
-    """Inspect one camera or rig root before editing it.
+    """
+    Inspect one camera or rig root before editing it.
 
     The result labels local and world transforms separately and includes camera optics, DOF,
     constraints, drivers, actions, render gate, active-camera state, camera markers, rig metadata,

@@ -1,6 +1,5 @@
 # MCP tool signatures intentionally expose more than five keyword arguments so
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
-# ruff: file-ignore[docstring-missing-returns, too-many-arguments, too-many-positional-arguments]
 """Typed tools for inspecting cloth systems and adding a Cloth modifier."""
 
 import asyncio
@@ -28,7 +27,8 @@ async def get_cloth_simulation_info(
     dependency_limit: Annotated[int, Field(ge=1, le=500)] = 100,
     dependency_offset: Annotated[int, Field(ge=0)] = 0,
 ) -> dict:
-    """Inspect cloth systems in one explicit scene or collection without evaluating another frame.
+    """
+    Inspect cloth systems in one explicit scene or collection without evaluating another frame.
 
     Use the two independent offsets to continue the object and dependency pages. Eligible-collider
     records distinguish active relationships from in-scope but disabled collision; objects excluded
@@ -55,7 +55,8 @@ async def get_cloth_object_info(
     vertex_group_limit: Annotated[int, Field(ge=1, le=500)] = 50,
     vertex_group_offset: Annotated[int, Field(ge=0)] = 0,
 ) -> dict:
-    """Inspect one named cloth or collider before planning a mutation.
+    """
+    Inspect one named cloth or collider before planning a mutation.
 
     Base mesh statistics and vertex indices are object-local; evaluated counts include the live
     dependency graph. Vertex groups are separately paginated and can change after topology edits.
@@ -86,7 +87,8 @@ async def add_cloth_simulation(
     solver: ClothSolverPatch | None = None,
     collisions: ClothCollisionPatch | None = None,
 ) -> dict:
-    """Add a named live Cloth modifier to an explicit nonempty mesh, without baking or applying it.
+    """
+    Add a named live Cloth modifier to an explicit nonempty mesh, without baking or applying it.
 
     ``existing_policy='ERROR'`` is the safe default. ``REUSE`` targets only a same-name Cloth
     modifier and still refuses baked caches. All supplied patches and the cache range are validated,

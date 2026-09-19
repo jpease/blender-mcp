@@ -1,4 +1,4 @@
-# ruff: file-ignore[docstring-missing-returns, multi-line-summary-second-line, too-many-arguments, too-many-positional-arguments, unused-async]
+# ruff: file-ignore[multi-line-summary-second-line, unused-async]
 """Agent-facing specialized retopology accelerators: quadriflow, primitive fitting, surface deform, LODs."""
 
 from typing import Annotated, Any, Literal

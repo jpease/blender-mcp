@@ -26,7 +26,7 @@ from types import ModuleType
 import pytest
 
 from conftest import ROOT_ADDON, install_file_lifecycle_handler_lists, load_addon_source_module
-from test_mutation_transaction import _load_addon  # ruff: ignore[import-private-name]
+from test_mutation_transaction import _load_addon
 
 _SESSION_ALIAS = "blender_mcp_addon_session_test"
 

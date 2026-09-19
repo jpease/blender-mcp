@@ -1,4 +1,5 @@
-"""Blender 5.1+ background smoke coverage for the validate_scene preflight aggregator.
+"""
+Blender 5.1+ background smoke coverage for the validate_scene preflight aggregator.
 
 Run with::
 
@@ -22,7 +23,9 @@ addon = importlib.util.module_from_spec(spec)
 sys.modules[package_name] = addon
 spec.loader.exec_module(addon)
 
-from blender_mcp_scene_validate_smoke.server_core import BlenderMCPServer  # ruff: ignore[E402]
+from blender_mcp_scene_validate_smoke.server_core import (  # ruff: ignore[module-import-not-at-top-of-file]
+    BlenderMCPServer,
+)
 
 scene = bpy.context.scene
 server = BlenderMCPServer()

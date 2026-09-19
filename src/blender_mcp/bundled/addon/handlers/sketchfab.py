@@ -7,12 +7,11 @@ import tempfile
 import zipfile
 
 from contextlib import suppress
+from pathlib import PurePosixPath
 
 import bpy
 import mathutils
 import requests
-
-from pathlib import PurePosixPath
 
 from ..network import download_file, get_bytes, get_json
 

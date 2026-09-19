@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO_ROOT
-from test_mutation_transaction import _load_addon  # ruff: ignore[import-private-name]
+from test_mutation_transaction import _load_addon
 
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "blend" / "empty_gzip.blend"
 SERVER_SRC = REPO_ROOT / "src" / "blender_mcp" / "server"

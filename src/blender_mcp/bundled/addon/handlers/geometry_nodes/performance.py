@@ -1,4 +1,4 @@
-# ruff: file-ignore[docstring-missing-returns, magic-value-comparison, missing-return-type-private-function, missing-return-type-undocumented-public-function, missing-type-function-argument, no-self-use, too-many-arguments, too-many-branches, too-many-locals, too-many-positional-arguments, too-many-statements, undocumented-public-method]
+# ruff: file-ignore[magic-value-comparison, too-many-branches, too-many-locals, too-many-statements, undocumented-public-method]
 """Bounded whole-system Geometry Nodes performance analysis handlers."""
 
 import itertools

@@ -1,4 +1,5 @@
-"""Cloth sewing, pressure, internal-spring, and field-weight patch models.
+"""
+Cloth sewing, pressure, internal-spring, and field-weight patch models.
 
 Shared by configure_cloth; SewingPair is also used directly by other cloth tools.
 """

@@ -22,7 +22,8 @@ async def run_geometry_nodes_tool(
     inputs: dict[str, Any] | None = None,
     confirm_destructive: bool = False,
 ) -> dict:
-    """Run an existing local Geometry Nodes tool on explicit objects and element selections.
+    """
+    Run an existing local Geometry Nodes tool on explicit objects and element selections.
 
     This changes base geometry and therefore requires confirmation. The group must be marked as a
     tool and expose a valid custom operator identifier; object applicability and every index are
@@ -58,7 +59,8 @@ async def publish_procedural_asset(
     fake_user: bool = True,
     operator_idname: str | None = None,
 ) -> dict:
-    """Mark a validated local node group as a reusable asset in the open Blender file.
+    """
+    Mark a validated local node group as a reusable asset in the open Blender file.
 
     This does not save, overwrite, or export a .blend file. For tool groups, ``operator_idname`` is
     the Blender operator identifier used by run_geometry_nodes_tool and must be globally unique.

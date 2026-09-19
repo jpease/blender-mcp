@@ -50,7 +50,8 @@ async def bake_texture_map(
     overwrite: bool = False,
     confirm: bool = False,
 ) -> dict:
-    """Bake one native or semantic map atomically through Cycles to an explicit file.
+    """
+    Bake one native or semantic map atomically through Cycles to an explicit file.
 
     `confirm=True` is required because baking is expensive and writes a file. Omit high-poly sources
     for same-object baking. BASE_COLOR, METALLIC, and OPACITY are temporarily routed through

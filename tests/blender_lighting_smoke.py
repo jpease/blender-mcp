@@ -23,7 +23,9 @@ addon = importlib.util.module_from_spec(spec)
 sys.modules[package_name] = addon
 spec.loader.exec_module(addon)
 
-from blender_mcp_lighting_smoke.handlers.lighting import LightingHandlers  # noqa: E402
+from blender_mcp_lighting_smoke.handlers.lighting import (  # ruff: ignore[module-import-not-at-top-of-file]
+    LightingHandlers,
+)
 
 
 def main() -> None:

@@ -53,7 +53,8 @@ async def transfer_mesh_attributes(
     mix_factor: Annotated[float, Field(ge=0, le=1)] = 1.0,
     apply: bool = False,
 ) -> dict:
-    """Transfer named production data from a source mesh to new topology.
+    """
+    Transfer named production data from a source mesh to new topology.
 
     Data Transfer supports vertex groups, UVs, colors, custom normals, seams,
     creases, bevel weights, sharp edges, and smooth shading. Mapping enum
@@ -91,7 +92,8 @@ async def unwrap_retopology_uvs(
     pack_islands: bool = True,
     margin: Annotated[float, Field(ge=0, le=1)] = 0.001,
 ) -> dict:
-    """Create and validate a seam-driven bake-ready UV map.
+    """
+    Create and validate a seam-driven bake-ready UV map.
 
     All base-mesh faces are unwrapped using existing seam attributes; the tool
     does not invent seams. An existing map with `uv_map_name` is preserved and
@@ -116,7 +118,8 @@ async def create_bake_cage(
     vertex_group: str | None = None,
     validate_enclosure: bool = True,
 ) -> dict:
-    """Create an editable, non-rendering cage with low-poly-identical topology.
+    """
+    Create an editable, non-rendering cage with low-poly-identical topology.
 
     The base mesh is copied without modifiers, keeping vertex/edge/face indices
     identical. Cage vertices move in target-local averaged-normal directions by
@@ -160,7 +163,8 @@ async def bake_retopology_maps(
     overwrite: bool = False,
     confirm: bool = False,
 ) -> dict:
-    """Bake one validated high-to-low map to an explicit file path.
+    """
+    Bake one validated high-to-low map to an explicit file path.
 
     This is synchronous and potentially expensive, so `confirm=True` is
     required. The absolute `output_path` parent must exist; an existing file is

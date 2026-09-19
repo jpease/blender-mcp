@@ -1,5 +1,5 @@
 # The orchestrator's signature intentionally exposes every policy it forwards to its sub-tools.
-# ruff: file-ignore[docstring-missing-exception, docstring-missing-returns, multi-line-summary-second-line, too-many-arguments, too-many-positional-arguments, unused-function-argument]
+# ruff: file-ignore[multi-line-summary-second-line]
 """One typed entry point that turns container/source intent into a complete liquid setup."""
 
 import asyncio

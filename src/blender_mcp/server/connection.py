@@ -166,9 +166,7 @@ class BlenderConnection:
 
         while b"\n" not in self._recv_buffer:
             if len(self._recv_buffer) > self._MAX_MESSAGE_BYTES:
-                raise Exception(
-                    f"Response exceeded max size ({len(self._recv_buffer)} bytes) without a terminator"
-                )
+                raise Exception(f"Response exceeded max size ({len(self._recv_buffer)} bytes) without a terminator")
             chunk = sock.recv(buffer_size)
             if not chunk:
                 if not self._recv_buffer:

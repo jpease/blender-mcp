@@ -386,8 +386,8 @@ class EnvironmentLightingHandlers:
                     sun = bpy.data.objects.new(sun_name, data)
                     collection.objects.link(sun)
                     sun_created = True
-                elevation = float(getattr(sky, "sun_elevation"))
-                rotation = float(getattr(sky, "sun_rotation"))
+                elevation = float(sky.sun_elevation)
+                rotation = float(sky.sun_rotation)
                 toward_sun = mathutils.Vector(
                     (
                         math.cos(elevation) * math.cos(rotation),
@@ -401,7 +401,7 @@ class EnvironmentLightingHandlers:
                     sun.matrix_world.to_scale(),
                 )
                 sun.data.energy = sun_energy
-                sun.data.angle = float(getattr(sky, "sun_size"))
+                sun.data.angle = float(sky.sun_size)
         except Exception:
             if existing_sun is not None and old_sun_values is not None:
                 existing_sun.matrix_world = old_sun_matrix

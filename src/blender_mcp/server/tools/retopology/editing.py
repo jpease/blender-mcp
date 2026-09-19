@@ -35,7 +35,8 @@ async def configure_surface_projection(
     invert_vertex_group: bool = False,
     apply: bool = False,
 ) -> dict:
-    """Idempotently create or update one named live Shrinkwrap relationship.
+    """
+    Idempotently create or update one named live Shrinkwrap relationship.
 
     Recalling with the same `modifier_name` updates that modifier instead of
     stacking another. PROJECT uses the selected local projection axes and
@@ -70,7 +71,8 @@ async def project_mesh_elements(
     symmetry_tolerance: Annotated[float, Field(ge=0)] = 0.0001,
     expected_revision: str | None = None,
 ) -> dict:
-    """Project explicit target vertices onto an evaluated source without snapping.
+    """
+    Project explicit target vertices onto an evaluated source without snapping.
 
     Supply exactly one of `vertex_indices` or `vertex_group`. NEAREST uses the
     closest BVH point. RAYCAST tries the requested positive and/or negative
@@ -94,7 +96,8 @@ async def reroute_topology(
     cuts: Annotated[int, Field(ge=1, le=1000)] = 1,
     expected_revision: str | None = None,
 ) -> dict:
-    """Perform one bounded local edge-flow correction.
+    """
+    Perform one bounded local edge-flow correction.
 
     CONNECT needs two vertices, ROTATE_DIAGONAL one interior edge shared by
     two triangles, COLLAPSE one or more edges, DISSOLVE one or more edges, and
@@ -120,7 +123,8 @@ async def relax_topology(
     projection_offset: float = 0.0,
     expected_revision: str | None = None,
 ) -> dict:
-    """Tangentially smooth a bounded patch while retaining its source shape.
+    """
+    Tangentially smooth a bounded patch while retaining its source shape.
 
     Each iteration computes adjacency-based Laplacian movement, removes its
     component along the current vertex normal, applies `factor` in [0, 1],
@@ -145,7 +149,8 @@ async def redistribute_edge_loop(
     projection_offset: float = 0.0,
     expected_revision: str | None = None,
 ) -> dict:
-    """Evenly redistribute an explicitly ordered open or closed edge loop.
+    """
+    Evenly redistribute an explicitly ordered open or closed edge loop.
 
     The supplied order must follow existing edges exactly. Positions are
     resampled by cumulative target-local arc length, independently between
@@ -173,7 +178,8 @@ async def configure_retopology_symmetry(
     symmetry_tolerance: Annotated[float, Field(ge=0)] = 0.001,
     modifier_name: str = "RetopologyMirror",
 ) -> dict:
-    """Idempotently configure and validate a live retopology Mirror modifier.
+    """
+    Idempotently configure and validate a live retopology Mirror modifier.
 
     The plane is the target's local origin unless `mirror_object_name` is
     supplied. `source_side` controls which half survives when `bisect=True`.

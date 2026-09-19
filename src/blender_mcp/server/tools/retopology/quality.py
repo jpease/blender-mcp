@@ -23,7 +23,8 @@ async def analyze_surface_conformity(
     create_heat_map: bool = False,
     attribute_name: str = "retopology_distance",
 ) -> dict:
-    """Measure world-space distance from a target to an evaluated source.
+    """
+    Measure world-space distance from a target to an evaluated source.
 
     The source BVH includes its live modifiers. Results include mean, RMS,
     p50/p90/p95/p99, maximum, signed offsets where the nearest triangle normal
@@ -61,7 +62,8 @@ async def validate_retopology(
     check_skin_weights: bool = True,
     issue_limit: Annotated[int, Field(ge=1, le=2000)] = 100,
 ) -> dict:
-    """Return a production pass/warn/fail report for a retopology profile.
+    """
+    Return a production pass/warn/fail report for a retopology profile.
 
     Profiles select documented thresholds rather than enforcing a blanket
     all-quads rule. Checks cover manifoldness and allowed boundaries, doubles,
@@ -90,7 +92,8 @@ async def test_deformation(
     check_self_intersections: bool = True,
     issue_limit: Annotated[int, Field(ge=1, le=2000)] = 100,
 ) -> dict:
-    """Evaluate deformation quality at explicit animation frames without editing it.
+    """
+    Evaluate deformation quality at explicit animation frames without editing it.
 
     The current scene frame is restored in `finally` and no keyframes are
     inserted. Evaluated meshes include the live modifier/armature stack.

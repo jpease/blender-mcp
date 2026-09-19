@@ -96,7 +96,8 @@ async def create_light(
     rotation_euler: tuple[float, float, float] = (0.0, 0.0, 0.0),
     settings: LightSettings | None = None,
 ) -> dict:
-    """Create one collision-safe Point, Spot, Area, or Sun light.
+    """
+    Create one collision-safe Point, Spot, Area, or Sun light.
 
     Location and XYZ Euler rotation are world-space. The light is linked only to the named scene
     collection and does not disturb selection. Use type-specific settings only with their matching
@@ -121,7 +122,8 @@ async def create_light(
 
 @mcp.tool()
 async def configure_light(ctx: Context, light_name: str, patch: LightPatch) -> dict:
-    """Patch only supplied settings on one existing light.
+    """
+    Patch only supplied settings on one existing light.
 
     The tool rejects settings that do not apply to the light's actual type and returns before/after
     values. If the light datablock is shared, every object user is reported as changed. It never
@@ -152,7 +154,8 @@ async def aim_light(
     helper_name: str | None = None,
     helper_collection_name: str = "Lighting Helpers",
 ) -> dict:
-    """Aim a Spot, Area, Sun, or Point light at one explicit target.
+    """
+    Aim a Spot, Area, Sun, or Point light at one explicit target.
 
     Supply exactly one target point or object. A bone requires its armature object. Object bounds can
     target center/top/bottom after evaluated transforms. Blender lights emit along local -Z. Static
@@ -195,7 +198,8 @@ async def configure_light_linking(
     clear_receivers: bool = False,
     clear_blockers: bool = False,
 ) -> dict:
-    """Set or clear the collections that receive or block one light.
+    """
+    Set or clear the collections that receive or block one light.
 
     Collections must already exist and be linked to the scene; this tool never moves objects or
     creates hidden membership changes. Omitted sides remain unchanged. The result expands the full
@@ -246,7 +250,8 @@ async def create_studio_lighting(
     confirm_overwrite: bool = False,
     confirm_long_render: bool = False,
 ) -> list[Image | dict]:
-    """Build a preset key/fill/rim AREA-light rig around a target and render a preview.
+    """
+    Build a preset key/fill/rim AREA-light rig around a target and render a preview.
 
     A one-call preset layer over create_light + aim_light: ratio, softbox sizing, and placement
     conventions for the requested mood are encoded here instead of left to the caller. The rig is

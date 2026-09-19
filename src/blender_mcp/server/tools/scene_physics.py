@@ -1,4 +1,3 @@
-# ruff: file-ignore[docstring-missing-exception, docstring-missing-returns, unused-function-argument]
 """Typed tools for scene-wide unit, gravity, and playback-sync configuration."""
 
 import asyncio

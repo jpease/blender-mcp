@@ -1,4 +1,3 @@
-# ruff: file-ignore[docstring-missing-returns]
 """Typed tools for keyframing curated cloth-related RNA properties."""
 
 import asyncio
@@ -44,7 +43,8 @@ async def animate_cloth_parameters(
     cloth_modifier_name: str | None = None,
     policy: KeyframePolicy = "INSERT_ONLY",
 ) -> dict:
-    """Insert exact keyframes on curated cloth-related RNA owners without touching unrelated curves.
+    """
+    Insert exact keyframes on curated cloth-related RNA owners without touching unrelated curves.
 
     ``target_name`` selects a shape key or modifier for those owner kinds. INSERT_ONLY rejects an
     existing key at the same property/index/frame; REPLACE_EXISTING updates only that exact key.

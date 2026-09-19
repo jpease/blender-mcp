@@ -128,7 +128,8 @@ def _convex_hull_mesh(source, name):
 
 
 def _hollow_container_geometry(source, name, rim_axis):
-    """Build an open-topped shell mesh from the source's evaluated geometry.
+    """
+    Build an open-topped shell mesh from the source's evaluated geometry.
 
     Removes the cap facing ``rim_axis`` (the pour opening) and returns the mesh plus the
     vertex indices of the opposite cap, for weighting a distinct bottom thickness through a

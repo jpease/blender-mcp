@@ -61,7 +61,8 @@ async def configure_lighting_quality(
     eevee: EeveeLightingQuality | None = None,
     detail: bool = False,
 ) -> dict:
-    """Patch only render settings that materially affect lighting quality and cost.
+    """
+    Patch only render settings that materially affect lighting quality and cost.
 
     Choose an explicit preset or supply engine-specific patches. ``BOTH`` requires settings for
     both engines unless a preset is supplied. The tool never changes output size, path, color
@@ -114,7 +115,8 @@ async def configure_color_management(
     exposure: Annotated[float | None, Field(ge=-32, le=32)] = None,
     gamma: Annotated[float | None, Field(gt=0, le=5)] = None,
 ) -> dict:
-    """Set a reproducible display transform for lighting evaluation.
+    """
+    Set a reproducible display transform for lighting evaluation.
 
     View and look names are validated against the active OCIO configuration. Exposure is measured
     in stops; the result includes its ``2 ** exposure`` multiplier. Light energy is never adjusted
@@ -181,7 +183,8 @@ async def render_lighting_preview(
     confirm_overwrite: bool = False,
     confirm_long_render: bool = False,
 ) -> list[Image | dict]:
-    """Render a bounded still or matched Cycles/EEVEE lighting comparison.
+    """
+    Render a bounded still or matched Cycles/EEVEE lighting comparison.
 
     The same camera, frame, dimensions, world, lights, exposure, and view transform are held for a
     ``BOTH`` comparison; only the engine and requested sample count differ. Cycles above 64 samples

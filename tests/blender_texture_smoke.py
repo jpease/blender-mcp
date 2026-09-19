@@ -21,7 +21,7 @@ addon = importlib.util.module_from_spec(spec)
 sys.modules[package_name] = addon
 spec.loader.exec_module(addon)
 
-from blender_mcp_texture_smoke.handlers.texture import TextureHandlers  # noqa: E402
+from blender_mcp_texture_smoke.handlers.texture import TextureHandlers  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 def main() -> None:

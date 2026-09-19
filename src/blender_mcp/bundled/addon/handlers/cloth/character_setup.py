@@ -8,7 +8,6 @@ import math
 import bpy
 
 from ...helpers import sync_from_editmode
-
 from ._cache_helpers import _set_cache_frame_range
 from ._deform_binding import (
     _move_modifier_immediately_after,

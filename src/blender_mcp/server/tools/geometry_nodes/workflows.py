@@ -49,7 +49,8 @@ async def create_procedural_scatter(
     guide_length: float = 1.0,
     source_collection_policy: Literal["WHOLE_COLLECTION", "PICK_INSTANCE", "SEPARATE_CHILDREN"] = "PICK_INSTANCE",
 ) -> dict:
-    """Build and attach a deterministic surface or volume instance scatter system.
+    """
+    Build and attach a deterministic surface or volume instance scatter system.
 
     Instances remain unrealized by default. Source object/collection, density or minimum distance,
     mask, seed, scale range, original-geometry passthrough, and realization are exposed as controls.
@@ -75,7 +76,8 @@ async def create_curve_generator(
     fill_caps: bool = True,
     material_name: str | None = None,
 ) -> dict:
-    """Build and attach an editable curve-to-mesh generator for cables, pipes, rails, or trims.
+    """
+    Build and attach an editable curve-to-mesh generator for cables, pipes, rails, or trims.
 
     The source curve stays editable. Radius, resampling, trim range, profile, cap policy, and material
     are explicit; generated geometry is evaluated in the modifier object's local space.
@@ -101,7 +103,8 @@ async def create_procedural_array(
     curve_object_name: str | None = None,
     realize_instances: bool = False,
 ) -> dict:
-    """Build and attach an instanced linear, grid, radial, or curve-following array.
+    """
+    Build and attach an instanced linear, grid, radial, or curve-following array.
 
     Use the existing Array modifier tool for ordinary one-axis mesh repetition. This builder is for
     multi-axis layouts, explicit pivots, curve orientation, and preserved instances.
@@ -124,7 +127,8 @@ async def create_surface_paneling(
     mask_attribute: str | None = None,
     realize_instances: bool = False,
 ) -> dict:
-    """Build and attach editable panels, tiles, shingles, facade units, scales, or greebles.
+    """
+    Build and attach editable panels, tiles, shingles, facade units, scales, or greebles.
 
     The source mesh is not destructively subdivided or voxelized. Panel IDs are stored as a named
     attribute, and estimated output growth is returned for production review.
@@ -145,7 +149,8 @@ async def create_procedural_boolean(
     solver: Literal["FLOAT", "EXACT", "MANIFOLD"] = "EXACT",
     include_cutters: bool = False,
 ) -> dict:
-    """Build and attach a live multi-cutter Boolean system without deleting cutter objects.
+    """
+    Build and attach a live multi-cutter Boolean system without deleting cutter objects.
 
     Cutter dependencies stay explicit and editable. Collection instances are realized only on the
     cutter branch required by the Boolean node; the target object's base mesh remains unchanged.
@@ -167,7 +172,8 @@ async def create_procedural_deformer(
     target_object_name: str | None = None,
     mask_attribute: str | None = None,
 ) -> dict:
-    """Build and attach a reusable field-based deformation template.
+    """
+    Build and attach a reusable field-based deformation template.
 
     The result documents object-versus-world-space behavior and keeps strength, scale, axis, seed,
     target, and mask contracts exposed instead of relying on a legacy Texture datablock.
@@ -195,7 +201,8 @@ async def create_volume_generator(
     confirm_write: bool = False,
     confirm_overwrite: bool = False,
 ) -> dict:
-    """Build and attach a bounded static volume or fog-source graph after runtime capability checks.
+    """
+    Build and attach a bounded static volume or fog-source graph after runtime capability checks.
 
     This creates procedural volume geometry, not a fluid simulation. Voxel size and estimated memory
     risk are reported so an agent can avoid accidentally requesting an impractical resolution. OPENVDB

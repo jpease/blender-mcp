@@ -1,4 +1,3 @@
-# ruff: file-ignore[too-many-locals]
 """Run with Blender 5.1+ to smoke-test advanced Geometry Nodes workflows."""
 
 from __future__ import annotations

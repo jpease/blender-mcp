@@ -1,4 +1,3 @@
-# ruff: file-ignore[docstring-missing-exception, docstring-missing-returns, missing-return-type-private-function, missing-type-function-argument]
 """Shared Blender-runtime operations for validated node-graph patches."""
 
 from typing import Any

@@ -5,6 +5,7 @@ import tempfile
 from contextlib import suppress
 
 import bpy
+
 from ..constants import REQ_HEADERS
 from ..file_paths import enforce_roots, resolve_blend_path, sanitize_blender_error
 from ..network import download_file, get_json
@@ -441,11 +442,7 @@ class PolyhavenHandlersMixin:
         if obj.data is None or not hasattr(obj.data, "materials"):
             raise ValueError(f"Object '{object_name}' cannot accept materials")
         material = next(
-            (
-                item
-                for item in bpy.data.materials
-                if item.get("blender_mcp_polyhaven_asset_id") == texture_id
-            ),
+            (item for item in bpy.data.materials if item.get("blender_mcp_polyhaven_asset_id") == texture_id),
             bpy.data.materials.get(texture_id),
         )
         if material is None:

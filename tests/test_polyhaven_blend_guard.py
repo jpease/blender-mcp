@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from test_mutation_transaction import _load_addon  # ruff: ignore[import-private-name]
+from test_mutation_transaction import _load_addon
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "blend"
 _URL = "https://dl.polyhaven.org/file/ph-assets/Models/blend/1k/chair/chair_1k.blend"

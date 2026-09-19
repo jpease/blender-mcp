@@ -1,6 +1,5 @@
 # MCP tool signatures intentionally expose more than five keyword arguments so
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
-# ruff: file-ignore[docstring-missing-returns, too-many-arguments, too-many-positional-arguments]
 """Typed tools for cloth resource estimation, validation, sampling, and performance analysis."""
 
 import asyncio
@@ -23,7 +22,8 @@ async def estimate_cloth_resources(
     object_limit: Annotated[int, Field(ge=1, le=200)] = 25,
     object_offset: Annotated[int, Field(ge=0)] = 0,
 ) -> dict:
-    """Estimate bounded relative CPU, memory, cache, and contact pressure for scoped cloth objects.
+    """
+    Estimate bounded relative CPU, memory, cache, and contact pressure for scoped cloth objects.
 
     Indices are deterministic heuristics for comparing setups and choosing preview/final settings;
     they are not byte counts or bake-duration promises. Runtime PointCache facts are reported apart.
@@ -51,7 +51,8 @@ async def validate_cloth_setup(
     collision_pair_limit: Annotated[int, Field(ge=1)] = 64,
     evaluated_triangle_limit: Annotated[int, Field(ge=1)] = 250_000,
 ) -> dict:
-    """Run a bounded, non-mutating structural preflight over scoped cloth systems.
+    """
+    Run a bounded, non-mutating structural preflight over scoped cloth systems.
 
     Findings include severity, evidence, affected property/object/frame, and remediation. Continue
     with narrower scopes when ``truncated`` or the collision-pair limit is reported. Passing this
@@ -81,7 +82,8 @@ async def sample_cloth_simulation(
     collider_sample_limit: Annotated[int, Field(ge=0)] = 16,
     timeout_seconds: Annotated[float, Field(gt=0)] = 30.0,
 ) -> dict:
-    """Evaluate bounded frames and measure the cloth without baking it.
+    """
+    Evaluate bounded frames and measure the cloth without baking it.
 
     Sampling can populate or invalidate Blender's in-memory point cache and is therefore mutating.
     The original frame is restored in ``finally``. Returned penetration evidence is heuristic and
@@ -115,7 +117,8 @@ async def analyze_cloth_performance(
     short_bake_frame_start: Annotated[int, Field(ge=0)] | None = None,
     short_bake_frame_end: Annotated[int, Field(ge=0)] | None = None,
 ) -> dict:
-    """Profile bounded first-pass/warm frame evaluation and optional isolated short baking.
+    """
+    Profile bounded first-pass/warm frame evaluation and optional isolated short baking.
 
     The optional bake runs on a temporary object with an independent in-memory cache and requires
     confirmation. Source caches are never freed or overwritten. Timings are measurements for this

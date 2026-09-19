@@ -83,7 +83,8 @@ async def create_camera(
     optics: CameraOpticsPatch | None = None,
     make_active: bool = False,
 ) -> dict:
-    """Create a collision-safe camera in an explicit scene collection.
+    """
+    Create a collision-safe camera in an explicit scene collection.
 
     Coordinates are world-space; Euler angles are XYZ radians and quaternions are [w, x, y, z].
     Supply at most one of Euler rotation, quaternion rotation, look-at object, or look-at point.
@@ -121,7 +122,8 @@ async def configure_camera(
     optics: CameraOpticsPatch | None = None,
     display: CameraDisplayPatch | None = None,
 ) -> dict:
-    """Patch only the supplied optical, clipping, and viewport fields on one camera.
+    """
+    Patch only the supplied optical, clipping, and viewport fields on one camera.
 
     This does not change render resolution because the render gate belongs to the scene. The result
     reports old and new values. Use ``configure_camera_dof`` for focus and aperture controls.
@@ -147,7 +149,8 @@ async def set_scene_camera(
     marker_frame: Annotated[int | None, Field(ge=-1_048_574, le=1_048_574)] = None,
     replace_marker: bool = False,
 ) -> dict:
-    """Set the scene camera and optionally bind it to one exact timeline marker.
+    """
+    Set the scene camera and optionally bind it to one exact timeline marker.
 
     ``marker_name`` and ``marker_frame`` must be supplied together. Existing marker bindings are
     preserved unless ``replace_marker`` is true; this avoids silently changing editorial cuts.
@@ -181,7 +184,8 @@ async def configure_camera_dof(
     focus_collection_name: str = "MCP Camera Controls",
     reuse_focus_target: bool = False,
 ) -> dict:
-    """Configure photographic depth of field without changing camera aim.
+    """
+    Configure photographic depth of field without changing camera aim.
 
     Supply at most one focus intent: an existing object, a positive distance, or a world-space point.
     A point creates (or explicitly reuses) a tagged focus Empty. Object focus and aim targets remain

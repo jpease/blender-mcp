@@ -2,7 +2,7 @@
 
 # This executable Blender harness intentionally uses module-level setup and
 # Blender's dynamically typed object return values.
-# ruff: file-ignore[float-equality-comparison, magic-value-comparison, missing-return-type-undocumented-public-function, undocumented-public-function]
+# ruff: file-ignore[float-equality-comparison]
 
 from __future__ import annotations
 

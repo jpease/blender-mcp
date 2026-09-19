@@ -9,7 +9,6 @@ import uuid
 import bpy
 
 from ...helpers import sync_from_editmode
-
 from ._cache_helpers import _configure_independent_cache, _shared_cache_identity
 from ._deform_binding import _bind_deform_modifier, _unbind_deform_modifier
 from ._ownership import _tag_owned_component, _tag_owned_object

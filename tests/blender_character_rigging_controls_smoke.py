@@ -1,4 +1,5 @@
-"""Blender 5.1+ background smoke coverage for character control and deformation handlers.
+"""
+Blender 5.1+ background smoke coverage for character control and deformation handlers.
 
 Run with::
 
@@ -6,7 +7,6 @@ Run with::
 """
 
 # Blender runtime types are dynamic in this executable harness.
-# ruff: file-ignore[missing-return-type-undocumented-public-function, undocumented-public-function]
 
 import importlib
 import json

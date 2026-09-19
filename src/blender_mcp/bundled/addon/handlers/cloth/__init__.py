@@ -22,10 +22,10 @@ from ._cache_helpers import (
 from ._ownership import (
     _owned_membership_record as _owned_membership_record,
 )
-from .animation import ClothAnimationHandlers
 from .animation import (
     _ANIMATABLE_FIELDS as _ANIMATABLE_FIELDS,
 )
+from .animation import ClothAnimationHandlers
 from .attachment import ClothAttachmentHandlers
 from .character_setup import ClothCharacterSetupHandlers
 from .collisions import ClothCollisionHandlers

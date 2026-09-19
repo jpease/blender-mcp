@@ -48,7 +48,8 @@ async def attach_geometry_nodes_modifier(
     single_user: bool = False,
     input_values: list[ModifierInputValue] | None = None,
 ) -> dict:
-    """Attach an existing group as a live modifier, or atomically create a pass-through group.
+    """
+    Attach an existing group as a live modifier, or atomically create a pass-through group.
 
     Name the target object explicitly. Exactly one of ``node_group_name`` and ``new_group_name``
     is required. Applicability is checked before mutation, and all created data is removed on failure.
@@ -81,7 +82,8 @@ async def set_geometry_nodes_inputs(
     ctx: Context,
     targets: Annotated[list[ModifierInputTarget], Field(min_length=1, max_length=200)],
 ) -> dict:
-    """Set exposed inputs on one or more modifier instances without editing shared groups.
+    """
+    Set exposed inputs on one or more modifier instances without editing shared groups.
 
     Every object, modifier, socket identifier, value type, and referenced datablock is validated
     before the first assignment, preventing a partially updated batch.
@@ -109,7 +111,8 @@ async def manage_geometry_nodes_modifier(
     replacement_group_name: str | None = None,
     confirm_destructive: bool = False,
 ) -> dict:
-    """Change one exact Geometry Nodes modifier while preserving its live graph by default.
+    """
+    Change one exact Geometry Nodes modifier while preserving its live graph by default.
 
     ``REMOVE`` and ``APPLY`` discard procedural state and require ``confirm_destructive=True``.
     Applying changes base geometry and invalidates previously inspected topology indices.
@@ -148,7 +151,8 @@ async def copy_geometry_node_group(
     reassign_duplicate_modifiers: bool = True,
     collision_policy: Literal["ERROR", "UNIQUE"] = "ERROR",
 ) -> dict:
-    """Copy a reusable group and optionally reassign exact modifier instances to the copy.
+    """
+    Copy a reusable group and optionally reassign exact modifier instances to the copy.
 
     External object, collection, material, image, and texture references remain shared and are
     returned for review. The copy receives a new MCP UUID and source-provenance tag.

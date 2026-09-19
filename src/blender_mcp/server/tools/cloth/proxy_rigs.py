@@ -1,6 +1,5 @@
 # MCP tool signatures intentionally expose more than five keyword arguments so
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
-# ruff: file-ignore[docstring-missing-returns, too-many-arguments, too-many-positional-arguments]
 """Typed tool for binding a low-resolution cloth proxy to a render mesh."""
 
 import asyncio
@@ -36,7 +35,8 @@ async def create_cloth_proxy_rig(
     rest_frame: Annotated[int, Field(ge=0)] = 1,
     validation_frames: list[int] | None = None,
 ) -> dict:
-    """Create a live low-resolution cloth proxy relationship for one render mesh.
+    """
+    Create a live low-resolution cloth proxy relationship for one render mesh.
 
     EXISTING uses an explicit proxy object. DUPLICATE_RENDER preserves topology; DECIMATE_RENDER
     creates a new proxy and is accepted only with ``allow_topology_change=True``. The render mesh

@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 
 from ...helpers import sync_from_editmode
-
 from ._deform_binding import _bind_corrective_smooth, _move_modifier_immediately_after, _unbind_corrective_smooth
 from ._geometry_sampling import _evaluated_geometry_evidence
 from ._ownership import _tag_owned_component

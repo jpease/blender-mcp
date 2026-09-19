@@ -1,4 +1,4 @@
-# ruff: file-ignore[magic-value-comparison, module-import-not-at-top-of-file, unsorted-imports]
+# ruff: file-ignore[module-import-not-at-top-of-file]
 """Run with Blender 5.1+ to smoke-test generic layered Action handlers."""
 
 import importlib.util

@@ -17,7 +17,7 @@ from types import ModuleType
 
 import pytest
 
-from test_mutation_transaction import _load_addon  # ruff: ignore[import-private-name]
+from test_mutation_transaction import _load_addon
 
 
 def _instrumented_server(monkeypatch: pytest.MonkeyPatch) -> tuple[object, list[tuple[str | None, ...]], ModuleType]:

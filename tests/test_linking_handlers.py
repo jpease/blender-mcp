@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 
 from conftest import REPO_ROOT
-from test_mutation_transaction import _load_addon  # ruff: ignore[import-private-name]
+from test_mutation_transaction import _load_addon
 
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "blend" / "empty_gzip.blend"
 LINKING_SOURCE = REPO_ROOT / "src" / "blender_mcp" / "bundled" / "addon" / "handlers" / "linking.py"
@@ -316,7 +316,7 @@ class StubData(list):
         self.world = world
         self.removed: list[StubID] = []
 
-    def remove(self, datablock: StubID, do_unlink: bool = True) -> None:  # ruff: ignore[unused-method-argument]
+    def remove(self, datablock: StubID, do_unlink: bool = True) -> None:
         """
         Remove a datablock, as Blender does.
 

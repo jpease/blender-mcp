@@ -1,4 +1,4 @@
-# ruff: file-ignore[docstring-missing-returns, multi-line-summary-second-line, too-many-arguments, too-many-positional-arguments, unused-function-argument]
+# ruff: file-ignore[multi-line-summary-second-line]
 """Typed tool for measuring what a baked liquid shot actually produced against fill/spill targets."""
 
 import asyncio

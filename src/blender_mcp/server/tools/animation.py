@@ -1,4 +1,3 @@
-# ruff: file-ignore[docstring-missing-exception, docstring-missing-returns, too-many-arguments, too-many-positional-arguments, unused-function-argument]
 """Typed tools for generic Blender animation data and layered Actions."""
 
 import ast

@@ -48,8 +48,6 @@ def _measured_replies(selection: str) -> dict[str, int]:
 
 def test_no_shot_mode_reply_passes_the_budget() -> None:
     """A reply over the budget spends more of the session's context than any single call is worth."""
-    over_budget = {
-        tool: size for tool, size in _measured_replies("shot").items() if size > REPLY_BYTE_BUDGET
-    }
+    over_budget = {tool: size for tool, size in _measured_replies("shot").items() if size > REPLY_BYTE_BUDGET}
 
     assert not over_budget, f"replies over the {REPLY_BYTE_BUDGET}-byte budget: {over_budget}"

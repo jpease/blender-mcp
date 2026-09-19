@@ -1,4 +1,5 @@
-"""Blender 5.1+ background smoke coverage for camera handlers.
+"""
+Blender 5.1+ background smoke coverage for camera handlers.
 
 Run with::
 
@@ -22,8 +23,10 @@ addon = importlib.util.module_from_spec(spec)
 sys.modules[package_name] = addon
 spec.loader.exec_module(addon)
 
-from blender_mcp_camera_smoke.handlers.camera import CameraHandlersMixin  # ruff: ignore[E402]
-from blender_mcp_camera_smoke.handlers.camera._shared import _tag  # ruff: ignore[E402]
+from blender_mcp_camera_smoke.handlers.camera import (  # ruff: ignore[module-import-not-at-top-of-file]
+    CameraHandlersMixin,
+)
+from blender_mcp_camera_smoke.handlers.camera._shared import _tag  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 def _new_object(name, data=None):

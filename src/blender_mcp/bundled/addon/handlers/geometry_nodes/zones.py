@@ -1,4 +1,4 @@
-# ruff: file-ignore[docstring-missing-exception, docstring-missing-returns, magic-value-comparison, missing-return-type-private-function, missing-return-type-undocumented-public-function, missing-type-function-argument, no-self-use, too-many-arguments, too-many-positional-arguments, undocumented-public-method]
+# ruff: file-ignore[magic-value-comparison, undocumented-public-method]
 """Atomic Repeat and Simulation Zone construction handlers."""
 
 import math

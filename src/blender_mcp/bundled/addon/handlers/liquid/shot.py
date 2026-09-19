@@ -110,7 +110,8 @@ def _resolve_sources(scene, sources, fps, frame_start):
 
 
 def _resolve_enabled_window(enabled_seconds, behavior, fps, frame_start, index):
-    """Convert an [on, off] seconds window into the (on_frame, off_frame) pair keyed on use_inflow.
+    """
+    Convert an [on, off] seconds window into the (on_frame, off_frame) pair keyed on use_inflow.
 
     Seconds are measured from the scene's frame_start at the scene's current fps, which is the same
     conversion get_scene_physics_info reports, so a caller can state intent in shot time.
@@ -144,7 +145,8 @@ def _resolve_enabled_window(enabled_seconds, behavior, fps, frame_start, index):
 
 
 def _interior_box(bounds, rim_axis, wall_thickness, bottom_thickness):
-    """Return the (center, dimensions) of the usable interior of an axis-aligned container bound box.
+    """
+    Return the (center, dimensions) of the usable interior of an axis-aligned container bound box.
 
     This is deliberately a box approximation: it is a measurement reference for
     validate_liquid_result's fill fraction, never simulation geometry, and a box keeps the reported
@@ -354,7 +356,8 @@ class LiquidShotHandlers:
         spill_catch_margin=None,
         dry_run=False,
     ):
-        """Turn container/source intent into a complete, unbaked liquid setup.
+        """
+        Turn container/source intent into a complete, unbaked liquid setup.
 
         Every mutating step delegates to the standalone handler that owns it, so the rules those
         handlers enforce (unbaked domain, explicit cache path, collection scoping, proxy transform

@@ -1,4 +1,3 @@
-# ruff: file-ignore[docstring-missing-returns, too-many-arguments, too-many-positional-arguments, unused-function-argument]
 """Typed tools for liquid render mesh, secondary particles, diffusion, and materials."""
 
 import asyncio
@@ -127,7 +126,8 @@ class LiquidMaterialConfig(_StrictModel):
 async def configure_liquid_mesh(
     ctx: Context, domain_object_name: str, modifier_name: str, patch: LiquidMeshPatch
 ) -> dict:
-    """Patch render-surface generation on one unbaked liquid domain.
+    """
+    Patch render-surface generation on one unbaked liquid domain.
 
     If both are given, mesh_concave_lower must be <= mesh_concave_upper; the same check is re-run
     against the domain's current values when only one of the pair is supplied.

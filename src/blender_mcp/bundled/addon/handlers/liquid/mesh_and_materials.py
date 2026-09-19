@@ -6,6 +6,7 @@ import math
 
 import bpy
 
+from ..texture.materials import _MATERIAL_PRESETS as _PBR_MATERIAL_PRESETS
 from .inspection_and_setup import (
     _ensure_collection,
     _finite,
@@ -22,7 +23,6 @@ from .simulation import (
     _scene_context_for_object,
     _update_or_restore,
 )
-from ..texture.materials import _MATERIAL_PRESETS as _PBR_MATERIAL_PRESETS
 
 # Recorded on ParticleSettings (not the ParticleSystem, which rejects ID properties) the first time a
 # Mantaflow system is observed, so later reads survive a rename of either datablock.
@@ -188,7 +188,8 @@ def _octahedron_mesh(name):
 
 
 def _classify_particle_role_by_name(system):
-    """Derive a role from Blender's freshly generated system/settings labels.
+    """
+    Derive a role from Blender's freshly generated system/settings labels.
 
     Only used the first time a Mantaflow system is seen, before its role is recorded; every later
     read comes from the stored property so a rename cannot silently reclassify a system.
@@ -199,7 +200,8 @@ def _classify_particle_role_by_name(system):
 
 
 def _particle_role(system):
-    """Return the recorded role for a Mantaflow particle system, falling back to its labels.
+    """
+    Return the recorded role for a Mantaflow particle system, falling back to its labels.
 
     The role lives on ``system.settings`` because ParticleSystem itself rejects ID properties
     ("id properties not supported for this type" in Blender 5.2.1) while ParticleSettings is a real
@@ -212,7 +214,8 @@ def _particle_role(system):
 
 
 def _tag_particle_roles(obj):
-    """Record ``blendermcp_particle_role`` on any of the domain's systems that lack it, then report them.
+    """
+    Record ``blendermcp_particle_role`` on any of the domain's systems that lack it, then report them.
 
     Mantaflow, not this add-on, creates the systems, so the earliest moment a role can be captured is
     the call that enables the corresponding secondary-particle toggle - at which point Blender's own

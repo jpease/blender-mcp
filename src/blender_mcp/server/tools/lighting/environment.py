@@ -47,7 +47,8 @@ async def configure_world_background(
     world_name: str | None = None,
     create_world: bool = False,
 ) -> dict:
-    """Create, assign, or patch a managed simple World background.
+    """
+    Create, assign, or patch a managed simple World background.
 
     This operates on the named scene's assigned world, never the first global World datablock. A
     missing world is created only when ``create_world`` is true and ``world_name`` is provided.
@@ -87,7 +88,8 @@ async def configure_hdri_environment(
     create_world: bool = False,
     transparent_film: bool | None = None,
 ) -> dict:
-    """Configure a persistent HDR/EXR environment without clearing user-authored world nodes.
+    """
+    Configure a persistent HDR/EXR environment without clearing user-authored world nodes.
 
     ``image_path`` must be an existing absolute .hdr or .exr file that will remain available after
     this call. The tool reuses Blender image datablocks, builds a tagged Texture Coordinate → Mapping
@@ -132,7 +134,8 @@ async def configure_procedural_sky(
     world_name: str | None = None,
     create_world: bool = False,
 ) -> dict:
-    """Configure a physical sky and optionally synchronize a Sun light.
+    """
+    Configure a physical sky and optionally synchronize a Sun light.
 
     The managed Sky → Background → World Output chain preserves unrelated nodes. Blender documents
     the sky sun disc as Cycles-only; for ``BOTH`` or ``EEVEE``, use ``sync_sun`` with a stable

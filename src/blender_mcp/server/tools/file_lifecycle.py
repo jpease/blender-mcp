@@ -1,4 +1,3 @@
-# ruff: file-ignore[too-many-arguments, too-many-positional-arguments, unused-function-argument]
 """
 Typed tools for the ten file-lifecycle and linking addon commands.
 

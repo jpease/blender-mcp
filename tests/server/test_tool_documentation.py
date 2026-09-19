@@ -1,4 +1,3 @@
-# ruff: file-ignore[import-private-name]
 """
 The documentation pass must add meaning, not restate the JSON Schema.
 

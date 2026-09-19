@@ -20,7 +20,8 @@ async def list_texture_images(
     limit: int = Field(default=50, ge=1, le=200),
     offset: int = Field(default=0, ge=0),
 ) -> dict:
-    """List bounded image metadata, material usage, storage state, UDIM tiles, and missing files.
+    """
+    List bounded image metadata, material usage, storage state, UDIM tiles, and missing files.
 
     Estimated memory is an uncompressed pixel estimate, not file size. Follow `next_offset` while
     `truncated` is true. No image pixels are read or changed.
@@ -37,7 +38,8 @@ async def load_texture_image(
     check_existing: bool = True,
     max_bytes: int = Field(default=536_870_912, ge=1, le=2_147_483_648),
 ) -> dict:
-    """Load one validated local texture file as a reusable Blender image datablock.
+    """
+    Load one validated local texture file as a reusable Blender image datablock.
 
     The absolute path must exist, use a supported texture extension, and fit `max_bytes`. Blender
     performs decoding on its main thread. The result distinguishes a reused image from a new one.
@@ -57,7 +59,8 @@ async def configure_texture_image(
     colorspace: str | None = None,
     alpha_mode: Literal["STRAIGHT", "PREMUL", "CHANNEL_PACKED", "NONE"] | None = None,
 ) -> dict:
-    """Configure how Blender interprets an image without altering its pixels.
+    """
+    Configure how Blender interprets an image without altering its pixels.
 
     Semantic COLOR defaults to sRGB; data semantics default to Non-Color. An explicit colorspace
     wins but must exist in the active OCIO configuration. At least one setting is required.
@@ -81,7 +84,8 @@ async def save_texture_image(
     color_depth: Literal["8", "16", "32"] | None = None,
     overwrite: bool = False,
 ) -> dict:
-    """Save one Blender image to an explicit absolute path without silently overwriting.
+    """
+    Save one Blender image to an explicit absolute path without silently overwriting.
 
     The destination directory must already exist. The image filepath and output settings are
     restored if saving fails; successful results report the actual path and byte size.

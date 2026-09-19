@@ -1,4 +1,4 @@
-# ruff: file-ignore[missing-return-type-private-function, missing-return-type-undocumented-public-function, missing-type-function-argument, no-self-use, too-many-arguments, too-many-branches, too-many-positional-arguments, too-many-statements-in-try-clause, undocumented-public-method]
+# ruff: file-ignore[too-many-branches, too-many-locals, too-many-statements, too-many-statements-in-try-clause, undocumented-public-method]
 """Blender-side scene rendering and view-layer handlers."""
 
 import math

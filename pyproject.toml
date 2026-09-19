@@ -39,6 +39,7 @@ reportOptionalMemberAccess = false
 [tool.ruff]
 target-version = "py313"
 line-length = 120
+extend-exclude = [".audit_tmp"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -49,9 +50,16 @@ line-ending = "auto"
 ignore = [
     "incorrect-blank-line-before-class",
     "missing-trailing-comma",
+    # D212/D213 are mutually exclusive. The repository's dominant style opens the
+    # docstring on its own line, so D212 is the one to silence.
     "multi-line-summary-first-line",
     "undocumented-public-module",
     "undocumented-public-package",
+    # MCP tools mirror Blender operator surfaces and are legitimately wide.
+    "too-many-arguments",
+    "too-many-positional-arguments",
+    # Handler classes group related operations; staticmethod churn buys nothing.
+    "no-self-use",
 ]
 select = [
     "ANN",    # flake8-annotations
@@ -60,7 +68,6 @@ select = [
     "C4",     # flake8-comprehensions
     "COM",    # flake8-commas
     "D",      # pydocstyle
-    "DOC",    # pydoclint
     "E",      # pycodestyle errors
     "ERA",    # eradicate
     "F",      # Pyflakes
@@ -76,6 +83,20 @@ select = [
     "W",      # pycodestyle warnings
 ]
 preview = true
+
+[tool.ruff.lint.per-file-ignores]
+# Add-on handlers take live bpy datablocks. bpy cannot be imported outside
+# Blender, so this package is a deliberately bpy-typed boundary; the MCP
+# contract surface in server/ stays fully annotated.
+"src/blender_mcp/bundled/addon/**" = ["ANN"]
+# Blender loads an add-on through its package `__init__`, so `bl_info`, the
+# protocol constant and register()/unregister() have to live there.
+"src/blender_mcp/bundled/addon/__init__.py" = ["ANN", "non-empty-init-module"]
+# FastMCP injects `ctx: Context` by annotation, not by name, so tools declare it
+# without referencing it.
+"src/blender_mcp/server/tools/**" = ["unused-function-argument"]
+# Tests document themselves through names and assertions.
+"tests/**" = ["ANN", "ARG", "D1", "import-outside-top-level", "import-private-name", "PLR09", "PLR17", "magic-value-comparison", "too-many-statements-in-try-clause"]
 
 [tool.ruff.lint.isort]
 lines-between-types = 1

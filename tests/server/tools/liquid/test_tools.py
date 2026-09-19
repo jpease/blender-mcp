@@ -19,7 +19,7 @@ def _run(function, **kwargs):
 
 def test_liquid_patch_models_forbid_unrestricted_rna_fields() -> None:
     with pytest.raises(ValidationError, match="extra_forbidden"):
-        liquid.LiquidSolverPatch(**{"arbitrary_rna": 1})  # pyright: ignore[reportArgumentType]
+        liquid.LiquidSolverPatch(arbitrary_rna=1)  # pyright: ignore[reportArgumentType]
 
 
 def test_solver_patch_rejects_inverted_ranges() -> None:

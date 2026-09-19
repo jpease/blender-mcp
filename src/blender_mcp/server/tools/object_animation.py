@@ -1,4 +1,3 @@
-# ruff: file-ignore[docstring-missing-exception, docstring-missing-returns, too-many-arguments, too-many-positional-arguments, unused-function-argument]
 """Typed tool for generic object transform keyframing (location/rotation/scale, local or world space)."""
 
 import asyncio

@@ -1,6 +1,5 @@
 # MCP tool signatures intentionally expose more than five keyword arguments so
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
-# ruff: file-ignore[docstring-missing-returns, too-many-arguments, too-many-positional-arguments]
 """Typed tool for assembling a non-destructive character cloth garment stack."""
 
 import asyncio
@@ -12,7 +11,7 @@ from pydantic import Field
 
 from ...app import mcp
 from ._shared import _call, _dump
-from .collisions import ClothCollisionPatch, ClothColliderPatch
+from .collisions import ClothColliderPatch, ClothCollisionPatch
 from .inspection_and_setup import ExistingPolicy
 from .material_and_solver import ClothMaterialPatch, ClothSolverPatch
 
@@ -43,7 +42,8 @@ async def create_character_cloth_setup(
     cache_frame_start: Annotated[int, Field(ge=0)] = 1,
     cache_frame_end: Annotated[int, Field(ge=0)] = 250,
 ) -> dict:
-    """Assemble a non-destructive garment, armature, collider, and finishing stack.
+    """
+    Assemble a non-destructive garment, armature, collider, and finishing stack.
 
     All assets, the pin group, and collision collection must be explicitly named. No weights,
     collision proxies, or anatomy are inferred. Deformation is placed before Cloth and optional

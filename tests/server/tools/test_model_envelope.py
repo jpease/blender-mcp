@@ -1,4 +1,5 @@
-"""Server-layer coverage for model.py's apply=True/False STALE_INDEX_WARNING behavior.
+"""
+Server-layer coverage for model.py's apply=True/False STALE_INDEX_WARNING behavior.
 
 Unlike tests/test_mesh_model_tools.py (which exercises the Blender-side addon handlers
 via a faked bpy), these tests call the MCP tool functions in

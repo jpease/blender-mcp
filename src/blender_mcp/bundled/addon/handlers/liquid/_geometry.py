@@ -1,4 +1,3 @@
-# ruff: file-ignore[docstring-missing-returns]
 """Shared geometry constants and primitives for liquid handlers."""
 
 from collections.abc import Sequence

@@ -6,7 +6,6 @@ import contextlib
 import statistics
 
 from ...helpers import sync_from_editmode
-
 from ._deform_binding import (
     _attachment_target_matrix,
     _bind_deform_modifier,

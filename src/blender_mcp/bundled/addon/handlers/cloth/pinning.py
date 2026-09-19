@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 
 from ...helpers import sync_from_editmode
-
 from .inspection_and_setup import (
     _DEFORMING_MODIFIERS,
     _PINNING_FIELDS,

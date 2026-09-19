@@ -1,4 +1,4 @@
-# ruff: file-ignore[line-too-long, magic-value-comparison, missing-return-type-private-function, missing-return-type-undocumented-public-function, missing-type-function-argument, no-self-use, too-many-arguments, too-many-branches, too-many-locals, too-many-positional-arguments, undocumented-public-method]
+# ruff: file-ignore[magic-value-comparison, too-many-branches, too-many-locals, undocumented-public-method]
 """Blender-side handlers for typed scene composition and native geometry."""
 
 import os

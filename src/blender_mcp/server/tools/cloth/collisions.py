@@ -1,6 +1,5 @@
 # MCP tool signatures intentionally expose more than five keyword arguments so
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
-# ruff: file-ignore[docstring-missing-returns, too-many-arguments, too-many-positional-arguments]
 """Typed tools for cloth-side collisions and collider registration."""
 
 import asyncio
@@ -63,7 +62,8 @@ async def add_cloth_collider(
     settings: ClothColliderPatch | None = None,
     registrations: list[ClothColliderRegistration] | None = None,
 ) -> dict:
-    """Add or explicitly reuse Collision physics on a named mesh or curve.
+    """
+    Add or explicitly reuse Collision physics on a named mesh or curve.
 
     Each registration links the collider into an existing collection and assigns that collection as
     the named cloth setup's collision scope; existing object collection links are preserved. Baked

@@ -11,10 +11,8 @@ import uuid
 from collections import Counter
 
 import bpy
-import mathutils
 
 from ...helpers import paginate, sync_from_editmode
-
 from ._cache_helpers import (
     _configure_independent_cache,
     _external_cache_path_status,

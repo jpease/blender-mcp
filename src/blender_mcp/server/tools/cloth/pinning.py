@@ -1,4 +1,3 @@
-# ruff: file-ignore[docstring-missing-returns]
 """Typed tools for cloth vertex weights and pin-goal behavior."""
 
 import asyncio
@@ -53,7 +52,8 @@ async def set_cloth_vertex_weights(
     assignments: Annotated[list[VertexWeightAssignment], Field(min_length=1)],
     operation: WeightOperation = "REPLACE",
 ) -> dict:
-    """Create or update one role-specific cloth vertex group using exact base-mesh indices.
+    """
+    Create or update one role-specific cloth vertex group using exact base-mesh indices.
 
     The complete batch is validated before editing. ADD and SUBTRACT clamp to [0, 1]; unrelated and
     locked groups are preserved. Query mesh indices again after any topology-changing operation.

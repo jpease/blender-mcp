@@ -325,7 +325,8 @@ def _restore_rna(owner, changes):
 
 
 def _set_flip_particles(settings, desired):
-    """Give ``use_flip_particles`` set-to-desired-state semantics instead of Blender's toggle.
+    """
+    Give ``use_flip_particles`` set-to-desired-state semantics instead of Blender's toggle.
 
     Verified against Blender 5.2.1: assigning this property ignores the assigned value and flips the
     FLIP particle system on or off, so writing ``True`` to an already-enabled domain disables it.
@@ -393,7 +394,8 @@ def _world_bounds(obj, evaluated=True):
 
 
 def _domain_bounds(obj, settings):
-    """Return the domain container bounds and, once baked, the evaluated liquid-mesh bounds.
+    """
+    Return the domain container bounds and, once baked, the evaluated liquid-mesh bounds.
 
     A liquid DOMAIN modifier replaces the object's evaluated mesh with the generated liquid surface
     once data/mesh caching exists, so ``evaluated_get`` no longer describes the container - it
@@ -614,7 +616,8 @@ def _ensure_liquid_uuid(obj):
 
 
 def _tag_liquid_object(obj, role):
-    """Give a liquid-owned object a stable UUID and role, returning a rollback token.
+    """
+    Give a liquid-owned object a stable UUID and role, returning a rollback token.
 
     ``ObjectState`` does not snapshot custom properties, so a caller that fails after tagging must
     pass the returned token to :func:`_untag_liquid_object` from its own rollback path.
@@ -660,7 +663,8 @@ def _liquid_object_identity(obj):
 
 
 def _find_object_by_liquid_uuid(object_uuid):
-    """Resolve an object by its recorded liquid UUID, which survives renames as names do not.
+    """
+    Resolve an object by its recorded liquid UUID, which survives renames as names do not.
 
     Objects are scanned rather than read from the cache-side manifest because the manifest stores
     names only as a human-readable convenience; the scene remains the authority on identity.
@@ -695,7 +699,8 @@ def _owned_object_registry(settings):
 
 
 def _register_owned_objects(domain_settings, domain_uuid, entries):
-    """Record owned (uuid, name, role) triples in the domain's cache-side manifest, best effort.
+    """
+    Record owned (uuid, name, role) triples in the domain's cache-side manifest, best effort.
 
     The manifest is bookkeeping written outside ``mutation_transaction``; a missing or read-only
     cache directory must never fail an otherwise successful scene mutation, so failures are absorbed
@@ -750,7 +755,8 @@ def _mesh_topology(obj):
 
 
 def _evaluated_mesh_topology(obj):
-    """Return topology counts for the mesh reaching the fluid modifier, not the base mesh.
+    """
+    Return topology counts for the mesh reaching the fluid modifier, not the base mesh.
 
     Boolean/array/mirror modifier stacks change the effective closed/open shape a flow or
     effector actually presents to Mantaflow; the base mesh can read manifold while the
@@ -765,7 +771,8 @@ def _evaluated_mesh_topology(obj):
 
 
 def _flow_normal_orientation(obj):
-    """Sample evaluated face normals and report the fraction pointing toward the mesh centroid.
+    """
+    Sample evaluated face normals and report the fraction pointing toward the mesh centroid.
 
     Blender's liquid emission expects outward-facing normals; a majority-inward mesh (flipped
     normals, or geometry built inside-out) emits incorrectly with no other visible symptom.
@@ -801,7 +808,8 @@ def _flow_normal_orientation(obj):
 
 
 def _wall_thickness_samples(obj, cell_size, max_samples=64):
-    """Cast rays inward from sampled evaluated faces and return the measured wall thickness.
+    """
+    Cast rays inward from sampled evaluated faces and return the measured wall thickness.
 
     ``BVHTree.FromObject`` builds its tree in the object's local space (vertex positions are
     used as-is, never multiplied by ``matrix_world``), so rays are cast in local space and hits

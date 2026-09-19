@@ -1,4 +1,3 @@
-# ruff: file-ignore[docstring-missing-exception, docstring-missing-returns, too-many-arguments]
 """Shared frame preflight and state-restoring evaluation for liquid handlers."""
 
 from __future__ import annotations

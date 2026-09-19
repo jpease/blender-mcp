@@ -1,4 +1,4 @@
-# ruff: file-ignore[docstring-missing-exception, docstring-missing-returns, multi-line-summary-second-line, too-many-arguments, too-many-positional-arguments, unused-function-argument]
+# ruff: file-ignore[multi-line-summary-second-line]
 """Bounded procedural-system performance analysis tool."""
 
 import asyncio

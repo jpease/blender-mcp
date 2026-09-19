@@ -78,7 +78,8 @@ async def create_geometry_node_group(
     collision_policy: CollisionPolicy = "ERROR",
     purpose: str = "custom procedural system",
 ) -> dict:
-    """Create an editable Geometry Nodes group with an explicit execution role and interface.
+    """
+    Create an editable Geometry Nodes group with an explicit execution role and interface.
 
     Modifier groups default to a Geometry input/output pass-through when ``sockets`` is omitted.
     The group receives a stable MCP UUID, schema version, and purpose tag for later discovery.
@@ -105,7 +106,8 @@ async def edit_node_group_interface(
     edits: Annotated[list[InterfaceEdit], Field(min_length=1, max_length=200)],
     migration_policy: Literal["PRESERVE_COMPATIBLE", "ALLOW_BREAKING", "ERROR_ON_BREAKING"] = "ERROR_ON_BREAKING",
 ) -> dict:
-    """Apply a preflighted batch of interface socket and panel edits by stable identifier.
+    """
+    Apply a preflighted batch of interface socket and panel edits by stable identifier.
 
     Removing or changing socket types requires ``ALLOW_BREAKING`` because modifier overrides and
     links may be invalidated. The result lists every affected modifier user.
@@ -128,7 +130,8 @@ async def patch_geometry_node_graph(
     node_group_name: str,
     operations: Annotated[list[GraphEdit], Field(min_length=1, max_length=500)],
 ) -> dict:
-    """Atomically add, configure, connect, frame, or remove nodes in one group.
+    """
+    Atomically add, configure, connect, frame, or remove nodes in one group.
 
     The complete patch is validated before mutation. Node types and writable properties are
     runtime-checked; socket endpoints use identifiers with an optional index fallback. If any

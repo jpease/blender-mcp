@@ -355,7 +355,7 @@ def test_character_posing_bundle_adds_only_the_posing_tools() -> None:
 def test_character_rigging_bundle_keeps_every_rigging_tool_after_the_split() -> None:
     """Existing `character-rigging` configs lose nothing: all 23 tools, posing included."""
     rigging = _tool_names_for_toolsets("character-rigging") - _tool_names_for_toolsets(None)
-    assert len(rigging) == 23  # ruff: ignore[magic-value-comparison] - the count IS the assertion
+    assert len(rigging) == 23
     assert rigging >= POSING_TOOLS | {"create_armature", "bind_mesh_to_armature", "add_pose_bone_constraint"}
 
 
@@ -620,7 +620,7 @@ def test_scene_authoring_tools_advertise_their_destructiveness() -> None:
 
 def test_file_lifecycle_tools_are_exactly_ten_and_reachable_from_shot_and_asset() -> None:
     """The ten file-lifecycle/linking tools exist once each and are reachable from both modes."""
-    assert len(_FILE_LIFECYCLE_TOOLS) == 10  # ruff: ignore[magic-value-comparison] - the count IS the assertion
+    assert len(_FILE_LIFECYCLE_TOOLS) == 10
     assert set(_FILE_LIFECYCLE_TOOLS) == set(_FILE_LIFECYCLE_HINTS)
     shot = _tool_names_for_toolsets("shot")
     asset = _tool_names_for_toolsets("asset")

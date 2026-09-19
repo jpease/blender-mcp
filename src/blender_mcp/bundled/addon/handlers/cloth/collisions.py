@@ -7,7 +7,6 @@ import contextlib
 import bpy
 
 from ...helpers import preserve_mode_and_selection, set_active, sync_from_editmode
-
 from ._ownership import _tag_owned_component, _tag_owned_membership
 from .inspection_and_setup import (
     _CLOTH_COLLISION_FIELDS,

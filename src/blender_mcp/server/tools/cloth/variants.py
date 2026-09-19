@@ -1,6 +1,5 @@
 # MCP tool signatures intentionally expose more than five keyword arguments so
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
-# ruff: file-ignore[docstring-missing-returns, too-many-arguments, too-many-positional-arguments]
 """Typed tool for duplicating a cloth setup with explicit sharing policies."""
 
 import asyncio
@@ -33,7 +32,8 @@ async def duplicate_cloth_setup_variant(
     render_surface_policy: RenderSurfacePolicy,
     cache_directory: str | None = None,
 ) -> dict:
-    """Duplicate a cloth setup with explicit sharing policies and independent point caches.
+    """
+    Duplicate a cloth setup with explicit sharing policies and independent point caches.
 
     Vertex groups copy with the object. Shape keys follow ``mesh_data_policy``; material slots and
     actions follow their own policies. Collision/effector dependencies and render surfaces are

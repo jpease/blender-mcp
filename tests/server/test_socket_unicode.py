@@ -75,6 +75,7 @@ def _split_after_lead_byte(payload: bytes) -> int:
 
     Raises:
         AssertionError: If the payload contains no multi-byte UTF-8 character.
+
     """
     for i, b in enumerate(payload):
         if b >= 0xC0:  # lead byte of a 2/3/4-byte sequence
@@ -118,9 +119,7 @@ def test_split_multibyte_utf8_boundary_keeps_handler_loop_alive() -> None:
 
     server = _make_server()
     server.running = True
-    server.handle_client(
-        ScriptedSocket([first_body[:split_idx], first_body[split_idx:] + b"\n", second])
-    )
+    server.handle_client(ScriptedSocket([first_body[:split_idx], first_body[split_idx:] + b"\n", second]))
 
     queued = []
     while not server.command_queue.empty():

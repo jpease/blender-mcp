@@ -1,6 +1,5 @@
 # MCP tool signatures intentionally expose more than five keyword arguments so
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
-# ruff: file-ignore[docstring-missing-returns, too-many-arguments, too-many-positional-arguments]
 """Typed tools for managing a cloth's point cache and removing cloth-related components."""
 
 import asyncio
@@ -48,7 +47,8 @@ async def manage_cloth_cache(
     confirm_external_overwrite: bool = False,
     max_bake_frames: Annotated[int, Field(ge=1)] = 250,
 ) -> dict:
-    """Inspect, configure, bake, mark baked-from-cache, or free one exact Cloth point cache.
+    """
+    Inspect, configure, bake, mark baked-from-cache, or free one exact Cloth point cache.
 
     BAKE is synchronous and requires confirmation; requests exceeding ``max_bake_frames`` are
     refused so this command never launches an unbounded job. FREE requires separate confirmation.
@@ -82,7 +82,8 @@ async def remove_cloth_components(
     confirm_baked_removal: bool = False,
     confirm_affected_bakes: bool = False,
 ) -> dict:
-    """Remove one exact cloth-related component while retaining unrelated data and cache files.
+    """
+    Remove one exact cloth-related component while retaining unrelated data and cache files.
 
     Modifier targets require their exact name; collection membership requires its exact collection.
     Vertex groups, meshes, materials, controls, and external cache files are never deleted. Baked

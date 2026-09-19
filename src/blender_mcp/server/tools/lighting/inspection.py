@@ -21,7 +21,8 @@ async def list_lights(
     offset: Annotated[int, Field(ge=0, le=9999)] = 0,
     detail: bool = False,
 ) -> dict:
-    """Inventory scene lights without changing selection, mode, or the active object.
+    """
+    Inventory scene lights without changing selection, mode, or the active object.
 
     Each record names the light object and its datablock and reports type, energy, color,
     world-space location, and whether the light is hidden in the viewport or the render.
@@ -56,7 +57,8 @@ async def list_lights(
 
 @mcp.tool()
 async def inspect_light(ctx: Context, scene_name: str, light_name: str) -> dict:
-    """Inspect one light before editing it.
+    """
+    Inspect one light before editing it.
 
     The result separates local and world transforms, reports all shared and type-specific light
     settings, constraints, linking, animation, and a bounded summary of shader nodes and external
@@ -77,7 +79,8 @@ async def inspect_lighting_setup(
     offset: Annotated[int, Field(ge=0, le=9999)] = 0,
     detail: bool = False,
 ) -> dict:
-    """Capture a reproducible, read-only scene-lighting snapshot.
+    """
+    Capture a reproducible, read-only scene-lighting snapshot.
 
     It includes the active engine, units, camera, color management, world graph, a paginated
     light inventory in the same trimmed form ``list_lights`` returns, bounded
@@ -109,7 +112,8 @@ async def validate_lighting_setup(
     limit: Annotated[int, Field(ge=1, le=200)] = 100,
     offset: Annotated[int, Field(ge=0, le=9999)] = 0,
 ) -> dict:
-    """Audit lighting readiness without changing the scene.
+    """
+    Audit lighting readiness without changing the scene.
 
     Findings contain severity, stable code, evidence, and remediation. The audit checks camera and
     engine availability, invalid or extreme power, coincident lights, disabled shadows, broken

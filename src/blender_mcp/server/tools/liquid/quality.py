@@ -1,4 +1,3 @@
-# ruff: file-ignore[docstring-missing-returns, unused-function-argument]
 """Named liquid quality profiles applied through the existing solver and mesh tools."""
 
 import asyncio
@@ -87,13 +86,15 @@ QUALITY_PROFILES: dict[str, tuple[LiquidSolverPatch, LiquidMeshPatch]] = {
 
 
 def profile_patches(profile: str) -> tuple[dict, dict]:
-    """Return the (solver, mesh) patch payload pair for a named profile.
+    """
+    Return the (solver, mesh) patch payload pair for a named profile.
 
     The bundles are the same LiquidSolverPatch/LiquidMeshPatch models the standalone tools accept, so
     a profile cannot smuggle in a field or cross-field combination those tools would reject.
 
     Raises:
         ValueError: if the profile name is not one of QUALITY_PROFILES.
+
     """
     try:
         solver, mesh = QUALITY_PROFILES[profile]
@@ -114,7 +115,8 @@ async def apply_liquid_quality_profile(
     apply_solver: bool = True,
     apply_mesh: bool = True,
 ) -> dict:
-    """Apply a named PREVIEW/BALANCED/FINAL preset through configure_liquid_solver and configure_liquid_mesh.
+    """
+    Apply a named PREVIEW/BALANCED/FINAL preset through configure_liquid_solver and configure_liquid_mesh.
 
     This is a convenience wrapper over those two tools, not a separate mutation path: the same
     unbaked-domain and cache-stage rules apply, and the reported "changes" come from them unmodified.

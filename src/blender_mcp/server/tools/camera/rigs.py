@@ -40,7 +40,8 @@ async def create_orbit_camera_rig(
     lens: Annotated[float, Field(gt=0)] = 50.0,
     target_height: float = 0.0,
 ) -> dict:
-    """Build a new editable orbit rig from standard Empty, Camera, and Damped Track objects.
+    """
+    Build a new editable orbit rig from standard Empty, Camera, and Damped Track objects.
 
     Angles are radians. The root Z rotation is azimuth; the boom offset encodes radius/elevation;
     camera roll remains available on the camera control. All members are tagged with one rig UUID,
@@ -63,7 +64,8 @@ async def create_dolly_camera_rig(
     lens: Annotated[float, Field(gt=0)] = 50.0,
     create_target: bool = True,
 ) -> dict:
-    """Build a conventional dolly rig with root, camera-height control, camera, and optional aim target.
+    """
+    Build a conventional dolly rig with root, camera-height control, camera, and optional aim target.
 
     ``rail_direction`` is a non-zero local direction exposed as rig metadata for animation planning;
     translate/yaw the root for the dolly move and animate the child control for height/pitch/roll.
@@ -87,7 +89,8 @@ async def create_crane_camera_rig(
     lens: Annotated[float, Field(gt=0)] = 50.0,
     create_target: bool = True,
 ) -> dict:
-    """Build an editable crane hierarchy with base, arm pivot, boom, head, camera, and optional target.
+    """
+    Build an editable crane hierarchy with base, arm pivot, boom, head, camera, and optional target.
 
     Angles are radians and remain independently animatable on standard object transforms. The boom
     length is its local X offset; no opaque driver or optional add-on dependency is introduced.
@@ -112,7 +115,8 @@ async def create_camera_path_rig(
     end_frame: Annotated[int | None, Field(ge=-1_048_574, le=1_048_574)] = None,
     target_object_name: str | None = None,
 ) -> dict:
-    """Attach an existing camera to a new rig root following one explicit curve.
+    """
+    Attach an existing camera to a new rig root following one explicit curve.
 
     Supply either an existing curve name or at least two world-space points for a new Bézier/NURBS
     path. Optional start/end frames key the constraint's fixed-position ``offset_factor`` from 0 to

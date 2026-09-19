@@ -128,7 +128,8 @@ async def list_materials(
     limit: int = Field(default=50, ge=1, le=200),
     offset: int = Field(default=0, ge=0),
 ) -> dict:
-    """List materials with assignments, shader classification, image count, and basic Principled values.
+    """
+    List materials with assignments, shader classification, image count, and basic Principled values.
 
     Use `object_name` to scope the inventory to one mesh. Follow `next_offset` while `truncated`
     is true. This intentionally summarizes graphs; use `inspect_material` for nodes and links.
@@ -146,7 +147,8 @@ async def inspect_material(
     link_limit: int = Field(default=200, ge=1, le=1000),
     link_offset: int = Field(default=0, ge=0),
 ) -> dict:
-    """Inspect one material's effective output path, bounded graph, images, UV maps, and render settings.
+    """
+    Inspect one material's effective output path, bounded graph, images, UV maps, and render settings.
 
     Node identity uses stable node names plus `bl_idname`; sockets include identifiers and display
     names. Pagination for nodes and links is independent. This tool never evaluates or edits pixels.
@@ -164,7 +166,8 @@ async def get_shader_node_type_info(
     limit: int = Field(default=50, ge=1, le=200),
     offset: int = Field(default=0, ge=0),
 ) -> dict:
-    """Discover shader node types and concrete sockets supported by the connected Blender runtime.
+    """
+    Discover shader node types and concrete sockets supported by the connected Blender runtime.
 
     Supply ``bl_idname`` for one exact schema or ``search`` to browse. Each candidate is instantiated
     in a disposable Material, World, or Light graph so dynamic sockets and target compatibility are
@@ -190,7 +193,8 @@ async def patch_shader_graph(
     operations: Annotated[list[ShaderGraphEdit], Field(min_length=1, max_length=500)],
     enable_nodes: bool = False,
 ) -> dict:
-    """Atomically patch a Material, World, or Light shader graph without exposing raw node CRUD tools.
+    """
+    Atomically patch a Material, World, or Light shader graph without exposing raw node CRUD tools.
 
     The full ordered patch is applied to a private datablock copy and validated before all users are
     remapped in one commit. Node types and writable properties are checked against the connected
@@ -220,7 +224,8 @@ async def create_pbr_material(
     settings: PBRMaterialSettings | None = None,
     reuse_existing: bool = False,
 ) -> dict:
-    """Create one unassigned Principled material with an explicit engine compatibility target.
+    """
+    Create one unassigned Principled material with an explicit engine compatibility target.
 
     A collision is rejected unless `reuse_existing` is true; reuse never clears or rebuilds an
     existing graph. `preset` seeds WATER/GLASS/OIL/TINTED starting values (WATER/OIL/TINTED also add
@@ -241,7 +246,8 @@ async def create_pbr_material(
 async def configure_pbr_material(
     ctx: Context, material_name: str, patch: PBRMaterialSettings, target_engine: TargetEngine = "BOTH"
 ) -> dict:
-    """Patch supplied Principled and material settings on the shader feeding the active output.
+    """
+    Patch supplied Principled and material settings on the shader feeding the active output.
 
     Omitted values remain unchanged. `BOTH` retains a shared normal/bump workflow and reports
     features that cannot render equivalently; true displacement is accepted only for Cycles.
@@ -265,7 +271,8 @@ async def assign_material(
     slot_index: int | None = Field(default=None, ge=0),
     face_indices: dict[str, list[int]] | None = None,
 ) -> dict:
-    """Assign a material to explicit mesh objects without clearing unrelated slots.
+    """
+    Assign a material to explicit mesh objects without clearing unrelated slots.
 
     `REPLACE_SLOT` requires `slot_index`. `ASSIGN_FACES` requires per-object face indices and uses
     the existing matching slot or appends one. Every object and index is validated before mutation.
@@ -284,7 +291,8 @@ async def assign_material(
 async def configure_texture_mapping(
     ctx: Context, material_name: str, texture_node_names: list[str], settings: TextureMappingSettings
 ) -> dict:
-    """Attach or update one managed coordinate/mapping branch for explicit Image Texture nodes.
+    """
+    Attach or update one managed coordinate/mapping branch for explicit Image Texture nodes.
 
     Existing unrelated vector branches are not rewritten. All target nodes are validated before
     mutation, and managed nodes are reused on repeated calls.
@@ -314,7 +322,8 @@ async def apply_pbr_texture_set(
     ao_display_strength: float = Field(default=0.0, ge=0, le=1),
     reuse_existing_images: bool = True,
 ) -> dict:
-    """Build a managed, repeatable PBR image branch from an explicit local texture set.
+    """
+    Build a managed, repeatable PBR image branch from an explicit local texture set.
 
     Color maps use sRGB; scalar/vector data use Non-Color. DirectX normals are green-channel
     corrected. Packed ORM/RMA channels are separated explicitly. AO is multiplied into base color

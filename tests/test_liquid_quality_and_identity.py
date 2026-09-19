@@ -1,7 +1,6 @@
 """Regression coverage for newly exposed liquid settings, quality profiles, and stable identities."""
 
 import asyncio
-
 import types
 
 import pytest

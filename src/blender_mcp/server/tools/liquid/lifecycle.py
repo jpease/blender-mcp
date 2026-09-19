@@ -1,4 +1,4 @@
-# ruff: file-ignore[docstring-missing-returns, multi-line-summary-second-line, unused-function-argument]
+# ruff: file-ignore[multi-line-summary-second-line]
 """Typed tools for removing fluid modifier components."""
 
 import asyncio

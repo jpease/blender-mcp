@@ -170,7 +170,8 @@ def _has_gui_window():
 
 
 def _start_fluid_bake_job(obj, operator):
-    """Start a fluid bake as a non-blocking, pollable Blender WM job when a GUI window is available.
+    """
+    Start a fluid bake as a non-blocking, pollable Blender WM job when a GUI window is available.
 
     Blender's fluid bake operators only become non-blocking (INVOKE_DEFAULT, returning RUNNING_MODAL
     while the job runs in the background) when invoked under a real window/area/region context; the
@@ -229,7 +230,8 @@ def _job_id(domain_uuid, stage, resolved_directory):
 
 
 def _reconcile_pending_bake_manifest(obj, settings, resolved_directory):
-    """Write the ownership manifest for a previously async-started bake once it has finished.
+    """
+    Write the ownership manifest for a previously async-started bake once it has finished.
 
     START_BAKE/RESUME may dispatch a real Blender WM job (INVOKE_DEFAULT) that keeps running after
     the call returns, so nothing runs the manifest write at the moment baking actually completes.
@@ -279,7 +281,8 @@ def _reject_unused_openvdb_fields(settings, patch):
 
 
 def _set_openvdb_data_depth(settings, value):
-    """Set the OpenVDB float precision, bypassing the RNA enum whose static items are unreliable.
+    """
+    Set the OpenVDB float precision, bypassing the RNA enum whose static items are unreliable.
 
     Blender 5.2.1 reports ``enum_items == ['NONE']`` for this dynamic enum while only the strings
     ``'32'``, ``'16'`` and ``'8'`` are accepted, so the value is checked against the verified
@@ -293,7 +296,8 @@ def _set_openvdb_data_depth(settings, value):
 
 
 def _baked_frame_ceiling(settings):
-    """Return the highest frame guaranteed to have baked cache data for a MODULAR/ALL domain.
+    """
+    Return the highest frame guaranteed to have baked cache data for a MODULAR/ALL domain.
 
     A pause frame > 0 on the stage that drives the domain's visible output means baking stopped
     there; a fully completed (or never-started) stage leaves its pause field at 0, so the ceiling

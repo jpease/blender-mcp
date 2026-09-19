@@ -21,7 +21,8 @@ async def create_retopology_guides(
     projection_offset: float = 0.0,
     max_projection_distance: Annotated[float, Field(gt=0)] | None = None,
 ) -> dict:
-    """Create explicit world-space curve guides projected onto an evaluated source.
+    """
+    Create explicit world-space curve guides projected onto an evaluated source.
 
     Each guide dict must contain `name`, `role`, and exactly one of `points`
     or `source_vertex_indices`; it may contain `cyclic` (default false).
@@ -59,7 +60,8 @@ async def create_surface_section(
     cyclic: bool = True,
     projection_offset: float = 0.0,
 ) -> dict:
-    """Create a resampled guide from a world-space plane/source intersection.
+    """
+    Create a resampled guide from a world-space plane/source intersection.
 
     The evaluated source (including live modifiers) is intersected without
     modifying it. Connected sections are sorted by descending world-space
@@ -91,7 +93,8 @@ async def set_retopology_features(
     bevel_weight: Annotated[float, Field(ge=0, le=1)] | None = None,
     expected_revision: str | None = None,
 ) -> dict:
-    """Detect and optionally write coherent feature marks on explicit target edges.
+    """
+    Detect and optionally write coherent feature marks on explicit target edges.
 
     Explicit `edge_indices` are always active. Optional source dihedral,
     material-boundary, and guide proximity rules add *candidates*; candidates
@@ -121,7 +124,8 @@ async def add_support_loops(
     subdivision_levels: Annotated[int, Field(ge=0, le=6)] = 2,
     expected_revision: str | None = None,
 ) -> dict:
-    """Insert deterministic support loops around selected manifold feature edges.
+    """
+    Insert deterministic support loops around selected manifold feature edges.
 
     The ordered-independent edge IDs must describe non-branching manifold
     chains. `width` is Blender's positive Edge Slide factor (0, 10]. BOTH runs
@@ -158,7 +162,8 @@ async def build_quad_patch(
     projection_offset: float = 0.0,
     expected_revision: str | None = None,
 ) -> dict:
-    """Append a regular quad grid defined by four ordered corners or Coons guides.
+    """
+    Append a regular quad grid defined by four ordered corners or Coons guides.
 
     Corners are ordered [u0v0, u1v0, u1v1, u0v1]. `u_segments` and
     `v_segments` are face counts, each at least 1. COONS additionally requires
@@ -185,7 +190,8 @@ async def extend_boundary(
     projection_offset: float = 0.0,
     expected_revision: str | None = None,
 ) -> dict:
-    """Grow one or more quad rows from one ordered open manifold boundary.
+    """
+    Grow one or more quad rows from one ordered open manifold boundary.
 
     The supplied vertices must form one non-branching open boundary in order;
     no implicit sorting or selection is used. FIXED_VECTOR uses `vector` in
@@ -211,7 +217,8 @@ async def fill_boundary_quads(
     projection_offset: float = 0.0,
     expected_revision: str | None = None,
 ) -> dict:
-    """Fill a compatible closed hole boundary with quads only.
+    """
+    Fill a compatible closed hole boundary with quads only.
 
     `boundary_edge_indices` must be exactly one ordered-compatible closed
     manifold boundary with an even vertex count. `span` and `offset` select

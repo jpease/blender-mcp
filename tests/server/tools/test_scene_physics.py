@@ -1,4 +1,4 @@
-# ruff: file-ignore[import-private-name, missing-return-type-private-function, missing-type-function-argument, undocumented-public-function, yoda-conditions]
+# ruff: file-ignore[yoda-conditions]
 """Regression coverage for scene-wide unit/gravity/sync-mode tools."""
 
 import asyncio

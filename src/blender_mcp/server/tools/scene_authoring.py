@@ -1,11 +1,9 @@
 # Tools take `ctx` by convention, used or not. Parameters stay flat because a model fills named
 # top-level parameters more reliably, which is worth the extra schema bytes.
-# ruff: file-ignore[too-many-arguments, too-many-positional-arguments, unused-function-argument]
 # Tool docstrings are sent to every client. These tools return the standard envelope and raise
 # only the errors their summaries state, so a `Returns:` or `Raises:` would add nothing. Add
 # `Returns:` only when `data` has a shape worth naming. Pydantic calls the validators, so no
 # caller could act on their `Raises:` either.
-# ruff: file-ignore[docstring-missing-exception, docstring-missing-returns]
 # pydantic's discriminated-union and `Annotated` forms defeat pyright's call/type-form checks.
 # pyright: reportCallIssue=false, reportInvalidTypeForm=false
 """

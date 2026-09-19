@@ -1,4 +1,4 @@
-# ruff: file-ignore[docstring-missing-exception, module-import-not-at-top-of-file]
+# ruff: file-ignore[module-import-not-at-top-of-file]
 """Run with Blender 5.1+ to smoke-test generic object transform keyframing."""
 
 import importlib.util

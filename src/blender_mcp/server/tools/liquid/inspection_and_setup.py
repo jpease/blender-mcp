@@ -2,7 +2,7 @@
 # receive a useful schema instead of an unrestricted FluidDomainSettings bag.
 # Ruff's argument-count and unused-context rules conflict with FastMCP's typed
 # public signatures; return sections are carried by the generated tool schema.
-# ruff: file-ignore[docstring-missing-returns, multi-line-summary-second-line, too-many-arguments, too-many-positional-arguments, undocumented-public-method, unused-function-argument]
+# ruff: file-ignore[multi-line-summary-second-line, undocumented-public-method]
 """Typed tools for liquid domain inspection, setup, flows, effectors, and validation."""
 
 import asyncio

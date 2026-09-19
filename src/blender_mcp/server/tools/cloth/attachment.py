@@ -1,6 +1,5 @@
 # MCP tool signatures intentionally expose more than five keyword arguments so
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
-# ruff: file-ignore[docstring-missing-returns, too-many-arguments, too-many-positional-arguments]
 """Typed tool for attaching a cloth's pin group to a target deformer."""
 
 import asyncio
@@ -31,7 +30,8 @@ async def create_cloth_attachment(
     existing_policy: ExistingPolicy = "ERROR",
     bind: bool = True,
 ) -> dict:
-    """Create or reuse a typed attachment modifier immediately before Cloth.
+    """
+    Create or reuse a typed attachment modifier immediately before Cloth.
 
     HOOK supports an optional armature bone and preserves the rest transform. ARMATURE,
     MESH_DEFORM, and SURFACE_DEFORM retain live targets; the deform variants bind only when

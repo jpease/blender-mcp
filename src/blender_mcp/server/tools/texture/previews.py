@@ -27,7 +27,8 @@ async def render_pbr_material_preview(
     eevee_output_path: str | None = None,
     confirm_cycles: bool = False,
 ) -> list[Image | dict]:
-    """Render a controlled studio preview in Eevee, Cycles, or both using identical staging.
+    """
+    Render a controlled studio preview in Eevee, Cycles, or both using identical staging.
 
     Cycles requires `confirm_cycles=True`. Output paths are optional but must be absolute and distinct.
     The result records engine, device, samples, color management, and approximation warnings. The

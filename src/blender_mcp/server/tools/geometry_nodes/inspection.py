@@ -18,7 +18,8 @@ async def list_procedural_systems(
     offset: Annotated[int, Field(ge=0)] = 0,
     include_orphans: bool = True,
 ) -> dict:
-    """Inventory reusable Geometry Nodes groups and every object modifier that uses them.
+    """
+    Inventory reusable Geometry Nodes groups and every object modifier that uses them.
 
     Use this before creating or attaching a procedural system. Results include sharing,
     asset/library state, execution-role flags, interface summaries, and MCP ownership tags.
@@ -39,7 +40,8 @@ async def get_geometry_node_graph(
     limit: Annotated[int, Field(ge=1, le=500)] = 100,
     offset: Annotated[int, Field(ge=0)] = 0,
 ) -> dict:
-    """Inspect one Geometry Nodes graph with stable socket identifiers and modifier overrides.
+    """
+    Inspect one Geometry Nodes graph with stable socket identifiers and modifier overrides.
 
     Request only the sections needed for the next edit. Node and socket display names are
     descriptive only; use returned identifiers and indices when preparing a graph patch.
@@ -60,7 +62,8 @@ async def get_geometry_node_type_info(
     limit: Annotated[int, Field(ge=1, le=200)] = 50,
     offset: Annotated[int, Field(ge=0)] = 0,
 ) -> dict:
-    """Discover Geometry Nodes node types supported by the connected Blender runtime.
+    """
+    Discover Geometry Nodes node types supported by the connected Blender runtime.
 
     Supply ``bl_idname`` for an exact schema or ``search``/``category`` to browse. Dynamic
     sockets are reported from a disposable runtime node, so use this instead of remembered
@@ -88,7 +91,8 @@ async def evaluate_procedural_geometry(
     frame: int | None = None,
     instance_limit: Annotated[int, Field(ge=1, le=5000)] = 500,
 ) -> dict:
-    """Inspect the evaluated result of an object's live procedural stack without applying it.
+    """
+    Inspect the evaluated result of an object's live procedural stack without applying it.
 
     Returns world-space bounds, mesh counts, materials, named attributes, component limits,
     and a bounded dependency-graph instance summary at the requested frame.
@@ -107,7 +111,8 @@ async def validate_geometry_node_graph(
     object_names: list[str] | None = None,
     topology_warning_threshold: Annotated[int, Field(ge=1)] = 1_000_000,
 ) -> dict:
-    """Check a procedural graph and its live users for production risks without changing data.
+    """
+    Check a procedural graph and its live users for production risks without changing data.
 
     Findings have INFO, WARNING, or ERROR severity and identify the affected group, node,
     socket, modifier, or object plus a concrete remediation. A clean evaluation is not claimed

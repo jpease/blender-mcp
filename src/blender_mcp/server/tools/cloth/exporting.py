@@ -1,6 +1,5 @@
 # MCP tool signatures intentionally expose more than five keyword arguments so
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
-# ruff: file-ignore[docstring-missing-returns, too-many-arguments, too-many-positional-arguments]
 """Typed tool for exporting cloth objects to Alembic or USD."""
 
 import asyncio
@@ -44,7 +43,8 @@ async def export_cloth_simulation(
     overwrite: bool = False,
     max_frames: Annotated[int, Field(ge=1)] = 500,
 ) -> dict:
-    """Export exact cloth objects to Alembic or USD using Blender 5.1's native exporter.
+    """
+    Export exact cloth objects to Alembic or USD using Blender 5.1's native exporter.
 
     The path, range, transforms, units, axes, topology policy, attributes, and overwrite boundary
     are explicit. REQUIRE_BAKED rejects unbaked Cloth modifiers; EVALUATE may populate in-memory

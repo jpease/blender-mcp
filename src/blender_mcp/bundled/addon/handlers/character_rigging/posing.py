@@ -217,6 +217,7 @@ class PoseAnimationHandlersMixin:
     """Apply pose-space transforms and author named animation actions."""
 
     def list_character_bones(self, armature_object_name, limit=100, offset=0):
+        """Page the armature's rest bones with their parent and deform flags."""
         armature = _armature_object(armature_object_name)
         _validate_limit_offset(limit, offset, _MAX_BONE_PAGE, "bone")
         # Rest-bone names, parents and deform flags are edited in Edit Mode, which keeps its own

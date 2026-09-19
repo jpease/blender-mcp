@@ -7,7 +7,6 @@ import contextlib
 import bpy
 
 from ...helpers import preserve_mode_and_selection, set_active
-
 from .inspection_and_setup import _scene_context_for_object
 
 

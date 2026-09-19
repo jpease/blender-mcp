@@ -1,4 +1,5 @@
-"""Read and write the per-domain liquid sidecar manifest kept beside a domain's cache.
+"""
+Read and write the per-domain liquid sidecar manifest kept beside a domain's cache.
 
 The manifest lets later calls tell MCP-owned cache files and MCP-owned scene objects apart from
 unrelated content in the same directory. It is plain metadata: writes are idempotent and are *not*
@@ -56,7 +57,8 @@ def write_stage_entry(resolved_directory, domain_uuid, stage, cache_type, frame_
 
 
 def register_objects(resolved_directory, domain_uuid, entries):
-    """Record UUID -> {name, role} for objects this domain owns, keyed by UUID rather than name.
+    """
+    Record UUID -> {name, role} for objects this domain owns, keyed by UUID rather than name.
 
     ``entries`` is an iterable of ``(object_uuid, object_name, role)``. Names are stored only as a
     convenience for humans reading the file; lookups key off the UUID so a rename cannot orphan an

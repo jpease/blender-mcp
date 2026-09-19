@@ -392,7 +392,8 @@ class LightConstructionHandlers:
         rig_name=None,
         collection_name="Studio Lighting",
     ):
-        """Build a photographically-sound key/fill/rim AREA-light rig sized to a target's bounds.
+        """
+        Build a photographically-sound key/fill/rim AREA-light rig sized to a target's bounds.
 
         Orchestrates create_light + aim_light for each role instead of duplicating their validation
         or mutation logic; placement, softbox size, and energy all scale off the target's evaluated

@@ -1,5 +1,4 @@
 # pyright: reportCallIssue=false, reportInvalidTypeForm=false
-# ruff: file-ignore[docstring-missing-exception, docstring-missing-returns, too-many-arguments, too-many-positional-arguments, unused-function-argument]
 """
 Typed scene composition, hierarchy, constraint, modifier and validation tools.
 
@@ -450,7 +449,8 @@ async def validate_scene(
     | None = None,
     max_findings: Annotated[int, Field(ge=1, le=1000)] = 300,
 ) -> dict:
-    """Run one bounded, non-mutating pre-render preflight aggregating every domain validator.
+    """
+    Run one bounded, non-mutating pre-render preflight aggregating every domain validator.
 
     Orchestrates ``validate_pbr_asset``, ``validate_lighting_setup``, ``validate_cloth_setup``,
     ``validate_liquid_setup``, and ``validate_camera_rig`` for this scene, plus scene-level checks

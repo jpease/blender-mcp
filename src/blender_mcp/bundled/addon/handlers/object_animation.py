@@ -1,5 +1,5 @@
 # pyright: reportArgumentType=false
-# ruff: file-ignore[missing-return-type-private-function, missing-return-type-undocumented-public-function, missing-type-function-argument, no-self-use, too-many-arguments, too-many-branches, too-many-locals, undocumented-public-method]
+# ruff: file-ignore[too-many-branches, too-many-locals, undocumented-public-method]
 """Blender-side handlers for generic object transform keyframing (location/rotation/scale)."""
 
 import math

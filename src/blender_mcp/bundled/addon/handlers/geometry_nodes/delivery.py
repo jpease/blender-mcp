@@ -1,4 +1,4 @@
-# ruff: file-ignore[docstring-missing-exception, docstring-missing-returns, missing-return-type-private-function, missing-return-type-undocumented-public-function, missing-type-function-argument, no-self-use, too-many-arguments, too-many-branches, too-many-locals, too-many-positional-arguments, too-many-statements, too-many-statements-in-try-clause, undocumented-public-method]
+# ruff: file-ignore[too-many-branches, too-many-locals, too-many-statements, too-many-statements-in-try-clause, undocumented-public-method]
 """Non-destructive Geometry Nodes delivery handlers."""
 
 import uuid

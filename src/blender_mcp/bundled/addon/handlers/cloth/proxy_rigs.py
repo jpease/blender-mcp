@@ -9,7 +9,6 @@ import uuid
 import bpy
 
 from ...helpers import preserve_mode_and_selection, set_active, sync_from_editmode
-
 from ._cache_helpers import _configure_independent_cache
 from ._deform_binding import (
     _bind_deform_modifier,

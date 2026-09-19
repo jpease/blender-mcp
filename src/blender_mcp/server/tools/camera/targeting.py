@@ -37,7 +37,8 @@ async def point_camera_at(
     target_point: tuple[float, float, float] | None = None,
     subtarget: str | None = None,
 ) -> dict:
-    """Rotate a camera once to aim at an object or world-space point.
+    """
+    Rotate a camera once to aim at an object or world-space point.
 
     Supply exactly one target source. Rotates local -Z toward the target with local Y as up,
     correctly resolving parent space. This is a one-shot rotation, not a constraint — use
@@ -74,7 +75,8 @@ async def create_camera_target(
     camera_names: list[str] | None = None,
     constraint_type: TrackingConstraint = "DAMPED_TRACK",
 ) -> dict:
-    """Create or explicitly reuse a tagged Empty as a camera aim control.
+    """
+    Create or explicitly reuse a tagged Empty as a camera aim control.
 
     Supply either a world location or an object whose evaluated bounds center should be used. Reuse
     is opt-in and accepts only an Empty already tagged as a camera target. Named cameras receive a
@@ -109,7 +111,8 @@ async def frame_camera_on_objects(
     policy: FramePolicy = "MOVE_CAMERA",
     aim_at_center: bool = True,
 ) -> dict:
-    """Fit explicit evaluated objects in a camera without viewport operators.
+    """
+    Fit explicit evaluated objects in a camera without viewport operators.
 
     ``MOVE_CAMERA`` preserves perspective optics, ``CHANGE_LENS`` preserves camera position, and
     ``CHANGE_ORTHO_SCALE`` is required for orthographic scale changes. Modifier-evaluated world

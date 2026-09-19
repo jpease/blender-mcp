@@ -26,7 +26,8 @@ async def create_retopology_target(
     add_shrinkwrap: bool = True,
     subdivision_levels: Annotated[int, Field(ge=0, le=6)] = 0,
 ) -> dict:
-    """Create an editable low-poly target linked to one or more source meshes.
+    """
+    Create an editable low-poly target linked to one or more source meshes.
 
     Use EMPTY when topology will be built by later tools, SINGLE_VERTEX for
     vertex-by-vertex work, PLANE/GRID for a starter patch, or
@@ -50,6 +51,7 @@ async def create_retopology_target(
 
     Returns:
         Target name, source links, collection, base counts, modifier order, and topology revision.
+
     """
     result = _call(
         "create_retopology_target",
@@ -77,7 +79,8 @@ async def inspect_retopology(
     limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     offset: Annotated[int, Field(ge=0)] = 0,
 ) -> dict:
-    """Inspect topology quality and a bounded set of planning details.
+    """
+    Inspect topology quality and a bounded set of planning details.
 
     This is the preferred inspection before index-based retopology edits. It
     reports aggregate components, boundary-loop summaries, face-type counts,
@@ -113,7 +116,8 @@ async def manage_retopology_checkpoint(
     checkpoint_name: str | None = None,
     confirm: bool = False,
 ) -> dict:
-    """Create, list, compare, restore, or delete recoverable mesh checkpoints.
+    """
+    Create, list, compare, restore, or delete recoverable mesh checkpoints.
 
     CREATE copies the mesh, local transform, modifier settings, vertex groups,
     and custom attributes into a hidden backup collection. LIST needs only the

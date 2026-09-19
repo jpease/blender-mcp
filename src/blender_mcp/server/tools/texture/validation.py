@@ -19,7 +19,8 @@ async def validate_pbr_asset(
     profile: Literal["BLENDER_CYCLES", "BLENDER_EEVEE", "BLENDER_BOTH"] = "BLENDER_BOTH",
     overlap_pair_limit: int = Field(default=100, ge=0, le=1000),
 ) -> dict:
-    """Return evidence-backed PBR readiness findings without changing the scene.
+    """
+    Return evidence-backed PBR readiness findings without changing the scene.
 
     Scope by objects, materials, or both. Findings cover slots, output paths, images, colorspaces,
     normal conversion, alpha, UVs, dirty storage, and engine-specific displacement/transmission risk.

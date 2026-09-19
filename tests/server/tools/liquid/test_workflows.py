@@ -47,7 +47,7 @@ def test_all_sixteen_workflow_commands_are_registered() -> None:
 
 def test_workflow_models_reject_unknown_and_inconsistent_values() -> None:
     with pytest.raises(ValidationError, match="extra_forbidden"):
-        liquid.LiquidMeshPatch(**{"smoke_only": True})  # pyright: ignore[reportArgumentType]
+        liquid.LiquidMeshPatch(smoke_only=True)  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValidationError, match="minimum must be <= maximum"):
         liquid.LiquidSecondaryParticlePatch(sndparticle_life_min=4, sndparticle_life_max=2)
     with pytest.raises(ValidationError, match="supplied together"):
@@ -183,11 +183,25 @@ def test_hollow_container_validates_rim_axis_and_thickness(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="rim_axis must be one of"):
         make().create_liquid_proxy_rig(
-            "Scene", "Source", "Proxy", "Domain", "Liquid Domain", "EFFECTOR", geometry="HOLLOW_CONTAINER", rim_axis="UP"
+            "Scene",
+            "Source",
+            "Proxy",
+            "Domain",
+            "Liquid Domain",
+            "EFFECTOR",
+            geometry="HOLLOW_CONTAINER",
+            rim_axis="UP",
         )
     with pytest.raises(ValueError, match="wall_thickness must be a positive number"):
         make().create_liquid_proxy_rig(
-            "Scene", "Source", "Proxy", "Domain", "Liquid Domain", "EFFECTOR", geometry="HOLLOW_CONTAINER", wall_thickness=0
+            "Scene",
+            "Source",
+            "Proxy",
+            "Domain",
+            "Liquid Domain",
+            "EFFECTOR",
+            geometry="HOLLOW_CONTAINER",
+            wall_thickness=0,
         )
     with pytest.raises(ValueError, match="wall_thickness must be a positive number"):
         make().create_liquid_proxy_rig(

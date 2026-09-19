@@ -59,6 +59,7 @@ def sync_from_editmode(obj) -> None:
 
     Args:
         obj: Value for obj.
+
     """
     obj.update_from_editmode()
 
@@ -503,7 +504,9 @@ def nd_call(op_name, *args, **kwargs):
     nd_ops = getattr(bpy.ops, "nd", None)
     op = getattr(nd_ops, op_name, None) if nd_ops is not None else None
     if op is None:
-        raise RuntimeError(f"ND operator 'nd.{op_name}' is not available - check that the ND addon is installed/enabled")
+        raise RuntimeError(
+            f"ND operator 'nd.{op_name}' is not available - check that the ND addon is installed/enabled"
+        )
     result = op(*args, **kwargs)
     if "RUNNING_MODAL" in result:
         raise RuntimeError(f"nd.{op_name} entered a modal state unexpectedly - not safe to call headlessly")

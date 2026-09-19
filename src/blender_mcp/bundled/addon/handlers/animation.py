@@ -1,4 +1,4 @@
-# ruff: file-ignore[missing-return-type-private-function, missing-return-type-undocumented-public-function, missing-type-function-argument, no-self-use, too-many-arguments, too-many-branches, too-many-locals, too-many-positional-arguments, undocumented-public-method]
+# ruff: file-ignore[too-many-branches, too-many-locals, undocumented-public-method]
 """Blender-side generic animation and layered Action handlers."""
 
 import ast
@@ -789,10 +789,10 @@ class AnimationHandlersMixin:
                             raise ValueError(f"Invalid array indices for {channel['data_path']}: {invalid}")
                         for index in indices:
                             channels.setdefault((channel["data_path"], index), []).append((frame, float(value[index])))
-                            channel_tolerances[(channel["data_path"], index)] = channel.get("tolerance", 0.0)
+                            channel_tolerances[channel["data_path"], index] = channel.get("tolerance", 0.0)
                     else:
                         channels.setdefault((channel["data_path"], 0), []).append((frame, float(value)))
-                        channel_tolerances[(channel["data_path"], 0)] = channel.get("tolerance", 0.0)
+                        channel_tolerances[channel["data_path"], 0] = channel.get("tolerance", 0.0)
         finally:
             scene.frame_set(original_frame)
 

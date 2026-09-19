@@ -1,4 +1,5 @@
-"""Run with Blender 5.1+: blender --background --factory-startup --python this_file.py.
+"""
+Run with Blender 5.1+: blender --background --factory-startup --python this_file.py.
 
 Disclosure: this file runs under `--background`, which has no window manager, so
 `START_BAKE`/`RESUME` always fall back to Blender's synchronous bake path
@@ -12,7 +13,6 @@ synchronous MODULAR bake.
 
 # This executable Blender harness intentionally uses module-level setup and
 # Blender's dynamically typed object return values.
-# ruff: file-ignore[magic-value-comparison, missing-return-type-undocumented-public-function, undocumented-public-function]
 
 from __future__ import annotations
 

@@ -1,6 +1,5 @@
 # MCP tool signatures intentionally expose more than five keyword arguments so
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
-# ruff: file-ignore[docstring-missing-returns, too-many-arguments, too-many-positional-arguments]
 """Typed tool for adding a reversible render-only modifier stack after Cloth."""
 
 import asyncio
@@ -87,7 +86,8 @@ async def prepare_cloth_render_surface(
     existing_policy: ExistingPolicy = "ERROR",
     rest_frame: Annotated[int, Field(ge=0)] = 1,
 ) -> dict:
-    """Add or update a reversible render-only modifier stack after Cloth.
+    """
+    Add or update a reversible render-only modifier stack after Cloth.
 
     Requested modifiers are ordered Corrective Smooth, Subdivision, Solidify, then Weighted Normal.
     Nothing is applied, source geometry/materials/UVs are retained, and evaluated cost evidence is

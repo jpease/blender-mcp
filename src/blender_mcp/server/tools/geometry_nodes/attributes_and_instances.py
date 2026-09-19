@@ -22,7 +22,8 @@ async def manage_named_attributes(
     values: list[Any] | None = None,
     confirm_destructive: bool = False,
 ) -> dict:
-    """Inspect or change persistent named geometry attributes used across procedural graphs.
+    """
+    Inspect or change persistent named geometry attributes used across procedural graphs.
 
     ``LIST`` is read-only. ``REMOVE`` and ``CONVERT`` require confirmation and report known node-group
     consumers. Values are bounded and validated against the selected data type, domain, and element count.
@@ -58,7 +59,8 @@ async def manage_procedural_instances(
     translation: tuple[float, float, float] | None = None,
     realize_instances: bool | None = None,
 ) -> dict:
-    """Inspect or update a tagged scatter/array instance system through stable builder roles.
+    """
+    Inspect or update a tagged scatter/array instance system through stable builder roles.
 
     The result identifies source dependencies, estimated instance count, nesting depth, and whether
     downstream nodes force realization. Omitted settings remain unchanged.

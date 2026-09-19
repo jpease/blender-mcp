@@ -1,4 +1,3 @@
-# ruff: file-ignore[docstring-missing-returns]
 """One merged tool patching any combination of cloth-solver concerns."""
 
 import asyncio
@@ -221,7 +220,8 @@ async def configure_cloth(
     modifier_name: str,
     patch: ClothPatch,
 ) -> dict:
-    """Patch any combination of cloth-solver concerns through one entry point.
+    """
+    Patch any combination of cloth-solver concerns through one entry point.
 
     ``patch`` accepts one optional section per concern - solver, material, pinning,
     collisions, collider, sewing, pressure, internal_springs, rest_shape, and

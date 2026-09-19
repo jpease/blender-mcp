@@ -1,4 +1,3 @@
-# ruff: file-ignore[undocumented-public-function]
 """Coverage for the envelope: lifting an addon `warnings` list, and the per-reply byte budget."""
 
 from pydantic_core import to_json

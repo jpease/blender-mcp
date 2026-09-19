@@ -869,7 +869,7 @@ class LinkingHandlersMixin:
     """Link, override, list, reload, relocate and unlink canon libraries."""
 
     @staticmethod
-    def link_canon_library(  # ruff: ignore[too-many-arguments]
+    def link_canon_library(
         filepath: object,
         *,
         collections: object = None,

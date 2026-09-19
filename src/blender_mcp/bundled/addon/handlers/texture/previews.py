@@ -132,11 +132,10 @@ class TexturePreviewHandlers:
                 scene.render.engine = runtime_engine(engine)
                 if engine == "CYCLES":
                     scene.cycles.samples = int(samples)
-                else:
-                    # Blender 5.1 exposes Eevee samples through render settings RNA;
-                    # retain runtime introspection for builds with renamed properties.
-                    if hasattr(scene, "eevee") and hasattr(scene.eevee, "taa_render_samples"):
-                        scene.eevee.taa_render_samples = int(samples)
+                # Blender 5.1 exposes Eevee samples through render settings RNA;
+                # retain runtime introspection for builds with renamed properties.
+                elif hasattr(scene, "eevee") and hasattr(scene.eevee, "taa_render_samples"):
+                    scene.eevee.taa_render_samples = int(samples)
                 render.filepath = paths[engine]
                 with bpy.context.temp_override(scene=scene):
                     result = bpy.ops.render.render(write_still=True, scene=scene.name)

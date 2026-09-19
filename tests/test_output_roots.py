@@ -15,7 +15,7 @@ from types import ModuleType
 import pytest
 
 from conftest import load_addon_source_module
-from test_mutation_transaction import _load_addon  # ruff: ignore[import-private-name]
+from test_mutation_transaction import _load_addon
 
 
 def _load_output_roots() -> ModuleType:

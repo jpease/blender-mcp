@@ -22,7 +22,8 @@ async def manage_uv_maps(
     source_uv_map_name: str | None = None,
     confirm: bool = False,
 ) -> dict:
-    """List or perform one explicit UV-map lifecycle action on a named mesh.
+    """
+    List or perform one explicit UV-map lifecycle action on a named mesh.
 
     CREATE never replaces; DUPLICATE copies loop UVs; RENAME preserves references; ACTIVATE and
     SET_RENDER are distinct. REMOVE requires `confirm=True` and reports material nodes referencing it.
@@ -42,7 +43,8 @@ async def set_uv_seams(
     rule: Literal["BOUNDARY", "SHARP", "ANGLE"] | None = None,
     angle_threshold: float | None = Field(default=None, gt=0, le=3.141592653589793),
 ) -> dict:
-    """Mark or clear seams by explicit edge indices or one deterministic topology rule.
+    """
+    Mark or clear seams by explicit edge indices or one deterministic topology rule.
 
     Supply exactly one of `edge_indices` and `rule`; ANGLE requires radians in `angle_threshold`.
     The response returns the exact changed edge indices. Topology indices remain valid.
@@ -65,7 +67,8 @@ async def unwrap_uvs(
     create_if_missing: bool = True,
     margin: float = Field(default=0.001, ge=0, le=1),
 ) -> dict:
-    """Seam-unwrap all or explicit faces into a named UV map with full context restoration.
+    """
+    Seam-unwrap all or explicit faces into a named UV map with full context restoration.
 
     Face indices are base-mesh indices and are validated before mode changes. This tool unwraps
     only; call `optimize_uv_layout` for density normalization, relaxation, and packing.
@@ -89,7 +92,8 @@ async def optimize_uv_layout(
     margin: float = Field(default=0.001, ge=0, le=1),
     udim_source: Literal["CLOSEST_UDIM", "ACTIVE_UDIM", "ORIGINAL_AABB"] = "CLOSEST_UDIM",
 ) -> dict:
-    """Normalize, relax, and pack selected or all UV faces using checked Blender operators.
+    """
+    Normalize, relax, and pack selected or all UV faces using checked Blender operators.
 
     Every enabled stage must return FINISHED. Pinned UV behavior follows Blender's operator contract;
     the result reports executed stages and updated layout measurements.
@@ -105,7 +109,8 @@ async def inspect_uv_layout(
     uv_map_name: str | None = None,
     overlap_pair_limit: int = Field(default=100, ge=0, le=1000),
 ) -> dict:
-    """Audit UV islands, bounds, degeneracy, overlap, orientation, stretch, and density read-only.
+    """
+    Audit UV islands, bounds, degeneracy, overlap, orientation, stretch, and density read-only.
 
     Coordinates are raw UV space and density is UV units per world unit. Overlap testing is bounded;
     check `overlap_truncated` before treating the reported pair list as exhaustive.

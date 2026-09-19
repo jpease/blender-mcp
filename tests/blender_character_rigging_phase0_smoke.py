@@ -1,4 +1,5 @@
-"""Blender 5.1+ background smoke coverage for Phase 0 character-rigging handlers.
+"""
+Blender 5.1+ background smoke coverage for Phase 0 character-rigging handlers.
 
 Run with::
 
@@ -6,7 +7,6 @@ Run with::
 """
 
 # Blender's runtime types are intentionally dynamic in this executable harness.
-# ruff: file-ignore[missing-return-type-undocumented-public-function, undocumented-public-function]
 
 import importlib.util
 import json

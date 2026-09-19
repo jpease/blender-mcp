@@ -1,4 +1,5 @@
-"""Blender background smoke coverage for rigid-body character and scale workflows.
+"""
+Blender background smoke coverage for rigid-body character and scale workflows.
 
 Run with::
 
@@ -6,7 +7,6 @@ Run with::
 """
 
 # Blender runtime types are dynamic in this executable harness.
-# ruff: file-ignore[missing-return-type-undocumented-public-function, undocumented-public-function]
 
 import importlib.util
 import json

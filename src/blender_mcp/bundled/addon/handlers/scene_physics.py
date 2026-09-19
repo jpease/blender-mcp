@@ -1,4 +1,4 @@
-# ruff: file-ignore[missing-return-type-private-function, missing-return-type-undocumented-public-function, missing-type-function-argument, no-self-use, undocumented-public-method]
+# ruff: file-ignore[undocumented-public-method]
 """Blender-side scene unit, gravity, and playback-sync handlers."""
 
 import math

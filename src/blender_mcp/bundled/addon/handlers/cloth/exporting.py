@@ -10,7 +10,6 @@ import tempfile
 import bpy
 
 from ...helpers import preserve_mode_and_selection
-
 from .inspection_and_setup import _get_object
 
 _EXPORT_UNIT_METERS = {
