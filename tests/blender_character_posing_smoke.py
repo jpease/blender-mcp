@@ -310,6 +310,31 @@ print(
 # that would mean the rounding or the flat shape had been lost.
 assert 100 < per_bone < 260, f"a rest-axis row costs {per_bone} bytes"
 
+# Naming the bones is the difference between six paginated calls and one. Measured on this
+# 187-bone rig: an unfiltered rest_axes walk needs `ceil(total / page)` calls before the three
+# bones a pose names are all in hand, and the filter needs one reply of a few hundred bytes.
+wanted = ["CHAR1_filler_010_jnt", "CHAR1_filler_120_jnt", "head"]
+named = handler.list_character_bones(wide.name, rest_axes=True, bone_names=wanted)
+assert named["bones"]["total"] == len(wanted), named["bones"]["total"]
+assert named["bones"]["truncated"] is False
+assert {item["name"] for item in named["bones"]["items"]} == set(wanted)
+assert all("rest_axes" in item for item in named["bones"]["items"])
+named_bytes = len(json.dumps(named, indent=2))
+assert named_bytes < axis_bytes / 10, f"a three-bone reply cost {named_bytes} of {axis_bytes} bytes"
+print(f"named three bones of {bone_count}: {named_bytes} bytes in 1 call, vs {axis_bytes} paged")
+
+# Armature order, so paging a filtered list behaves exactly like paging an unfiltered one.
+order = [bone.name for bone in wide.data.bones if bone.name in set(wanted)]
+assert [item["name"] for item in named["bones"]["items"]] == order, order
+
+# A name the rig does not have is refused, never quietly dropped.
+try:
+    handler.list_character_bones(wide.name, bone_names=["head", "CHAR1_no_such_jnt"])
+except ValueError as error:
+    assert "CHAR1_no_such_jnt" in str(error), str(error)
+else:
+    raise AssertionError("an unknown bone name was accepted")
+
 # --- 5. A keyed aim on an Euler bone stays on one branch -------------------------------------
 
 # A derived Euler triple has infinitely many spellings, and the one nearest the previous key is

@@ -129,6 +129,7 @@ async def list_character_bones(
     limit: Annotated[int, Field(ge=1, le=200)] = 100,
     offset: Annotated[int, Field(ge=0, le=99_999)] = 0,
     rest_axes: bool = False,
+    bone_names: Annotated[list[str] | None, Field(min_length=1, max_length=200)] = None,
 ) -> dict:
     """
     List a rig's bone names, parents, and deform flags so a pose can name real bones.
@@ -147,6 +148,10 @@ async def list_character_bones(
             which way a bone's local X, Y and Z point is rig-specific and not guessable from
             its name. It costs about 180 wire bytes a bone, which the reply budget spends as
             roughly 22 bones a page instead of 57, so leave it off unless choosing an axis.
+        bone_names: Report only these exact bones. Name the bones you intend to pose and read
+            their rest axes in one call, instead of paging a whole rig to reach three of them -
+            a 187-bone rig costs six calls with rest_axes and one with this. A name the
+            armature does not have is an error, never a silent omission.
 
     Returns:
         armature_object, and bones with items (name, parent - null for a root - and deform,
@@ -164,6 +169,7 @@ async def list_character_bones(
             "limit": limit,
             "offset": offset,
             "rest_axes": rest_axes,
+            "bone_names": bone_names,
         },
     )
 

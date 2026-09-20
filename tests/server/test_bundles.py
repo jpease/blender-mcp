@@ -484,7 +484,10 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # they travel), `render_scene` gained confirm_frame_range/persist_output/detail plus an optional
 # filepath so a render can carry its own intent, and `save_shot` gained the two provenance
 # switches. 601 of the 3,260 bytes are `save_shot`'s.
-SHOT_MODE_BYTE_CEILING = 205_260
+# Raised a third time, from 205,260, by `list_character_bones(bone_names=…)`: 459 bytes that
+# turn reading three bones' rest axes off a 187-bone rig from six paginated calls (53,023
+# bytes) into one 997-byte reply.
+SHOT_MODE_BYTE_CEILING = 205_719
 
 # The same rule for the default, core-only surface, and the same work: 166 bytes for
 # `validate_scene`'s `persistence` scope, 2,202 for `inspect_delivery`, 601 for `save_shot`'s

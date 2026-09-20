@@ -385,6 +385,14 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{CTRLT}::test_keyframe_detail_reports_the_pose_that_was_keyed",
     f"{CTRLT}::test_pose_tools_forward_the_detail_flag",
     # --- the pose an agent authors reaches the file, and a child is solved against its parent ---
+    # --- naming the bones instead of paging to them ---
+    f"{POSET}::test_named_bones_are_returned_in_one_page_instead_of_paged_to",
+    f"{POSET}::test_an_unknown_bone_name_is_refused_rather_than_silently_dropped",
+    f"{POSET}::test_no_filter_still_lists_every_bone",
+    *(
+        f"{POSET}::test_a_malformed_bone_name_filter_is_refused[{case}]"
+        for case in ("value0", "value1", "value2", "CHAR1_head_jnt")
+    ),
     f"{POSET}::test_aim_points_the_named_axis_at_an_object_and_leaves_position_and_scale_alone",
     f"{POSET}::test_aim_at_a_world_point_resolves_through_the_rig_transform",
     f"{POSET}::test_aim_rejects_every_direction_it_cannot_define",
@@ -6067,6 +6075,50 @@ REVERTS: list[Revert] = [
         '    reachable = {("scene.render", name) for name in table.RENDER_PROPERTIES}',
         "    reachable = set()",
         (f"{RCT}::test_the_recorded_baseline_and_the_shipped_routes_agree_on_the_reachable_set",),
+    ),
+    Revert(
+        "posing: the bone filter is ignored, so naming three bones still reads the whole rig",
+        ADDON_POSING,
+        "    if bone_names is None:\n        return bones",
+        "    if True:\n        return bones",
+        (
+            f"{POSET}::test_named_bones_are_returned_in_one_page_instead_of_paged_to",
+            f"{POSET}::test_an_unknown_bone_name_is_refused_rather_than_silently_dropped",
+        ),
+    ),
+    Revert(
+        "posing: a bone the rig does not have is dropped from the page instead of refused",
+        ADDON_POSING,
+        '    if missing:\n        raise ValueError(f"Bones not found in armature',
+        '    if False:\n        raise ValueError(f"Bones not found in armature',
+        (f"{POSET}::test_an_unknown_bone_name_is_refused_rather_than_silently_dropped",),
+    ),
+    Revert(
+        "posing: the bone filter accepts a shape that is not a list of names",
+        ADDON_POSING,
+        "    if not isinstance(bone_names, list) or not 1 <= len(bone_names) <= _MAX_BONE_PAGE:",
+        "    if False:",
+        (
+            f"{POSET}::test_a_malformed_bone_name_filter_is_refused[value0]",
+            f"{POSET}::test_a_malformed_bone_name_filter_is_refused[CHAR1_head_jnt]",
+        ),
+    ),
+    Revert(
+        "posing: a blank or non-string bone name passes the filter",
+        ADDON_POSING,
+        "        if not isinstance(name, str) or not name.strip():",
+        "        if False:",
+        (
+            f"{POSET}::test_a_malformed_bone_name_filter_is_refused[value1]",
+            f"{POSET}::test_a_malformed_bone_name_filter_is_refused[value2]",
+        ),
+    ),
+    Revert(
+        "posing: the list is narrowed even when no filter was asked for",
+        ADDON_POSING,
+        "    if bone_names is None:\n        return bones",
+        "    if bone_names is None:\n        return bones[:1]",
+        (f"{POSET}::test_no_filter_still_lists_every_bone",),
     ),
 ]
 

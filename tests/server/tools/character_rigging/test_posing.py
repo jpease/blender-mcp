@@ -884,3 +884,66 @@ def test_rest_axes_are_reported_only_when_asked_for(monkeypatch) -> None:
     assert "rest_axes" not in plain["bones"]["items"][0]
     # A quarter turn about Z sends the bone's rest X to armature +Y and its Y to armature -X.
     assert with_axes["bones"]["items"][0]["rest_axes"] == [0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+
+def _rig_with_bones(monkeypatch, *names: str):
+    """
+    Build a stub armature carrying the named rest bones.
+
+    Args:
+        monkeypatch: The test's monkeypatch.
+        *names: Bone names, in armature order.
+
+    Returns:
+        The server whose `bpy.data.objects` holds the rig.
+
+    """
+    bones = [
+        types.SimpleNamespace(name=name, parent=None, use_deform=True, matrix_local=_Matrix.Rotation(0.0, 4, "Z"))
+        for name in names
+    ]
+    rig = types.SimpleNamespace(
+        name="CHAR1_rig",
+        type="ARMATURE",
+        data=types.SimpleNamespace(name="CHAR1_rigData", bones=bones),
+        update_from_editmode=lambda: None,
+    )
+    addon, _bpy = _load_addon(monkeypatch, data={"objects": {"CHAR1_rig": rig}})
+    return addon.BlenderMCPServer()
+
+
+def test_named_bones_are_returned_in_one_page_instead_of_paged_to(monkeypatch) -> None:
+    """Reading three bones' axes off a production rig took six calls; naming them takes one."""
+    server = _rig_with_bones(monkeypatch, *(f"CHAR1_bone_{index:03d}" for index in range(180)))
+
+    filtered = server.list_character_bones("CHAR1_rig", rest_axes=True, bone_names=["CHAR1_bone_177", "CHAR1_bone_004"])
+
+    assert [item["name"] for item in filtered["bones"]["items"]] == ["CHAR1_bone_004", "CHAR1_bone_177"]
+    assert filtered["bones"]["total"] == 2
+    assert filtered["bones"]["truncated"] is False
+    assert filtered["bones"]["next_offset"] is None
+    assert all("rest_axes" in item for item in filtered["bones"]["items"])
+
+
+def test_an_unknown_bone_name_is_refused_rather_than_silently_dropped(monkeypatch) -> None:
+    """A caller asking for three bones and receiving two would pose the wrong one."""
+    server = _rig_with_bones(monkeypatch, "CHAR1_head_jnt", "CHAR1_spine03_skn_jnt")
+
+    with pytest.raises(ValueError, match=r"Bones not found in armature 'CHAR1_rig': \['CHAR1_hed_jnt'\]"):
+        server.list_character_bones("CHAR1_rig", bone_names=["CHAR1_head_jnt", "CHAR1_hed_jnt"])
+
+
+@pytest.mark.parametrize("value", [[], ["  "], [7], "CHAR1_head_jnt"])
+def test_a_malformed_bone_name_filter_is_refused(monkeypatch, value) -> None:
+    """The filter decides which bones are read, so a wrong shape must not read the whole rig."""
+    server = _rig_with_bones(monkeypatch, "CHAR1_head_jnt")
+
+    with pytest.raises(ValueError, match="bone_names"):
+        server.list_character_bones("CHAR1_rig", bone_names=value)
+
+
+def test_no_filter_still_lists_every_bone(monkeypatch) -> None:
+    """The filter is opt-in: omitting it must not narrow anything."""
+    server = _rig_with_bones(monkeypatch, "CHAR1_head_jnt", "CHAR1_spine03_skn_jnt")
+
+    assert server.list_character_bones("CHAR1_rig")["bones"]["total"] == 2

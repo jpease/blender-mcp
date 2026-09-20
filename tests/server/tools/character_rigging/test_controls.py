@@ -260,10 +260,20 @@ def test_bone_listing_is_registered_read_only_and_paginates(monkeypatch) -> None
 
     _run(character_rigging.list_character_bones, armature_object_name="HeroRig", limit=200, offset=200)
 
-    expected = {"armature_object_name": "HeroRig", "limit": 200, "offset": 200, "rest_axes": False}
+    expected = {
+        "armature_object_name": "HeroRig",
+        "limit": 200,
+        "offset": 200,
+        "rest_axes": False,
+        "bone_names": None,
+    }
     assert calls == [("list_character_bones", expected, None)]
     advertised = character_rigging.mcp._tool_manager._tools["list_character_bones"].parameters["properties"]
     assert advertised["limit"]["maximum"] == 200
+
+    calls.clear()
+    _run(character_rigging.list_character_bones, armature_object_name="HeroRig", bone_names=["CHAR1_head_jnt"])
+    assert calls[0][1]["bone_names"] == ["CHAR1_head_jnt"]
 
     addon, _bpy = _load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()

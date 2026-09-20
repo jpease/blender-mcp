@@ -761,17 +761,57 @@ def _place_playhead(scene, frame):
     scene.frame_set(whole, subframe=frame - whole)
 
 
+def _selected_bones(armature, bone_names):
+    """
+    Narrow an armature's rest bones to the ones the caller named, in armature order.
+
+    Reading three bones' rest axes off a 187-bone rig otherwise costs six paginated calls,
+    because `rest_axes` spends the reply budget at roughly 22 bones a page. A name that does
+    not exist is refused rather than silently omitted: a caller asking for three bones and
+    receiving two would pose the wrong one.
+
+    Args:
+        armature: The armature object.
+        bone_names: Exact bone names to keep, or None for every bone.
+
+    Returns:
+        list: The matching `bpy.types.Bone`s, in armature order, so paging a filtered list
+        behaves exactly like paging an unfiltered one.
+
+    Raises:
+        ValueError: When `bone_names` is not a list of 1 to `_MAX_BONE_PAGE` non-empty
+            strings, or names a bone this armature does not have.
+
+    """
+    bones = list(armature.data.bones)
+    if bone_names is None:
+        return bones
+    if not isinstance(bone_names, list) or not 1 <= len(bone_names) <= _MAX_BONE_PAGE:
+        raise ValueError(f"bone_names must be a list of 1 to {_MAX_BONE_PAGE} bone names")
+    wanted = []
+    for name in bone_names:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("each bone_names entry must be a non-empty string")
+        wanted.append(name.strip())
+    present = {bone.name for bone in bones}
+    missing = sorted({name for name in wanted if name not in present})
+    if missing:
+        raise ValueError(f"Bones not found in armature '{armature.name}': {missing}")
+    requested = set(wanted)
+    return [bone for bone in bones if bone.name in requested]
+
+
 class PoseAnimationHandlersMixin:
     """Apply pose-space transforms and author named animation actions."""
 
-    def list_character_bones(self, armature_object_name, limit=100, offset=0, rest_axes=False):
+    def list_character_bones(self, armature_object_name, limit=100, offset=0, rest_axes=False, bone_names=None):
         """Page the armature's rest bones with their parent, deform flag and optional rest axes."""
         armature = _armature_object(armature_object_name)
         _validate_limit_offset(limit, offset, _MAX_BONE_PAGE, "bone")
         # Rest-bone names, parents and deform flags are edited in Edit Mode, which keeps its own
         # copy of the armature until it exits; flush it rather than report stale bones.
         sync_from_editmode(armature)
-        bones = list(armature.data.bones)
+        bones = _selected_bones(armature, bone_names)
         start, end, truncated, next_offset = paginate(len(bones), offset, limit, _MAX_BONE_PAGE)
         items = []
         for bone in bones[start:end]:
