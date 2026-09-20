@@ -233,3 +233,7 @@ docker/blender/output/
 
 # Local planning notes (superpowers plans/specs), not published
 docs/superpowers/
+
+# Mantaflow writes its wavelet noise tile into the working directory the first time a
+# fluid smoke script bakes, so `just smoke` drops a 24 MB file in the repository root.
+waveletNoiseTile.bin
