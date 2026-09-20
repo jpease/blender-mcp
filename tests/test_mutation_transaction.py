@@ -29,9 +29,20 @@ class FakeMatrix:
 
 
 class FakeDatablock:
+    """
+    Stand-in for a bpy ID.
+
+    `users`, `use_fake_user` and `library` exist on every real ID, so they exist
+    here: production reads them with a `getattr` default, and a fake missing them
+    would pass the persistence checks for the wrong reason.
+    """
+
     def __init__(self, name) -> None:
         self.name = name
         self.session_uid = _next_uid()
+        self.users = 1
+        self.use_fake_user = False
+        self.library = None
 
 
 class FakeMesh:
@@ -685,3 +696,97 @@ def test_regression_guard_a_transaction_unaware_of_a_library_reload_removes_the_
 
     survivors = {db.session_uid for collection in data.values() for db in collection}
     assert survivors == {local.session_uid}
+
+
+# ---------------------------------------------------------------------------
+# What the save will discard: the warning every mutating reply carries.
+# ---------------------------------------------------------------------------
+
+
+def _mutating_reply(monkeypatch: pytest.MonkeyPatch, prepare) -> dict:
+    """
+    Run one successful mutating handler and return its reply.
+
+    Args:
+        monkeypatch: The active monkeypatch fixture.
+        prepare: Callable given `bpy`, run inside the handler, that creates the
+            datablock under test.
+
+    Returns:
+        dict: The command response.
+
+    """
+    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
+    addon, bpy = _load_addon(monkeypatch, data=data)
+    server = addon.BlenderMCPServer()
+
+    def fake_handler():
+        prepare(bpy)
+        return {"ok": True}
+
+    monkeypatch.setattr(server, "_build_command_handlers", lambda: {"do_mutate": fake_handler})
+    monkeypatch.setattr(bpy.ops.ed, "undo_push", lambda **_kw: None)
+    return server.execute_command_internal({"type": "do_mutate", "params": {}})
+
+
+def test_persistence_an_unreferenced_created_datablock_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A material nothing references is lost at save, so the reply must say so."""
+
+    def create(bpy) -> None:
+        bpy.data.materials.new(name="Orphan").users = 0
+
+    response = _mutating_reply(monkeypatch, create)
+
+    warnings = response["result"]["warnings"]
+    assert len(warnings) == 1
+    assert "have no user" in warnings[0]
+    assert "materials:Orphan" in warnings[0]
+
+
+def test_persistence_a_fake_user_datablock_is_not_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ID.users` counts the fake user, so a deliberately-kept datablock is not a loss."""
+
+    def create(bpy) -> None:
+        kept = bpy.data.actions.new(name="Kept")
+        kept.users = 1
+        kept.use_fake_user = True
+
+    assert _mutating_reply(monkeypatch, create)["result"] == {"ok": True}
+
+
+def test_persistence_an_assigned_datablock_is_not_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A datablock with a real user survives the save, so no warning rides along."""
+
+    def create(bpy) -> None:
+        bpy.data.materials.new(name="Assigned").users = 1
+
+    assert _mutating_reply(monkeypatch, create)["result"] == {"ok": True}
+
+
+def test_persistence_a_linked_datablock_is_never_this_commands_authorship(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A zero-user datablock belonging to another file is that file's problem, not this reply's."""
+
+    def create(bpy) -> None:
+        linked = bpy.data.meshes.new(name="CanonMesh")
+        linked.users = 0
+        linked.library = FakeDatablock("canon.blend")
+
+    assert _mutating_reply(monkeypatch, create)["result"] == {"ok": True}
+
+
+def test_persistence_the_warning_names_at_most_five_and_counts_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The warning shares an 8 KiB reply budget, so it is bounded at the source."""
+
+    def create(bpy) -> None:
+        for index in range(8):
+            bpy.data.materials.new(name=f"Orphan{index}").users = 0
+
+    warning = _mutating_reply(monkeypatch, create)["result"]["warnings"][0]
+
+    assert warning.startswith("8 datablocks")
+    assert warning.count("materials:") == 5
+    assert "(+3 more)" in warning

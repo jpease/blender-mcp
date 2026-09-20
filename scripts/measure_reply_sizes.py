@@ -566,6 +566,74 @@ def _linked_datablocks(total: int) -> dict[str, object]:
     }
 
 
+def _delivery_entries() -> list[dict[str, object]]:
+    """
+    Mirror `handlers/delivery.py:_entry` for a representative shot's external references.
+
+    One canon library, a dozen textures (one of them left on an absolute path, which is the
+    finding the tool exists for), a title font, the cloth and rigid-body caches, and the
+    scene's own output template.
+
+    Returns:
+        list[dict[str, object]]: One page of entries in the tool's fixed order.
+
+    """
+    entries: list[dict[str, object]] = [
+        {
+            "kind": "LIBRARY",
+            "name": "canon.blend",
+            "path": "//../canon/canon.blend",
+            "absolute": False,
+            "verdict": "RELATIVE_OK",
+            "detail": {"indirect": False, "sha256": "", "hash_skipped": ""},
+        }
+    ]
+    for index in range(12):
+        absolute = index == 0
+        entries.append(
+            {
+                "kind": "IMAGE",
+                "name": f"prop_{index:03d}_basecolor.png",
+                "path": "prop_000_basecolor.png" if absolute else f"//textures/prop_{index:03d}_basecolor.png",
+                "absolute": absolute,
+                "verdict": "ABSOLUTE" if absolute else "RELATIVE_OK",
+                "detail": {"users": 1, "dirty": False, "source": "FILE"},
+            }
+        )
+    entries.append(
+        {
+            "kind": "FONT",
+            "name": "TitleSans.ttf",
+            "path": "//fonts/TitleSans.ttf",
+            "absolute": False,
+            "verdict": "RELATIVE_OK",
+            "detail": {"users": 1},
+        }
+    )
+    for owner in ("Hero_Cloak:Cache", "Scene:RigidBodyWorld"):
+        entries.append(
+            {
+                "kind": "CACHE",
+                "name": owner,
+                "path": "",
+                "absolute": False,
+                "verdict": "RELATIVE_OK",
+                "detail": {"use_disk_cache": True, "use_external": False, "is_baked": True, "is_outdated": False},
+            }
+        )
+    entries.append(
+        {
+            "kind": "RENDER_OUTPUT",
+            "name": "Scene",
+            "path": "//renders/sh010_",
+            "absolute": False,
+            "verdict": "RELATIVE_OK",
+            "detail": {"file_format": "OPEN_EXR_MULTILAYER"},
+        }
+    )
+    return entries
+
+
 def _bone_name(index: int) -> str:
     """
     Name one bone the way a production rig does, so name length is realistic.
@@ -909,6 +977,39 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "last_save_error": None,
             "is_dirty": True,
             "libraries": [{key: _LIBRARY_DETAILS[key] for key in ("session_uid", "name", "filepath")}],
+        },
+        # `handlers/delivery.py:inspect_delivery`. A representative shot references one canon
+        # library, a dozen textures, a font, both simulation caches and its own output template.
+        "inspect_delivery": lambda _scale: {
+            "scene": "Scene",
+            "blend_filepath": "/shots/hero/shot.blend",
+            "saved": True,
+            "portable": False,
+            "classes": {
+                "LIBRARY": {"total": 1, "unportable": 0},
+                "IMAGE": {"total": 12, "unportable": 1},
+                "FONT": {"total": 1, "unportable": 0},
+                "SOUND": {"total": 0, "unportable": 0},
+                "CACHE": {"total": 2, "unportable": 0},
+                "RENDER_OUTPUT": {"total": 1, "unportable": 0},
+                "PATH": {"total": 0, "unportable": 0},
+            },
+            "entries": _delivery_entries(),
+            "limit": 50,
+            "offset": 0,
+            "total": 17,
+            "truncated": False,
+            "next_offset": None,
+            "provenance": None,
+            "changed_objects": [],
+            "warnings": [],
+            "limitations": [
+                "Paths that are not // -relative are reported by leaf name only, so the reply never carries "
+                "this host's directory layout.",
+                "A packed image is portable; a packed image with unsaved edits (dirty) is not yet written.",
+                "Verdicts describe path shape and existence on this machine, not whether the destination can "
+                "read them.",
+            ],
         },
         "save_shot": lambda _scale: {
             "filepath": "/shots/hero/shot.blend",
@@ -1613,12 +1714,14 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "view_layer": {**_VIEW_LAYER_INFO, "name": "Beauty"},
             "changed_resources": ["Beauty"],
         },
+        # The default reply summarises: `files`/`progress` are `detail=true` only, so this shape
+        # no longer grows with the frame count.
         "render_scene": lambda _scale: {
             "scene": "Scene",
-            "mode": "STILL",
-            "filepath": "/shots/hero/render/shot_0001.png",
+            "mode": "ANIMATION",
+            "filepath": "/shots/hero/render/shot_",
             "frame": 1,
-            "frame_count": 1,
+            "frame_count": 120,
             "operator_result": ["FINISHED"],
             "settings_restored": True,
             "status": "COMPLETED",
@@ -1626,14 +1729,15 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "cancellation_reason": None,
             "duration_seconds": 41.19302070798585,
             "render_slot_policy": "USE_ACTIVE",
-            "files": [{"frame": 1, "path": "/shots/hero/render/shot_0001.png", "bytes": 2_514_071}],
+            "output_persisted": False,
+            "first_file": "/shots/hero/render/shot_0001.png",
+            "last_file": "/shots/hero/render/shot_0120.png",
+            "bytes_written": 301_688_520,
             "passes": [
                 {"layer": "ViewLayer", "pass": name, "setting": f"use_pass_{name.lower()}"}
                 for name in ("Combined", "Z", "Normal", "Cryptomatte")
             ],
             "pass_verification": "VIEW_LAYER_CONFIGURATION",
-            "progress": [{"frame": 1, "completed": 1, "total": 1, "fraction": 1.0}],
-            "progress_truncated": False,
         },
         "inspect_render_output": lambda _scale: {
             "success": True,
@@ -1761,6 +1865,7 @@ _ARGUMENTS: Mapping[str, Mapping[str, object]] = MappingProxyType(
         "get_session_info": {},
         "get_viewport_screenshot": {},
         "inspect_animation": {"target": {"type": "OBJECT", "name": "Camera_Hero"}},
+        "inspect_delivery": {"scene_name": "Scene"},
         "inspect_light": {"scene_name": "Scene", "light_name": "Key"},
         "inspect_lighting_setup": {"scene_name": "Scene"},
         "inspect_render_output": {"output_path": "/shots/hero/render/shot_0001.png"},

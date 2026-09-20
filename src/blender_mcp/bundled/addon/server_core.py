@@ -15,12 +15,13 @@ from contextlib import suppress
 import bpy
 import mathutils
 
-from . import ADDON_PROTOCOL_VERSION, bl_info
+from . import ADDON_PROTOCOL_VERSION, authored, bl_info
 from .file_paths import canonical_path
 from .handlers.animation import AnimationHandlersMixin
 from .handlers.camera import CameraHandlersMixin
 from .handlers.character_rigging import CharacterRiggingHandlersMixin
 from .handlers.cloth import ClothHandlersMixin
+from .handlers.delivery import DeliveryHandlersMixin
 from .handlers.file_lifecycle import FileLifecycleHandlersMixin
 from .handlers.lighting import LightingHandlers
 from .handlers.linking import LinkingHandlersMixin
@@ -42,7 +43,7 @@ from .object_lookup import find_object
 from .output_roots import configured_file_roots, configured_roots, writable_roots
 from .session import load_in_flight, mark_session_indeterminate, session_is_indeterminate, session_snapshot
 from .text_hygiene import client_safe_name_leaf
-from .transaction import mutation_transaction
+from .transaction import mutation_transaction, unreferenced_warning
 
 
 @functools.lru_cache(maxsize=1)
@@ -277,6 +278,7 @@ class BlenderMCPServer(
     ClothHandlersMixin,
     LiquidHandlersMixin,
     FileLifecycleHandlersMixin,
+    DeliveryHandlersMixin,
     LinkingHandlersMixin,
     SceneHandlersMixin,
     ScenePhysicsHandlersMixin,
@@ -1267,6 +1269,7 @@ class BlenderMCPServer(
             "link_canon_library": self.link_canon_library,
             "create_override": self.create_override,
             "list_libraries": self.list_libraries,
+            "inspect_delivery": self.inspect_delivery,
             "reload_library": self.reload_library,
             "relocate_library": self.relocate_library,
             "unlink_libraries": self.unlink_libraries,
@@ -1650,6 +1653,7 @@ class BlenderMCPServer(
             "inspect_render_output",
             "get_scene_physics_info",
             "validate_scene",
+            "inspect_delivery",
         }
     )
 
@@ -1673,12 +1677,16 @@ class BlenderMCPServer(
     _TICK_ENDING_COMMANDS = frozenset({"save_shot"})
 
     # Commands that mutate nothing worth an undo checkpoint: viewport and
-    # capture toggles, and a render, whose output is a file rather than scene
-    # state. Not read-only, so they are not in `_READ_ONLY_COMMANDS`, but a
-    # transaction around them would only add undo-stack noise.
-    _NON_UNDO_COMMANDS = frozenset(
-        {"set_viewport_overlay", "nd_pulse_viewport_toggle", "nd_capture_utils", "render_scene"}
-    )
+    # capture toggles. Not read-only, so they are not in `_READ_ONLY_COMMANDS`,
+    # but a transaction around them would only add undo-stack noise.
+    _NON_UNDO_COMMANDS = frozenset({"set_viewport_overlay", "nd_pulse_viewport_toggle", "nd_capture_utils"})
+
+    # The same, for commands that are only non-undo with some params. A render
+    # writes a file rather than scene state - unless `persist_output` stores its
+    # output template on the scene, which is scene state a rollback must restore.
+    _NON_UNDO_WHEN: Mapping[str, Callable[[Mapping[str, object]], bool]] = {
+        "render_scene": lambda params: not params.get("persist_output", False)
+    }
 
     def execute_command_internal(self, command):
         """
@@ -1920,9 +1928,11 @@ class BlenderMCPServer(
             bool: True when the handler runs unwrapped.
 
         """
+        skips_undo = self._NON_UNDO_WHEN.get(cmd_type)
         return (
             self.is_read_only_command(cmd_type, params)
             or cmd_type in self._NON_UNDO_COMMANDS
+            or (skips_undo is not None and skips_undo(params))
             or cmd_type in self._SESSION_SWAP_COMMANDS
             or cmd_type in self._DATABLOCK_REPLACING_COMMANDS
         )
@@ -1958,9 +1968,11 @@ class BlenderMCPServer(
             failure = _handler_failure_message(result)
             if failure is not None:
                 raise HandlerReportedError(failure)
-            warning = txn.commit()
-            if warning and isinstance(result, dict):
-                result = {**result, "warnings": [*result.get("warnings", []), warning]}
+            unreferenced = unreferenced_warning(txn.unreferenced_created())
+            authored.record(txn.created_datablocks())
+            notices = [note for note in (txn.commit(), unreferenced) if note]
+            if notices and isinstance(result, dict):
+                result = {**result, "warnings": [*result.get("warnings", []), *notices]}
             return result
 
     def get_addon_info(self):

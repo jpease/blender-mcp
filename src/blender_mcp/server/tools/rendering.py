@@ -281,27 +281,35 @@ async def manage_view_layers(
 async def render_scene(
     ctx: Context,
     scene_name: str,
-    filepath: Annotated[str, Field(min_length=1)],
+    filepath: Annotated[str | None, Field(min_length=1)] = None,
     mode: Literal["STILL", "ANIMATION"] = "STILL",
     view_layer_name: str | None = None,
     frame: int | None = None,
     max_animation_frames: Annotated[int, Field(ge=1, le=10_000)] = 250,
     confirm_render: bool = False,
     confirm_overwrite: bool = False,
+    confirm_frame_range: bool = False,
     render_slot_policy: Literal["USE_ACTIVE", "NEW_SLOT", "REPLACE_ACTIVE"] = "USE_ACTIVE",
     verify_outputs: bool = True,
     verify_passes: bool = True,
     max_duration_seconds: Annotated[float | None, Field(gt=0, le=604_800)] = None,
+    persist_output: bool = False,
+    detail: bool = False,
 ) -> dict:
     """
     Render a still or bounded animation to an explicit path after confirmation.
 
-    This writes the actual rendered frame(s) to disk but returns only metadata (written
-    path, byte size, per-frame status), not pixel content. get_viewport_screenshot
-    captures the live viewport, not this render, so it is not a substitute for looking
-    at the output. To actually see this render's pixels, call
-    inspect_render_output(output_path=<one of this result's "files" paths>) afterward -
-    or omit output_path there to read the in-memory Render Result directly.
+    This writes the actual rendered frame(s) to disk but returns only metadata: the first and
+    last written path, the total bytes, and per-frame status. get_viewport_screenshot captures
+    the live viewport, not this render, so it is not a substitute for looking at the output. To
+    see this render's pixels, call inspect_render_output(output_path=result["last_file"])
+    afterward - or omit output_path there to read the in-memory Render Result directly.
+    detail=true adds the per-frame "files" and "progress" arrays.
+
+    Omit filepath to render to the scene's own output path (configure_render_settings
+    output.filepath); persist_output=true stores an ANIMATION's template on the scene so a
+    re-render needs no arguments. An ANIMATION over Blender's untouched 1-250 default range is
+    refused until the range is set or confirm_frame_range=true.
 
     filepath is never a directory: Blender appends the frame number to the path as given,
     so a trailing slash writes files beside the folder instead of inside it and is refused.
@@ -323,10 +331,13 @@ async def render_scene(
             "max_animation_frames": max_animation_frames,
             "confirm_render": confirm_render,
             "confirm_overwrite": confirm_overwrite,
+            "confirm_frame_range": confirm_frame_range,
             "render_slot_policy": render_slot_policy,
             "verify_outputs": verify_outputs,
             "verify_passes": verify_passes,
             "max_duration_seconds": max_duration_seconds,
+            "persist_output": persist_output,
+            "detail": detail,
         },
     )
 
@@ -416,9 +427,9 @@ async def inspect_render_output(
 
     Unlike get_viewport_screenshot, which captures the live viewport and never matches
     final render output (different engine, lighting, and color management), this reads
-    real render output: an explicit output_path (typically one of render_scene's
-    returned "files" paths - read-only, never modified) or, when omitted, the in-memory
-    "Render Result" datablock. Render Result only ever reflects the most recently
+    real render output: an explicit output_path (typically render_scene's returned "last_file",
+    or one of its detail=true "files" paths - read-only, never modified) or, when omitted, the
+    in-memory "Render Result" datablock. Render Result only ever reflects the most recently
     rendered frame, so an animation's earlier frames are only reachable by passing
     their own written output_path.
 

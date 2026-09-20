@@ -86,6 +86,8 @@ SERVER_LIGHTING_RENDERING_TOOL = ROOT / "src/blender_mcp/server/tools/lighting/r
 ADDON_POSING = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/posing.py"
 SERVER_POSING_TOOL = ROOT / "src/blender_mcp/server/tools/character_rigging/posing.py"
 ADDON_RENDERING = ROOT / "src/blender_mcp/bundled/addon/handlers/rendering.py"
+ADDON_DELIVERY = ROOT / "src/blender_mcp/bundled/addon/handlers/delivery.py"
+RENDER_COVERAGE_SCRIPT = ROOT / "scripts/render_coverage.py"
 SERVER_RENDERING_TOOL = ROOT / "src/blender_mcp/server/tools/rendering.py"
 SERVER_DOCUMENTATION = ROOT / "src/blender_mcp/server/tools/_documentation.py"
 SERVER_BUNDLES = ROOT / "src/blender_mcp/server/bundles.py"
@@ -133,6 +135,9 @@ LIGHTT = "tests/server/tools/lighting/test_tools.py"
 CTRLT = "tests/server/tools/character_rigging/test_controls.py"
 POSET = "tests/server/tools/character_rigging/test_posing.py"
 RENDT = "tests/test_rendering_tools.py"
+SVT = "tests/server/tools/test_scene_validate.py"
+DRT = "tests/server/test_dispatch_rules.py"
+RCT = "tests/test_render_coverage.py"
 # Named because inline it passes the line limit, and `ruff format` rejoins a split f-string.
 _LIST_SCALAR = "test_a_string_where_a_list_belongs_is_not_iterated_character_by_character"
 SESSIONT = "tests/test_session_state.py"
@@ -174,6 +179,33 @@ NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, 
 # Nodes in files the matrix does not own. `coverage_gaps()` sees only these and the nodes
 # collected from NEW_TEST_FILES, so a node left off this list is never checked.
 NEW_NODES_IN_EXISTING_FILES = (
+    # --- artefact truth: what the save discards, and who authored the file ---
+    f"{MUTT}::test_persistence_an_unreferenced_created_datablock_is_reported",
+    f"{MUTT}::test_persistence_a_fake_user_datablock_is_not_reported",
+    f"{MUTT}::test_persistence_an_assigned_datablock_is_not_reported",
+    f"{MUTT}::test_persistence_a_linked_datablock_is_never_this_commands_authorship",
+    f"{MUTT}::test_persistence_the_warning_names_at_most_five_and_counts_the_rest",
+    f"{SVT}::test_persistence_findings_flag_unreferenced_and_fake_user_only_datablocks",
+    f"{SVT}::test_persistence_findings_ignore_linked_datablocks",
+    f"{SVT}::test_persistence_findings_report_truncation_past_max_findings",
+    f"{SVT}::test_validate_scene_runs_the_persistence_domain_on_request",
+    # --- artefact truth: render intent lives on the scene ---
+    f"{RENDT}::test_render_scene_without_a_filepath_names_the_tool_that_sets_one",
+    f"{RENDT}::test_render_scene_renders_to_the_scenes_own_output_path",
+    f"{RENDT}::test_render_scene_refuses_an_animation_over_blenders_untouched_default_range",
+    f"{RENDT}::test_render_scene_accepts_the_default_range_when_it_was_chosen",
+    f"{RENDT}::test_render_scene_persists_the_callers_template_not_the_resolved_path",
+    f"{RENDT}::test_render_scene_leaves_the_output_path_alone_by_default",
+    f"{RENDT}::test_render_scene_does_not_persist_a_cancelled_render",
+    f"{RENDT}::test_render_scene_refuses_to_persist_a_still_path",
+    f"{RENDT}::test_configure_render_settings_refuses_a_directory_as_the_stored_template",
+    f"{RENDT}::test_render_scene_reply_summarises_and_detail_restores_the_per_frame_arrays",
+    f"{DRT}::test_a_render_that_persists_its_output_template_is_transacted",
+    # --- artefact truth: which render properties the schemas reach ---
+    f"{RCT}::test_coverage_classifies_the_same_identifier_per_owner",
+    f"{RCT}::test_coverage_never_reports_an_excluded_property_as_unreachable",
+    f"{RCT}::test_coverage_ignores_an_absent_owner",
+    f"{RCT}::test_the_recorded_baseline_and_the_shipped_routes_agree_on_the_reachable_set",
     # --- which object a name shared with an override resolves to ---
     f"{SOIT}::test_the_transaction_snapshots_the_same_object_the_handler_mutates_after_an_override",
     f"{SOIT}::test_an_ambiguous_target_name_is_skipped_rather_than_raising_out_of_the_snapshot",
@@ -308,7 +340,7 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{AMT}::test_a_hostile_element_inside_a_list_field_is_dropped_not_published[file_roots]",
     # --- file_lifecycle joins core, and the ten tools' hints/prose ---
     f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",
-    f"{BUNT}::test_file_lifecycle_tools_are_exactly_ten_and_reachable_from_shot_and_asset",
+    f"{BUNT}::test_file_lifecycle_tools_are_exactly_eleven_and_reachable_from_shot_and_asset",
     f"{BUNT}::test_file_lifecycle_tools_advertise_correct_hints",
     f"{BUNT}::test_file_lifecycle_tools_blend_file_prose_is_correct",
     # --- descriptions advertise only what the schema does not ---
@@ -431,6 +463,14 @@ SPLICED_MODEL_CONTEXT = '''    for definition in schema.get("$defs", {}).values(
                     property_schema["description"] = f"Numeric value for {spaced}."'''
 
 NOT_INDIVIDUALLY_FALSIFIABLE: dict[str, str] = {
+    f"{ENVT}::test_a_reply_within_the_budget_is_sent_whole": (
+        "the early return in `_fit_budget` is a performance guard, not a decision: the loop below it "
+        "re-measures and returns before shortening anything, so a within-budget reply is left whole "
+        "either way. Measured on a pristine checkout, not argued - the row that claimed this node was "
+        "a SURVIVOR there too. What the guard buys is one skipped encode per reply, which no assertion "
+        "about reply content can see; the shortening itself is falsifiable through "
+        "`test_an_oversized_record_page_is_cut_to_the_budget_and_stays_resumable`."
+    ),
     f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[protocol_version]": (
         "the field is `int | None` by construction and the only revert that reaches it takes the whole "
         "handshake down a different path. Measured: replacing the `int()` parse with `protocol_i = protocol` "
@@ -2881,8 +2921,8 @@ REVERTS: list[Revert] = [
     Revert(
         "transaction: load_post stops invalidating the open transaction",
         ADDON_SESSION,
-        "    invalidate_active_transaction()\n    _STORE.state = applied_load_post(_STORE.state, file_path)\n",
-        "    _STORE.state = applied_load_post(_STORE.state, file_path)\n",
+        "    invalidate_active_transaction()\n    # The datablocks",
+        "    # The datablocks",
         (
             f"{TSWAPT}::test_a_swap_inside_an_open_transaction_is_not_rolled_back_and_says_so",
             f"{TSWAPT}::test_an_invalidated_geometry_backup_is_dropped_without_remove",
@@ -3876,10 +3916,10 @@ REVERTS: list[Revert] = [
     Revert(
         "file lifecycle: save_shot reports a same-tick is_dirty that Blender has not cleared yet",
         ADDON_FILE_LIFECYCLE,
-        '            "relative_remap": relative_remap,\n            "session_id": session["session_id"],\n',
-        '            "relative_remap": relative_remap,\n'
-        '            "is_dirty": bool(bpy.data.is_dirty),\n'
-        '            "session_id": session["session_id"],\n',
+        '        "relative_remap": relative_remap,\n        "session_id": session["session_id"],\n',
+        '        "relative_remap": relative_remap,\n'
+        '        "is_dirty": bool(bpy.data.is_dirty),\n'
+        '        "session_id": session["session_id"],\n',
         (f"{FLT}::test_save_shot_does_not_report_a_dirty_flag_blender_has_not_cleared_yet",),
     ),
     Revert(
@@ -4829,6 +4869,7 @@ REVERTS: list[Revert] = [
                     "reload_library",
                     "relocate_library",
                     "unlink_libraries",
+                    "inspect_delivery",
                 )
             )
         ),
@@ -4838,7 +4879,7 @@ REVERTS: list[Revert] = [
         SERVER_BUNDLES,
         '    "animation",\n    "file_lifecycle",\n)',
         '    "animation",\n)',
-        (f"{BUNT}::test_file_lifecycle_tools_are_exactly_ten_and_reachable_from_shot_and_asset",),
+        (f"{BUNT}::test_file_lifecycle_tools_are_exactly_eleven_and_reachable_from_shot_and_asset",),
     ),
     # Each ceiling constant is its mode's measured payload, so the only revert that can still
     # falsify these two tests is one byte below it. The rows this replaced named historical
@@ -4847,17 +4888,17 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 202_000",
+        "SHOT_MODE_BYTE_CEILING = 205_260",
         # One byte below the *measured* payload (201,541), not below the ceiling: the ceiling has
         # headroom by design, so reverting it to 201_999 would still pass and prove nothing.
-        "SHOT_MODE_BYTE_CEILING = 201_540",
+        "SHOT_MODE_BYTE_CEILING = 205_259",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
         "server tools: the default ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 66_862",
-        "DEFAULT_MODE_BYTE_CEILING = 66_861",
+        "DEFAULT_MODE_BYTE_CEILING = 69_831",
+        "DEFAULT_MODE_BYTE_CEILING = 69_830",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
@@ -4992,13 +5033,6 @@ REVERTS: list[Revert] = [
         '        owner[names["next_offset"]] = start + total\n',
         "",
         (f"{ENVT}::test_the_keys_the_shortening_adds_are_inside_the_budget_it_measured",),
-    ),
-    Revert(
-        "reply budget: a reply within the budget is shortened anyway",
-        SERVER_ENVELOPE,
-        "    if _wire_bytes(reply) <= REPLY_BYTE_BUDGET:\n        return\n    pages",
-        "    pages",
-        (f"{ENVT}::test_a_reply_within_the_budget_is_sent_whole",),
     ),
     # --- save_shot.create_directories ---
     Revert(
@@ -5607,8 +5641,8 @@ REVERTS: list[Revert] = [
     Revert(
         "render settings: the reply carries the whole render state again instead of what it wrote",
         ADDON_RENDERING,
-        '            "after": {path: getattr(owner, name) for path, (owner, name) in applied.items()},\n',
-        '            "after": _render_info(scene),\n',
+        "        after = {path: getattr(owner, name) for path, (owner, name) in applied.items()}\n",
+        "        after = _render_info(scene)\n",
         (
             f"{RENDT}::test_configure_render_settings_returns_only_the_patched_values",
             f"{RENDT}::test_configure_render_settings_reports_a_patch_that_writes_nothing",
@@ -5617,10 +5651,8 @@ REVERTS: list[Revert] = [
     Revert(
         "render settings: changed names the patch's top-level keys, not the property paths written",
         ADDON_RENDERING,
-        '            "changed": sorted(applied),\n'
-        '            "after": {path: getattr(owner, name) for path, (owner, name) in applied.items()},\n',
-        '            "changed": sorted(patch),\n'
-        '            "after": {path: getattr(owner, name) for path, (owner, name) in applied.items()},\n',
+        '        changed = sorted([*applied, "frame_range_authored"] if authored_range else applied)\n',
+        '        changed = sorted([*patch, "frame_range_authored"] if authored_range else patch)\n',
         (f"{RENDT}::test_configure_render_settings_returns_only_the_patched_values",),
     ),
     Revert(
@@ -5636,6 +5668,405 @@ REVERTS: list[Revert] = [
         '        {"scene_name": scene_name, "patch": patch.model_dump(exclude_none=True), "detail": detail},\n',
         '        {"scene_name": scene_name, "patch": patch.model_dump(exclude_none=True), "detail": False},\n',
         (f"{RENDT}::test_configure_render_settings_forwards_detail",),
+    ),
+    # --- artefact truth: the datablocks a save discards ---
+    Revert(
+        "transaction: a created datablock with no user is not reported as one the save discards",
+        ADDON_TRANSACTION,
+        '                if int(getattr(db, "users", 1) or 0) == 0',
+        '                if int(getattr(db, "users", 1) or 0) < 0',
+        (
+            f"{MUTT}::test_persistence_an_unreferenced_created_datablock_is_reported",
+            f"{MUTT}::test_persistence_the_warning_names_at_most_five_and_counts_the_rest",
+        ),
+    ),
+    Revert(
+        "transaction: a fake user is counted as no user, so a deliberate keep is reported as a loss",
+        ADDON_TRANSACTION,
+        '                if int(getattr(db, "users", 1) or 0) == 0',
+        '                if int(getattr(db, "users", 1) or 0) == 0 or getattr(db, "use_fake_user", False)',
+        (f"{MUTT}::test_persistence_a_fake_user_datablock_is_not_reported",),
+    ),
+    Revert(
+        "transaction: a datablock with one real user is reported as unreferenced",
+        ADDON_TRANSACTION,
+        '                if int(getattr(db, "users", 1) or 0) == 0',
+        '                if int(getattr(db, "users", 1) or 0) <= 1',
+        (f"{MUTT}::test_persistence_an_assigned_datablock_is_not_reported",),
+    ),
+    Revert(
+        "transaction: another file's datablock is claimed as this command's authorship",
+        ADDON_TRANSACTION,
+        "            if coll_name not in _AUTHORSHIP_EXEMPT_COLLECTIONS and "
+        'getattr(datablock, "library", None) is None',
+        "            if coll_name not in _AUTHORSHIP_EXEMPT_COLLECTIONS",
+        (f"{MUTT}::test_persistence_a_linked_datablock_is_never_this_commands_authorship",),
+    ),
+    Revert(
+        "transaction: the discard warning names every datablock instead of a bounded few",
+        ADDON_TRANSACTION,
+        "    shown = \", \".join(f\"{entry['collection']}:{entry['name']}\" "
+        "for entry in entries[:MAX_REPORTED_UNREFERENCED])",
+        "    shown = \", \".join(f\"{entry['collection']}:{entry['name']}\" for entry in entries)",
+        (f"{MUTT}::test_persistence_the_warning_names_at_most_five_and_counts_the_rest",),
+    ),
+    Revert(
+        "scene validation: the persistence domain stops reporting datablocks with no user",
+        ADDON_SCENE,
+        "            if users == 0:",
+        "            if users < 0:",
+        (
+            f"{SVT}::test_persistence_findings_flag_unreferenced_and_fake_user_only_datablocks",
+            f"{SVT}::test_persistence_findings_report_truncation_past_max_findings",
+            f"{SVT}::test_validate_scene_runs_the_persistence_domain_on_request",
+        ),
+    ),
+    Revert(
+        "scene validation: an action kept alive only by a fake user is reported as driving something",
+        ADDON_SCENE,
+        '            elif coll_name == "actions" and getattr(datablock, "use_fake_user", False) and users <= 1:',
+        "            elif False:",
+        (f"{SVT}::test_persistence_findings_flag_unreferenced_and_fake_user_only_datablocks",),
+    ),
+    Revert(
+        "scene validation: a linked datablock is reported as this file's to lose",
+        ADDON_SCENE,
+        '            if getattr(datablock, "library", None) is not None:\n                continue',
+        "            if False:\n                continue",
+        (f"{SVT}::test_persistence_findings_ignore_linked_datablocks",),
+    ),
+    Revert(
+        "scene validation: the persistence domain is never run",
+        ADDON_SCENE,
+        '        if "persistence" in domains:',
+        "        if False:",
+        (f"{SVT}::test_validate_scene_runs_the_persistence_domain_on_request",),
+    ),
+    # --- artefact truth: will this file resolve elsewhere ---
+    Revert(
+        "delivery: a path outside the shot is published whole instead of by leaf",
+        ADDON_DELIVERY,
+        "    whole = safe_relative_link(text, _MAX_REPORTED_LINK_CHARS)\n"
+        "    return whole if whole is not None else client_safe_leaf(text, is_directory=is_directory)",
+        "    return text",
+        (
+            f"{FLT}::test_inspect_delivery_reports_an_absolute_image_by_leaf_not_by_directory",
+            f"{FLT}::test_inspect_delivery_does_not_mistake_a_rooted_triple_slash_path_for_a_relative_one",
+        ),
+    ),
+    Revert(
+        "delivery: relativity is judged by the // prefix, so a rooted path reads as portable",
+        ADDON_DELIVERY,
+        "    return relative_link_body(strip_unsafe(raw)) is not None",
+        '    return str(raw or "").startswith("//")',
+        (f"{FLT}::test_inspect_delivery_does_not_mistake_a_rooted_triple_slash_path_for_a_relative_one",),
+    ),
+    Revert(
+        "delivery: packed pixels are judged by their path rather than by being packed",
+        ADDON_DELIVERY,
+        '        if getattr(image, "packed_file", None) is not None:\n            verdict = "PACKED"',
+        '        if False:\n            verdict = "PACKED"',
+        (f"{FLT}::test_inspect_delivery_reports_a_packed_image_as_portable",),
+    ),
+    Revert(
+        "delivery: a broken image link is reported by path shape alone",
+        ADDON_DELIVERY,
+        '        elif image_path_missing(image):\n            verdict = "MISSING"',
+        '        elif False:\n            verdict = "MISSING"',
+        (f"{FLT}::test_inspect_delivery_reports_an_image_whose_file_is_gone_as_missing",),
+    ),
+    Revert(
+        "delivery: portability is judged from the returned page, so a defect hides on page two",
+        ADDON_DELIVERY,
+        '    for entry in entries:\n        bucket = classes[entry["kind"]]',
+        '    for entry in page:\n        bucket = classes[entry["kind"]]',
+        (f"{FLT}::test_inspect_delivery_judges_portability_over_every_entry_not_the_returned_page",),
+    ),
+    Revert(
+        "delivery: a cache that lives in memory is reported as a file that travels",
+        ADDON_DELIVERY,
+        '    if info.get("use_disk_cache"):\n        return "RELATIVE_OK" if bpy.data.filepath else "UNSET"\n'
+        '    return "UNSET"',
+        '    return "RELATIVE_OK"',
+        (f"{FLT}::test_inspect_delivery_reports_a_memory_only_point_cache_as_unset",),
+    ),
+    Revert(
+        "delivery: an unset Mantaflow cache directory passes as a portable default",
+        ADDON_DELIVERY,
+        '    verdict = "MISSING" if not resolved or not os.path.isdir(resolved) else _shape_verdict(raw)',
+        "    verdict = _shape_verdict(raw)",
+        (f"{FLT}::test_inspect_delivery_reports_an_unset_fluid_cache_directory_as_missing",),
+    ),
+    Revert(
+        "delivery: hashing linked files needs no configured roots, making it a read oracle",
+        ADDON_DELIVERY,
+        "        if hash_libraries and not roots:",
+        "        if False:",
+        (f"{FLT}::test_inspect_delivery_refuses_to_hash_libraries_without_configured_file_roots",),
+    ),
+    Revert(
+        "delivery: a library outside the roots is hashed anyway",
+        ADDON_DELIVERY,
+        "            enforce_roots(resolved, roots)",
+        "            pass",
+        (f"{FLT}::test_inspect_delivery_skips_hashing_a_library_outside_the_configured_roots",),
+    ),
+    Revert(
+        "delivery: the page bounds are not checked before the scan walks bpy.data",
+        ADDON_DELIVERY,
+        "    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:",
+        "    if False:",
+        (f"{FLT}::test_inspect_delivery_refuses_an_out_of_range_page",),
+    ),
+    Revert(
+        "delivery: an unsaved session is called portable, though // resolves against nothing",
+        ADDON_DELIVERY,
+        '        "portable": saved and not capped and unportable == 0,',
+        '        "portable": not capped and unportable == 0,',
+        (f"{FLT}::test_inspect_delivery_warns_that_an_unsaved_session_cannot_resolve_relative_paths",),
+    ),
+    # --- artefact truth: C2PA-shaped provenance in the file ---
+    Revert(
+        "provenance: the save writes no authorship block at all",
+        ADDON_FILE_LIFECYCLE,
+        "        if write_provenance:\n            backup, ingredients = _stamp_provenance(provenance_checksums)",
+        "        if False:\n            backup, ingredients = _stamp_provenance(provenance_checksums)",
+        (
+            f"{FLT}::test_save_shot_writes_a_json_provenance_block_into_every_local_scene",
+            f"{FLT}::test_save_shot_names_the_datablocks_this_session_authored",
+        ),
+    ),
+    Revert(
+        "provenance: write_provenance=false writes a block anyway",
+        ADDON_FILE_LIFECYCLE,
+        "        if write_provenance:\n            backup, ingredients = _stamp_provenance(provenance_checksums)",
+        "        if True:\n            backup, ingredients = _stamp_provenance(provenance_checksums)",
+        (f"{FLT}::test_save_shot_writes_nothing_when_provenance_is_declined",),
+    ),
+    Revert(
+        "provenance: a linked scene is stamped with this file's authorship",
+        ADDON_FILE_LIFECYCLE,
+        "        if scene.library is not None:\n            continue",
+        "        if False:\n            continue",
+        (f"{FLT}::test_save_shot_writes_a_json_provenance_block_into_every_local_scene",),
+    ),
+    Revert(
+        "provenance: a save Blender refused leaves its claim on the scenes",
+        ADDON_FILE_LIFECYCLE,
+        "    except RuntimeError as exc:\n        _restore_provenance(backup)\n        raise RuntimeError(",
+        "    except RuntimeError as exc:\n        raise RuntimeError(",
+        (f"{FLT}::test_a_failed_save_leaves_no_scene_claiming_provenance",),
+    ),
+    Revert(
+        "provenance: checksums are taken with no roots to confine them",
+        ADDON_FILE_LIFECYCLE,
+        "    roots = configured_file_roots()\n    if not roots:",
+        "    roots = configured_file_roots()\n    if False:",
+        (f"{FLT}::test_save_shot_refuses_checksums_without_configured_file_roots",),
+    ),
+    Revert(
+        "provenance: the block records no datablocks, so the file claims nothing was authored",
+        ADDON_FILE_LIFECYCLE,
+        "                \"datablocks\": [f\"{entry['collection']}:{entry['name']}\" "
+        "for entry in authored.snapshot()],",
+        '                "datablocks": [],',
+        (f"{FLT}::test_save_shot_names_the_datablocks_this_session_authored",),
+    ),
+    Revert(
+        "provenance: an oversized block is read back whole into the agent's context",
+        ADDON_DELIVERY,
+        "    if not isinstance(raw, str) or len(raw) > MAX_PROVENANCE_CHARS:",
+        "    if not isinstance(raw, str):",
+        (f"{FLT}::test_inspect_delivery_reports_a_hostile_provenance_block_as_invalid[oversized]",),
+    ),
+    Revert(
+        "provenance: unparseable text is reported as a valid block",
+        ADDON_DELIVERY,
+        "    except (TypeError, ValueError):\n"
+        '        return {"present": True, "valid": False, "reason": "unparseable"}',
+        '    except (TypeError, ValueError):\n        return {"present": True, "valid": True, "reason": "unparseable"}',
+        (f"{FLT}::test_inspect_delivery_reports_a_hostile_provenance_block_as_invalid[not json at all]",),
+    ),
+    Revert(
+        "provenance: a JSON array is reported as a valid block",
+        ADDON_DELIVERY,
+        "    if not isinstance(block, dict):\n"
+        '        return {"present": True, "valid": False, "reason": "unparseable"}',
+        '    if not isinstance(block, dict):\n        return {"present": True, "valid": True, "reason": "unparseable"}',
+        (f"{FLT}::test_inspect_delivery_reports_a_hostile_provenance_block_as_invalid[[1, 2, 3]]",),
+    ),
+    Revert(
+        "provenance: an ingredient list of any length is read back whole",
+        ADDON_DELIVERY,
+        "        for entry in (ingredients if isinstance(ingredients, list) else [])[:MAX_PROVENANCE_ENTRIES]",
+        "        for entry in (ingredients if isinstance(ingredients, list) else [])",
+        (f"{FLT}::test_inspect_delivery_bounds_a_valid_provenance_block",),
+    ),
+    Revert(
+        "provenance: a file with no block is reported as carrying an invalid one",
+        ADDON_DELIVERY,
+        "    if raw is None:\n        return None",
+        '    if raw is None:\n        return {"present": True, "valid": False, "reason": "unparseable"}',
+        (f"{FLT}::test_inspect_delivery_reports_no_provenance_for_a_file_without_one",),
+    ),
+    Revert(
+        "provenance: a completed load keeps the replaced session's authorship",
+        ADDON_SESSION,
+        "    authored.clear()\n    _STORE.state = applied_load_post(_STORE.state, file_path)",
+        "    _STORE.state = applied_load_post(_STORE.state, file_path)",
+        (f"{SESSIONT}::test_a_completed_load_forgets_what_the_replaced_session_authored",),
+    ),
+    Revert(
+        "provenance: a load that never landed throws away the open file's authorship",
+        ADDON_SESSION,
+        "    _STORE.state = applied_load_failure(_STORE.state, file_path, is_directory=_names_a_directory(file_path))",
+        "    authored.clear()\n"
+        "    _STORE.state = applied_load_failure(_STORE.state, file_path, is_directory=_names_a_directory(file_path))",
+        (f"{SESSIONT}::test_a_failed_load_keeps_the_open_files_authorship",),
+    ),
+    Revert(
+        "provenance: an aborted swap keeps an authorship claim it can no longer describe",
+        ADDON_SESSION,
+        "    # The swap was aborted part-way: what is open cannot be described truthfully, so the\n"
+        "    # authorship claim goes with it.\n"
+        "    authored.clear()",
+        "    # The swap was aborted part-way.",
+        (f"{SESSIONT}::test_an_aborted_swap_forgets_the_authorship_it_can_no_longer_describe",),
+    ),
+    # --- artefact truth: the delivery tool's own surface ---
+    Revert(
+        "server tools: inspect_delivery drops the parameters it is given",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        '            "hash_libraries": hash_libraries,\n            "max_hash_bytes": max_hash_bytes,',
+        '            "hash_libraries": False,\n            "max_hash_bytes": 1,',
+        (
+            f"{SFLT}::test_inspect_delivery_forwards_every_parameter",
+            f"{SFLT}::test_inspect_delivery_defaults_do_not_read_linked_files",
+        ),
+    ),
+    Revert(
+        "server tools: inspect_delivery's paging and hash bounds are undeclared",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        "    limit: Annotated[int, Field(ge=1, le=200)] = 50,\n"
+        "    offset: Annotated[int, Field(ge=0)] = 0,\n"
+        "    hash_libraries: bool = False,\n"
+        "    max_hash_bytes: Annotated[int, Field(ge=1, le=8 * 1024**3)] = 268_435_456,",
+        "    limit: int = 50,\n"
+        "    offset: int = 0,\n"
+        "    hash_libraries: bool = False,\n"
+        "    max_hash_bytes: int = 268_435_456,",
+        tuple(
+            f"{SFLT}::test_inspect_delivery_schema_rejects_out_of_range_paging[{case}]"
+            for case in ("limit-0", "limit-201", "max_hash_bytes-0", "max_hash_bytes-8589934593", "offset--1")
+        ),
+    ),
+    # --- artefact truth: render intent belongs to the scene ---
+    Revert(
+        "rendering: a render with no filepath falls back to Blender's own output path silently",
+        ADDON_RENDERING,
+        "        requested_filepath = filepath\n        if requested_filepath is None:",
+        '        requested_filepath = filepath or "/tmp/fallback.png"\n        if False:',
+        (
+            f"{RENDT}::test_render_scene_without_a_filepath_names_the_tool_that_sets_one",
+            f"{RENDT}::test_render_scene_renders_to_the_scenes_own_output_path",
+        ),
+    ),
+    Revert(
+        "rendering: an ANIMATION over Blender's untouched default range renders unasked",
+        ADDON_RENDERING,
+        "            and (scene.frame_start, scene.frame_end) == (1, 250)",
+        "            and False",
+        (f"{RENDT}::test_render_scene_refuses_an_animation_over_blenders_untouched_default_range",),
+    ),
+    Revert(
+        "rendering: a frame range the MCP set still trips the default-range guard",
+        ADDON_RENDERING,
+        '            and not scene.get("blender_mcp_frame_range_authored", False)',
+        "            and True",
+        (f"{RENDT}::test_render_scene_accepts_the_default_range_when_it_was_chosen",),
+    ),
+    Revert(
+        "rendering: configure_render_settings stops marking a frame range as authored",
+        ADDON_RENDERING,
+        '            scene["blender_mcp_frame_range_authored"] = True',
+        "            pass",
+        (f"{RENDT}::test_render_scene_accepts_the_default_range_when_it_was_chosen",),
+    ),
+    Revert(
+        "rendering: persist_output stores the resolved path instead of the caller's template",
+        ADDON_RENDERING,
+        "            scene.render.filepath = requested_filepath if persisted else original_path",
+        "            scene.render.filepath = output if persisted else original_path",
+        (f"{RENDT}::test_render_scene_persists_the_callers_template_not_the_resolved_path",),
+    ),
+    Revert(
+        "rendering: every render stores its output path, whether or not it was asked to",
+        ADDON_RENDERING,
+        "            persisted = bool(persist_output) and not cancelled and completed",
+        "            persisted = True",
+        (
+            f"{RENDT}::test_render_scene_leaves_the_output_path_alone_by_default",
+            f"{RENDT}::test_render_scene_does_not_persist_a_cancelled_render",
+        ),
+    ),
+    Revert(
+        "rendering: a still's one-file path is stored as a per-frame template",
+        ADDON_RENDERING,
+        '        if persist_output and mode == "STILL":',
+        "        if False:",
+        (f"{RENDT}::test_render_scene_refuses_to_persist_a_still_path",),
+    ),
+    Revert(
+        "rendering: a directory is accepted as the scene's stored output template",
+        ADDON_RENDERING,
+        '                _refuse_container_output(scene, pending["output"]["filepath"])',
+        "                pass",
+        (f"{RENDT}::test_configure_render_settings_refuses_a_directory_as_the_stored_template",),
+    ),
+    Revert(
+        "rendering: the default reply carries every frame's bookkeeping again",
+        ADDON_RENDERING,
+        "        if not detail:",
+        "        if False:",
+        (f"{RENDT}::test_render_scene_reply_summarises_and_detail_restores_the_per_frame_arrays",),
+    ),
+    Revert(
+        "dispatch: a render that stores its output template still bypasses the transaction",
+        ADDON_SERVER_CORE,
+        "            or (skips_undo is not None and skips_undo(params))",
+        '            or cmd_type in {"render_scene"}',
+        (f"{DRT}::test_a_render_that_persists_its_output_template_is_transacted",),
+    ),
+    # --- artefact truth: which render properties the schemas reach ---
+    Revert(
+        "render coverage: reachability is judged by identifier, ignoring which owner carries it",
+        RENDER_COVERAGE_SCRIPT,
+        '    reached = sorted(f"{owner}:{name}" for owner, name in probed & set(reachable))',
+        "    reached = sorted(\n"
+        '        f"{owner}:{name}" for owner, name in probed if name in {name for _owner, name in reachable}\n'
+        "    )",
+        (f"{RCT}::test_coverage_classifies_the_same_identifier_per_owner",),
+    ),
+    Revert(
+        "render coverage: an excluded property is reported as an unreachable gap",
+        RENDER_COVERAGE_SCRIPT,
+        '    unreachable = sorted(f"{owner}:{name}" for owner, name in probed - set(reachable) - set(excluded))',
+        '    unreachable = sorted(f"{owner}:{name}" for owner, name in probed - set(reachable))',
+        (f"{RCT}::test_coverage_never_reports_an_excluded_property_as_unreachable",),
+    ),
+    Revert(
+        "render coverage: an absent owner's placeholder is read as a property name",
+        RENDER_COVERAGE_SCRIPT,
+        '        if identifier == "(absent)":\n            continue',
+        "        if False:\n            continue",
+        (f"{RCT}::test_coverage_ignores_an_absent_owner",),
+    ),
+    Revert(
+        "render coverage: the routing table's flat render properties are never counted as reachable",
+        RENDER_COVERAGE_SCRIPT,
+        '    reachable = {("scene.render", name) for name in table.RENDER_PROPERTIES}',
+        "    reachable = set()",
+        (f"{RCT}::test_the_recorded_baseline_and_the_shipped_routes_agree_on_the_reachable_set",),
     ),
 ]
 

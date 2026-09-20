@@ -10,8 +10,32 @@ import mathutils
 
 from ..helpers import apply_modifier, modifier_result, rotation_as_native_list
 from ..object_lookup import find_object
+from ..text_hygiene import client_safe_text
 
-_VALIDATE_SCENE_DOMAINS = ("scene", "camera", "lighting", "pbr", "cloth", "liquid")
+_VALIDATE_SCENE_DOMAINS = ("scene", "camera", "lighting", "pbr", "cloth", "liquid", "persistence")
+
+# Every collection `transaction._TRACKED_COLLECTIONS` rolls back, minus `libraries`, spelled
+# out rather than imported so this domain does not depend on another module's private name.
+_PERSISTENCE_COLLECTIONS = (
+    "objects",
+    "meshes",
+    "curves",
+    "materials",
+    "textures",
+    "images",
+    "node_groups",
+    "worlds",
+    "actions",
+    "armatures",
+    "cameras",
+    "lights",
+    "collections",
+    "pointclouds",
+    "volumes",
+    "metaballs",
+    "lattices",
+    "grease_pencils",
+)
 
 
 def _normalized_domain_finding(domain, item):
@@ -145,6 +169,55 @@ def _scene_level_findings(scene, active_domains):
         )
 
     return findings
+
+
+def _persistence_findings(max_findings):
+    """
+    Report local datablocks the save will discard, and actions that drive nothing.
+
+    File-wide, not scene-scoped: `bpy.data` is what the save writes. Scans one match past
+    `max_findings` so a full page can be told apart from a truncated one.
+
+    Args:
+        max_findings: Most findings to return.
+
+    Returns:
+        tuple[list[dict], bool]: The findings, and whether at least one more exists.
+
+    """
+    findings = []
+    for coll_name in _PERSISTENCE_COLLECTIONS:
+        for datablock in getattr(bpy.data, coll_name, ()):
+            if getattr(datablock, "library", None) is not None:
+                continue
+            users = int(getattr(datablock, "users", 1) or 0)
+            if users == 0:
+                findings.append(
+                    {
+                        "severity": "WARNING",
+                        "code": "UNREFERENCED_DATABLOCK",
+                        "subject": client_safe_text(getattr(datablock, "name", ""), 64),
+                        "message": "Nothing references this datablock, so the save will discard it.",
+                        "evidence": {"collection": coll_name},
+                        "remediation": (
+                            "Assign it to an object, scene or animation, or set use_fake_user to keep it deliberately."
+                        ),
+                    }
+                )
+            elif coll_name == "actions" and getattr(datablock, "use_fake_user", False) and users <= 1:
+                findings.append(
+                    {
+                        "severity": "INFO",
+                        "code": "ACTION_KEPT_BY_FAKE_USER_ONLY",
+                        "subject": client_safe_text(getattr(datablock, "name", ""), 64),
+                        "message": "The action survives the save but drives nothing.",
+                        "evidence": {"collection": "actions"},
+                        "remediation": "Assign it with keyframe_character_pose or manage_action, or delete it.",
+                    }
+                )
+            if len(findings) > max_findings:
+                return findings[:max_findings], True
+    return findings[:max_findings], len(findings) > max_findings
 
 
 def _required_name(value, label):
@@ -1308,6 +1381,10 @@ class SceneHandlersMixin:
         if "scene" in domains:
             record("scene", _scene_level_findings(scene, domains))
 
+        if "persistence" in domains:
+            items, persistence_truncated = _persistence_findings(int(max_findings))
+            record("persistence", items, truncated=persistence_truncated)
+
         severity_order = {"ERROR": 0, "WARNING": 1, "INFO": 2}
         findings.sort(
             key=lambda item: (
@@ -1336,6 +1413,8 @@ class SceneHandlersMixin:
                 "when those domains are excluded from scope, frame range consistency, unapplied scale, "
                 "degenerate geometry, dirty cloth/rigid-body caches); it is a structural preflight, not a "
                 "rendered-frame review.",
+                "The persistence domain reads bpy.data file-wide, not just this scene, and reports local "
+                "datablocks only.",
             ],
         }
 

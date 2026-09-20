@@ -1,6 +1,6 @@
 import contextlib
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 import bpy
@@ -12,6 +12,7 @@ from .object_state import (
     invalidate_object_states,
     restore_object_states,
 )
+from .text_hygiene import client_safe_text
 
 # Every bpy.data collection a mutating handler could plausibly create
 # datablocks in - modifier/texture/material creation (materials, textures,
@@ -49,6 +50,40 @@ ROLLBACK_SKIPPED_WARNING = (
     "The open database was replaced during this command (a file load or library reload), "
     "so its earlier changes were not rolled back; inspect the scene before relying on it."
 )
+
+# A Library's own user count does not describe whether Blender writes it, and linked
+# datablocks belong to their own file: neither is this command's authored work.
+_AUTHORSHIP_EXEMPT_COLLECTIONS = frozenset({"libraries"})
+
+# The warning rides in every mutating reply, which has 8 KiB for the actual result.
+MAX_REPORTED_UNREFERENCED = 5
+MAX_REPORTED_NAME_CHARS = 40
+
+
+def unreferenced_warning(entries: Sequence[Mapping[str, str]]) -> str | None:
+    """
+    Phrase `Transaction.unreferenced_created()` output as one bounded client warning.
+
+    Args:
+        entries: The `{"collection": ..., "name": ...}` records to describe.
+
+    Returns:
+        str | None: One warning naming at most `MAX_REPORTED_UNREFERENCED` entries,
+        or None when nothing will be discarded.
+
+    """
+    if not entries:
+        return None
+    shown = ", ".join(f"{entry['collection']}:{entry['name']}" for entry in entries[:MAX_REPORTED_UNREFERENCED])
+    overflow = len(entries) - MAX_REPORTED_UNREFERENCED
+    if overflow > 0:
+        shown = f"{shown} (+{overflow} more)"
+    noun = "datablock" if len(entries) == 1 else "datablocks"
+    return (
+        f"{len(entries)} {noun} this command created have no user, so Blender discards them when "
+        f"the file is saved: {shown}. Assign them, or set use_fake_user. "
+        "validate_scene(scope=['persistence']) lists all of them."
+    )
 
 
 @dataclass
@@ -262,6 +297,68 @@ class Transaction:
         self._backup_ids = frozenset()
         invalidate_object_states(self._states)
         self._states = []
+
+    def _created_pairs(self):
+        """
+        Yield `(collection, datablock)` for local datablocks this request created.
+
+        Live datablocks, not sanitized records: `users` and `library` exist on the
+        object only.
+
+        Returns:
+            list[tuple[str, ID]]: Pairs in creation order, empty when invalidated.
+
+        """
+        if self.invalidated:
+            return []
+        return [
+            (coll_name, datablock)
+            for coll_name, datablock in _new_datablocks(self._before_ids, exclude_ids=self._backup_ids)
+            if coll_name not in _AUTHORSHIP_EXEMPT_COLLECTIONS and getattr(datablock, "library", None) is None
+        ]
+
+    def created_datablocks(self) -> list[dict[str, str]]:
+        """
+        Name every local datablock this request created, sanitized for the wire and the file.
+
+        Returns:
+            list[dict[str, str]]: `{"collection": ..., "name": ...}` records, sorted.
+
+        """
+        return sorted(
+            (
+                {
+                    "collection": coll_name,
+                    "name": client_safe_text(getattr(db, "name", ""), MAX_REPORTED_NAME_CHARS),
+                }
+                for coll_name, db in self._created_pairs()
+            ),
+            key=lambda entry: (entry["collection"], entry["name"]),
+        )
+
+    def unreferenced_created(self) -> list[dict[str, str]]:
+        """
+        Name the created datablocks Blender will discard at save.
+
+        `users == 0` is the whole test: a fake user counts as a user, so a datablock
+        kept deliberately never appears here. Linked datablocks and the `libraries`
+        collection are already excluded by `_created_pairs`. Read before `commit()`.
+
+        Returns:
+            list[dict[str, str]]: `{"collection": ..., "name": ...}` records, sorted.
+
+        """
+        return sorted(
+            (
+                {
+                    "collection": coll_name,
+                    "name": client_safe_text(getattr(db, "name", ""), MAX_REPORTED_NAME_CHARS),
+                }
+                for coll_name, db in self._created_pairs()
+                if int(getattr(db, "users", 1) or 0) == 0
+            ),
+            key=lambda entry: (entry["collection"], entry["name"]),
+        )
 
     def rollback(self) -> str | None:
         """

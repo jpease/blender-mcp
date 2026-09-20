@@ -42,7 +42,7 @@ assert scene.camera is None
 # the first pass, with no scope filter applied.
 baseline = server.validate_scene(scene.name)
 assert baseline["scene"] == scene.name
-assert baseline["domains_checked"] == ["scene", "camera", "lighting", "pbr", "cloth", "liquid"]
+assert baseline["domains_checked"] == ["scene", "camera", "lighting", "pbr", "cloth", "liquid", "persistence"]
 codes = {finding["code"] for finding in baseline["findings"]}
 scene_domain_codes = {finding["code"] for finding in baseline["findings"] if finding["domain"] == "scene"}
 assert "MISSING_LIGHTS" in codes
@@ -152,5 +152,25 @@ assert bounded["total_findings"] > 1
 # above (pbr excluded), so explicitly request it now against the meshed scene.
 with_pbr = server.validate_scene(scene.name, scope=["pbr"])
 assert with_pbr["domain_summaries"]["pbr"]["findings"] >= 0
+
+# The persistence domain reads bpy.data, not the scene: an action nothing uses is
+# discarded at save, and a fake user turns that loss into a deliberate keep.
+orphan_action = bpy.data.actions.new("Smoke Orphan Action")
+assert orphan_action.users == 0
+persistence = server.validate_scene(scene.name, scope=["persistence"])
+assert persistence["domains_checked"] == ["persistence"]
+orphan_findings = {
+    finding["subject"]: finding for finding in persistence["findings"] if finding["domain"] == "persistence"
+}
+assert orphan_action.name in orphan_findings
+assert orphan_findings[orphan_action.name]["code"] == "UNREFERENCED_DATABLOCK"
+assert orphan_findings[orphan_action.name]["evidence"] == {"collection": "actions"}
+
+orphan_action.use_fake_user = True
+assert orphan_action.users == 1
+kept = server.validate_scene(scene.name, scope=["persistence"])
+kept_findings = {finding["subject"]: finding for finding in kept["findings"] if finding["domain"] == "persistence"}
+assert kept_findings[orphan_action.name]["code"] == "ACTION_KEPT_BY_FAKE_USER_ONLY"
+assert kept_findings[orphan_action.name]["severity"] == "INFO"
 
 print("SCENE_VALIDATE_SMOKE_OK")

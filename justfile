@@ -68,6 +68,10 @@ alias blender-validate := probes
 probes-record *args:
     {{PYTHON}} scripts/validate_blender_release.py --record "$@"
 
+# Which render/eevee/cycles/view-settings properties the tool schemas reach, and which they do not
+coverage *args:
+    {{PYTHON}} scripts/render_coverage.py "$@"
+
 # Drive one scenario through the GUI rig (macOS only); name WORK when the scenario needs fixtures built beside it
 rig scenario work="" *args:
     #!/usr/bin/env sh

@@ -16,12 +16,17 @@ because a client compares it against the file roots.
 it is a read-only command and never runs in `mutation_transaction`.
 """
 
+import json
 import os
 
 from collections import Counter
+from contextlib import suppress
+from datetime import UTC, datetime
 
 import bpy
 
+from .. import ADDON_PROTOCOL_VERSION, authored, bl_info
+from ..file_digest import MAX_DIGEST_FILES, MAX_DIGEST_TOTAL_BYTES, file_digest
 from ..file_paths import (
     BLENDER_RELATIVE_PREFIX,
     canonical_path,
@@ -51,6 +56,10 @@ _REHANDSHAKE_NOTE = (
 # hostile link from pushing kilobytes into an agent's context. The bound applies
 # per library, and the library list itself is unbounded.
 _MAX_REPORTED_LINK_CHARS = 256
+
+# The custom property every local scene carries after a save. One name, so a reader does not
+# have to know which scene the add-on happened to be looking at.
+PROVENANCE_PROPERTY = "blender_mcp"
 
 
 def _library_summary(library: object) -> dict[str, object]:
@@ -316,6 +325,246 @@ def _unresolvable_relative_paths(canonical: str, relative_remap: bool) -> int:
     return sum(count for count in relative.values() if count > 0)
 
 
+def _library_checksums(libraries: list[object]) -> dict[int, tuple[str, str]]:
+    """
+    SHA-256 each linked library, confined to the configured file roots.
+
+    A `Library.filepath` comes out of the opened `.blend` and is author-controlled, so an
+    unconfined checksum would read any file on this host. The resolved path is used for
+    reading only and never returned.
+
+    Args:
+        libraries: The libraries to hash, in `bpy.data.libraries` order.
+
+    Returns:
+        dict[int, tuple[str, str]]: Index into `libraries` -> `(sha256, skipped reason)`;
+        exactly one of the two is ever non-empty.
+
+    Raises:
+        ValueError: When no file roots are configured, so nothing can be confined.
+
+    """
+    roots = configured_file_roots()
+    if not roots:
+        raise ValueError(
+            "provenance_checksums requires BLENDERMCP_FILE_ROOTS (or BLENDERMCP_OUTPUT_ROOTS) to be "
+            "configured; without roots a checksum would read any file on this host"
+        )
+    digests: dict[int, tuple[str, str]] = {}
+    budget = MAX_DIGEST_TOTAL_BYTES
+    hashed = 0
+    for index, library in enumerate(libraries):
+        if hashed >= MAX_DIGEST_FILES:
+            digests[index] = ("", "call hash file limit reached")
+            continue
+        raw = str(getattr(library, "filepath", "") or "")
+        resolved = canonical_path(bpy.path.abspath(raw, library=getattr(library, "parent", None)))
+        try:
+            enforce_roots(resolved, roots)
+        except ValueError:
+            digests[index] = ("", "outside the configured file roots")
+            continue
+        digest, reason = file_digest(resolved, MAX_DIGEST_TOTAL_BYTES, budget)
+        hashed += 1
+        if digest is None:
+            digests[index] = ("", reason or "unreadable")
+            continue
+        with suppress(OSError):
+            budget -= os.path.getsize(resolved)
+        digests[index] = (digest, "")
+    return digests
+
+
+def _provenance_block(with_checksums: bool) -> dict[str, object]:
+    """
+    Describe who authored this file, from what, in C2PA's vocabulary.
+
+    Keys are named for the C2PA assertions they will later serialize into (`claim_generator`,
+    `ingredients`, `actions`), so attaching a signed manifest to a render becomes a
+    serialization step rather than a second provenance model. Unsigned and editable: it
+    records authorship, it does not prove it.
+
+    Args:
+        with_checksums: Also hash every linked library, which reads them from disk.
+
+    Returns:
+        dict[str, object]: The block, JSON-serializable and free of host paths.
+
+    Raises:
+        ValueError: When checksums were asked for with no file roots configured.
+
+    """
+    addon_version = ".".join(str(part) for part in bl_info["version"])
+    libraries = list(bpy.data.libraries)
+    digests = _library_checksums(libraries) if with_checksums else {}
+    ingredients = []
+    for index, library in enumerate(libraries):
+        summary = _library_summary(library)
+        sha256, skipped = digests.get(index, ("", ""))
+        ingredients.append(
+            {"name": summary["name"], "filepath": summary["filepath"], "sha256": sha256, "skipped": skipped}
+        )
+    return {
+        "claim_generator": f"blender-mcp/{addon_version}",
+        "protocol_version": ADDON_PROTOCOL_VERSION,
+        "blender_version": bpy.app.version_string,
+        "saved_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+        "ingredients": ingredients,
+        "actions": [
+            {
+                "action": "c2pa.edited",
+                "software_agent": f"blender-mcp/{addon_version}",
+                "datablocks": [f"{entry['collection']}:{entry['name']}" for entry in authored.snapshot()],
+                "datablocks_truncated": authored.was_truncated(),
+            }
+        ],
+    }
+
+
+def _stamp_provenance(with_checksums: bool) -> tuple[list[tuple[object, bool, object]], int]:
+    """
+    Write the provenance block into every local scene, remembering what was there.
+
+    Stored as a JSON string, not a nested ID-property group: an `IDPropertyArray` cannot hold
+    groups, which is why every complex value this repo puts on a datablock is `json.dumps`'d.
+    A linked scene is another file's data and assigning to it raises, so it is skipped.
+
+    Args:
+        with_checksums: Passed through to `_provenance_block`.
+
+    Returns:
+        tuple[list[tuple[object, bool, object]], int]: The `(scene, key existed, previous
+        value)` backup `_restore_provenance` undoes, and how many ingredients were recorded.
+
+    """
+    block = _provenance_block(with_checksums)
+    encoded = json.dumps(block, sort_keys=True)
+    backup: list[tuple[object, bool, object]] = []
+    for scene in bpy.data.scenes:
+        if scene.library is not None:
+            continue
+        backup.append((scene, PROVENANCE_PROPERTY in scene, scene.get(PROVENANCE_PROPERTY)))
+        scene[PROVENANCE_PROPERTY] = encoded
+    return backup, len(block["ingredients"])  # pyright: ignore[reportArgumentType]
+
+
+def _restore_provenance(backup: list[tuple[object, bool, object]]) -> None:
+    """
+    Put every scene's `blender_mcp` property back as it was, in reverse order.
+
+    Args:
+        backup: `(scene, key existed, previous value)` triples recorded before writing.
+
+    """
+    for scene, existed, previous in reversed(backup):
+        with suppress(Exception):
+            if existed:
+                scene[PROVENANCE_PROPERTY] = previous  # pyright: ignore[reportIndexIssue]
+            else:
+                del scene[PROVENANCE_PROPERTY]  # pyright: ignore[reportIndexIssue]
+
+
+def _save_with_provenance(
+    canonical: str,
+    requested: object,
+    *,
+    in_place: bool,
+    compress: bool,
+    relative_remap: bool,
+    write_provenance: bool,
+    provenance_checksums: bool,
+) -> int:
+    """
+    Stamp the provenance block, run Blender's save, and undo the stamp if it fails.
+
+    The stamp lives inside the same `try` as the operator and after every refusal, so a save
+    that is refused or that Blender rejects leaves no scene carrying a claim about a file that
+    was never written.
+
+    Args:
+        canonical: The validated target path to hand Blender.
+        requested: The path the client asked for, for the sanitized failure message.
+        in_place: Whether this is a save over the open file.
+        compress: Passed to the operator.
+        relative_remap: Passed to the operator.
+        write_provenance: Whether to stamp at all.
+        provenance_checksums: Whether the stamp hashes linked libraries.
+
+    Returns:
+        int: How many ingredients the stamp recorded; 0 when nothing was stamped.
+
+    Raises:
+        RuntimeError: When Blender could not write the file.
+
+    """
+    operator = bpy.ops.wm.save_mainfile if in_place else bpy.ops.wm.save_as_mainfile
+    backup: list[tuple[object, bool, object]] = []
+    ingredients = 0
+    try:
+        if write_provenance:
+            backup, ingredients = _stamp_provenance(provenance_checksums)
+        # Raises RuntimeError on every failure mode; never returns CANCELLED.
+        operator(filepath=canonical, compress=compress, relative_remap=relative_remap)
+    except RuntimeError as exc:
+        _restore_provenance(backup)
+        raise RuntimeError(_operator_failure_message("save_shot", exc, (requested, canonical))) from exc
+    except Exception:
+        _restore_provenance(backup)
+        raise
+    return ingredients
+
+
+def _save_report(
+    *,
+    in_place: bool,
+    exists: bool,
+    created_directory: bool,
+    compress: bool,
+    relative_remap: bool,
+    write_provenance: bool,
+    ingredients: int,
+    broken_links: int,
+) -> dict[str, object]:
+    """
+    Describe a completed save.
+
+    Args:
+        in_place: Whether the save went to the open file.
+        exists: Whether the target already existed.
+        created_directory: Whether the target's directory was created.
+        compress: What was passed to the operator.
+        relative_remap: What was passed to the operator.
+        write_provenance: Whether a provenance block was written.
+        ingredients: How many linked libraries that block records.
+        broken_links: `_unresolvable_relative_paths`' count.
+
+    Returns:
+        dict[str, object]: See `save_shot`'s Returns.
+
+    """
+    session = session_snapshot()
+    result: dict[str, object] = {
+        "filepath": session["current_filepath"],
+        "saved_in_place": in_place,
+        "overwrote_existing": exists,
+        "created_directory": created_directory,
+        "compress": compress,
+        "relative_remap": relative_remap,
+        "session_id": session["session_id"],
+        "session_epoch": session["session_epoch"],
+        "provenance_written": write_provenance,
+    }
+    if write_provenance:
+        result["provenance_ingredients"] = ingredients
+    if broken_links:
+        noun = "path (images, libraries, etc.) is" if broken_links == 1 else "paths (images, libraries, etc.) are"
+        result["warnings"] = [
+            f"{broken_links} external file {noun} Blender-relative and will not resolve from the new "
+            "directory, because relative_remap is false; save again with relative_remap=true, or relink"
+        ]
+    return result
+
+
 class FileLifecycleHandlersMixin:
     """
     Report and change which .blend the session holds.
@@ -464,6 +713,8 @@ class FileLifecycleHandlersMixin:
         relative_remap: object = False,
         confirm_overwrite: object = False,
         create_directories: object = False,
+        write_provenance: object = True,
+        provenance_checksums: object = False,
     ) -> dict[str, object]:
         """
         Write the open database to disk, refusing to replace an existing file unconfirmed.
@@ -492,12 +743,18 @@ class FileLifecycleHandlersMixin:
                 parents, inside the file roots when any are configured. They are
                 created after every refusal check, and stay if Blender's save then
                 fails.
+            write_provenance: Record who authored this file into every local scene as the
+                custom property `blender_mcp`, shaped for C2PA. Default True.
+            provenance_checksums: Also SHA-256 each linked library. Default False: hashing
+                every library on every save would read gigabytes on Blender's main thread.
+                Requires configured file roots.
 
         Returns:
             dict[str, object]: `filepath` (the open file after the save),
             `saved_in_place`, `overwrote_existing`, `created_directory`,
             `compress`, `relative_remap`, `session_id`, `session_epoch`
-            (unchanged by a save), and `warnings` when `//`-relative external
+            (unchanged by a save), `provenance_written` and, when written,
+            `provenance_ingredients`; and `warnings` when `//`-relative external
             file paths (images, direct libraries) will not resolve from a new
             directory. No `is_dirty`: Blender clears it only after this tick, so
             poll `get_session_info` instead.
@@ -511,6 +768,8 @@ class FileLifecycleHandlersMixin:
         relative_remap = _require_bool("relative_remap", relative_remap)
         confirm_overwrite = _require_bool("confirm_overwrite", confirm_overwrite)
         create_directories = _require_bool("create_directories", create_directories)
+        write_provenance = _require_bool("write_provenance", write_provenance)
+        provenance_checksums = _require_bool("provenance_checksums", provenance_checksums)
         in_place = filepath is None
         if in_place and not bpy.data.filepath:
             raise ValueError("this session has never been saved, so it cannot be saved in place; pass a filepath")
@@ -522,30 +781,25 @@ class FileLifecycleHandlersMixin:
         _refuse_a_leftover_temp_save(canonical)
         broken_links = _unresolvable_relative_paths(canonical, relative_remap)
         created_directory = create_save_directory(canonical)
-        operator = bpy.ops.wm.save_mainfile if in_place else bpy.ops.wm.save_as_mainfile
-        try:
-            # Raises RuntimeError on every failure mode; never returns CANCELLED.
-            operator(filepath=canonical, compress=compress, relative_remap=relative_remap)
-        except RuntimeError as exc:
-            raise RuntimeError(_operator_failure_message("save_shot", exc, (requested, canonical))) from exc
-        session = session_snapshot()
-        result: dict[str, object] = {
-            "filepath": session["current_filepath"],
-            "saved_in_place": in_place,
-            "overwrote_existing": exists,
-            "created_directory": created_directory,
-            "compress": compress,
-            "relative_remap": relative_remap,
-            "session_id": session["session_id"],
-            "session_epoch": session["session_epoch"],
-        }
-        if broken_links:
-            noun = "path (images, libraries, etc.) is" if broken_links == 1 else "paths (images, libraries, etc.) are"
-            result["warnings"] = [
-                f"{broken_links} external file {noun} Blender-relative and will not resolve from the new "
-                "directory, because relative_remap is false; save again with relative_remap=true, or relink"
-            ]
-        return result
+        ingredients = _save_with_provenance(
+            canonical,
+            requested,
+            in_place=in_place,
+            compress=compress,
+            relative_remap=relative_remap,
+            write_provenance=write_provenance,
+            provenance_checksums=provenance_checksums,
+        )
+        return _save_report(
+            in_place=in_place,
+            exists=exists,
+            created_directory=created_directory,
+            compress=compress,
+            relative_remap=relative_remap,
+            write_provenance=write_provenance,
+            ingredients=ingredients,
+            broken_links=broken_links,
+        )
 
     def reset_session(self, confirm: object = False) -> dict[str, object]:
         """

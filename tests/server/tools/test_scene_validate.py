@@ -323,3 +323,63 @@ def test_normalized_domain_finding_prefers_message_and_falls_back_to_evidence_st
     )
     assert string_evidence_only["message"] == "No UV layers"
     assert string_evidence_only["evidence"] is None
+
+
+# ---------------------------------------------------------------------------
+# _persistence_findings: what bpy.data loses at save, which no scene walk sees.
+# ---------------------------------------------------------------------------
+
+
+def _fake_id(name, *, users=1, use_fake_user=False, library=None):
+    return types.SimpleNamespace(name=name, users=users, use_fake_user=use_fake_user, library=library)
+
+
+def test_persistence_findings_flag_unreferenced_and_fake_user_only_datablocks(monkeypatch) -> None:
+    addon, bpy = _load_addon(monkeypatch, data={"materials": FakeCollection(), "actions": FakeCollection()})
+    bpy.data.materials["Orphan"] = _fake_id("Orphan", users=0)
+    bpy.data.materials["Used"] = _fake_id("Used", users=2)
+    bpy.data.actions["Parked"] = _fake_id("Parked", users=1, use_fake_user=True)
+    bpy.data.actions["Driving"] = _fake_id("Driving", users=2, use_fake_user=True)
+
+    findings, truncated = addon.handlers.scene._persistence_findings(300)
+
+    by_subject = {item["subject"]: item for item in findings}
+    assert set(by_subject) == {"Orphan", "Parked"}
+    assert by_subject["Orphan"]["code"] == "UNREFERENCED_DATABLOCK"
+    assert by_subject["Orphan"]["severity"] == "WARNING"
+    assert by_subject["Orphan"]["evidence"] == {"collection": "materials"}
+    assert by_subject["Parked"]["code"] == "ACTION_KEPT_BY_FAKE_USER_ONLY"
+    assert by_subject["Parked"]["severity"] == "INFO"
+    assert truncated is False
+
+
+def test_persistence_findings_ignore_linked_datablocks(monkeypatch) -> None:
+    addon, bpy = _load_addon(monkeypatch, data={"meshes": FakeCollection()})
+    bpy.data.meshes["CanonMesh"] = _fake_id("CanonMesh", users=0, library=object())
+
+    assert addon.handlers.scene._persistence_findings(300) == ([], False)
+
+
+def test_persistence_findings_report_truncation_past_max_findings(monkeypatch) -> None:
+    addon, bpy = _load_addon(monkeypatch, data={"materials": FakeCollection()})
+    for index in range(3):
+        bpy.data.materials[f"Orphan{index}"] = _fake_id(f"Orphan{index}", users=0)
+
+    findings, truncated = addon.handlers.scene._persistence_findings(2)
+
+    assert len(findings) == 2
+    assert truncated is True
+
+
+def test_validate_scene_runs_the_persistence_domain_on_request(monkeypatch) -> None:
+    addon, bpy = _load_addon(monkeypatch, data={"scenes": FakeCollection(), "materials": FakeCollection()})
+    bpy.data.scenes["Scene"] = _fake_scene()
+    bpy.data.materials["Orphan"] = _fake_id("Orphan", users=0)
+    server = addon.BlenderMCPServer()
+
+    result = server.validate_scene("Scene", scope=["persistence"])
+
+    assert result["domains_checked"] == ["persistence"]
+    assert result["domain_summaries"]["persistence"] == {"findings": 1, "truncated": False}
+    assert result["findings"][0]["domain"] == "persistence"
+    assert result["findings"][0]["code"] == "UNREFERENCED_DATABLOCK"

@@ -1311,3 +1311,40 @@ def test_only_a_completed_load_clears_the_indeterminate_latch(monkeypatch: pytes
 
     _fire(bpy, "load_post", "/shots/sq020.blend")
     assert server.get_session_info()["session_indeterminate"] is False, "a completed load did not clear it"
+
+
+def test_a_completed_load_forgets_what_the_replaced_session_authored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The new file's provenance block must not claim datablocks that belonged to the old one."""
+    _server, session, bpy = _load_server(monkeypatch)
+    session.register_handlers()
+    session.authored.record([{"collection": "actions", "name": "Hero_Walk"}])
+    assert session.authored.snapshot()
+
+    _fire(bpy, "load_post", "/shots/sq020.blend")
+
+    assert session.authored.snapshot() == []
+
+
+def test_a_failed_load_keeps_the_open_files_authorship(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A load that never landed replaced nothing, so what this session authored is still true."""
+    _server, session, bpy = _load_server(monkeypatch)
+    session.register_handlers()
+    session.authored.record([{"collection": "actions", "name": "Hero_Walk"}])
+
+    _fire(bpy, "load_post_fail", "/shots/nope.blend")
+
+    assert session.authored.snapshot() == [{"collection": "actions", "name": "Hero_Walk"}]
+    session.authored.clear()
+
+
+def test_an_aborted_swap_forgets_the_authorship_it_can_no_longer_describe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What is open after an abort cannot be named truthfully, and neither can its authorship."""
+    _server, session, _bpy = _load_server(monkeypatch)
+    session.register_handlers()
+    session.authored.record([{"collection": "actions", "name": "Hero_Walk"}])
+
+    session.mark_session_indeterminate()
+
+    assert session.authored.snapshot() == []

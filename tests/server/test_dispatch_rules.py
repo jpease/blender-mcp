@@ -111,3 +111,9 @@ def test_these_commands_run_outside_the_transaction(server: object, cmd_type: st
 
     """
     assert server.bypasses_transaction(cmd_type, {}) is True, why
+
+
+def test_a_render_that_persists_its_output_template_is_transacted(server: object) -> None:
+    """`persist_output` writes `scene.render.filepath`, which is scene state a failure must restore."""
+    assert server.bypasses_transaction("render_scene", {"persist_output": True}) is False
+    assert server.bypasses_transaction("render_scene", {"persist_output": False}) is True

@@ -88,7 +88,7 @@ def asset_creation_strategy() -> str:
         - A screenshot is the live viewport, not a render, and render_scene itself returns
           only the written file's path/size/status, not pixels. To actually see rendered
           pixels: for the real scene's final render, call
-          inspect_render_output(output_path=<one of render_scene's "files" paths>)
+          inspect_render_output(output_path=<render_scene's "last_file">)
           afterward (or with no arguments, to read the in-memory Render Result); for a
           bounded preview render, use render_lighting_preview or render_pbr_material_preview
           instead (a disposable staging scene, not the real one).

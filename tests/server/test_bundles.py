@@ -52,6 +52,7 @@ _FILE_LIFECYCLE_TOOLS = (
     "reload_library",
     "relocate_library",
     "unlink_libraries",
+    "inspect_delivery",
 )
 
 # name -> (destructive, read_only, open_world). If this disagrees with `_documentation.py`,
@@ -67,6 +68,7 @@ _FILE_LIFECYCLE_HINTS: dict[str, tuple[bool, bool, bool]] = {
     "reload_library": (True, False, True),
     "relocate_library": (True, False, True),
     "unlink_libraries": (True, False, False),
+    "inspect_delivery": (False, True, True),
 }
 
 
@@ -477,10 +479,17 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # the camera instead of guessing bone-local radians; 2,050 is Eevee's ray-tracing patch, which
 # is what stops the demo set's glass rendering black without a manual trip through Blender's UI.
 # 895 bytes of Args rows that only restated the schema were deleted in the same pass.
-SHOT_MODE_BYTE_CEILING = 202_000
+# Raised a second time, from 202,000, by the artefact-truth work: `inspect_delivery` joined the
+# core surface (the only tool that reads a file's external references back and answers whether
+# they travel), `render_scene` gained confirm_frame_range/persist_output/detail plus an optional
+# filepath so a render can carry its own intent, and `save_shot` gained the two provenance
+# switches. 601 of the 3,260 bytes are `save_shot`'s.
+SHOT_MODE_BYTE_CEILING = 205_260
 
-# The same rule for the default, core-only surface.
-DEFAULT_MODE_BYTE_CEILING = 66_862
+# The same rule for the default, core-only surface, and the same work: 166 bytes for
+# `validate_scene`'s `persistence` scope, 2,202 for `inspect_delivery`, 601 for `save_shot`'s
+# provenance switches.
+DEFAULT_MODE_BYTE_CEILING = 69_831
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:
@@ -625,9 +634,9 @@ def test_scene_authoring_tools_advertise_their_destructiveness() -> None:
     )
 
 
-def test_file_lifecycle_tools_are_exactly_ten_and_reachable_from_shot_and_asset() -> None:
-    """The ten file-lifecycle/linking tools exist once each and are reachable from both modes."""
-    assert len(_FILE_LIFECYCLE_TOOLS) == 10
+def test_file_lifecycle_tools_are_exactly_eleven_and_reachable_from_shot_and_asset() -> None:
+    """The eleven file-lifecycle/linking tools exist once each and are reachable from both modes."""
+    assert len(_FILE_LIFECYCLE_TOOLS) == 11
     assert set(_FILE_LIFECYCLE_TOOLS) == set(_FILE_LIFECYCLE_HINTS)
     shot = _tool_names_for_toolsets("shot")
     asset = _tool_names_for_toolsets("asset")
@@ -638,7 +647,7 @@ def test_file_lifecycle_tools_are_exactly_ten_and_reachable_from_shot_and_asset(
 
 def test_file_lifecycle_tools_advertise_correct_hints() -> None:
     """
-    All ten tools advertise the right destructive/read-only/open-world hints, by name, both ways.
+    All eleven tools advertise the right destructive/read-only/open-world hints, by name, both ways.
 
     Every tool gets all three hints, so a tool left out of a set ships a wrong hint, not none.
     """
@@ -652,6 +661,8 @@ def test_file_lifecycle_tools_advertise_correct_hints() -> None:
 
 # Emitted for `_BLEND_FILE_TOOLS` in `_documentation.py`.
 _BLEND_FILE_EFFECTS_SENTENCE = "reads or writes a .blend file on disk"
+# Emitted for a tool in both `_BLEND_FILE_TOOLS` and the read-only prefix set.
+_READ_ONLY_BLEND_FILE_SENTENCE = "Read-only for Blender data, but reads .blend files from disk."
 
 _BLEND_FILE_TOOLS_UNDER_TEST = ("open_shot", "save_shot", "link_canon_library", "reload_library", "relocate_library")
 
@@ -679,10 +690,12 @@ def _tool_descriptions_for_toolsets(raw_value: str | None) -> dict[str, str]:
 
 def test_file_lifecycle_tools_blend_file_prose_is_correct() -> None:
     """
-    None of the ten claims it skips saving the .blend file; the five that touch one say so correctly.
+    None of the eleven claims it skips saving the .blend file; those that touch one say so correctly.
 
     Merging `_BLEND_FILE_TOOLS` into `_FILE_TOOLS`, or dropping its branch in `_tool_contract`,
-    passes every other file-lifecycle test.
+    passes every other file-lifecycle test. `inspect_delivery` is read-only for Blender data and
+    still reads `.blend` files from disk, so it gets its own accurate sentence rather than either
+    of the other two.
     """
     descriptions = _tool_descriptions_for_toolsets("shot")
     for name in _FILE_LIFECYCLE_TOOLS:
@@ -691,6 +704,7 @@ def test_file_lifecycle_tools_blend_file_prose_is_correct() -> None:
         )
     for name in _BLEND_FILE_TOOLS_UNDER_TEST:
         assert _BLEND_FILE_EFFECTS_SENTENCE in descriptions[name], f"{name} is missing the .blend-file effects sentence"
+    assert _READ_ONLY_BLEND_FILE_SENTENCE in descriptions["inspect_delivery"]
 
 
 def _parameter_descriptions_for_toolsets(raw_value: str | None) -> dict[str, str]:

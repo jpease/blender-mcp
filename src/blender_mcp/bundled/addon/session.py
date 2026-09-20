@@ -28,6 +28,7 @@ import bpy
 
 from bpy.app.handlers import persistent
 
+from . import authored
 from .text_hygiene import client_safe_leaf
 from .transaction import invalidate_active_transaction, library_replace_in_progress
 
@@ -412,6 +413,9 @@ def _on_load_post(file_path: str = "", _unused: object = None) -> None:
 
     """
     invalidate_active_transaction()
+    # The datablocks this session authored belong to the file that was just replaced; the
+    # provenance block of the new one must not claim them.
+    authored.clear()
     _STORE.state = applied_load_post(_STORE.state, file_path)
 
 
@@ -483,6 +487,9 @@ def mark_session_indeterminate() -> None:
     `applied_indeterminate` for why this is the one failure that moves the epoch.
     """
     _STORE.state = applied_indeterminate(_STORE.state)
+    # The swap was aborted part-way: what is open cannot be described truthfully, so the
+    # authorship claim goes with it.
+    authored.clear()
 
 
 # One table, so registration, removal and the duplicate check cannot drift apart.

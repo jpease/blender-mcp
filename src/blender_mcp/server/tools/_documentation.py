@@ -67,6 +67,7 @@ _BLEND_FILE_TOOLS = {
     "link_canon_library",
     "reload_library",
     "relocate_library",
+    "inspect_delivery",
 }
 _IMAGE_TOOLS = {
     "get_viewport_screenshot",
@@ -531,6 +532,8 @@ def _tool_contract(name: str, *, read_only: bool, returns: str | None) -> str:
         effects = (
             "Read-only for Blender data, but queries an external provider and may use credentials or network access."
         )
+    elif read_only and name in _BLEND_FILE_TOOLS:
+        effects = "Read-only for Blender data, but reads .blend files from disk."
     elif read_only:
         effects = "Read-only: does not persistently modify Blender data."
     elif name in _FILE_TOOLS:

@@ -37,6 +37,11 @@ _PACKAGE.__path__ = [str(ADDON_DIR)]  # type: ignore[attr-defined]
 # `helpers`, imported by `handlers.scene`, reads the package's `ADDON_ID`; the real
 # `__init__` would register Blender classes, so only the constant is provided.
 _PACKAGE.ADDON_ID = "blender_mcp_probe"  # type: ignore[attr-defined]
+# `handlers.file_lifecycle` stamps the add-on version and protocol into a saved file's
+# provenance block. The real `__init__` would register Blender classes, so only the two
+# constants are provided, with fixed values so a version bump cannot move this transcript.
+_PACKAGE.ADDON_PROTOCOL_VERSION = 0  # type: ignore[attr-defined]
+_PACKAGE.bl_info = {"version": (0, 0, 0)}  # type: ignore[attr-defined]
 sys.modules["probe_addon"] = _PACKAGE
 file_lifecycle = importlib.import_module("probe_addon.handlers.file_lifecycle")
 object_lookup = importlib.import_module("probe_addon.object_lookup")

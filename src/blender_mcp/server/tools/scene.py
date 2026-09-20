@@ -444,8 +444,8 @@ async def validate_scene(
     ctx: Context,
     scene_name: str,
     scope: Annotated[
-        list[Literal["scene", "camera", "lighting", "pbr", "cloth", "liquid"]],
-        Field(min_length=1, max_length=6),
+        list[Literal["scene", "camera", "lighting", "pbr", "cloth", "liquid", "persistence"]],
+        Field(min_length=1, max_length=7),
     ]
     | None = None,
     max_findings: Annotated[int, Field(ge=1, le=1000)] = 300,
@@ -465,6 +465,9 @@ async def validate_scene(
     ``domain_summaries`` before trusting an empty result as "clean" - a domain can be truncated
     internally even while the top-level list still has room. Passing this check does not replace
     representative evaluated-frame review in Blender.
+
+    The persistence domain is file-wide: it reports local datablocks with no user, which the save
+    discards, and actions kept alive only by a fake user.
     """
     return await asyncio.to_thread(
         _call,

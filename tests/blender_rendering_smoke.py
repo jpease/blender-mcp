@@ -71,11 +71,13 @@ def _check_directory_output_is_refused(handler: RenderingHandlersMixin, scene: b
         else:
             raise AssertionError("An ANIMATION render into a single .png filename was accepted")
         rendered = handler.render_scene(
-            scene.name, str(Path(directory) / "sh010_"), mode="ANIMATION", confirm_render=True
+            scene.name, str(Path(directory) / "sh010_"), mode="ANIMATION", confirm_render=True, detail=True
         )
         written = sorted(p.name for p in Path(directory).iterdir())
         assert written == ["sh010_0001.png", "sh010_0002.png"], written
         assert [entry["path"] for entry in rendered["files"]] == [str(Path(directory) / name) for name in written]
+        assert rendered["first_file"] == str(Path(directory) / written[0])
+        assert rendered["last_file"] == str(Path(directory) / written[-1])
 
 
 def _check_frame_is_read_back_from_the_filename(handler: RenderingHandlersMixin, scene: bpy.types.Scene) -> None:
@@ -85,7 +87,7 @@ def _check_frame_is_read_back_from_the_filename(handler: RenderingHandlersMixin,
             scene.name, str(Path(directory) / "beat_"), mode="ANIMATION", confirm_render=True
         )
         copy = str(Path(directory) / "copy.png")
-        inspected = handler.inspect_render_output(copy, output_path=sequence["files"][-1]["path"])
+        inspected = handler.inspect_render_output(copy, output_path=sequence["last_file"])
         assert inspected["frame"] == scene.frame_end, inspected
         still = handler.render_scene(
             scene.name, str(Path(directory) / "hero.png"), mode="STILL", frame=1, confirm_render=True
@@ -135,6 +137,62 @@ def _check_detail_reply(handler: RenderingHandlersMixin, scene: bpy.types.Scene)
     handler.configure_render_settings(scene.name, {"resolution_percentage": 100})
 
 
+def _check_scene_owned_render_intent(handler: RenderingHandlersMixin, scene: bpy.types.Scene) -> None:
+    """Take the output template from the scene, and store one back."""
+    with tempfile.TemporaryDirectory() as directory:
+        renders = Path(directory) / "renders"
+        renders.mkdir()
+        # This .blend has never been saved, so a `//` template has nothing to resolve against;
+        # the absolute template is what the rig can render, and what `persist_output` stores is
+        # still the caller's own text rather than a re-resolved path.
+        absolute_template = str(renders / "sh020_")
+        handler.configure_render_settings(scene.name, {"output": {"filepath": absolute_template}})
+        assert scene.render.filepath == absolute_template
+
+        rendered = handler.render_scene(scene.name, mode="ANIMATION", confirm_render=True, persist_output=True)
+
+        written = sorted(path.name for path in renders.iterdir())
+        assert written == ["sh020_0001.png", "sh020_0002.png"], written
+        assert rendered["output_persisted"] is True
+        assert scene.render.filepath == absolute_template
+        assert rendered["first_file"] == str(renders / written[0])
+        assert "files" not in rendered
+
+    # A directory is refused at the moment it is stored, not only when a render reads it.
+    with tempfile.TemporaryDirectory() as directory:
+        try:
+            handler.configure_render_settings(scene.name, {"output": {"filepath": f"{directory}/"}})
+        except ValueError as exc:
+            assert "is a directory" in str(exc), str(exc)
+        else:
+            raise AssertionError("A directory was accepted as the scene's stored output template")
+
+
+def _check_default_frame_range_is_refused(handler: RenderingHandlersMixin, scene: bpy.types.Scene) -> None:
+    """Blender's untouched 1-250 is a default, not a decision, so an ANIMATION over it is refused."""
+    previous_end = scene.frame_end
+    marker = "blender_mcp_frame_range_authored"
+    had_marker = marker in scene
+    scene.frame_end = 250
+    if had_marker:
+        # bpy's stub types __delitem__ for sequence indexing and loses the ID custom-property
+        # protocol a real Scene has.
+        del scene[marker]  # pyright: ignore[reportArgumentType]
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            try:
+                handler.render_scene(scene.name, str(Path(directory) / "wide_"), mode="ANIMATION", confirm_render=True)
+            except ValueError as exc:
+                assert "still Blender's default 1-250" in str(exc), str(exc)
+            else:
+                raise AssertionError("An ANIMATION over the untouched default range was accepted")
+            assert list(Path(directory).iterdir()) == [], "a refused render still wrote a frame"
+    finally:
+        scene.frame_end = previous_end
+        if had_marker:
+            scene[marker] = True
+
+
 def main() -> None:
     """Exercise settings, passes, rollback, view layers, and a tiny still render."""
     handler = RenderingHandlersMixin()
@@ -181,6 +239,9 @@ def main() -> None:
         "output.use_file_extension": True,
         "metadata.use_stamp": True,
         "metadata.use_stamp_frame": True,
+        # Setting a frame range through this tool is what marks the range as chosen; the
+        # render guard reads the same marker back off the scene.
+        "frame_range_authored": True,
     }
     assert configured["changed"] == sorted(configured["after"])
 
@@ -228,6 +289,8 @@ def main() -> None:
     _check_output_path_resolution(handler, scene)
     _check_directory_output_is_refused(handler, scene)
     _check_frame_is_read_back_from_the_filename(handler, scene)
+    _check_scene_owned_render_intent(handler, scene)
+    _check_default_frame_range_is_refused(handler, scene)
 
     removed = handler.manage_view_layers(scene.name, "REMOVE", "Smoke Passes", confirm_remove=True)
     assert removed["removed"] == "Smoke Passes"

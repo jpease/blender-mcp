@@ -29,12 +29,12 @@ exit: 0
   [open_shot(fixture)] OK -> {'session_id': '<uid>', 'session_epoch': 3, 'filepath': '<real-tmp>/t6_handlers_<rand>/fixture.blend', 'rehandshake_required': True, 'note': "The open database was replaced: session_epoch moved, and the addon's capabilities follow the file. Re-handshake (get_addon_info) before relying on a cached capability list.", 'discarded_unsaved_changes': False, 'scene_name': 'Scene', 'object_count': 0, 'libraries': [], 'capabilities_changed': False}
   after adding a mesh under --background: is_dirty=False
 Info: Saved as "saved.blend"
-  [save_shot(saved)] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/saved.blend', 'saved_in_place': False, 'overwrote_existing': False, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 3}
+  [save_shot(saved)] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/saved.blend', 'saved_in_place': False, 'overwrote_existing': False, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 3, 'provenance_written': True, 'provenance_ingredients': 0}
   saved exists=True header=b'BLENDER17-01' fixture header=b'(\xb5/\xfd\xa0A\x06\x01\x00%7\x00'
   [open_shot(saved)] OK -> {'session_id': '<uid>', 'session_epoch': 4, 'filepath': '<real-tmp>/t6_handlers_<rand>/saved.blend', 'rehandshake_required': True, 'note': "The open database was replaced: session_epoch moved, and the addon's capabilities follow the file. Re-handshake (get_addon_info) before relying on a cached capability list.", 'discarded_unsaved_changes': False, 'scene_name': 'Scene', 'object_count': 1, 'libraries': [], 'capabilities_changed': False}
   reopened objects=['Suzanne']
 Info: Saved "saved.blend"
-  [save_shot() in place, confirmed] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/saved.blend', 'saved_in_place': True, 'overwrote_existing': True, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 4}
+  [save_shot() in place, confirmed] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/saved.blend', 'saved_in_place': True, 'overwrote_existing': True, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 4, 'provenance_written': True, 'provenance_ingredients': 0}
   in-place header=b'BLENDER17-01'
   [reset_session()] ValueError -> 'reset_session discards the open file and any unsaved work; pass confirm=true'
   [reset_session(confirm=True)] OK -> {'session_id': '<uid>', 'session_epoch': 5, 'filepath': None, 'rehandshake_required': True, 'note': "The open database was replaced: session_epoch moved, and the addon's capabilities follow the file. Re-handshake (get_addon_info) before relying on a cached capability list.", 'discarded_unsaved_changes': False, 'scene_name': 'Scene', 'object_count': 0, 'libraries': [], 'capabilities_changed': False}
@@ -86,7 +86,7 @@ Info: Read library: '<real-tmp>/t6_handlers_<rand>/projA/libs/lib.blend', '//lib
   [open_shot(projA/shot)] OK -> '<real-tmp>/t6_handlers_<rand>/projA/shot.blend'
   projA libraries: [('//libs/lib.blend', False)]
 Info: Saved as "shot.blend"
-  [save_shot(projB/shot) remap off] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/projB/shot.blend', 'saved_in_place': False, 'overwrote_existing': False, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 12, 'warnings': ['1 external file path (images, libraries, etc.) is Blender-relative and will not resolve from the new directory, because relative_remap is false; save again with relative_remap=true, or relink']}
+  [save_shot(projB/shot) remap off] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/projB/shot.blend', 'saved_in_place': False, 'overwrote_existing': False, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 12, 'provenance_written': True, 'provenance_ingredients': 1, 'warnings': ['1 external file path (images, libraries, etc.) is Blender-relative and will not resolve from the new directory, because relative_remap is false; save again with relative_remap=true, or relink']}
   open session still reports: [('//libs/lib.blend', False)]
 Info: Read library: '<real-tmp>/t6_handlers_<rand>/projB/libs/lib.blend', '//libs/lib.blend', parent '<direct>'
 Warning: Unable to open '<real-tmp>/t6_handlers_<rand>/projB/libs/lib.blend': No such file or directory
@@ -100,7 +100,7 @@ Warning: 1 libraries and 3 linked data-blocks are missing (including 0 ObjectDat
 Info: Read library: '<real-tmp>/t6_handlers_<rand>/projA/libs/lib.blend', '//libs/lib.blend', parent '<direct>'
   [open_shot(projA/shot)] OK -> '<real-tmp>/t6_handlers_<rand>/projA/shot.blend'
 Info: Saved as "shot.blend"
-  [save_shot(projC/shot) remap on] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/projC/shot.blend', 'saved_in_place': False, 'overwrote_existing': False, 'created_directory': False, 'compress': False, 'relative_remap': True, 'session_id': '<uid>', 'session_epoch': 14}
+  [save_shot(projC/shot) remap on] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/projC/shot.blend', 'saved_in_place': False, 'overwrote_existing': False, 'created_directory': False, 'compress': False, 'relative_remap': True, 'session_id': '<uid>', 'session_epoch': 14, 'provenance_written': True, 'provenance_ingredients': 1}
 Info: Read library: '<real-tmp>/t6_handlers_<rand>/projA/libs/lib.blend', '//../projA/libs/lib.blend', parent '<direct>'
   [open_shot(projC/shot)] OK -> '<real-tmp>/t6_handlers_<rand>/projC/shot.blend'
   projC libraries after reopen: [('//../projA/libs/lib.blend', False)]
@@ -111,7 +111,7 @@ Info: Saved "image_shot.blend"
   [open_shot(projA/image_shot)] OK -> '<real-tmp>/t6_handlers_<rand>/projA/image_shot.blend'
   libraries: []  blend_paths: ['//textures/t2.png']
 Info: Saved as "image_shot.blend"
-  [save_shot(projB/image_shot) remap off] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/projB/image_shot.blend', 'saved_in_place': False, 'overwrote_existing': False, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 17, 'warnings': ['1 external file path (images, libraries, etc.) is Blender-relative and will not resolve from the new directory, because relative_remap is false; save again with relative_remap=true, or relink']}
+  [save_shot(projB/image_shot) remap off] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/projB/image_shot.blend', 'saved_in_place': False, 'overwrote_existing': False, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 17, 'provenance_written': True, 'provenance_ingredients': 0, 'warnings': ['1 external file path (images, libraries, etc.) is Blender-relative and will not resolve from the new directory, because relative_remap is false; save again with relative_remap=true, or relink']}
   [open_shot(projB/image_shot)] OK -> '<real-tmp>/t6_handlers_<rand>/projB/image_shot.blend'
   projB image after reopen: [('//textures/t2.png', False)]
 
@@ -127,7 +127,7 @@ Info: Read library: '<tmp>/t6_handlers_<rand>/projA/libs/deep/lib2.blend', '//de
   libraries (relative?, leaf, indirect by users_id): [(False, 'lib1.blend', False), (True, 'lib2.blend', True)]
   blend_paths(local=True), relative entries: ['//../../../../../../../..<tmp>/t6_handlers_<rand>/projA/libs/deep/lib2.blend']
 Info: Saved as "indirect_shot.blend"
-  [save_shot(projB/indirect_shot) remap off] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/projB/indirect_shot.blend', 'saved_in_place': False, 'overwrote_existing': False, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 22}
+  [save_shot(projB/indirect_shot) remap off] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/projB/indirect_shot.blend', 'saved_in_place': False, 'overwrote_existing': False, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 22, 'provenance_written': True, 'provenance_ingredients': 2}
 Info: Read library: '<tmp>/t6_handlers_<rand>/projA/libs/lib1.blend', '<tmp>/t6_handlers_<rand>/projA/libs/lib1.blend', parent '<direct>'
 Info: Read library: '<tmp>/t6_handlers_<rand>/projA/libs/deep/lib2.blend', '//../../../../../../../..<tmp>/t6_handlers_<rand>/projA/libs/deep/lib2.blend', parent '<direct>'
   [open_shot(projB/indirect_shot)] OK -> '<real-tmp>/t6_handlers_<rand>/projB/indirect_shot.blend'

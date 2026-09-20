@@ -1,6 +1,6 @@
 # ruff: file-ignore[yoda-conditions]
 """
-Regression coverage for the ten file-lifecycle and linking tools.
+Regression coverage for the eleven file-lifecycle and linking tools.
 
 Tests patch the tool module's own `get_blender_connection` with a `_Connection` stand-in and
 call each tool coroutine directly. The `stub_blender_connection` fixture does not apply,
@@ -9,9 +9,12 @@ because it patches only `_scene_shared`.
 
 import asyncio
 
+from typing import get_type_hints
+
 import pytest
 
 from mcp.server.fastmcp.exceptions import ToolError
+from pydantic import TypeAdapter, ValidationError
 from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _documentation, file_lifecycle
@@ -28,6 +31,7 @@ FILE_LIFECYCLE_COMMANDS = {
     "reload_library",
     "relocate_library",
     "unlink_libraries",
+    "inspect_delivery",
 }
 
 
@@ -55,8 +59,9 @@ def test_file_lifecycle_tools_are_registered_and_dispatched(monkeypatch) -> None
 
     assert FILE_LIFECYCLE_COMMANDS <= set(file_lifecycle.mcp._tool_manager._tools)
     assert FILE_LIFECYCLE_COMMANDS <= set(server._build_command_handlers())
-    assert {"get_session_info", "list_libraries"} <= server._READ_ONLY_COMMANDS
-    assert not FILE_LIFECYCLE_COMMANDS - {"get_session_info", "list_libraries"} & server._READ_ONLY_COMMANDS
+    read_only = {"get_session_info", "list_libraries", "inspect_delivery"}
+    assert read_only <= server._READ_ONLY_COMMANDS
+    assert not FILE_LIFECYCLE_COMMANDS - read_only & server._READ_ONLY_COMMANDS
 
 
 def test_get_session_info_forwards_no_params(monkeypatch) -> None:
@@ -104,6 +109,8 @@ def test_save_shot_forwards_every_parameter(monkeypatch) -> None:
             relative_remap=True,
             confirm_overwrite=True,
             create_directories=True,
+            write_provenance=False,
+            provenance_checksums=False,
         )
     )
 
@@ -115,6 +122,8 @@ def test_save_shot_forwards_every_parameter(monkeypatch) -> None:
         "relative_remap": True,
         "confirm_overwrite": True,
         "create_directories": True,
+        "write_provenance": False,
+        "provenance_checksums": False,
     }
 
 
@@ -132,6 +141,8 @@ def test_save_shot_default_filepath_is_none(monkeypatch) -> None:
         "relative_remap": False,
         "confirm_overwrite": False,
         "create_directories": False,
+        "write_provenance": True,
+        "provenance_checksums": False,
     }
 
 
@@ -309,6 +320,56 @@ def test_unlink_libraries_defaults(monkeypatch) -> None:
     assert params == {"library_uids": [1], "confirm": False, "purge_orphans": False}
 
 
+def test_inspect_delivery_forwards_every_parameter(monkeypatch) -> None:
+    connection = _Connection()
+    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+
+    asyncio.run(
+        file_lifecycle.inspect_delivery(
+            ctx=None, scene_name="Scene", limit=10, offset=20, hash_libraries=True, max_hash_bytes=1024
+        )
+    )
+
+    command, params = connection.calls[0]
+    assert command == "inspect_delivery"
+    assert params == {
+        "scene_name": "Scene",
+        "limit": 10,
+        "offset": 20,
+        "hash_libraries": True,
+        "max_hash_bytes": 1024,
+    }
+
+
+def test_inspect_delivery_defaults_do_not_read_linked_files(monkeypatch) -> None:
+    """Hashing reads linked .blend files on Blender's main thread, so it must stay opt-in."""
+    connection = _Connection()
+    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+
+    asyncio.run(file_lifecycle.inspect_delivery(ctx=None, scene_name="Scene"))
+
+    _command, params = connection.calls[0]
+    assert params == {
+        "scene_name": "Scene",
+        "limit": 50,
+        "offset": 0,
+        "hash_libraries": False,
+        "max_hash_bytes": 268_435_456,
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("limit", 0), ("limit", 201), ("offset", -1), ("max_hash_bytes", 0), ("max_hash_bytes", 8 * 1024**3 + 1)],
+)
+def test_inspect_delivery_schema_rejects_out_of_range_paging(field, value) -> None:
+    """The bounds are declared on the tool, so a bad page never reaches Blender's main thread."""
+    hints = get_type_hints(file_lifecycle.inspect_delivery, include_extras=True)
+
+    with pytest.raises(ValidationError):
+        TypeAdapter(hints[field]).validate_python(value)
+
+
 def test_save_shot_destructive_hint_is_explicit_not_schema_derived() -> None:
     """
     `save_shot` is explicitly in `_DESTRUCTIVE_TOOLS`, so the hint survives losing `confirm_overwrite`.
@@ -343,6 +404,7 @@ def test_addon_failure_reaches_the_client_as_a_tool_error_unchanged(monkeypatch,
         "relocate_library": {"library_uid": 1, "filepath": "x.blend"},
         "unlink_libraries": {"library_uids": [1]},
         "get_session_info": {},
+        "inspect_delivery": {"scene_name": "Scene"},
     }[tool_name]
 
     with pytest.raises(ToolError) as excinfo:

@@ -95,9 +95,9 @@ Every tool below returns one of two shapes:
      render_pbr_material_preview do render, but a disposable staging scene, not the user's
      actual one. render_scene renders the user's actual scene but only writes files to disk
      and never returns pixels itself - only its written-path/size/status metadata. To actually
-     see render_scene's pixels, call inspect_render_output(output_path=<one of its "files"
-     paths>) afterward, or call it with no arguments to read the in-memory Render Result
-     directly (which only ever holds the most recently rendered frame).
+     see render_scene's pixels, call inspect_render_output(output_path=<its "last_file", or one
+     of its detail=true "files" paths>) afterward, or call it with no arguments to read the
+     in-memory Render Result directly (which only ever holds the most recently rendered frame).
 
 For any tool exposing limit/offset parameters, pagination metadata is inside the envelope's "data"
 dict. Continue with the returned "next_offset" while "truncated" is true. Independent limit/offset

@@ -11,18 +11,21 @@ Overwrite tests use real files under `tmp_path`, because the guard is `os.path.e
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import os
 import shutil
+import sys
 import types
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
 from conftest import REPO_ROOT
-from test_mutation_transaction import _load_addon
+from test_mutation_transaction import FakeCollection, _load_addon
 
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "blend" / "empty_gzip.blend"
 SERVER_SRC = REPO_ROOT / "src" / "blender_mcp" / "server"
@@ -166,6 +169,64 @@ def _abspath(bpy: types.ModuleType, path: str) -> str:
     return os.path.join(os.path.dirname(base), path[2:]) if base else path[2:]
 
 
+class _StubScene:
+    """
+    A scene stub with Blender's ID custom-property protocol and its `library` link.
+
+    `save_shot` writes the provenance block as `scene["blender_mcp"]` and skips linked
+    scenes, so a stub without the mapping protocol or without `library` cannot exercise
+    either rule.
+    """
+
+    def __init__(self, name: str = "Scene", *, library: object = None, **attributes: object) -> None:
+        """
+        Build a scene.
+
+        Args:
+            name: The scene's name.
+            library: The library it is linked from, or None for a local scene.
+            **attributes: Extra attributes, such as `render`, for the delivery scan.
+
+        """
+        self.name = name
+        self.library = library
+        self._custom_properties: dict[str, object] = {}
+        for key, value in attributes.items():
+            setattr(self, key, value)
+
+    def get(self, key: str, default: object = None) -> object:
+        return self._custom_properties.get(key, default)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._custom_properties
+
+    def __getitem__(self, key: str) -> object:
+        return self._custom_properties[key]
+
+    def __setitem__(self, key: str, value: object) -> None:
+        self._custom_properties[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self._custom_properties[key]
+
+
+def _scene_collection(*scenes: _StubScene) -> FakeCollection:
+    """
+    Build a `bpy.data.scenes` stand-in.
+
+    Args:
+        *scenes: The scenes to hold; one plain local `Scene` when none are given.
+
+    Returns:
+        FakeCollection: Keyed by each scene's current name, like Blender's.
+
+    """
+    collection = FakeCollection()
+    for scene in scenes or (_StubScene(),):
+        collection[scene.name] = scene
+    return collection
+
+
 def _server(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -190,14 +251,22 @@ def _server(
     monkeypatch.delenv("BLENDERMCP_OUTPUT_ROOTS", raising=False)
     addon, bpy = _load_addon(
         monkeypatch,
-        data={"filepath": filepath, "is_dirty": is_dirty, "libraries": [], "objects": ["a", "b"]},
+        data={
+            "filepath": filepath,
+            "is_dirty": is_dirty,
+            "libraries": [],
+            "objects": ["a", "b"],
+            "scenes": _scene_collection(),
+        },
     )
     bpy.context.scene.name = "Scene"
     bpy.context.preferences = types.SimpleNamespace(
         filepaths=types.SimpleNamespace(use_scripts_auto_execute=auto_execute),
         edit=types.SimpleNamespace(use_global_undo=True),
     )
-    bpy.path = types.SimpleNamespace(abspath=lambda path: _abspath(bpy, path))
+    # `library=` is how the add-on resolves a linked datablock's path; the real
+    # `bpy.path.abspath` takes it as a keyword, so the stub must too.
+    bpy.path = types.SimpleNamespace(abspath=lambda path, library=None: _abspath(bpy, path))
     bpy.utils = types.SimpleNamespace(blend_paths=lambda **_flags: [])
     wm = _RecordingWm(bpy)
     bpy.ops.wm = wm
@@ -1188,3 +1257,415 @@ def test_an_occupied_temp_save_name_says_it_may_be_left_by_an_interrupted_save(
 
     assert "possibly left by an interrupted save" in message
     assert "cannot be created or checked" not in message
+
+
+# ---------------------------------------------------------------------------
+# inspect_delivery
+# ---------------------------------------------------------------------------
+
+
+def _image(name: str, filepath: str, *, packed: bool = False, source: str = "FILE") -> types.SimpleNamespace:
+    """
+    Build a stub image datablock with the fields the delivery scan reads.
+
+    Args:
+        name: Datablock name.
+        filepath: Its path, as Blender would report it.
+        packed: Whether the pixels live inside the .blend.
+        source: The image's source enum.
+
+    Returns:
+        types.SimpleNamespace: The stub.
+
+    """
+    return types.SimpleNamespace(
+        name=name,
+        filepath=filepath,
+        library=None,
+        packed_file=object() if packed else None,
+        source=source,
+        users=1,
+        is_dirty=False,
+    )
+
+
+def _delivery_scene(name: str = "Scene", output: str = "//renders/sh010_") -> _StubScene:
+    """
+    Build a stub scene with the render output and rigid-body fields the scan reads.
+
+    Args:
+        name: Scene name.
+        output: `scene.render.filepath`.
+
+    Returns:
+        _StubScene: The stub, custom-property protocol included.
+
+    """
+    return _StubScene(
+        name,
+        render=types.SimpleNamespace(
+            filepath=output, image_settings=types.SimpleNamespace(file_format="OPEN_EXR_MULTILAYER")
+        ),
+        rigidbody_world=None,
+    )
+
+
+def _authored_ledger(server: object) -> types.ModuleType:
+    """
+    Reach the add-on's own `authored` module, the one its dispatch records into.
+
+    A separately loaded copy would have its own list, so a test that seeded it would prove
+    nothing about what a save writes.
+
+    Args:
+        server: The server built by `_server`.
+
+    Returns:
+        types.ModuleType: The live ledger module.
+
+    """
+    return sys.modules[type(server).__module__].authored
+
+
+def _delivery_server(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    filepath: str = "/shots/hero/shot.blend",
+    images: Sequence[object] | None = None,
+    objects: Sequence[object] | None = None,
+    libraries: Sequence[object] | None = None,
+    scene: object | None = None,
+) -> tuple[object, types.ModuleType]:
+    """
+    Build a server whose stub `bpy.data` carries every collection the scan walks.
+
+    Args:
+        monkeypatch: The test's monkeypatch.
+        filepath: The open .blend, "" for an unsaved session.
+        images: Stub images.
+        objects: Stub objects, for simulation caches.
+        libraries: Stub libraries.
+        scene: The scene to inspect; a default one when omitted.
+
+    Returns:
+        tuple: The server and the stub `bpy`.
+
+    """
+    server, bpy, _wm = _server(monkeypatch, filepath=filepath)
+    scenes = FakeCollection()
+    subject = scene if scene is not None else _delivery_scene()
+    scenes[subject.name] = subject
+    bpy.data.scenes = scenes
+    bpy.data.images = list(images or [])
+    bpy.data.fonts = []
+    bpy.data.sounds = []
+    bpy.data.objects = list(objects or [])
+    bpy.data.libraries = list(libraries or [])
+    return server, bpy
+
+
+def _entries_by_name(result: dict) -> dict[str, dict]:
+    return {entry["name"]: entry for entry in result["entries"]}
+
+
+def test_inspect_delivery_reports_an_absolute_image_by_leaf_not_by_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An absolute texture is the defect; publishing its directory would ship the studio's layout."""
+    texture = tmp_path / "prop_basecolor.png"
+    texture.write_bytes(b"x")
+    server, _bpy = _delivery_server(monkeypatch, images=[_image("Prop", str(texture))])
+
+    result = server.inspect_delivery("Scene")
+
+    entry = _entries_by_name(result)["Prop"]
+    assert entry["verdict"] == "ABSOLUTE"
+    assert entry["absolute"] is True
+    assert entry["path"] == "prop_basecolor.png"
+    _assert_no_absolute_path(json.dumps(result), tmp_path)
+    assert result["portable"] is False
+    assert result["classes"]["IMAGE"] == {"total": 1, "unportable": 1}
+
+
+def test_inspect_delivery_does_not_mistake_a_rooted_triple_slash_path_for_a_relative_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`///Users/...` starts with `//` and names an absolute location; `startswith` gets it wrong."""
+    texture = tmp_path / "secret.png"
+    texture.write_bytes(b"x")
+    server, _bpy = _delivery_server(monkeypatch, images=[_image("Rooted", f"//{texture}")])
+
+    entry = _entries_by_name(server.inspect_delivery("Scene"))["Rooted"]
+
+    assert entry["verdict"] == "ABSOLUTE"
+    assert entry["absolute"] is True
+    assert entry["path"] == "secret.png"
+
+
+def test_inspect_delivery_reports_a_packed_image_as_portable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Packed pixels travel inside the file, so they cost nothing at delivery."""
+    server, _bpy = _delivery_server(monkeypatch, images=[_image("Packed", "/gone/tex.png", packed=True)])
+
+    entry = _entries_by_name(server.inspect_delivery("Scene"))["Packed"]
+
+    assert entry["verdict"] == "PACKED"
+    assert entry["absolute"] is False
+    assert server.inspect_delivery("Scene")["classes"]["IMAGE"]["unportable"] == 0
+
+
+def test_inspect_delivery_reports_an_image_whose_file_is_gone_as_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A broken link is unportable here and everywhere else."""
+    server, _bpy = _delivery_server(monkeypatch, images=[_image("Gone", "/absent/tex.png")])
+
+    result = server.inspect_delivery("Scene")
+
+    assert _entries_by_name(result)["Gone"]["verdict"] == "MISSING"
+    assert result["portable"] is False
+
+
+def test_inspect_delivery_judges_portability_over_every_entry_not_the_returned_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A one-entry page must not report a file portable because the defect sits on page two."""
+    images = [_image(f"Tex{index:02d}", f"//textures/tex{index:02d}.png", packed=True) for index in range(4)]
+    images.append(_image("Zz_Absolute", "/elsewhere/tex.png"))
+    server, _bpy = _delivery_server(monkeypatch, images=images)
+
+    result = server.inspect_delivery("Scene", limit=1)
+
+    assert [entry["name"] for entry in result["entries"]] == ["Tex00"]
+    assert result["truncated"] is True
+    assert result["next_offset"] == 1
+    assert result["portable"] is False
+    assert result["classes"]["IMAGE"]["unportable"] == 1
+
+
+def test_inspect_delivery_reports_a_memory_only_point_cache_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nothing is on disk, so nothing can fail to travel; calling that ABSOLUTE would be a false alarm."""
+    cache = types.SimpleNamespace(
+        name="Cache",
+        index=0,
+        filepath="",
+        use_disk_cache=False,
+        use_external=False,
+        is_baked=False,
+        is_outdated=False,
+    )
+    cloth = types.SimpleNamespace(type="CLOTH", name="Cloth", point_cache=cache)
+    obj = types.SimpleNamespace(name="Cloak", library=None, modifiers=[cloth])
+    server, _bpy = _delivery_server(monkeypatch, objects=[obj])
+
+    entry = _entries_by_name(server.inspect_delivery("Scene"))["Cloak:Cache"]
+
+    assert entry["verdict"] == "UNSET"
+    assert entry["absolute"] is False
+    assert entry["detail"]["use_disk_cache"] is False
+
+
+def test_inspect_delivery_reports_an_unset_fluid_cache_directory_as_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mantaflow has no in-memory cache: an empty cache_directory is a defect, not a default."""
+    domain = types.SimpleNamespace(cache_directory="", has_cache_baked_any=False)
+    fluid = types.SimpleNamespace(type="FLUID", name="Fluid", fluid_type="DOMAIN", domain_settings=domain)
+    obj = types.SimpleNamespace(name="Splash", library=None, modifiers=[fluid])
+    server, _bpy = _delivery_server(monkeypatch, objects=[obj])
+
+    result = server.inspect_delivery("Scene")
+
+    assert _entries_by_name(result)["Splash"]["verdict"] == "MISSING"
+    assert result["portable"] is False
+
+
+def test_inspect_delivery_refuses_to_hash_libraries_without_configured_file_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Library.filepath comes out of the opened file; unconfined hashing is a read oracle."""
+    server, _bpy = _delivery_server(monkeypatch)
+
+    with pytest.raises(ValueError, match="requires BLENDERMCP_FILE_ROOTS"):
+        server.inspect_delivery("Scene", hash_libraries=True)
+
+
+def test_inspect_delivery_skips_hashing_a_library_outside_the_configured_roots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The confinement is the point: a library outside the roots is reported, never read."""
+    inside = tmp_path / "roots"
+    inside.mkdir()
+    linked = inside / "canon.blend"
+    linked.write_bytes(b"BLENDER-canon")
+    outside = _shot(tmp_path, "outside.blend")
+    libraries = [
+        types.SimpleNamespace(name="canon.blend", filepath=str(linked), is_missing=False, parent=None, users_id=()),
+        types.SimpleNamespace(name="outside.blend", filepath=str(outside), is_missing=False, parent=None, users_id=()),
+    ]
+    server, _bpy = _delivery_server(monkeypatch, libraries=libraries)
+    monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(inside))
+
+    entries = _entries_by_name(server.inspect_delivery("Scene", hash_libraries=True))
+
+    assert entries["canon.blend"]["detail"]["sha256"] == hashlib.sha256(b"BLENDER-canon").hexdigest()
+    assert not entries["canon.blend"]["detail"]["hash_skipped"]
+    assert not entries["outside.blend"]["detail"]["sha256"]
+    assert entries["outside.blend"]["detail"]["hash_skipped"] == "outside the configured file roots"
+
+
+def test_inspect_delivery_refuses_an_out_of_range_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bounds are checked before anything is walked, so a bad page costs no scan."""
+    server, _bpy = _delivery_server(monkeypatch)
+
+    with pytest.raises(ValueError, match=r"limit must be an integer in \[1, 200\]"):
+        server.inspect_delivery("Scene", limit=0)
+    with pytest.raises(ValueError, match="Scene not found"):
+        server.inspect_delivery("Nope")
+
+
+# ---------------------------------------------------------------------------
+# Provenance: who authored this file, written into it and read back
+# ---------------------------------------------------------------------------
+
+
+_PROVENANCE = "blender_mcp"
+
+
+def test_save_shot_writes_a_json_provenance_block_into_every_local_scene(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The block has to survive the save, so it is written before the operator, not after."""
+    linked = _StubScene("Canon Scene", library=object())
+    server, bpy, _wm = _server(monkeypatch)
+    bpy.data.scenes = _scene_collection(_StubScene("Scene"), linked)
+
+    response = _run(server, "save_shot", filepath=str(tmp_path / "shot.blend"))
+
+    assert response["status"] == "success", response
+    assert response["result"]["provenance_written"] is True
+    assert response["result"]["provenance_ingredients"] == 0
+    block = json.loads(bpy.data.scenes["Scene"][_PROVENANCE])
+    assert block["claim_generator"].startswith("blender-mcp/")
+    assert block["actions"][0]["action"] == "c2pa.edited"
+    assert _PROVENANCE not in linked, "a linked scene belongs to another file"
+
+
+def test_save_shot_names_the_datablocks_this_session_authored(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The ledger is the point: the file records what the add-on made, not what the names suggest."""
+    server, bpy, _wm = _server(monkeypatch)
+    ledger = _authored_ledger(server)
+    ledger.clear()
+    ledger.record([{"collection": "actions", "name": "Hero_Walk"}])
+
+    _run(server, "save_shot", filepath=str(tmp_path / "shot.blend"))
+
+    block = json.loads(bpy.data.scenes["Scene"][_PROVENANCE])
+    assert block["actions"][0]["datablocks"] == ["actions:Hero_Walk"]
+    assert block["actions"][0]["datablocks_truncated"] is False
+    ledger.clear()
+
+
+def test_a_failed_save_leaves_no_scene_claiming_provenance(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A file Blender never wrote must not leave its scenes asserting they were saved."""
+    server, bpy, wm = _server(monkeypatch)
+    bpy.data.scenes = _scene_collection(_StubScene("Fresh"), _StubScene("Kept"))
+    bpy.data.scenes["Kept"][_PROVENANCE] = "{}"
+    wm.failures["save_as_mainfile"] = RuntimeError("cannot write")
+
+    response = _run(server, "save_shot", filepath=str(tmp_path / "shot.blend"))
+
+    assert response["status"] == "error"
+    assert _PROVENANCE not in bpy.data.scenes["Fresh"]
+    assert bpy.data.scenes["Kept"][_PROVENANCE] == "{}"
+
+
+def test_save_shot_writes_nothing_when_provenance_is_declined(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A canon publish has to be byte-stable, so the block must be refusable."""
+    server, bpy, _wm = _server(monkeypatch)
+
+    response = _run(server, "save_shot", filepath=str(tmp_path / "shot.blend"), write_provenance=False)
+
+    assert response["result"]["provenance_written"] is False
+    assert "provenance_ingredients" not in response["result"]
+    assert _PROVENANCE not in bpy.data.scenes["Scene"]
+
+
+def test_save_shot_refuses_checksums_without_configured_file_roots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Hashing a library path out of the opened file is a read oracle unless it is confined."""
+    server, bpy, _wm = _server(monkeypatch)
+
+    response = _run(server, "save_shot", filepath=str(tmp_path / "shot.blend"), provenance_checksums=True)
+
+    assert response["status"] == "error"
+    assert "BLENDERMCP_FILE_ROOTS" in response["message"]
+    assert _PROVENANCE not in bpy.data.scenes["Scene"]
+
+
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    [
+        pytest.param("not json at all", "unparseable", id="not json at all"),
+        pytest.param("[1, 2, 3]", "unparseable", id="[1, 2, 3]"),
+        # Valid JSON, so only the size bound can refuse it.
+        pytest.param(
+            json.dumps({"claim_generator": "x" * 20_000}),
+            "not a JSON string of the expected size",
+            id="oversized",
+        ),
+    ],
+)
+def test_inspect_delivery_reports_a_hostile_provenance_block_as_invalid(
+    monkeypatch: pytest.MonkeyPatch, value: str, reason: str
+) -> None:
+    """A .blend anyone could have authored must not inject text into the agent's context."""
+    scene = _delivery_scene()
+    scene[_PROVENANCE] = value
+    server, _bpy = _delivery_server(monkeypatch, scene=scene)
+
+    result = server.inspect_delivery("Scene")
+
+    assert result["provenance"] == {"present": True, "valid": False, "reason": reason}
+    assert json.dumps(result)
+
+
+def test_inspect_delivery_bounds_a_valid_provenance_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Known keys only, each bounded: an oversized ingredient list cannot spend the reply budget."""
+    scene = _delivery_scene()
+    scene[_PROVENANCE] = json.dumps(
+        {
+            "claim_generator": "blender-mcp/2.0.0",
+            "protocol_version": 31,
+            "blender_version": "5.2.2 LTS",
+            "saved_utc": "2026-01-01T00:00:00+00:00",
+            "ingredients": [{"name": f"lib{index}.blend", "filepath": "//canon.blend"} for index in range(80)],
+            "actions": [{"action": "c2pa.edited", "datablocks": [f"actions:a{index}" for index in range(80)]}],
+            "unexpected": "dropped",
+        }
+    )
+    server, _bpy = _delivery_server(monkeypatch, scene=scene)
+
+    provenance = server.inspect_delivery("Scene")["provenance"]
+
+    assert provenance["valid"] is True
+    assert provenance["claim_generator"] == "blender-mcp/2.0.0"
+    assert len(provenance["ingredients"]) == 50
+    assert len(provenance["actions"][0]["datablocks"]) == 50
+    assert "unexpected" not in provenance
+
+
+def test_inspect_delivery_reports_no_provenance_for_a_file_without_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Absent is not invalid: a hand-authored .blend has no block and that is fine."""
+    server, _bpy = _delivery_server(monkeypatch)
+
+    assert server.inspect_delivery("Scene")["provenance"] is None
+
+
+def test_inspect_delivery_warns_that_an_unsaved_session_cannot_resolve_relative_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`//` has nothing to resolve against before the first save, so `portable` cannot be true."""
+    server, _bpy = _delivery_server(monkeypatch, filepath="")
+
+    result = server.inspect_delivery("Scene")
+
+    assert result["saved"] is False
+    assert result["portable"] is False
+    assert any("never been saved" in warning for warning in result["warnings"])

@@ -225,6 +225,7 @@ def _load_server_core():
         "SketchfabHandlersMixin",
         "FileLifecycleHandlersMixin",
         "LinkingHandlersMixin",
+        "DeliveryHandlersMixin",
     )
 
     namespace = {

@@ -10,6 +10,15 @@ from contextlib import suppress
 
 import bpy
 
+from ..render_properties import (
+    CYCLES_PROPERTY_MAPPING,
+    IMAGE_PROPERTY_MAPPING,
+    NESTED_SECTIONS,
+    RENDER_PATCH_PROPERTIES,
+    RENDER_PROPERTIES,
+    SCENE_PROPERTIES,
+)
+
 _VIEW_LAYER_PROPERTIES = {
     "use",
     "use_sky",
@@ -30,33 +39,6 @@ _VIEW_LAYER_PROPERTIES = {
     "pass_cryptomatte_depth",
 }
 
-_RENDER_PROPERTIES = {
-    "engine",
-    "resolution_x",
-    "resolution_y",
-    "resolution_percentage",
-    "pixel_aspect_x",
-    "pixel_aspect_y",
-    "fps",
-    "fps_base",
-    "film_transparent",
-}
-_SCENE_PROPERTIES = {"frame_start", "frame_end", "frame_step"}
-_IMAGE_PROPERTY_MAPPING = {
-    "image_format": "file_format",
-    "color_mode": "color_mode",
-    "color_depth": "color_depth",
-    "compression": "compression",
-    "quality": "quality",
-}
-_CYCLES_PROPERTY_MAPPING = {"cycles_samples": "samples", "cycles_use_denoising": "use_denoising"}
-_RENDER_PATCH_PROPERTIES = (
-    _RENDER_PROPERTIES
-    | _SCENE_PROPERTIES
-    | set(_IMAGE_PROPERTY_MAPPING)
-    | set(_CYCLES_PROPERTY_MAPPING)
-    | {"motion_blur", "film", "output", "metadata", "multiview", "cycles", "eevee"}
-)
 _MAX_ANIMATION_FRAMES = 10_000
 # Extensions Blender writes for the image formats this tool's patch model can select, measured on
 # 5.2 (PNG .png, JPEG .jpg, OPEN_EXR .exr, TIFF .tif, WEBP .webp) plus the alternate spellings a
@@ -337,10 +319,62 @@ def _set_supported(owner, patch, label, mapping=None, applied=None, prefix=""):
     return _set_properties(owner, patch, mapping, applied, prefix)
 
 
+def _section_owner(scene, owner_path):
+    """
+    Walk a `render_properties` owner path from the scene.
+
+    Args:
+        scene: The scene being patched.
+        owner_path: A dotted path such as `render.image_settings`.
+
+    Returns:
+        The owner struct, or None when this Blender build has no such struct.
+
+    """
+    owner = scene
+    for part in owner_path.split("."):
+        owner = getattr(owner, part, None)
+        if owner is None:
+            return None
+    return owner
+
+
+def _apply_section(scene, section, patch, applied, snapshots):
+    """
+    Apply one nested patch section across every owner `NESTED_SECTIONS` routes it to.
+
+    Each route but the last claims exactly the keys its mapping names; the last route takes
+    whatever is left, with its mapping as a translation table and an identity fallback. That
+    is what makes an unknown key reach `_set_supported` and be refused rather than dropped.
+
+    Args:
+        scene: The scene being patched.
+        section: A key of `NESTED_SECTIONS`.
+        patch: The client's values for that section.
+        applied: The handler's patch-key -> (owner, property) record.
+        snapshots: The handler's rollback list, appended to per owner written.
+
+    Raises:
+        ValueError: When this Blender build has no such struct, or a key is unsupported.
+
+    """
+    routes = NESTED_SECTIONS[section]
+    remaining = dict(patch)
+    for index, (owner_path, mapping, label) in enumerate(routes):
+        is_last = index == len(routes) - 1
+        values = remaining if is_last else {key: remaining.pop(key) for key in tuple(remaining) if key in mapping}
+        if not values:
+            continue
+        owner = _section_owner(scene, owner_path)
+        if owner is None:
+            raise ValueError(f"{label} settings are unavailable in this Blender runtime")
+        snapshots.append((owner, _set_supported(owner, values, label, dict(mapping or {}), applied, f"{section}.")))
+
+
 def _validate_render_patch(patch):
     if not isinstance(patch, dict) or not patch:
         raise ValueError("patch must be a non-empty object")
-    unknown = sorted(set(patch) - _RENDER_PATCH_PROPERTIES)
+    unknown = sorted(set(patch) - RENDER_PATCH_PROPERTIES)
     if unknown:
         raise ValueError(f"Unsupported render settings: {unknown}")
     numeric_ranges = {
@@ -401,6 +435,38 @@ def _render_output_suggestion(name, extension):
     return stem + extension
 
 
+def _refuse_container_output(scene, filepath):
+    """
+    Refuse an output path Blender would treat as a prefix rather than a folder.
+
+    Blender appends the frame number to the path as given, so a directory writes files beside
+    it and leaves it empty. Shared by `render_scene` and `configure_render_settings`, which
+    must refuse the same shape at the moment it is stored.
+
+    Args:
+        scene: Scene whose image format decides the suggested extension.
+        filepath: The caller's text, used verbatim in the message.
+
+    Raises:
+        ValueError: When the path names a directory, or is not a usable string.
+
+    """
+    if not isinstance(filepath, str) or not filepath.strip():
+        raise ValueError("filepath must be a non-empty string")
+    extension = scene.render.file_extension
+    output = os.path.abspath(bpy.path.abspath(os.path.expanduser(filepath)))
+    # os.path.abspath drops a trailing separator, so the directory intent has to be read off the
+    # caller's own text before it is normalised away.
+    if filepath.endswith(("/", os.sep)) or os.path.isdir(output):
+        shown = filepath.rstrip("/" + os.sep) or filepath
+        raise ValueError(
+            f"Output filepath is a directory: {filepath!r}. Blender appends the frame number to the "
+            f"path as given, so a directory writes files beside it and leaves it empty. Pass a "
+            f"filename prefix inside it, such as {shown + '/frame_'!r} or "
+            f"{shown + '/frame_####' + extension!r}."
+        )
+
+
 def _resolve_render_output(scene, filepath, mode):
     """
     Resolve a caller's output path to the exact file Blender will write, or refuse its shape.
@@ -427,17 +493,8 @@ def _resolve_render_output(scene, filepath, mode):
 
     """
     extension = scene.render.file_extension
+    _refuse_container_output(scene, filepath)
     output = os.path.abspath(bpy.path.abspath(os.path.expanduser(filepath)))
-    # os.path.abspath drops a trailing separator, so the directory intent has to be read off the
-    # caller's own text before it is normalised away.
-    if filepath.endswith(("/", os.sep)) or os.path.isdir(output):
-        shown = filepath.rstrip("/" + os.sep) or filepath
-        raise ValueError(
-            f"Output filepath is a directory: {filepath!r}. Blender appends the frame number to the "
-            f"path as given, so a directory writes files beside it and leaves it empty. Pass a "
-            f"filename prefix inside it, such as {shown + '/frame_'!r} or "
-            f"{shown + '/frame_####' + extension!r}."
-        )
     directory = os.path.dirname(output)
     if not directory or not os.path.isdir(directory):
         # The caller's own text, not the resolved path, which can expose Blender's working directory.
@@ -510,7 +567,7 @@ class RenderingHandlersMixin:
                     scene.render,
                     _set_properties(
                         scene.render,
-                        {k: v for k, v in patch.items() if k in _RENDER_PROPERTIES},
+                        {k: v for k, v in patch.items() if k in RENDER_PROPERTIES},
                         applied=applied,
                     ),
                 )
@@ -518,7 +575,7 @@ class RenderingHandlersMixin:
             snapshots.append(
                 (
                     scene,
-                    _set_properties(scene, {k: v for k, v in patch.items() if k in _SCENE_PROPERTIES}, applied=applied),
+                    _set_properties(scene, {k: v for k, v in patch.items() if k in SCENE_PROPERTIES}, applied=applied),
                 )
             )
             snapshots.append(
@@ -526,163 +583,44 @@ class RenderingHandlersMixin:
                     scene.render.image_settings,
                     _set_properties(
                         scene.render.image_settings,
-                        {k: v for k, v in patch.items() if k in _IMAGE_PROPERTY_MAPPING},
-                        _IMAGE_PROPERTY_MAPPING,
+                        {k: v for k, v in patch.items() if k in IMAGE_PROPERTY_MAPPING},
+                        IMAGE_PROPERTY_MAPPING,
                         applied,
                     ),
                 )
             )
-            cycles_patch = {k: v for k, v in patch.items() if k in _CYCLES_PROPERTY_MAPPING}
+            cycles_patch = {k: v for k, v in patch.items() if k in CYCLES_PROPERTY_MAPPING}
             if cycles_patch:
                 if not hasattr(scene, "cycles"):
                     raise ValueError("Cycles settings are unavailable in this Blender build")
                 snapshots.append(
                     (
                         scene.cycles,
-                        _set_properties(scene.cycles, cycles_patch, _CYCLES_PROPERTY_MAPPING, applied),
+                        _set_properties(scene.cycles, cycles_patch, CYCLES_PROPERTY_MAPPING, applied),
                     )
                 )
             nested = {key: value for key, value in patch.items() if isinstance(value, dict)}
             resulting_engine = patch.get("engine", scene.render.engine)
-            if nested.get("cycles"):
-                if resulting_engine != "CYCLES":
-                    raise ValueError("cycles settings require the CYCLES render engine")
-                snapshots.append(
-                    (scene.cycles, _set_supported(scene.cycles, nested["cycles"], "Cycles", None, applied, "cycles."))
-                )
-            if nested.get("eevee"):
-                if resulting_engine != "BLENDER_EEVEE":
-                    raise ValueError("eevee settings require the BLENDER_EEVEE render engine")
-                eevee_patch = dict(nested["eevee"])
-                # Blender 5.2 keeps the screen-trace controls on a nested RaytraceEEVEE struct,
-                # scene.eevee.ray_tracing_options, not on scene.eevee itself.
-                ray_tracing = eevee_patch.pop("ray_tracing", None)
-                if eevee_patch:
-                    snapshots.append(
-                        (scene.eevee, _set_supported(scene.eevee, eevee_patch, "EEVEE", None, applied, "eevee."))
-                    )
-                if ray_tracing:
-                    options = getattr(scene.eevee, "ray_tracing_options", None)
-                    if options is None:
-                        raise ValueError("EEVEE ray-tracing options are unavailable in this Blender runtime")
-                    snapshots.append(
-                        (
-                            options,
-                            _set_supported(
-                                options, ray_tracing, "EEVEE ray tracing", None, applied, "eevee.ray_tracing."
-                            ),
-                        )
-                    )
-            if nested.get("motion_blur"):
-                mapping = {
-                    "enabled": "use_motion_blur",
-                    "shutter": "motion_blur_shutter",
-                    "position": "motion_blur_position",
-                }
-                snapshots.append(
-                    (
-                        scene.render,
-                        _set_supported(
-                            scene.render, nested["motion_blur"], "motion blur", mapping, applied, "motion_blur."
-                        ),
-                    )
-                )
-            if nested.get("film"):
-                film = dict(nested["film"])
-                if "transparent" in film:
-                    snapshots.append(
-                        (
-                            scene.render,
-                            _set_properties(
-                                scene.render,
-                                {"transparent": film.pop("transparent")},
-                                {"transparent": "film_transparent"},
-                                applied,
-                                "film.",
-                            ),
-                        )
-                    )
-                if film:
-                    mapping = {
-                        "transparent_glass": "film_transparent_glass",
-                        "transparent_roughness": "film_transparent_roughness",
-                    }
-                    snapshots.append(
-                        (scene.cycles, _set_supported(scene.cycles, film, "Cycles film", mapping, applied, "film."))
-                    )
-            if nested.get("output"):
-                output_patch = dict(nested["output"])
-                render_patch = {
-                    key: output_patch.pop(key)
-                    for key in tuple(output_patch)
-                    if key in {"filepath", "use_file_extension", "use_overwrite", "use_placeholder"}
-                }
-                snapshots.append(
-                    (
-                        scene.render,
-                        _set_supported(scene.render, render_patch, "render output", None, applied, "output."),
-                    )
-                )
-                snapshots.append(
-                    (
-                        scene.render.image_settings,
-                        _set_supported(
-                            scene.render.image_settings,
-                            output_patch,
-                            "image output",
-                            _IMAGE_PROPERTY_MAPPING,
-                            applied,
-                            "output.",
-                        ),
-                    )
-                )
-            if nested.get("metadata"):
-                snapshots.append(
-                    (
-                        scene.render,
-                        _set_supported(scene.render, nested["metadata"], "render metadata", None, applied, "metadata."),
-                    )
-                )
-            if nested.get("multiview"):
-                multiview = dict(nested["multiview"])
-                if "enabled" in multiview:
-                    snapshots.append(
-                        (
-                            scene.render,
-                            _set_supported(
-                                scene.render,
-                                {"enabled": multiview.pop("enabled")},
-                                "multiview",
-                                {"enabled": "use_multiview"},
-                                applied,
-                                "multiview.",
-                            ),
-                        )
-                    )
-                stereo = multiview.pop("stereo_3d_format", None)
-                snapshots.append(
-                    (
-                        scene.render.image_settings,
-                        _set_supported(
-                            scene.render.image_settings, multiview, "multiview image", None, applied, "multiview."
-                        ),
-                    )
-                )
-                if stereo is not None:
-                    stereo_owner = scene.render.image_settings.stereo_3d_format
-                    snapshots.append(
-                        (
-                            stereo_owner,
-                            _set_supported(
-                                stereo_owner,
-                                {"stereo_3d_format": stereo},
-                                "stereo output",
-                                {"stereo_3d_format": "display_mode"},
-                                applied,
-                                "multiview.",
-                            ),
-                        )
-                    )
+            if nested.get("cycles") and resulting_engine != "CYCLES":
+                raise ValueError("cycles settings require the CYCLES render engine")
+            if nested.get("eevee") and resulting_engine != "BLENDER_EEVEE":
+                raise ValueError("eevee settings require the BLENDER_EEVEE render engine")
+            pending = {section: dict(values) for section, values in nested.items() if values}
+            # Blender 5.2 keeps the screen-trace controls on a nested RaytraceEEVEE struct,
+            # scene.eevee.ray_tracing_options, so they travel as their own section.
+            ray_tracing = pending.get("eevee", {}).pop("ray_tracing", None)
+            if ray_tracing:
+                pending["eevee.ray_tracing"] = dict(ray_tracing)
+            if pending.get("output", {}).get("filepath") is not None:
+                # Refused here, at the moment it is stored, so a later render that reads the
+                # scene's own template cannot inherit a shape Blender writes beside itself.
+                _refuse_container_output(scene, pending["output"]["filepath"])
+            # Table order, not the client's key order, so two runs of the same patch write the
+            # same owners in the same sequence.
+            for section in NESTED_SECTIONS:
+                values = pending.get(section)
+                if values:
+                    _apply_section(scene, section, values, applied, snapshots)
             if scene.frame_end < scene.frame_start:
                 raise ValueError("Resulting frame_end must be greater than or equal to frame_start")
         except Exception:
@@ -691,18 +629,29 @@ class RenderingHandlersMixin:
                     with suppress(Exception):
                         setattr(owner, name, value)
             raise
+        # A scene custom property, so "an MCP call chose this range" survives save and reopen.
+        # `render_scene`'s default-range guard reads it; nothing else may write it.
+        authored_range = any(key in patch for key in ("frame_start", "frame_end"))
+        if authored_range:
+            scene["blender_mcp_frame_range_authored"] = True
+        changed = sorted([*applied, "frame_range_authored"] if authored_range else applied)
         if detail:
             return {
                 "scene": scene.name,
-                "changed": sorted(applied),
+                "changed": changed,
                 "before": before,
                 "after": _render_info(scene),
                 "changed_resources": [scene.name],
             }
+        # `applied` holds (owner, property) pairs; the marker is not one, so it is added here
+        # rather than smuggled into a mapping the comprehension below unpacks.
+        after = {path: getattr(owner, name) for path, (owner, name) in applied.items()}
+        if authored_range:
+            after["frame_range_authored"] = True
         return {
             "scene": scene.name,
-            "changed": sorted(applied),
-            "after": {path: getattr(owner, name) for path, (owner, name) in applied.items()},
+            "changed": changed,
+            "after": after,
             "changed_resources": [scene.name],
         }
 
@@ -762,17 +711,20 @@ class RenderingHandlersMixin:
     def render_scene(
         self,
         scene_name,
-        filepath,
+        filepath=None,
         mode="STILL",
         view_layer_name=None,
         frame=None,
         max_animation_frames=250,
         confirm_render=False,
         confirm_overwrite=False,
+        confirm_frame_range=False,
         render_slot_policy="USE_ACTIVE",
         verify_outputs=True,
         verify_passes=True,
         max_duration_seconds=None,
+        persist_output=False,
+        detail=False,
     ):
         if not confirm_render:
             raise ValueError("confirm_render=True is required")
@@ -788,9 +740,23 @@ class RenderingHandlersMixin:
             raise ValueError("frame must be an integer")
         if mode == "ANIMATION" and frame is not None:
             raise ValueError("frame is only valid for STILL renders")
-        if not isinstance(filepath, str) or not filepath.strip():
+        requested_filepath = filepath
+        if requested_filepath is None:
+            requested_filepath = scene.render.filepath
+            if not isinstance(requested_filepath, str) or not requested_filepath.strip():
+                raise ValueError(
+                    "No filepath was given and the scene has no render output path set. Pass filepath, "
+                    "or set it once with configure_render_settings(patch={'output': {'filepath': ...}})."
+                )
+        if not isinstance(requested_filepath, str) or not requested_filepath.strip():
             raise ValueError("filepath must be a non-empty string")
-        output = _resolve_render_output(scene, filepath, mode)
+        if persist_output and mode == "STILL":
+            raise ValueError(
+                "persist_output stores a per-frame template, and a STILL path names one file: storing it "
+                "would make the next ANIMATION write '<name>.png0001.png'. Persist from an ANIMATION, or "
+                "set the template with configure_render_settings."
+            )
+        output = _resolve_render_output(scene, requested_filepath, mode)
         if mode == "STILL" and os.path.exists(output) and not confirm_overwrite:
             raise ValueError("Output file already exists; set confirm_overwrite=True to replace it")
         if view_layer_name and scene.view_layers.get(view_layer_name) is None:
@@ -810,6 +776,17 @@ class RenderingHandlersMixin:
             raise ValueError(
                 f"Animation contains {frame_count} frames, exceeding max_animation_frames={max_animation_frames}"
             )
+        if (
+            mode == "ANIMATION"
+            and (scene.frame_start, scene.frame_end) == (1, 250)
+            and not scene.get("blender_mcp_frame_range_authored", False)
+            and not confirm_frame_range
+        ):
+            raise ValueError(
+                "The scene's frame range is still Blender's default 1-250 and no MCP call has set it; "
+                f"this ANIMATION would render {frame_count} frames. Set frame_start/frame_end with "
+                "configure_render_settings, or pass confirm_frame_range=true to render 1-250 deliberately."
+            )
 
         original_path = scene.render.filepath
         original_frame = scene.frame_current
@@ -817,6 +794,7 @@ class RenderingHandlersMixin:
         written_files = []
         progress = []
         cancelled = False
+        completed = False
         render_result = bpy.data.images.get("Render Result")
         if render_slot_policy == "NEW_SLOT" and render_result is not None:
             slot = render_result.render_slots.new(name=f"MCP {int(time.time())}")
@@ -870,30 +848,46 @@ class RenderingHandlersMixin:
                             "fraction": (index + 1) / len(frames),
                         }
                     )
+            completed = True
         finally:
-            scene.render.filepath = original_path
+            # The caller's template text, never the resolved absolute path: persisting `output`
+            # would replace a portable `//renders/sh010_` with this machine's layout and make
+            # `inspect_delivery` report the scene as unportable.
+            persisted = bool(persist_output) and not cancelled and completed
+            scene.render.filepath = requested_filepath if persisted else original_path
             scene.frame_set(original_frame)
         render_result = bpy.data.images.get("Render Result")
         passes, pass_verification = _render_pass_info(scene, view_layer_name, render_result)
         if verify_passes and not passes:
             raise RuntimeError("Render completed but no enabled passes could be verified")
         duration = time.monotonic() - started
-        return {
+        summary = {
             "scene": scene.name,
             "mode": mode,
             "filepath": output,
             "frame": frame if frame is not None else scene.frame_current,
             "frame_count": len(written_files),
             "operator_result": sorted(result),
-            "settings_restored": True,
+            "settings_restored": not persisted,
             "status": "CANCELLED" if cancelled else "COMPLETED",
             "cancelled": cancelled,
             "cancellation_reason": "max_duration_seconds exceeded" if cancelled else None,
             "duration_seconds": duration,
             "render_slot_policy": render_slot_policy,
-            "files": written_files,
+            "output_persisted": persisted,
+            "first_file": written_files[0]["path"] if written_files else None,
+            "last_file": written_files[-1]["path"] if written_files else None,
+            "bytes_written": sum(entry["bytes"] or 0 for entry in written_files),
             "passes": passes,
             "pass_verification": pass_verification,
+        }
+        if not detail:
+            # Absent rather than empty: `envelope._record_pages` shortens a page it can see, and
+            # warning about data nobody asked for spends the reply budget on bookkeeping.
+            return summary
+        return {
+            **summary,
+            "files": written_files,
             "progress": progress,
             "progress_truncated": len(written_files) > len(progress),
         }

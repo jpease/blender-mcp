@@ -8,6 +8,8 @@ import math
 import os
 import types
 
+from pathlib import Path
+
 import pytest
 
 from mcp.server.fastmcp import Image
@@ -262,8 +264,44 @@ class _FakeImages(dict):
         """Drop the loaded datablock, as the handler does in its finally block."""
 
 
+class _FakeScene(types.SimpleNamespace):
+    """
+    A scene stub that also holds Blender ID custom properties.
+
+    `configure_render_settings` records an authored frame range as `scene[...]` and
+    `render_scene` reads it back, so a stub without the mapping protocol would make the
+    guard untestable.
+    """
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self.__dict__["_custom_properties"] = {}
+
+    def get(self, key: str, default: object = None) -> object:
+        return self._custom_properties.get(key, default)
+
+    def __getitem__(self, key: str) -> object:
+        return self._custom_properties[key]
+
+    def __setitem__(self, key: str, value: object) -> None:
+        self._custom_properties[key] = value
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._custom_properties
+
+    def __delitem__(self, key: str) -> None:
+        del self._custom_properties[key]
+
+
 def _fake_view_layer(handlers, name="ViewLayer"):
-    layer = types.SimpleNamespace(name=name, material_override=None, world_override=None)
+    layer = types.SimpleNamespace(
+        name=name,
+        material_override=None,
+        world_override=None,
+        # `_render_pass_info` walks this; an empty list is "no passes reported", which is
+        # exactly what a stub can honestly claim.
+        bl_rna=types.SimpleNamespace(properties=[]),
+    )
     for prop in handlers._VIEW_LAYER_PROPERTIES:
         setattr(layer, prop, 8 if prop == "pass_cryptomatte_depth" else True)
     return layer
@@ -303,7 +341,7 @@ def _fake_scene(handlers, name="Scene"):
         stamp_note_text="",
         image_settings=image_settings,
     )
-    return types.SimpleNamespace(
+    return _FakeScene(
         name=name,
         camera=None,
         frame_start=1,
@@ -541,3 +579,207 @@ def test_eevee_patch_carries_the_ray_tracing_controls_to_blender(monkeypatch) ->
         rendering.EeveePatch.model_validate({"ray_tracing_method": "RAYTRACE"})
     with pytest.raises(ValidationError):
         rendering.EeveePatch.model_validate({"ray_tracing": {"resolution_scale": "3"}})
+
+
+# ---------------------------------------------------------------------------
+# Render intent: the scene owns the range and the output template.
+# ---------------------------------------------------------------------------
+
+
+def _renderable(monkeypatch, tmp_path):
+    """
+    Build a handler whose stub render operator actually writes the frames it reports.
+
+    Args:
+        monkeypatch: The test's monkeypatch.
+        tmp_path: The directory `//` paths resolve against, as the open .blend's would.
+
+    Returns:
+        tuple: The handler, the scene, and the stub `bpy`.
+
+    """
+    addon, fake_bpy = _load_addon(monkeypatch, data={"scenes": {}, "images": _FakeImages()})
+    handlers = importlib.import_module(f"{addon.__name__}.handlers.rendering")
+    fake_bpy.path = types.SimpleNamespace(
+        abspath=lambda path: str(tmp_path / path[2:]) if path.startswith("//") else path
+    )
+    scene = _fake_scene(handlers)
+    scene.frame_current = 1
+    scene.frame_set = lambda frame: setattr(scene, "frame_current", frame)
+    scene.render.filepath = ""
+    scene.render.frame_path = lambda frame=1: f"{scene.render.filepath}{frame:04d}.png"
+    fake_bpy.data.scenes["Scene"] = scene
+
+    def render(**_kwargs):
+        Path(scene.render.filepath).write_bytes(b"frame")
+        return {"FINISHED"}
+
+    fake_bpy.ops.render = types.SimpleNamespace(render=render)
+    return handlers.RenderingHandlersMixin(), scene, fake_bpy
+
+
+def test_render_scene_without_a_filepath_names_the_tool_that_sets_one(monkeypatch, tmp_path) -> None:
+    """An empty scene output path is not a render target; the refusal must say where to set one."""
+    handler, _scene, _bpy = _renderable(monkeypatch, tmp_path)
+
+    with pytest.raises(ValueError, match="configure_render_settings"):
+        handler.render_scene("Scene", confirm_render=True, verify_passes=False)
+
+
+def test_render_scene_renders_to_the_scenes_own_output_path(monkeypatch, tmp_path) -> None:
+    """Intent stored on the scene is intent a later render can use with no arguments."""
+    handler, scene, _bpy = _renderable(monkeypatch, tmp_path)
+    scene.render.filepath = str(tmp_path / "sh010.png")
+
+    result = handler.render_scene("Scene", confirm_render=True, verify_passes=False)
+
+    assert result["filepath"] == str(tmp_path / "sh010.png")
+    assert (tmp_path / "sh010.png").is_file()
+    assert result["first_file"] == result["last_file"] == str(tmp_path / "sh010.png")
+
+
+def test_render_scene_refuses_an_animation_over_blenders_untouched_default_range(monkeypatch, tmp_path) -> None:
+    """1-250 is Blender's default, not a decision; rendering it unasked is the defect."""
+    handler, scene, _bpy = _renderable(monkeypatch, tmp_path)
+
+    with pytest.raises(ValueError, match="still Blender's default 1-250"):
+        handler.render_scene(
+            "Scene", str(tmp_path / "sh010_"), mode="ANIMATION", confirm_render=True, verify_passes=False
+        )
+
+    scene.frame_end = 2
+    handler.render_scene("Scene", str(tmp_path / "sh010_"), mode="ANIMATION", confirm_render=True, verify_passes=False)
+
+
+def test_render_scene_accepts_the_default_range_when_it_was_chosen(monkeypatch, tmp_path) -> None:
+    """Either an explicit confirmation or a range this MCP set clears the guard."""
+    handler, scene, _bpy = _renderable(monkeypatch, tmp_path)
+    scene.frame_end = 3
+    scene.frame_start = 1
+
+    handler.configure_render_settings("Scene", {"frame_end": 250})
+    assert scene["blender_mcp_frame_range_authored"] is True
+    authored = handler.render_scene(
+        "Scene", str(tmp_path / "authored_"), mode="ANIMATION", confirm_render=True, verify_passes=False
+    )
+    assert authored["frame_count"] == 250
+
+    del scene["blender_mcp_frame_range_authored"]
+    confirmed = handler.render_scene(
+        "Scene",
+        str(tmp_path / "confirmed_"),
+        mode="ANIMATION",
+        confirm_render=True,
+        confirm_frame_range=True,
+        verify_passes=False,
+    )
+    assert confirmed["frame_count"] == 250
+
+
+def test_render_scene_persists_the_callers_template_not_the_resolved_path(monkeypatch, tmp_path) -> None:
+    """Storing the resolved path would replace a portable // template with this machine's layout."""
+    handler, scene, _bpy = _renderable(monkeypatch, tmp_path)
+    scene.frame_end = 2
+    (tmp_path / "renders").mkdir()
+
+    result = handler.render_scene(
+        "Scene",
+        "//renders/sh010_",
+        mode="ANIMATION",
+        confirm_render=True,
+        persist_output=True,
+        verify_passes=False,
+    )
+
+    assert scene.render.filepath == "//renders/sh010_"
+    assert result["output_persisted"] is True
+    assert result["settings_restored"] is False
+
+
+def test_render_scene_leaves_the_output_path_alone_by_default(monkeypatch, tmp_path) -> None:
+    """A render is not a settings change unless the caller asked for one."""
+    handler, scene, _bpy = _renderable(monkeypatch, tmp_path)
+    scene.frame_end = 2
+    scene.render.filepath = "//previous_"
+
+    result = handler.render_scene(
+        "Scene", str(tmp_path / "once_"), mode="ANIMATION", confirm_render=True, verify_passes=False
+    )
+
+    assert scene.render.filepath == "//previous_"
+    assert result["output_persisted"] is False
+    assert result["settings_restored"] is True
+
+
+def test_render_scene_does_not_persist_a_cancelled_render(monkeypatch, tmp_path) -> None:
+    """A run that stopped early never proved the template works, so it must not become the default."""
+    handler, scene, _bpy = _renderable(monkeypatch, tmp_path)
+    scene.frame_end = 4
+    scene.render.filepath = "//previous_"
+
+    result = handler.render_scene(
+        "Scene",
+        str(tmp_path / "stopped_"),
+        mode="ANIMATION",
+        confirm_render=True,
+        persist_output=True,
+        max_duration_seconds=0.000001,
+        verify_passes=False,
+    )
+
+    assert result["cancelled"] is True
+    assert result["output_persisted"] is False
+    assert scene.render.filepath == "//previous_"
+
+
+def test_render_scene_refuses_to_persist_a_still_path(monkeypatch, tmp_path) -> None:
+    """Blender appends the frame number to a stored path, so a still template breaks the next animation."""
+    handler, _scene, _bpy = _renderable(monkeypatch, tmp_path)
+
+    with pytest.raises(ValueError, match="persist_output stores a per-frame template"):
+        handler.render_scene(
+            "Scene", str(tmp_path / "sh010.png"), mode="STILL", confirm_render=True, persist_output=True
+        )
+
+
+def test_configure_render_settings_refuses_a_directory_as_the_stored_template(monkeypatch, tmp_path) -> None:
+    """The same shape `render_scene` refuses must be refused at the moment it is stored."""
+    handler, scene, _handlers = _rendering_handler(monkeypatch)
+    renders = tmp_path / "renders"
+    renders.mkdir()
+
+    with pytest.raises(ValueError, match="is a directory"):
+        handler.configure_render_settings("Scene", {"output": {"filepath": f"{renders}/"}})
+
+    assert scene.render.filepath == "/tmp/render/"
+
+
+def test_render_scene_reply_summarises_and_detail_restores_the_per_frame_arrays(monkeypatch, tmp_path) -> None:
+    """Per-frame bookkeeping is what spent 86% of the budget; it is now opt-in."""
+    handler, scene, _bpy = _renderable(monkeypatch, tmp_path)
+    scene.frame_end = 3
+
+    summary = handler.render_scene(
+        "Scene", str(tmp_path / "beat_"), mode="ANIMATION", confirm_render=True, verify_passes=False
+    )
+
+    assert "files" not in summary
+    assert "progress" not in summary
+    assert "progress_truncated" not in summary
+    assert summary["first_file"] == str(tmp_path / "beat_0001.png")
+    assert summary["last_file"] == str(tmp_path / "beat_0003.png")
+    assert summary["bytes_written"] == 3 * len(b"frame")
+
+    detailed = handler.render_scene(
+        "Scene",
+        str(tmp_path / "beat_"),
+        mode="ANIMATION",
+        confirm_render=True,
+        confirm_overwrite=True,
+        verify_passes=False,
+        detail=True,
+    )
+
+    assert [entry["frame"] for entry in detailed["files"]] == [1, 2, 3]
+    assert [entry["completed"] for entry in detailed["progress"]] == [1, 2, 3]
+    assert detailed["progress_truncated"] is False
