@@ -39,6 +39,8 @@ ACTION_NAME = "Roundtrip Motion"
 TRACK_NAME = "Roundtrip Track"
 STRIP_NAME = "Roundtrip Strip"
 STRIP_ACTION_NAME = "Roundtrip Strip Motion"
+CHAR1_ACTION = "CHAR1_sh050_motion"
+CHAR2_ACTION = "CHAR2_sh050_motion"
 
 
 def _run(server: BlenderMCPServer, command: str, **params: object) -> dict:
@@ -60,6 +62,101 @@ def _run(server: BlenderMCPServer, command: str, **params: object) -> dict:
     response = server.execute_command_internal({"type": command, "params": params})
     assert response["status"] == "success", (command, response)
     return response["result"]
+
+
+def _build_rig(name: str, location: tuple[float, float, float]) -> bpy.types.Object:
+    """
+    Build a two-bone rig at a location, the smallest thing `keyframe_character_pose` accepts.
+
+    Args:
+        name: Object name; its armature data takes the same name plus `Data`.
+        location: Where to stand it, so the two rigs are not coincident.
+
+    Returns:
+        bpy.types.Object: The armature object, left in Object Mode.
+
+    """
+    data = bpy.data.armatures.new(f"{name}Data")
+    rig = bpy.data.objects.new(name, data)
+    bpy.context.scene.collection.objects.link(rig)
+    rig.location = location
+    bpy.context.view_layer.objects.active = rig
+    rig.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT")
+    spine = data.edit_bones.new("spine")
+    spine.head, spine.tail = (0, 0, 0), (0, 0, 0.4)
+    head = data.edit_bones.new("head")
+    head.head, head.tail = (0, 0, 0.4), (0, 0, 0.6)
+    head.parent, head.use_connect = spine, True
+    bpy.ops.object.mode_set(mode="OBJECT")
+    rig.select_set(False)
+    return rig
+
+
+def _check_two_characters_keep_their_own_animation(server: BlenderMCPServer) -> None:
+    """
+    Two rigs, two actions, one shot: the case a two-character scene actually is.
+
+    Blender 4.4+ actions are slotted, so one action datablock can carry several animated
+    IDs. That makes cross-assignment the failure to guard: keying the second character must
+    not land in the first character's action, retarget its slot, or overwrite its keys - and
+    a save must carry both independently. Nothing in a single session would notice, because
+    each rig evaluates correctly right up until the file is reopened.
+
+    Args:
+        server: The server under test, with a shot already saved and reopened.
+
+    Raises:
+        AssertionError: When either character's animation did not survive intact.
+
+    """
+    work = Path(tempfile.mkdtemp(prefix="animation_roundtrip_pair_"))
+    blend_path = work / "sh050.blend"
+    char1 = _build_rig("CHAR1_rig", (0.0, 0.0, 0.0))
+    char2 = _build_rig("CHAR2_rig", (1.0, 0.0, 0.0))
+
+    for rig, action_name, degrees in ((char1, CHAR1_ACTION, 25.0), (char2, CHAR2_ACTION, -25.0)):
+        for frame, policy, turn in ((1, "CREATE", 0.0), (24, "REUSE", degrees)):
+            _run(
+                server,
+                "keyframe_character_pose",
+                armature_object_name=rig.name,
+                action_name=action_name,
+                frame=frame,
+                poses=[{"bone_name": "head", "rotate": {"axis": "Z", "degrees": turn}}],
+                space="LOCAL",
+                action_policy=policy,
+            )
+
+    # Two actions, not one shared between them, and neither rig borrowed the other's.
+    assert char1.animation_data.action.name == CHAR1_ACTION
+    assert char2.animation_data.action.name == CHAR2_ACTION
+    assert char1.animation_data.action is not char2.animation_data.action
+
+    _run(server, "save_shot", filepath=str(blend_path))
+    _run(server, "open_shot", filepath=str(blend_path))
+
+    for rig_name, action_name in (("CHAR1_rig", CHAR1_ACTION), ("CHAR2_rig", CHAR2_ACTION)):
+        reopened = bpy.data.objects.get(rig_name)
+        assert reopened is not None, rig_name
+        assert reopened.animation_data is not None, rig_name
+        assert reopened.animation_data.action is not None, rig_name
+        assert reopened.animation_data.action.name == action_name, (rig_name, reopened.animation_data.action.name)
+        inspected = _run(server, "inspect_animation", target={"type": "OBJECT", "name": rig_name})
+        assert inspected["action"]["name"] == action_name, inspected["action"]
+        assert inspected["action"]["frame_range"] == [1.0, 24.0], (rig_name, inspected["action"])
+        assert inspected["total_keyframes"] > 0, rig_name
+        # Every channel belongs to the bone this character was posed on, not the other's rig.
+        paths = {key["data_path"] for key in inspected["keyframes"]}
+        assert paths and all('pose.bones["head"]' in path for path in paths), (rig_name, paths)
+
+    # The two characters turned opposite ways, so identical curves would mean one overwrote
+    # the other - the failure a shared action datablock produces.
+    char1_keys = _run(server, "inspect_animation", target={"type": "OBJECT", "name": "CHAR1_rig"})["keyframes"]
+    char2_keys = _run(server, "inspect_animation", target={"type": "OBJECT", "name": "CHAR2_rig"})["keyframes"]
+    char1_values = [key["value"] for key in char1_keys]
+    char2_values = [key["value"] for key in char2_keys]
+    assert char1_values != char2_values, (char1_values, char2_values)
 
 
 def main() -> None:
@@ -177,6 +274,8 @@ def main() -> None:
     delivery = _run(server, "inspect_delivery", scene_name=bpy.context.scene.name)
     assert delivery["saved"] is True
     assert delivery["provenance"]["valid"] is True, delivery["provenance"]
+
+    _check_two_characters_keep_their_own_animation(server)
 
     print("ANIMATION_ROUNDTRIP_SMOKE_OK")
 

@@ -237,3 +237,8 @@ docs/superpowers/
 # Mantaflow writes its wavelet noise tile into the working directory the first time a
 # fluid smoke script bakes, so `just smoke` drops a 24 MB file in the repository root.
 waveletNoiseTile.bin
+
+# The private production terms tests/test_repository_hygiene.py checks tracked files against.
+# Never tracked: a repository cannot hold the list of words it must not contain, in any form -
+# a hash of a short word is reversible with a wordlist.
+.private-terms
