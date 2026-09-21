@@ -242,3 +242,4 @@ waveletNoiseTile.bin
 # Never tracked: a repository cannot hold the list of words it must not contain, in any form -
 # a hash of a short word is reversible with a wordlist.
 .private-terms
+.omp/

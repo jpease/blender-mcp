@@ -42,9 +42,15 @@ from .blend_files import (
 from .provenance import restore_provenance, stamp_provenance
 
 # Sent in every successful swap result. A constant, so no path or name reaches it.
+# It names `get_addon_status`, the MCP tool, not the `get_addon_info` command behind it:
+# an agent reading this reply can only call tools, and the older wording sent one looking
+# for a tool no client mounts. The server re-handshakes on its own when a response reports
+# a different session (`connection.note_session_marker`), so this asks for confirmation,
+# not for work.
 _REHANDSHAKE_NOTE = (
     "The open database was replaced: session_epoch moved, and the addon's capabilities follow the "
-    "file. Re-handshake (get_addon_info) before relying on a cached capability list."
+    "file. The server re-handshakes automatically on the next command; call get_addon_status to see "
+    "the new session before relying on a cached capability list."
 )
 
 # What Blender raises while reading back a database it has just replaced: a scene
