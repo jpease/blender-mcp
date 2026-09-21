@@ -12,7 +12,6 @@ from typing import Any
 
 from ...app import mcp as mcp
 from .._lazy_package import lazy_dir, lazy_getattr
-from ._shared import _call as _call
 
 _SUBMODULES: tuple[str, ...] = ("foundation", "controls", "deformation", "posing")
 

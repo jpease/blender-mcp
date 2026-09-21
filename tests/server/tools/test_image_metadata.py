@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from blender_mcp.server.tools import viewport
+from blender_mcp.server.tools import _dispatch, image_capture, viewport
 from blender_mcp.server.tools.sketchfab import _preview_metadata
 from blender_mcp.server.tools.viewport import _screenshot_metadata
 
@@ -77,8 +77,10 @@ def test_screenshot_tempfile_is_removed_when_blender_fails(monkeypatch, tmp_path
         descriptor = os.open(screenshot, os.O_CREAT | os.O_RDWR)
         return descriptor, str(screenshot)
 
-    monkeypatch.setattr(viewport, "get_blender_connection", Connection)
-    monkeypatch.setattr(viewport.tempfile, "mkstemp", fake_mkstemp)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", Connection)
+    # The temporary file is `image_capture`'s to name and remove; `get_blender_connection` stays
+    # patched on the calling tool's module, which is the seam `capture_png` takes it through.
+    monkeypatch.setattr(image_capture.tempfile, "mkstemp", fake_mkstemp)
 
     with pytest.raises(Exception, match="Screenshot failed"):
         # The tool is async so its blocking socket work stays off the event loop;

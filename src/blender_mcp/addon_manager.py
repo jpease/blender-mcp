@@ -30,7 +30,7 @@ from .text_hygiene import strip_unsafe
 logger = logging.getLogger("BlenderMCPServer")
 
 # Must match ADDON_PROTOCOL_VERSION in bundled/addon/__init__.py
-EXPECTED_ADDON_PROTOCOL_VERSION = 33
+EXPECTED_ADDON_PROTOCOL_VERSION = 34
 
 _ADDON_MARKER = 'bl_info = {\n    "name": "Blender MCP"'
 _INSTALLED_DIRNAME = "blender_mcp"
@@ -247,9 +247,9 @@ class AddonHandshake:
     file_roots_enforced: bool = False
     # Per-command accepted keyword names ("*" = accepts arbitrary kwargs via **kwargs).
     # Internal only - read by connection.send_command's preflight gate. Deliberately never
-    # added to tools/core.py:_status_payload: `capabilities` alone (291 short names) already
-    # gets shortened by envelope._fit_budget under get_addon_status(detail=True), and this
-    # field is far heavier per entry - it would make that truncation dramatically worse.
+    # added to tools/core.py:_status_payload: `capabilities` alone already gets shortened by
+    # envelope._fit_budget under get_addon_status(detail=True), and this field is far heavier
+    # per entry - it would make that truncation dramatically worse.
     capability_params: dict[str, list[str] | str] = field(default_factory=dict)
     # What the committed `addon_surface.json` expects and this addon did not report,
     # computed once during the handshake so `get_addon_status` can show it without

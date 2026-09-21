@@ -1,7 +1,5 @@
 """Typed tools for building reusable camera rigs and rig-level transform utilities."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
@@ -9,7 +7,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import FollowForwardAxis, UpAxis, _call, _dump, _StrictModel, _tool_params
+from .._dispatch import call_blender
+from ._shared import FollowForwardAxis, UpAxis, _dump, _StrictModel, _tool_params
 
 SplineType = Literal["BEZIER", "NURBS"]
 DataPolicy = Literal["COPY", "LINK"]
@@ -47,7 +46,7 @@ async def create_orbit_camera_rig(
     camera roll remains available on the camera control. All members are tagged with one rig UUID,
     role, schema version, and owner so agents can inspect or duplicate them safely.
     """
-    return await asyncio.to_thread(_call, "create_orbit_camera_rig", _tool_params(locals()))
+    return await call_blender("create_orbit_camera_rig", _tool_params(locals()))
 
 
 @mcp.tool()
@@ -70,7 +69,7 @@ async def create_dolly_camera_rig(
     ``rail_direction`` is a non-zero local direction exposed as rig metadata for animation planning;
     translate/yaw the root for the dolly move and animate the child control for height/pitch/roll.
     """
-    return await asyncio.to_thread(_call, "create_dolly_camera_rig", _tool_params(locals()))
+    return await call_blender("create_dolly_camera_rig", _tool_params(locals()))
 
 
 @mcp.tool()
@@ -95,7 +94,7 @@ async def create_crane_camera_rig(
     Angles are radians and remain independently animatable on standard object transforms. The boom
     length is its local X offset; no opaque driver or optional add-on dependency is introduced.
     """
-    return await asyncio.to_thread(_call, "create_crane_camera_rig", _tool_params(locals()))
+    return await call_blender("create_crane_camera_rig", _tool_params(locals()))
 
 
 @mcp.tool()
@@ -130,7 +129,7 @@ async def create_camera_path_rig(
         raise ToolError("start_frame and end_frame must be supplied together")
     if start_frame is not None and end_frame is not None and start_frame >= end_frame:
         raise ToolError("start_frame must be less than end_frame")
-    return await asyncio.to_thread(_call, "create_camera_path_rig", _tool_params(locals()))
+    return await call_blender("create_camera_path_rig", _tool_params(locals()))
 
 
 @mcp.tool()
@@ -146,8 +145,7 @@ async def match_camera_transform(
         raise ToolError("Supply exactly one source_object_name or world_transform")
     if policy != "TRANSFORM_ONLY" and source_object_name is None:
         raise ToolError("Optics matching requires a source camera object")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "match_camera_transform",
         {
             "destination_name": destination_name,
@@ -155,7 +153,7 @@ async def match_camera_transform(
             "source_object_name": source_object_name,
             "world_transform": _dump(world_transform),
         },
-        [destination_name],
+        changed_objects=[destination_name],
     )
 
 
@@ -172,4 +170,4 @@ async def duplicate_camera_rig(
     external_target_policy: ExternalTargetPolicy = "SHARE",
 ) -> dict:
     """Duplicate one tagged rig and explicitly control datablock, action, and external-target sharing."""
-    return await asyncio.to_thread(_call, "duplicate_camera_rig", _tool_params(locals()))
+    return await call_blender("duplicate_camera_rig", _tool_params(locals()))

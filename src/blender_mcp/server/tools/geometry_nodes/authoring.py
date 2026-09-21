@@ -1,15 +1,14 @@
 """Validated interface and graph authoring tools."""
 
-import asyncio
-
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ...app import mcp
+from .._dispatch import call_blender
 from .._node_graph import NodeGraphEdit
-from ._shared import GeometryNodesRequest, call_geometry_nodes, model_records
+from ._shared import GeometryNodesRequest, model_records
 
 SocketDirection = Literal["INPUT", "OUTPUT"]
 CollisionPolicy = Literal["ERROR", "REUSE", "UNIQUE"]
@@ -96,7 +95,7 @@ async def create_geometry_node_group(
         "collision_policy": collision_policy,
         "purpose": purpose,
     }
-    return await asyncio.to_thread(call_geometry_nodes, "create_geometry_node_group", params, changed_resources=[name])
+    return await call_blender("create_geometry_node_group", params, changed_resources=[name])
 
 
 @mcp.tool()
@@ -112,8 +111,7 @@ async def edit_node_group_interface(
     Removing or changing socket types requires ``ALLOW_BREAKING`` because modifier overrides and
     links may be invalidated. The result lists every affected modifier user.
     """
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "edit_node_group_interface",
         {
             "node_group_name": node_group_name,
@@ -137,8 +135,7 @@ async def patch_geometry_node_graph(
     runtime-checked; socket endpoints use identifiers with an optional index fallback. If any
     operation fails, the original graph is restored.
     """
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "patch_geometry_node_graph",
         {"node_group_name": node_group_name, "operations": model_records(operations)},
         changed_resources=[node_group_name],

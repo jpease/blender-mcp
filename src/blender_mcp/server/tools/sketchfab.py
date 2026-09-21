@@ -1,6 +1,5 @@
 """Sketchfab asset-library integration tools."""
 
-import asyncio
 import base64
 import logging
 
@@ -11,7 +10,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from ..app import mcp
-from ..connection import get_blender_connection
+from ._dispatch import send_blender_command
 from .envelope import ok
 
 logger = logging.getLogger("BlenderMCPServer")
@@ -69,12 +68,10 @@ async def search_sketchfab_models(
 
     """
     try:
-        blender = get_blender_connection()
         logger.info(
             f"Searching Sketchfab models with query: {query}, categories: {categories}, count: {count}, downloadable: {downloadable}"
         )
-        result = await asyncio.to_thread(
-            blender.send_command,
+        result = await send_blender_command(
             "search_sketchfab_models",
             {
                 "query": query,
@@ -129,10 +126,9 @@ async def get_sketchfab_model_preview(ctx: Context, uid: Annotated[str, Field(mi
 
     """
     try:
-        blender = get_blender_connection()
         logger.info(f"Getting Sketchfab model preview for UID: {uid}")
 
-        result = await asyncio.to_thread(blender.send_command, "get_sketchfab_model_preview", {"uid": uid})
+        result = await send_blender_command("get_sketchfab_model_preview", {"uid": uid})
 
         if result is None:
             raise Exception("Received no response from Blender")
@@ -180,11 +176,9 @@ async def import_sketchfab_model(
 
     """
     try:
-        blender = get_blender_connection()
         logger.info(f"Downloading Sketchfab model: {uid}, target_size={target_size}")
 
-        result = await asyncio.to_thread(
-            blender.send_command,
+        result = await send_blender_command(
             "import_sketchfab_model",
             {
                 "uid": uid,

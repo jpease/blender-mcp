@@ -9,7 +9,7 @@ import bpy
 import mathutils
 
 from .action_assignment import ACTION_POLICIES, action_fcurve_collections, assign_named_action, assigned_slot_identifier
-from .key_style import style_point, validate_key_style
+from .key_style import KeyStyle, style_point
 from .scene import _object, _required_name
 from .scene_physics import _scene, _scene_fps
 
@@ -113,7 +113,7 @@ def _has_key_at(obj, data_path, frame):
     return False
 
 
-def _style_inserted_keys(obj, data_path, frame, interpolation, *, handle_left, handle_right, easing=None):
+def _style_inserted_keys(obj, data_path, frame, style):
     changed = []
     _action, curves = _action_fcurves(obj)
     for curve in curves:
@@ -124,7 +124,7 @@ def _style_inserted_keys(obj, data_path, frame, interpolation, *, handle_left, h
         )
         if point is None:
             continue
-        style_point(point, interpolation, handle_left=handle_left, handle_right=handle_right, easing=easing)
+        style_point(point, style)
         changed.append({"data_path": data_path, "array_index": curve.array_index, "frame": frame})
     return changed
 
@@ -221,7 +221,8 @@ class ObjectAnimationHandlersMixin:
             raise ValueError(f"keyframes must contain between 1 and {_MAX_BATCH} records")
         if policy not in _POLICIES:
             raise ValueError(f"policy must be one of {sorted(_POLICIES)}")
-        validate_key_style(interpolation, handle_left, handle_right)
+        style = KeyStyle(interpolation, handle_left, handle_right)
+        style.validate()
         if action_policy not in ACTION_POLICIES:
             raise ValueError(f"action_policy must be one of {list(ACTION_POLICIES)}")
 
@@ -275,16 +276,7 @@ class ObjectAnimationHandlersMixin:
         for entry in prepared:
             inserted = _apply_and_key(entry["object"], entry["frame"], entry["space"], entry["channels"])
             for data_path in inserted:
-                changed_keys.extend(
-                    _style_inserted_keys(
-                        entry["object"],
-                        data_path,
-                        entry["frame"],
-                        interpolation,
-                        handle_left=handle_left,
-                        handle_right=handle_right,
-                    )
-                )
+                changed_keys.extend(_style_inserted_keys(entry["object"], data_path, entry["frame"], style))
 
         changed_objects = list(dict.fromkeys(entry["object_name"] for entry in prepared))
         actions = sorted(

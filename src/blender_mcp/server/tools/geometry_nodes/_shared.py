@@ -1,18 +1,11 @@
-"""Shared transport and validation primitives for Geometry Nodes tools."""
+"""Shared validation primitives for Geometry Nodes tools."""
 
-import logging
 import math
 
 from collections.abc import Sequence
 from typing import Any
 
-from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, model_validator
-
-from ...connection import get_blender_connection
-from ..envelope import envelope_for
-
-logger = logging.getLogger("BlenderMCPServer")
 
 
 class GeometryNodesRequest(BaseModel):
@@ -41,23 +34,3 @@ class GeometryNodesRequest(BaseModel):
 def model_records(items: Sequence[BaseModel]) -> list[dict[str, Any]]:
     """Convert validated request records into JSON-serializable dictionaries."""
     return [item.model_dump(exclude_none=True) for item in items]
-
-
-def call_geometry_nodes(
-    command: str,
-    params: dict[str, Any],
-    *,
-    changed_objects: list[str] | None = None,
-    changed_resources: list[str] | None = None,
-) -> dict[str, Any]:
-    """Send one validated Geometry Nodes command to Blender."""
-    try:
-        result = get_blender_connection().send_command(command, params)
-    except Exception as exc:
-        logger.error("Error running %s: %s", command, exc)
-        raise ToolError(f"Error running {command}: {exc}") from exc
-    return envelope_for(
-        result,
-        changed_objects=changed_objects or (),
-        changed_resources=changed_resources or (),
-    )

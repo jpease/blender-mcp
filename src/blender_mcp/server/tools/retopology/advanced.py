@@ -1,16 +1,15 @@
 # ruff: file-ignore[multi-line-summary-second-line]
 """Agent-facing specialized retopology accelerators: quadriflow, primitive fitting, surface deform, LODs."""
 
-import asyncio
-
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ..envelope import ok
-from ._shared import RetopologyProfile, _call
+from .._dispatch import send_blender_command
+from ..envelope import envelope_for
+from ._shared import RetopologyProfile
 
 QuadriFlowMode = Literal["RATIO", "EDGE", "FACES"]
 PrimitiveType = Literal["PLANE", "CYLINDER", "CONE", "SPHERE"]
@@ -49,8 +48,8 @@ async def generate_quadriflow_draft(
     is always identified as a draft, never as deformation-ready topology.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    result = await asyncio.to_thread(_call, "generate_quadriflow_draft", params)
-    return ok(result, changed_objects=[result["name"]])
+    reply = await send_blender_command("generate_quadriflow_draft", params)
+    return envelope_for(reply, changed_objects=[reply["name"]])
 
 
 @mcp.tool()
@@ -88,8 +87,8 @@ async def fit_surface_primitive(
     residuals, projection misses, counts, and topology revision.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    result = await asyncio.to_thread(_call, "fit_surface_primitive", params)
-    return ok(result, changed_objects=[result["name"]])
+    reply = await send_blender_command("fit_surface_primitive", params)
+    return envelope_for(reply, changed_objects=[reply["name"]])
 
 
 @mcp.tool()
@@ -122,9 +121,8 @@ async def bind_surface_deformation(
     operator result and final `is_bound` state, and keep the modifier live.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    result = await asyncio.to_thread(_call, "bind_surface_deformation", params)
-    changed = [object_name] if result.get("changed", True) else []
-    return ok(result, changed_objects=changed)
+    reply = await send_blender_command("bind_surface_deformation", params)
+    return envelope_for(reply, changed_objects=[object_name] if reply.get("changed", True) else [])
 
 
 @mcp.tool()
@@ -174,5 +172,5 @@ async def generate_retopology_lods(
     actual counts, revision, projection misses, and validation report.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    result = await asyncio.to_thread(_call, "generate_retopology_lods", params)
-    return ok(result, changed_objects=result["created_objects"])
+    reply = await send_blender_command("generate_retopology_lods", params)
+    return envelope_for(reply, changed_objects=reply["created_objects"])

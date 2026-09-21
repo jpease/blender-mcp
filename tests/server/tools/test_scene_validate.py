@@ -58,7 +58,7 @@ def test_validate_scene_is_registered_and_read_only(monkeypatch) -> None:
 
     assert "validate_scene" in scene.mcp._tool_manager._tools
     assert "validate_scene" in server._build_command_handlers()
-    assert "validate_scene" in server._READ_ONLY_COMMANDS
+    assert server.command_spec("validate_scene").read_only
 
 
 def test_validate_scene_dispatches_scope_and_max_findings(stub_blender_connection: StubFactory) -> None:

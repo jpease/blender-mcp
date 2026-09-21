@@ -1,6 +1,5 @@
 """Higher-level modeling tools built on top of mesh modifiers/operations."""
 
-import asyncio
 import logging
 
 from typing import Annotated, Literal
@@ -10,8 +9,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from ..app import mcp
-from ..connection import get_blender_connection
-from .envelope import STALE_INDEX_WARNING, ok
+from ._dispatch import call_blender, send_blender_command
+from .envelope import STALE_INDEX_WARNING, envelope_for, ok
 
 logger = logging.getLogger("BlenderMCPServer")
 
@@ -54,9 +53,7 @@ async def copy_object_transform(
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(
-            blender.send_command,
+        return await call_blender(
             "copy_object_transform",
             {
                 "object_name": object_name,
@@ -66,8 +63,8 @@ async def copy_object_transform(
                 "match_scale": match_scale,
                 "space": space,
             },
+            changed_objects=[object_name],
         )
-        return ok(result, changed_objects=[object_name])
     except Exception as e:
         logger.error(f"Error matching reference transform: {e}")
         raise ToolError(f"Error matching reference transform: {e}") from e
@@ -118,9 +115,7 @@ async def add_radial_array_modifier(
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(
-            blender.send_command,
+        result = await send_blender_command(
             "add_radial_array_modifier",
             {
                 "object_name": object_name,
@@ -156,10 +151,9 @@ async def sync_data_name(ctx: Context, object_names: Annotated[list[str], Field(
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(blender.send_command, "sync_data_name", {"object_names": object_names})
-        changed = result.get("names", object_names) if isinstance(result, dict) else object_names
-        return ok(result, changed_objects=changed)
+        reply = await send_blender_command("sync_data_name", {"object_names": object_names})
+        changed = reply.get("names", object_names) if isinstance(reply, dict) else object_names
+        return envelope_for(reply, changed_objects=changed)
     except Exception as e:
         logger.error(f"Error syncing data-block names: {e}")
         raise ToolError(f"Error syncing data-block names: {e}") from e

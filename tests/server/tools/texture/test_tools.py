@@ -11,8 +11,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import texture
-from blender_mcp.server.tools.texture import _shared
+from blender_mcp.server.tools import _dispatch, texture
 
 TEXTURE_COMMANDS = {
     "list_materials",
@@ -106,7 +105,7 @@ def test_material_patch_requires_volume_fields_together():
 
 def test_create_material_forwards_preset_and_volume_settings(monkeypatch):
     connection = StubConnection({"material": "Water", "created": True, "changed_resources": ["Water"]})
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     run_tool(
         texture.create_pbr_material,
@@ -131,7 +130,7 @@ def test_create_material_forwards_preset_and_volume_settings(monkeypatch):
 
 def test_configure_material_sends_only_explicit_fields(monkeypatch):
     connection = StubConnection({"material": "Paint", "changed_resources": ["Paint"]})
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = run_tool(
         texture.configure_pbr_material,
@@ -157,7 +156,7 @@ def test_texture_set_rejects_ambiguous_semantic_channels():
 
 def test_shader_graph_patch_is_strict_and_serializes_stable_socket_identity(monkeypatch):
     connection = StubConnection({"target": {"type": "MATERIAL", "name": "Paint"}})
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     with pytest.raises(ValidationError):
         texture.ShaderGraphEdit(operation="ADD_NODE", properties={"value": float("inf")})
@@ -213,7 +212,7 @@ def test_shader_graph_patch_is_strict_and_serializes_stable_socket_identity(monk
 
 def test_destructive_or_expensive_inputs_are_gated_before_dispatch(monkeypatch):
     connection = StubConnection()
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     with pytest.raises(ToolError, match="confirm=True"):
         run_tool(texture.bake_texture_map, object_name="Low", map_type="NORMAL", output_path="/tmp/n.png")
@@ -231,5 +230,5 @@ def test_texture_tools_are_async_and_dispatch_is_complete(monkeypatch):
     commands = server._build_command_handlers()
 
     assert TEXTURE_COMMANDS.issubset(commands)
-    assert READ_ONLY_TEXTURE_COMMANDS.issubset(server._READ_ONLY_COMMANDS)
-    assert not (TEXTURE_COMMANDS - READ_ONLY_TEXTURE_COMMANDS) & server._READ_ONLY_COMMANDS
+    assert all(server.command_spec(name).read_only for name in READ_ONLY_TEXTURE_COMMANDS)
+    assert not {name for name in TEXTURE_COMMANDS - READ_ONLY_TEXTURE_COMMANDS if server.command_spec(name).read_only}

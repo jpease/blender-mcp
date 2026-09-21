@@ -1,15 +1,14 @@
 """Typed tools for deterministic pose application and pose keyframing."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ...app import mcp
+from .._dispatch import call_blender
 from ..key_style import Easing, HandleType, Interpolation
-from ._shared import _call, _StrictModel
+from ._shared import _StrictModel
 
 _SignedAxis = Literal["X", "-X", "Y", "-Y", "Z", "-Z"]
 # A direction is a direction at any length, so only a vector that is zero to float noise is
@@ -162,8 +161,7 @@ async def list_character_bones(
         follow armature bone order, which lists a parent before its children.
 
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "list_character_bones",
         {
             "armature_object_name": armature_object_name,
@@ -224,8 +222,7 @@ async def set_character_pose(
     """
     if reset_unspecified and not confirm_reset_unspecified:
         raise ValueError("confirm_reset_unspecified=True is required to reset unspecified pose bones")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "set_character_pose",
         {
             "armature_object_name": armature_object_name,
@@ -235,7 +232,7 @@ async def set_character_pose(
             "confirm_reset_unspecified": confirm_reset_unspecified,
             "detail": detail,
         },
-        [armature_object_name],
+        changed_objects=[armature_object_name],
     )
 
 
@@ -301,10 +298,7 @@ async def keyframe_character_pose(
         budget; changed_bones stays complete.
 
     """
-    if keying_policy == "REMOVE" and action_policy == "CREATE":
-        raise ValueError("Removing keys requires an action that already exists, which action_policy='CREATE' forbids")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "keyframe_character_pose",
         {
             "armature_object_name": armature_object_name,
@@ -322,7 +316,7 @@ async def keyframe_character_pose(
             "action_slot_identifier": action_slot_identifier,
             "detail": detail,
         },
-        [armature_object_name],
+        changed_objects=[armature_object_name],
     )
 
 
@@ -358,7 +352,42 @@ class ReachHinge(_StrictModel):
         return self
 
 
-class BoneReach(_StrictModel):
+class _ReachChain(_StrictModel):
+    """
+    The chain, pole and solver settings every reach carries, whatever it does with them.
+
+    solve_bone_reach poses one chain now and keyframe_bone_reach solves the same chain at many
+    frames; everything except where the tail has to be is identical between them, the pole rule
+    included. Two copies of it had to agree by hand.
+    """
+
+    tip_bone: str = Field(min_length=1, max_length=63)
+    chain_length: Annotated[int, Field(ge=1, le=32)] | None = None
+    pole_target: tuple[float, float, float] | None = None
+    pole_target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
+    pole_angle_degrees: float = 0.0
+    use_stretch: bool = False
+    iterations: Annotated[int, Field(ge=1, le=1000)] = 500
+    hinge: ReachHinge | None = None
+
+    @model_validator(mode="after")
+    def validate_pole(self) -> "_ReachChain":
+        """
+        Reject a reach that names two pole targets.
+
+        Returns:
+            _ReachChain: This model, unchanged.
+
+        Raises:
+            ValueError: If both pole forms are given.
+
+        """
+        if self.pole_target is not None and self.pole_target_object is not None:
+            raise ValueError("Supply at most one of pole_target or pole_target_object")
+        return self
+
+
+class BoneReach(_ReachChain):
     """
     Bend an unbranched ancestor chain so tip_bone's TAIL reaches a world point.
 
@@ -371,33 +400,23 @@ class BoneReach(_StrictModel):
     orientation is posed separately.
     """
 
-    tip_bone: str = Field(min_length=1, max_length=63)
     target: tuple[float, float, float] | None = None
     target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
-    chain_length: Annotated[int, Field(ge=1, le=32)] | None = None
-    pole_target: tuple[float, float, float] | None = None
-    pole_target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
-    pole_angle_degrees: float = 0.0
-    use_stretch: bool = False
-    iterations: Annotated[int, Field(ge=1, le=1000)] = 500
-    hinge: ReachHinge | None = None
 
     @model_validator(mode="after")
-    def validate_reach(self) -> "BoneReach":
+    def validate_target(self) -> "BoneReach":
         """
-        Reject a reach that names no target, two targets, or two pole targets.
+        Reject a reach that names no target, or two.
 
         Returns:
             BoneReach: This model, unchanged.
 
         Raises:
-            ValueError: If neither or both target forms are given, or both pole forms are.
+            ValueError: If neither or both target forms are given.
 
         """
         if (self.target is None) == (self.target_object is None):
             raise ValueError("Supply exactly one of target or target_object")
-        if self.pole_target is not None and self.pole_target_object is not None:
-            raise ValueError("Supply at most one of pole_target or pole_target_object")
         return self
 
 
@@ -451,8 +470,7 @@ async def solve_bone_reach(
         set_character_pose returns for this chain.
 
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "solve_bone_reach",
         {
             "armature_object_name": armature_object_name,
@@ -460,7 +478,7 @@ async def solve_bone_reach(
             "tolerance_m": tolerance_m,
             "detail": detail,
         },
-        [armature_object_name],
+        changed_objects=[armature_object_name],
     )
 
 
@@ -488,33 +506,23 @@ class ReachKey(_StrictModel):
         return self
 
 
-class KeyedBoneReach(_StrictModel):
+class KeyedBoneReach(_ReachChain):
     """One chain solved and keyed at several frames."""
 
-    tip_bone: str = Field(min_length=1, max_length=63)
     keys: Annotated[list[ReachKey], Field(min_length=1, max_length=250)]
-    chain_length: Annotated[int, Field(ge=1, le=32)] | None = None
-    pole_target: tuple[float, float, float] | None = None
-    pole_target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
-    pole_angle_degrees: float = 0.0
-    hinge: ReachHinge | None = None
-    use_stretch: bool = False
-    iterations: Annotated[int, Field(ge=1, le=1000)] = 500
 
     @model_validator(mode="after")
-    def validate_keyed_reach(self) -> "KeyedBoneReach":
+    def validate_frames(self) -> "KeyedBoneReach":
         """
-        Reject two pole forms, or the same frame keyed twice in one reach.
+        Reject the same frame keyed twice in one reach.
 
         Returns:
             KeyedBoneReach: This model, unchanged.
 
         Raises:
-            ValueError: If both pole forms are given, or two keys name the same frame.
+            ValueError: If two keys name the same frame.
 
         """
-        if self.pole_target is not None and self.pole_target_object is not None:
-            raise ValueError("Supply at most one of pole_target or pole_target_object")
         frames = [key.frame for key in self.keys]
         if len(set(frames)) != len(frames):
             raise ValueError("Each frame may appear at most once in one reach's keys")
@@ -593,8 +601,7 @@ async def keyframe_bone_reach(
         before moving on; each miss also raises a warning naming its frame.
 
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "keyframe_bone_reach",
         {
             "armature_object_name": armature_object_name,
@@ -611,5 +618,5 @@ async def keyframe_bone_reach(
             "action_slot_identifier": action_slot_identifier,
             "detail": detail,
         },
-        [armature_object_name],
+        changed_objects=[armature_object_name],
     )

@@ -2,15 +2,14 @@
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
 """Typed tool for assembling a non-destructive character cloth garment stack."""
 
-import asyncio
-
 from typing import Annotated
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import _call, _dump
+from .._dispatch import call_blender
+from ._shared import _dump
 from .collisions import ClothColliderPatch, ClothCollisionPatch
 from .inspection_and_setup import ExistingPolicy
 from .material_and_solver import ClothMaterialPatch, ClothSolverPatch
@@ -50,8 +49,7 @@ async def create_character_cloth_setup(
     render-only Subdivision/Solidify modifiers after it; no modifier is applied. ``cache_frame_end``
     must not precede ``cache_frame_start``.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_character_cloth_setup",
         {
             "garment_object_name": garment_object_name,
@@ -77,5 +75,5 @@ async def create_character_cloth_setup(
             "cache_frame_start": cache_frame_start,
             "cache_frame_end": cache_frame_end,
         },
-        [garment_object_name, armature_object_name, *body_collider_object_names],
+        changed_objects=[garment_object_name, armature_object_name, *body_collider_object_names],
     )

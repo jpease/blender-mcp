@@ -1,13 +1,12 @@
 """Force-field authoring for rigid-body worlds."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import BaseModel, ConfigDict, Field
 
-from .inspection_and_setup import RigidBodyEffectorWeightsPatch, Vector3, _call, mcp
+from .._dispatch import call_blender
+from .inspection_and_setup import RigidBodyEffectorWeightsPatch, Vector3, mcp
 
 
 class RigidBodyForceField(BaseModel):
@@ -52,8 +51,7 @@ async def configure_rigid_body_force_fields(
     it must already exist. Rejects with confirm_delete_baked_cache=False if that world already has
     a baked simulation cache, since editing fields/weights invalidates it.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "configure_rigid_body_force_fields",
         {
             "scene_name": scene_name,
@@ -63,5 +61,5 @@ async def configure_rigid_body_force_fields(
             "weights": weights.model_dump(exclude_none=True, exclude_unset=True) if weights else {},
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
-        [field.object_name for field in fields],
+        changed_objects=[field.object_name for field in fields],
     )

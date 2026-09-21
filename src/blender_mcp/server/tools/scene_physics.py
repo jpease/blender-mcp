@@ -1,15 +1,12 @@
 """Typed tools for scene-wide unit, gravity, and playback-sync configuration."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..app import mcp
-from ..connection import get_blender_connection
-from .envelope import envelope_for
+from ._dispatch import call_blender
 
 UnitSystem = Literal["NONE", "METRIC", "IMPERIAL"]
 SyncMode = Literal["NONE", "FRAME_DROP", "AUDIO_SYNC"]
@@ -34,11 +31,6 @@ class ScenePhysicsPatch(BaseModel):
         return self
 
 
-async def _call(command: str, params: dict, *, changed_resources: list[str] | None = None) -> dict:
-    result = await asyncio.to_thread(get_blender_connection().send_command, command, params)
-    return envelope_for(result, changed_resources=changed_resources or ())
-
-
 @mcp.tool()
 async def get_scene_physics_info(
     ctx: Context,
@@ -53,7 +45,7 @@ async def get_scene_physics_info(
     to key events (e.g. a liquid flow's enable/disable frame) at an explicit time rather than a frame
     number. It does not itself change fps; use configure_render_settings for that.
     """
-    return await _call(
+    return await call_blender(
         "get_scene_physics_info",
         {"scene_name": scene_name, "convert_seconds": convert_seconds},
     )
@@ -71,7 +63,7 @@ async def configure_scene_physics(ctx: Context, scene_name: str, patch: ScenePhy
     geometry - it only changes how new values are interpreted - so a warning is returned when mesh
     objects with non-1.0 scale already exist in the scene.
     """
-    return await _call(
+    return await call_blender(
         "configure_scene_physics",
         {"scene_name": scene_name, "patch": patch.model_dump(exclude_none=True)},
         changed_resources=[scene_name],

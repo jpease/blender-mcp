@@ -125,7 +125,7 @@ def load_addon_package(monkeypatch, name):
 
 # A string target, resolved when the fixture runs. Importing the server here would import it
 # for the whole session, so a bad BLENDER_MCP_TOOLSETS would abort collection.
-_PATCH_TARGET = "blender_mcp.server.tools._scene_shared.get_blender_connection"
+_PATCH_TARGET = "blender_mcp.server.tools._dispatch.get_blender_connection"
 
 
 class RecordingConnection:
@@ -178,9 +178,9 @@ def stub_blender_connection(monkeypatch: pytest.MonkeyPatch) -> StubFactory:
     """
     Route scene tool dispatch to a recording stub.
 
-    Patched in `_scene_shared`, whose `_call` resolves `get_blender_connection`,
-    so one stub covers every tool module that dispatches through it; patching a
-    tool module instead would miss.
+    Patched in `_dispatch`, the one module that resolves `get_blender_connection`, so
+    one stub covers every tool in every package; patching a tool module instead would
+    miss, since none of them touches the socket itself.
 
     Returns:
         A factory taking an optional canned reply and returning the installed

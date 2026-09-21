@@ -1,7 +1,5 @@
 """Cycles-backed texture baking exposed with explicit sources and output."""
 
-import asyncio
-
 from typing import Literal
 
 from mcp.server.fastmcp import Context
@@ -9,7 +7,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import absolute_path, call_blender
+from .._dispatch import call_blender
+from ._shared import absolute_path
 
 
 @mcp.tool()
@@ -61,4 +60,4 @@ async def bake_texture_map(
         raise ToolError("Set confirm=True to run the bake")
     params = {k: v for k, v in locals().items() if k != "ctx"}
     params["output_path"] = absolute_path(output_path, "output_path")
-    return await asyncio.to_thread(call_blender, "bake_texture_map", params, [object_name])
+    return await call_blender("bake_texture_map", params, changed_objects=[object_name])

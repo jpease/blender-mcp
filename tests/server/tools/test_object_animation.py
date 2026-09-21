@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 from test_mutation_transaction import _TRACKED_COLLECTIONS, FakeCollection, FakeMatrix, _load_addon
 
-from blender_mcp.server.tools import object_animation
+from blender_mcp.server.tools import _dispatch, object_animation
 
 OBJECT_ANIMATION_COMMANDS = {"keyframe_object_transform"}
 
@@ -57,7 +57,7 @@ def test_object_animation_tools_are_registered_and_dispatched(monkeypatch) -> No
 
     assert OBJECT_ANIMATION_COMMANDS <= set(object_animation.mcp._tool_manager._tools)
     assert OBJECT_ANIMATION_COMMANDS <= set(server._build_command_handlers())
-    assert "keyframe_object_transform" not in server._READ_ONLY_COMMANDS
+    assert not server.command_spec("keyframe_object_transform").read_only
 
 
 def test_object_transform_keyframe_is_strict_and_bounded() -> None:
@@ -84,7 +84,7 @@ def test_object_transform_keyframe_is_strict_and_bounded() -> None:
 
 def test_keyframe_object_transform_serializes_records(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(object_animation, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = asyncio.run(
         object_animation.keyframe_object_transform(

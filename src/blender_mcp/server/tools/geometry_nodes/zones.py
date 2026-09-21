@@ -1,15 +1,14 @@
 # ruff: file-ignore[multi-line-summary-second-line]
 """Bounded Repeat and Simulation Zone authoring tools."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import GeometryNodesRequest, call_geometry_nodes, model_records
+from .._dispatch import call_blender
+from ._shared import GeometryNodesRequest, model_records
 from .authoring import GraphEdit
 
 ZoneSocketType = Literal["GEOMETRY", "FLOAT", "INT", "BOOLEAN", "VECTOR", "ROTATION", "RGBA"]
@@ -68,8 +67,7 @@ async def create_repeat_zone(
     _validate_graph_operations(operations)
     if not 1 <= iterations <= MAX_REPEAT_ITERATIONS:
         raise ValueError(f"iterations must be in [1, {MAX_REPEAT_ITERATIONS}]")
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "create_repeat_zone",
         {
             "node_group_name": node_group_name,
@@ -113,8 +111,7 @@ async def create_simulation_zone(
     _validate_graph_operations(operations)
     if frame_start > frame_end:
         raise ValueError("frame_start must not exceed frame_end")
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "create_simulation_zone",
         {
             "node_group_name": node_group_name,

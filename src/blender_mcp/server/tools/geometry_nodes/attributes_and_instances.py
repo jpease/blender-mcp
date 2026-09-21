@@ -1,13 +1,11 @@
 """Stable named-attribute and procedural-instance management tools."""
 
-import asyncio
-
 from typing import Any, Literal
 
 from mcp.server.fastmcp import Context
 
 from ...app import mcp
-from ._shared import call_geometry_nodes
+from .._dispatch import call_blender
 
 
 @mcp.tool()
@@ -30,8 +28,7 @@ async def manage_named_attributes(
     """
     if action in {"REMOVE", "CONVERT"} and not confirm_destructive:
         raise ValueError(f"confirm_destructive=True is required for {action}")
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "manage_named_attributes",
         {
             "object_name": object_name,
@@ -65,8 +62,7 @@ async def manage_procedural_instances(
     The result identifies source dependencies, estimated instance count, nesting depth, and whether
     downstream nodes force realization. Omitted settings remain unchanged.
     """
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "manage_procedural_instances",
         {
             "node_group_name": node_group_name,

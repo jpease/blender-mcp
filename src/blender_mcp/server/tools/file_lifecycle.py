@@ -7,33 +7,13 @@ no bundle may belong to both. Its descriptions count toward the mode byte ceilin
 `tests/server/test_bundles.py`, and `_documentation.py` registers hints for these tools.
 """
 
-import asyncio
-
 from typing import Annotated
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ..app import mcp
-from ..connection import get_blender_connection
-from .envelope import envelope_for
-
-
-async def _call(command: str, params: dict[str, object]) -> dict:
-    """
-    Dispatch one addon command and wrap its reply in the standard envelope.
-
-    Args:
-        command: Addon command name; identical to this module's tool name.
-        params: JSON-serializable parameters, forwarded unchanged.
-
-    Returns:
-        dict: The `ok()` envelope. Addon failures, already free of filesystem paths,
-        propagate and FastMCP turns them into `ToolError`.
-
-    """
-    result = await asyncio.to_thread(get_blender_connection().send_command, command, params)
-    return envelope_for(result)
+from ._dispatch import call_blender
 
 
 @mcp.tool()
@@ -53,7 +33,7 @@ async def get_session_info(ctx: Context) -> dict:
         session_uid, name, filepath, is_relative, is_missing).
 
     """
-    return await _call("get_session_info", {})
+    return await call_blender("get_session_info", {})
 
 
 @mcp.tool()
@@ -84,7 +64,7 @@ async def open_shot(
         warnings when part of the swap report could not be read.
 
     """
-    return await _call(
+    return await call_blender(
         "open_shot",
         {"filepath": filepath, "load_ui": load_ui, "discard_unsaved": discard_unsaved},
     )
@@ -129,7 +109,7 @@ async def save_shot(
         relative external file paths will not resolve from a new directory.
 
     """
-    return await _call(
+    return await call_blender(
         "save_shot",
         {
             "filepath": filepath,
@@ -163,7 +143,7 @@ async def reset_session(ctx: Context, confirm: bool = False) -> dict:
         note, and warnings when part of the swap report could not be read.
 
     """
-    return await _call("reset_session", {"confirm": confirm})
+    return await call_blender("reset_session", {"confirm": confirm})
 
 
 @mcp.tool()
@@ -198,7 +178,7 @@ async def link_canon_library(
         overrides.
 
     """
-    return await _call(
+    return await call_blender(
         "link_canon_library",
         {
             "filepath": filepath,
@@ -235,7 +215,7 @@ async def create_override(
         hierarchy_root_uid), scene_uid, replaced_instances, and objects (total, by_type).
 
     """
-    return await _call(
+    return await call_blender(
         "create_override",
         {"collection_uid": collection_uid, "scene_uid": scene_uid, "detail": detail},
     )
@@ -263,7 +243,7 @@ async def list_libraries(ctx: Context, limit: int = 25, offset: int = 0, detail:
         next_offset.
 
     """
-    return await _call("list_libraries", {"limit": limit, "offset": offset, "detail": detail})
+    return await call_blender("list_libraries", {"limit": limit, "offset": offset, "detail": detail})
 
 
 @mcp.tool()
@@ -286,7 +266,7 @@ async def reload_library(ctx: Context, library_uid: int, detail: bool = False) -
         missing.
 
     """
-    return await _call("reload_library", {"library_uid": library_uid, "detail": detail})
+    return await call_blender("reload_library", {"library_uid": library_uid, "detail": detail})
 
 
 @mcp.tool()
@@ -310,7 +290,7 @@ async def relocate_library(ctx: Context, library_uid: int, filepath: str, detail
         when a linked datablock is now missing.
 
     """
-    return await _call(
+    return await call_blender(
         "relocate_library",
         {"library_uid": library_uid, "filepath": filepath, "detail": detail},
     )
@@ -343,7 +323,7 @@ async def unlink_libraries(
         removed_uids, purged_orphans, purged_by_type, other_libraries_removed.
 
     """
-    return await _call(
+    return await call_blender(
         "unlink_libraries",
         {"library_uids": library_uids, "confirm": confirm, "purge_orphans": purge_orphans},
     )
@@ -386,7 +366,7 @@ async def inspect_delivery(
         truncated, next_offset, provenance, warnings, limitations.
 
     """
-    return await _call(
+    return await call_blender(
         "inspect_delivery",
         {
             "scene_name": scene_name,

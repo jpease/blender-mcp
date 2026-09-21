@@ -1,14 +1,13 @@
 """Rigid-body component removal tools."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from .inspection_and_setup import _call, mcp
+from .._dispatch import call_blender
+from .inspection_and_setup import mcp
 
 
 @mcp.tool()
@@ -40,8 +39,7 @@ async def remove_rigid_body_components(
         raise ToolError("WORLD does not accept object_names or rig_id")
     if component_type in {"TAGGED_HELPERS", "WORLD"} and not confirm_destructive:
         raise ToolError(f"{component_type} requires confirm_destructive=True")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "remove_rigid_body_components",
         {
             "scene_name": scene_name,
@@ -50,5 +48,5 @@ async def remove_rigid_body_components(
             "rig_id": rig_id,
             "confirm_destructive": confirm_destructive,
         },
-        names,
+        changed_objects=names,
     )

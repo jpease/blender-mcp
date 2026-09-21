@@ -1,14 +1,13 @@
 """Typed tools for cloth vertex weights and pin-goal behavior."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import _call, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _StrictModel
 
 WeightOperation = Literal["REPLACE", "ADD", "SUBTRACT"]
 WeightRole = Literal[
@@ -58,8 +57,7 @@ async def set_cloth_vertex_weights(
     The complete batch is validated before editing. ADD and SUBTRACT clamp to [0, 1]; unrelated and
     locked groups are preserved. Query mesh indices again after any topology-changing operation.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "set_cloth_vertex_weights",
         {
             "object_name": object_name,
@@ -69,5 +67,5 @@ async def set_cloth_vertex_weights(
             "assignments": [item.model_dump() for item in assignments],
             "operation": operation,
         },
-        [object_name],
+        changed_objects=[object_name],
     )

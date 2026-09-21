@@ -1,13 +1,12 @@
 """Authored-animation and rigid-body handoff tools."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
-from .inspection_and_setup import Vector3, _call, mcp
+from .._dispatch import call_blender
+from .inspection_and_setup import Vector3, mcp
 
 
 @mcp.tool()
@@ -35,8 +34,7 @@ async def animate_rigid_body_release(
     that world already has a baked simulation cache, since inserting a release/capture keyframe
     invalidates it.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "animate_rigid_body_release",
         {
             "scene_name": scene_name,
@@ -50,5 +48,5 @@ async def animate_rigid_body_release(
             "overwrite_existing_action": overwrite_existing_action,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
-        [object_name],
+        changed_objects=[object_name],
     )

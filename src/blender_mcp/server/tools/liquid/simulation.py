@@ -1,15 +1,14 @@
 # ruff: file-ignore[multi-line-summary-second-line]
 """Typed tools for evaluating and caching liquid simulations."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ...app import mcp
-from ._shared import _call, _dump, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _dump, _StrictModel
 from .inspection_and_setup import FluidDomainType, FluidSolverPatch
 from .mesh_and_materials import CacheMeshFormat
 
@@ -102,8 +101,7 @@ async def sample_liquid_simulation(
     frames are jumped to directly but must fall within the already-baked cache range, or the call
     fails instead of silently returning stale or empty geometry.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "sample_liquid_simulation",
         {
             "domain_object_name": domain_object_name,
@@ -113,7 +111,7 @@ async def sample_liquid_simulation(
             "boundary_tolerance_cells": boundary_tolerance_cells,
             "max_preroll_frames": max_preroll_frames,
         },
-        [domain_object_name],
+        changed_objects=[domain_object_name],
     )
 
 
@@ -163,8 +161,7 @@ async def manage_liquid_cache(
     not baking, CANCEL degrades to freeing that stage's cache (same confirm_free/confirm_external_overwrite
     gates as FREE_*).
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "manage_liquid_cache",
         {
             "domain_object_name": domain_object_name,
@@ -179,7 +176,7 @@ async def manage_liquid_cache(
             "max_bake_frames": max_bake_frames,
             "max_existing_cache_bytes": max_existing_cache_bytes,
         },
-        [domain_object_name],
+        changed_objects=[domain_object_name],
     )
 
 
@@ -192,8 +189,7 @@ async def configure_fluid_solver(
     patch: FluidSolverPatch,
 ) -> dict:
     """Patch validated common or domain-specific solver settings without touching omitted fields."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "configure_fluid_solver",
         {
             "domain_type": domain_type,
@@ -201,7 +197,7 @@ async def configure_fluid_solver(
             "modifier_name": modifier_name,
             "patch": _dump(patch),
         },
-        [domain_object_name],
+        changed_objects=[domain_object_name],
     )
 
 
@@ -221,8 +217,7 @@ async def manage_fluid_cache(
     max_bake_frames: Annotated[int, Field(ge=1, le=10_000)] = 250,
 ) -> dict:
     """Manage a normalized Mantaflow cache lifecycle for LIQUID or GAS domains."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "manage_fluid_cache",
         {
             "domain_type": domain_type,
@@ -237,5 +232,5 @@ async def manage_fluid_cache(
             "confirm_external_overwrite": confirm_external_overwrite,
             "max_bake_frames": max_bake_frames,
         },
-        [domain_object_name],
+        changed_objects=[domain_object_name],
     )

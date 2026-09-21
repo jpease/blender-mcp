@@ -1,7 +1,6 @@
 """Typed tools for generic Blender animation data and layered Actions."""
 
 import ast
-import asyncio
 import re
 
 from typing import Annotated, Literal
@@ -11,8 +10,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..app import mcp
-from ..connection import get_blender_connection
-from .envelope import envelope_for
+from ._dispatch import call_blender
 from .key_style import Easing, HandleType, Interpolation
 
 AnimationTargetType = Literal[
@@ -224,11 +222,6 @@ def _validate_safe_expression(expression: str, variable_names: set[str]) -> None
             raise ValueError("expression constants must be numeric")
 
 
-async def _call(command: str, params: dict, *, changed_resources: list[str] | None = None) -> dict:
-    result = await asyncio.to_thread(get_blender_connection().send_command, command, params)
-    return envelope_for(result, changed_resources=changed_resources or ())
-
-
 @mcp.tool()
 async def inspect_animation(
     ctx: Context,
@@ -237,7 +230,7 @@ async def inspect_animation(
     limit: Annotated[int, Field(ge=1, le=1000)] = 200,
 ) -> dict:
     """Inspect an ID's active Action, layered slots, keyframes, drivers, and NLA strips with pagination."""
-    return await _call(
+    return await call_blender(
         "inspect_animation",
         {"target": target.model_dump(), "offset": offset, "limit": limit},
     )
@@ -259,7 +252,7 @@ async def manage_animation_action(
         raise ToolError("DUPLICATE requires source_action_name")
     if action != "DUPLICATE" and source_action_name is not None:
         raise ToolError("source_action_name is only valid for DUPLICATE")
-    return await _call(
+    return await call_blender(
         "manage_animation_action",
         {
             "target": target.model_dump(),
@@ -282,7 +275,7 @@ async def edit_keyframes(
     allow_shared_action: bool = False,
 ) -> dict:
     """Batch-upsert or remove validated property keyframes in one layered Action without changing current values."""
-    return await _call(
+    return await call_blender(
         "edit_keyframes",
         {
             "target": target.model_dump(),
@@ -338,7 +331,7 @@ async def set_action_cycle(
         mode_after). A long action shortens modifiers to fit the reply budget.
 
     """
-    return await _call(
+    return await call_blender(
         "set_action_cycle",
         {
             "target": target.model_dump(),
@@ -377,7 +370,7 @@ async def bake_evaluated_animation(
         raise ToolError("Bake range exceeds the 100000-sample safety limit")
     if not confirm_bake:
         raise ToolError("confirm_bake=True is required")
-    return await _call(
+    return await call_blender(
         "bake_evaluated_animation",
         {
             "target": target.model_dump(),
@@ -420,7 +413,7 @@ async def manage_nla_tracks(
         raise ToolError("PATCH_STRIP requires strip_patch")
     if action.startswith("REMOVE") and not confirm_remove:
         raise ToolError("confirm_remove=True is required for removal")
-    return await _call(
+    return await call_blender(
         "manage_nla_tracks",
         {
             "target": target.model_dump(),
@@ -461,7 +454,7 @@ async def manage_animation_driver(
         if driver_type not in {None, "SCRIPTED"}:
             raise ToolError("expression is valid only for a SCRIPTED driver")
         _validate_safe_expression(expression, {variable.name for variable in variables or []})
-    return await _call(
+    return await call_blender(
         "manage_animation_driver",
         {
             "target": target.model_dump(),

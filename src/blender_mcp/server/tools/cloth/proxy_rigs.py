@@ -2,15 +2,13 @@
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
 """Typed tool for binding a low-resolution cloth proxy to a render mesh."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import _call
+from .._dispatch import call_blender
 from .inspection_and_setup import ExistingPolicy
 
 ProxySourcePolicy = Literal["EXISTING", "DUPLICATE_RENDER", "DECIMATE_RENDER"]
@@ -42,8 +40,7 @@ async def create_cloth_proxy_rig(
     creates a new proxy and is accepted only with ``allow_topology_change=True``. The render mesh
     receives a bound Surface Deform or Mesh Deform modifier and is never destructively converted.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_cloth_proxy_rig",
         {
             "render_object_name": render_object_name,
@@ -61,5 +58,5 @@ async def create_cloth_proxy_rig(
             "rest_frame": rest_frame,
             "validation_frames": validation_frames or [],
         },
-        [render_object_name],
+        changed_objects=[render_object_name],
     )

@@ -1,14 +1,12 @@
 """Typed tools for creating liquid effector and domain guides."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import _call
+from .._dispatch import call_blender
 from .inspection_and_setup import ExistingPolicy, GuideMode
 
 GuideSource = Literal["EFFECTOR", "DOMAIN"]
@@ -34,8 +32,7 @@ async def create_liquid_guide(
     guide_vel_factor: Annotated[float, Field(ge=0.0, le=100.0)] | None = None,
 ) -> dict:
     """Create an effector guide or connect one liquid domain as another domain's guide source."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_liquid_guide",
         {
             "domain_object_name": domain_object_name,
@@ -54,5 +51,7 @@ async def create_liquid_guide(
             "guide_beta": guide_beta,
             "guide_vel_factor": guide_vel_factor,
         },
-        [name for name in [domain_object_name, guide_object_name, guide_parent_domain_object_name] if name],
+        changed_objects=[
+            name for name in [domain_object_name, guide_object_name, guide_parent_domain_object_name] if name
+        ],
     )

@@ -1,5 +1,6 @@
 import os
 import shutil
+import string
 import tempfile
 
 from contextlib import suppress
@@ -7,12 +8,18 @@ from contextlib import suppress
 import bpy
 
 from ..constants import REQ_HEADERS
-from ..file_paths import enforce_roots, resolve_blend_path, sanitize_blender_error
+from ..file_paths import PathOutsideRootsError, resolve_blend_path, sanitize_blender_error
 from ..network import download_file, get_json
-from .file_lifecycle import _refuse_scripts_auto_execute
+from .blend_files import refuse_scripts_auto_execute
 
 _MAX_IMAGE_BYTES = 512 * 1024 * 1024
 _MAX_MODEL_FILE_BYTES = 2 * 1024 * 1024 * 1024
+# The maps that carry colour rather than data, so only these are read as sRGB.
+_COLOR_MAP_TYPES = frozenset({"color", "diffuse", "albedo"})
+# Keys in a files response that are whole scenes, not texture maps.
+_NON_TEXTURE_KEYS = frozenset({"blend", "gltf"})
+# A resolution reaches a cache file's name, so it may hold nothing else.
+_SAFE_FILENAME_CHARACTERS = frozenset(string.ascii_letters + string.digits + "-_")
 
 
 def _validated_download(path: str, download_dir: str) -> str:
@@ -20,7 +27,8 @@ def _validated_download(path: str, download_dir: str) -> str:
     Check a downloaded `.blend` before Blender parses it.
 
     The download is untrusted. The boundary is the handler's own temp directory,
-    not the deployment's file roots, because no caller named this path.
+    not the deployment's file roots, because no caller named this path, so the
+    shared refusal - which points at BLENDERMCP_FILE_ROOTS - is replaced here.
 
     Args:
         path: Where the download was written.
@@ -33,12 +41,445 @@ def _validated_download(path: str, download_dir: str) -> str:
         ValueError: If the file is not a `.blend` or resolves outside the directory.
 
     """
-    blend_path = resolve_blend_path(path, must_exist=True)
     try:
-        enforce_roots(blend_path, [download_dir])
-    except ValueError:
+        return resolve_blend_path(path, roots=[download_dir], must_exist=True)
+    except PathOutsideRootsError:
         raise ValueError("downloaded file resolves outside its download directory") from None
-    return blend_path
+
+
+def _has_safe_filename_characters(value: object) -> bool:
+    """
+    Report whether a value may go into a cache file's name unchanged.
+
+    Args:
+        value: What the client sent as the resolution.
+
+    Returns:
+        bool: True for a non-empty string of letters, digits, `-` and `_`.
+
+    """
+    return isinstance(value, str) and bool(value) and all(c in _SAFE_FILENAME_CHARACTERS for c in value)
+
+
+def _filename_component(asset_id) -> str:
+    """
+    Reduce an asset id to the part of it that may become a file name.
+
+    Args:
+        asset_id: The asset id the client sent.
+
+    Returns:
+        str: Letters, digits, `-` and `_`, with anything else replaced by `_`
+        and the result stripped of leading and trailing underscores. Empty when
+        the id contributes nothing usable.
+
+    """
+    return "".join(
+        character if character.isalnum() or character in {"-", "_"} else "_" for character in asset_id
+    ).strip("_")
+
+
+def _cached_image_path(safe_asset_id: str, resolution: str, file_format: str) -> str | None:
+    """
+    Name the file an HDRI is cached at, creating the cache directory.
+
+    Cached rather than temporary because an HDRI is referenced by path from the
+    world it lights: a temp file would leave the world pointing at nothing.
+
+    Args:
+        safe_asset_id: `_filename_component`'s result, already known non-empty.
+        resolution: The requested resolution, already charset-checked.
+        file_format: `hdr` or `exr`.
+
+    Returns:
+        str | None: The path, or None when Blender has no writable data directory.
+
+    """
+    cache_directory = bpy.utils.user_resource(
+        "DATAFILES",
+        path=os.path.join("blender_mcp", "polyhaven"),
+        create=True,
+    )
+    if not cache_directory:
+        return None
+    return os.path.join(cache_directory, f"{safe_asset_id}_{resolution}.{file_format}")
+
+
+def _set_colorspace(image, *, color: bool) -> None:
+    """
+    Read one texture as colour or as data, tolerating a build without that profile.
+
+    Args:
+        image: The loaded `bpy.types.Image`.
+        color: True for a base-colour map, False for roughness, normals and the rest.
+
+    """
+    with suppress(Exception):
+        image.colorspace_settings.name = "sRGB" if color else "Non-Color"
+
+
+def _packed_map_image(path: str, name: str, *, color: bool):
+    """
+    Load one downloaded map into the file itself, so the material outlives the temp file.
+
+    Args:
+        path: The downloaded file.
+        name: The datablock name to publish it under.
+        color: Passed to `_set_colorspace`.
+
+    Returns:
+        bpy.types.Image: The packed image.
+
+    """
+    image = bpy.data.images.load(path)
+    image.name = name
+    image.pack()
+    _set_colorspace(image, color=color)
+    return image
+
+
+def _downloaded_map(asset_id, map_type: str, file_format: str, file_url: str):
+    """
+    Download one texture map through a temp file that is always removed.
+
+    Args:
+        asset_id: The asset id, for the datablock name.
+        map_type: Poly Haven's name for this map.
+        file_format: The requested format, also the temp file's suffix.
+        file_url: Where to fetch it.
+
+    Returns:
+        bpy.types.Image: The packed image.
+
+    """
+    with tempfile.NamedTemporaryFile(suffix=f".{file_format}", delete=False) as tmp_file:
+        tmp_path = tmp_file.name
+    try:
+        download_file(file_url, tmp_path, headers=REQ_HEADERS, max_bytes=_MAX_IMAGE_BYTES)
+        return _packed_map_image(tmp_path, f"{asset_id}_{map_type}.{file_format}", color=map_type in _COLOR_MAP_TYPES)
+    finally:
+        with suppress(FileNotFoundError):
+            os.unlink(tmp_path)
+
+
+def _downloaded_texture_maps(asset_id, files_data, resolution, file_format: str) -> dict:
+    """
+    Download every map this asset publishes at the requested resolution and format.
+
+    Args:
+        asset_id: The asset id.
+        files_data: Poly Haven's files response.
+        resolution: The requested resolution.
+        file_format: The requested format.
+
+    Returns:
+        dict: Map type -> packed image; empty when the asset publishes none.
+
+    """
+    downloaded_maps = {}
+    for map_type in files_data:
+        if map_type in _NON_TEXTURE_KEYS:
+            continue
+        if resolution not in files_data[map_type] or file_format not in files_data[map_type][resolution]:
+            continue
+        downloaded_maps[map_type] = _downloaded_map(
+            asset_id, map_type, file_format, files_data[map_type][resolution][file_format]["url"]
+        )
+    return downloaded_maps
+
+
+def _connect_texture_map(nodes, links, map_type: str, tex_node, principled, output, x_pos: int, y_pos: int) -> None:
+    """
+    Wire one texture node into the shader input its map type belongs to.
+
+    A map type the graph has no input for is downloaded and packed but left
+    unconnected, which is how an asset can carry more maps than a Principled
+    BSDF takes.
+
+    Args:
+        nodes: The material's node collection, for the nodes a map needs beside it.
+        links: The material's link collection.
+        map_type: Poly Haven's name for this map.
+        tex_node: The image node already placed for it.
+        principled: The Principled BSDF node.
+        output: The material output node.
+        x_pos: Where the image node sits, for the nodes placed beside it.
+        y_pos: The row this map occupies.
+
+    """
+    normalized = map_type.lower()
+    if normalized in _COLOR_MAP_TYPES:
+        links.new(tex_node.outputs["Color"], principled.inputs["Base Color"])
+    elif normalized in {"roughness", "rough"}:
+        links.new(tex_node.outputs["Color"], principled.inputs["Roughness"])
+    elif normalized in {"metallic", "metalness", "metal"}:
+        links.new(tex_node.outputs["Color"], principled.inputs["Metallic"])
+    elif normalized in {"normal", "nor"}:
+        normal_map = nodes.new(type="ShaderNodeNormalMap")
+        normal_map.location = (x_pos + 200, y_pos)
+        links.new(tex_node.outputs["Color"], normal_map.inputs["Color"])
+        links.new(normal_map.outputs["Normal"], principled.inputs["Normal"])
+    elif map_type in {"displacement", "disp", "height"}:
+        disp_node = nodes.new(type="ShaderNodeDisplacement")
+        disp_node.location = (x_pos + 200, y_pos - 200)
+        links.new(tex_node.outputs["Color"], disp_node.inputs["Height"])
+        links.new(disp_node.outputs["Displacement"], output.inputs["Displacement"])
+
+
+def _texture_material(asset_id, downloaded_maps: dict):
+    """
+    Build the material the downloaded maps describe, one UV-mapped image node per map.
+
+    Args:
+        asset_id: The asset id, which names the material.
+        downloaded_maps: `_downloaded_texture_maps`' result, never empty.
+
+    Returns:
+        bpy.types.Material: The new material.
+
+    """
+    material = bpy.data.materials.new(name=asset_id)
+    material["blender_mcp_polyhaven_asset_id"] = asset_id
+    material.use_nodes = True
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+    for node in list(nodes):
+        nodes.remove(node)
+    output = nodes.new(type="ShaderNodeOutputMaterial")
+    output.location = (300, 0)
+    principled = nodes.new(type="ShaderNodeBsdfPrincipled")
+    principled.location = (0, 0)
+    links.new(principled.outputs[0], output.inputs[0])
+    tex_coord = nodes.new(type="ShaderNodeTexCoord")
+    tex_coord.location = (-800, 0)
+    mapping = nodes.new(type="ShaderNodeMapping")
+    mapping.location = (-600, 0)
+    # Blender's default is POINT, which does not tile a texture across a surface.
+    mapping.vector_type = "TEXTURE"
+    links.new(tex_coord.outputs["UV"], mapping.inputs["Vector"])
+    x_pos, y_pos = -400, 300
+    for map_type, image in downloaded_maps.items():
+        tex_node = nodes.new(type="ShaderNodeTexImage")
+        tex_node.location = (x_pos, y_pos)
+        tex_node.image = image
+        _set_colorspace(tex_node.image, color=map_type.lower() in _COLOR_MAP_TYPES)
+        links.new(mapping.outputs["Vector"], tex_node.inputs["Vector"])
+        _connect_texture_map(nodes, links, map_type, tex_node, principled, output, x_pos, y_pos)
+        y_pos -= 250
+    return material
+
+
+def _texture_material_reply(asset_id, files_data, resolution, file_format: str) -> dict:
+    """
+    Download an asset's maps and describe the material they were built into.
+
+    Args:
+        asset_id: The asset id.
+        files_data: Poly Haven's files response.
+        resolution: The requested resolution.
+        file_format: The requested format.
+
+    Returns:
+        dict: `success`, `message`, `material`, `maps` and `map_types`, or
+        `error` when the asset publishes no map at that resolution and format.
+
+    """
+    downloaded_maps = _downloaded_texture_maps(asset_id, files_data, resolution, file_format)
+    if not downloaded_maps:
+        return {"error": "No texture maps found for the requested resolution and format"}
+    material = _texture_material(asset_id, downloaded_maps)
+    return {
+        "success": True,
+        "message": f"Texture {asset_id} imported as material",
+        "material": material.name,
+        "maps": [image.name for image in downloaded_maps.values()],
+        "map_types": list(downloaded_maps),
+    }
+
+
+def _import_textures(asset_id, files_data, resolution, file_format) -> dict:
+    """
+    Import one Poly Haven texture set as a material.
+
+    Args:
+        asset_id: The asset id.
+        files_data: Poly Haven's files response.
+        resolution: The requested resolution.
+        file_format: The requested format; `jpg` when the client named none.
+
+    Returns:
+        dict: `_texture_material_reply`'s report, or `error` with no filesystem path.
+
+    """
+    try:
+        return _texture_material_reply(asset_id, files_data, resolution, file_format or "jpg")
+    except Exception as e:
+        return {"error": f"Failed to process textures: {sanitize_blender_error(e)}"}
+
+
+def _safe_include_path(include_path: str, temp_dir: str) -> str | None:
+    """
+    Place one of a model's included files inside the download directory, or refuse it.
+
+    The API response controls these dict keys; a malicious or MITM'd response
+    could request an absolute path or one containing ".." to escape `temp_dir`
+    and write arbitrary files (e.g. ~/.bashrc, authorized_keys). Mirrors the
+    zip-slip check in import_sketchfab_model.
+
+    Args:
+        include_path: The relative path the response asked for.
+        temp_dir: The download directory it must stay inside.
+
+    Returns:
+        str | None: Where to write it, or None when it escapes the directory.
+
+    """
+    target_path = os.path.join(temp_dir, os.path.normpath(include_path))
+    abs_temp_dir = os.path.abspath(temp_dir)
+    abs_target_path = os.path.abspath(target_path)
+    if os.path.isabs(include_path) or ".." in include_path or not abs_target_path.startswith(abs_temp_dir + os.sep):
+        return None
+    return target_path
+
+
+def _downloaded_model_files(file_info: dict, temp_dir: str) -> str:
+    """
+    Download a model and every file it includes into one directory.
+
+    Args:
+        file_info: The chosen format's entry in Poly Haven's files response.
+        temp_dir: The download directory.
+
+    Returns:
+        str: The main model file, for the importer to read.
+
+    """
+    file_url = file_info["url"]
+    main_file_path = os.path.join(temp_dir, file_url.split("/")[-1])
+    download_file(file_url, main_file_path, headers=REQ_HEADERS, max_bytes=_MAX_MODEL_FILE_BYTES)
+    for include_path, include_info in (file_info.get("include") or {}).items():
+        include_file_path = _safe_include_path(include_path, temp_dir)
+        if include_file_path is None:
+            print(f"Skipping include with unsafe path: {include_path}")
+            continue
+        os.makedirs(os.path.dirname(include_file_path), exist_ok=True)
+        download_file(include_info["url"], include_file_path, headers=REQ_HEADERS, max_bytes=_MAX_IMAGE_BYTES)
+    return main_file_path
+
+
+def _append_downloaded_blend(main_file_path: str, temp_dir: str) -> None:
+    """
+    Append the objects in a downloaded `.blend`, after checking it is one.
+
+    Args:
+        main_file_path: The downloaded file.
+        temp_dir: The directory it must resolve inside.
+
+    Raises:
+        ValueError: When the download is not a `.blend`, resolves outside its
+            directory, or Blender is set to run scripts embedded in a file.
+
+    """
+    validated = _validated_download(main_file_path, temp_dir)
+    # An appended object's Python driver runs when this preference is on.
+    refuse_scripts_auto_execute("import_polyhaven_asset")
+    # `bpy.data.libraries.load` is a context manager at runtime; the stub
+    # declares it returning None.
+    with bpy.data.libraries.load(validated, link=False) as (  # pyright: ignore[reportGeneralTypeIssues]
+        data_from,
+        data_to,
+    ):
+        data_to.objects = data_from.objects
+    for obj in data_to.objects:
+        if obj is not None:
+            bpy.context.collection.objects.link(obj)
+
+
+def _run_model_import(file_format: str, main_file_path: str, temp_dir: str) -> dict | None:
+    """
+    Hand the downloaded model to the importer for its format.
+
+    Args:
+        file_format: The format that was downloaded.
+        main_file_path: The downloaded file.
+        temp_dir: The download directory, for the `.blend` path check.
+
+    Returns:
+        dict | None: None when the import ran, else the `error` reply for an
+        unsupported format or an operator that cancelled.
+
+    """
+    if file_format in {"gltf", "glb"}:
+        operator_result = bpy.ops.import_scene.gltf(filepath=main_file_path)
+    elif file_format == "fbx":
+        operator_result = bpy.ops.import_scene.fbx(filepath=main_file_path)
+    elif file_format == "obj":
+        operator_result = bpy.ops.wm.obj_import(filepath=main_file_path)
+    elif file_format == "blend":
+        _append_downloaded_blend(main_file_path, temp_dir)
+        return None
+    else:
+        return {"error": f"Unsupported model format: {file_format}"}
+    if "FINISHED" not in operator_result:
+        return {"error": f"Blender model import was cancelled: {operator_result}"}
+    return None
+
+
+def _imported_model_reply(asset_id, file_info: dict, file_format: str, temp_dir: str) -> dict:
+    """
+    Download, import and describe one model, by the objects it added.
+
+    Args:
+        asset_id: The asset id.
+        file_info: The chosen format's entry in Poly Haven's files response.
+        file_format: The format being imported.
+        temp_dir: The download directory.
+
+    Returns:
+        dict: `success`, `message` and `imported_objects`, or `error`.
+
+    """
+    main_file_path = _downloaded_model_files(file_info, temp_dir)
+    before_ids = {obj.session_uid for obj in bpy.data.objects}
+    refusal = _run_model_import(file_format, main_file_path, temp_dir)
+    if refusal is not None:
+        return refusal
+    imported_objects = [obj.name for obj in bpy.data.objects if obj.session_uid not in before_ids]
+    if not imported_objects:
+        return {"error": "Blender imported no objects from the downloaded model"}
+    return {
+        "success": True,
+        "message": f"Model {asset_id} imported successfully",
+        "imported_objects": imported_objects,
+    }
+
+
+def _import_model(asset_id, files_data, resolution, file_format) -> dict:
+    """
+    Import one Poly Haven model, with its included files, from a temp directory.
+
+    Args:
+        asset_id: The asset id.
+        files_data: Poly Haven's files response.
+        resolution: The requested resolution.
+        file_format: The requested format; glTF when the client named none.
+
+    Returns:
+        dict: `_imported_model_reply`'s report, or `error` with no filesystem path.
+
+    """
+    file_format = file_format or "gltf"
+    if file_format not in files_data or resolution not in files_data[file_format]:
+        return {"error": "Requested format or resolution not available for this model"}
+    temp_dir = tempfile.mkdtemp()
+    try:
+        return _imported_model_reply(asset_id, files_data[file_format][resolution][file_format], file_format, temp_dir)
+    except Exception as e:
+        # Blender's and the OS's error text name the temp file's absolute path.
+        return {"error": f"Failed to import model: {sanitize_blender_error(e)}"}
+    finally:
+        with suppress(Exception):
+            shutil.rmtree(temp_dir)
 
 
 class PolyhavenHandlersMixin:
@@ -117,318 +558,138 @@ class PolyhavenHandlersMixin:
         except Exception as e:
             return {"error": sanitize_blender_error(e)}
 
-    def import_polyhaven_asset(self, asset_id, asset_type, resolution="1k", file_format=None):
+    def _configured_environment(self, image_path: str) -> dict:
+        """
+        Point the scene's world at a cached HDRI, creating the world when there is none.
+
+        Args:
+            image_path: The cached image to light the scene with.
+
+        Returns:
+            dict: `configure_hdri_environment`'s report.
+
+        """
+        scene = bpy.context.scene
+        return self.configure_hdri_environment(
+            scene_name=scene.name,
+            image_path=image_path,
+            strength=1.0,
+            rotation=0.0,
+            projection="EQUIRECTANGULAR",
+            replacement_policy="REPLACE_MANAGED",
+            world_name="World" if scene.world is None else None,
+            create_world=scene.world is None,
+        )
+
+    def _downloaded_hdri_world(self, asset_id, file_url: str, persistent_path: str) -> dict:
+        """
+        Download one HDRI into the cache and light the scene with it.
+
+        Written to `<target>.part` and renamed, so an interrupted download never
+        leaves a half-file where the world expects an image; the partial name is
+        removed whether the download succeeded or not.
+
+        Args:
+            asset_id: The asset id, for the message.
+            file_url: Where to fetch the image.
+            persistent_path: The cache file to write.
+
+        Returns:
+            dict: `success`, `message`, `image_name`, `image_path` and `world`,
+            or `error` with no filesystem path.
+
+        """
+        partial_path = f"{persistent_path}.part"
         try:
-            # First get the files information
+            download_file(file_url, partial_path, headers=REQ_HEADERS, max_bytes=_MAX_IMAGE_BYTES)
+            os.replace(partial_path, persistent_path)
+            configured = self._configured_environment(persistent_path)
+            return {
+                "success": True,
+                "message": f"HDRI {asset_id} imported successfully",
+                "image_name": configured["image"],
+                "image_path": configured["image_path"],
+                "world": configured["world"],
+            }
+        except Exception as e:
+            return {"error": f"Failed to set up HDRI in Blender: {sanitize_blender_error(e)}"}
+        finally:
+            with suppress(FileNotFoundError):
+                os.remove(partial_path)
+
+    def _import_hdri(self, asset_id, files_data, resolution, file_format) -> dict:
+        """
+        Import one Poly Haven HDRI as the scene's environment.
+
+        Args:
+            asset_id: The asset id.
+            files_data: Poly Haven's files response.
+            resolution: The requested resolution, which reaches the cache file's name.
+            file_format: `hdr` or `exr`; `hdr` when the client named none.
+
+        Returns:
+            dict: `_downloaded_hdri_world`'s report, or `error`.
+
+        """
+        file_format = (file_format or "hdr").lower()
+        if file_format not in {"hdr", "exr"}:
+            return {"error": "Poly Haven HDRIs require file_format 'hdr' or 'exr'"}
+        if not _has_safe_filename_characters(resolution):
+            return {"error": "resolution contains unsupported filename characters"}
+        if not (
+            "hdri" in files_data and resolution in files_data["hdri"] and file_format in files_data["hdri"][resolution]
+        ):
+            return {"error": "Requested resolution or format not available for this HDRI"}
+        safe_asset_id = _filename_component(asset_id)
+        if not safe_asset_id:
+            return {"error": "asset_id does not contain a safe filename component"}
+        persistent_path = _cached_image_path(safe_asset_id, resolution, file_format)
+        if persistent_path is None:
+            return {"error": "Could not create the Blender MCP Poly Haven cache directory"}
+        file_url = files_data["hdri"][resolution][file_format]["url"]
+        return self._downloaded_hdri_world(asset_id, file_url, persistent_path)
+
+    def _imported_asset(self, asset_id, asset_type, files_data, resolution, file_format) -> dict:
+        """
+        Route one asset to the importer for its type.
+
+        Args:
+            asset_id: The asset id.
+            asset_type: `hdris`, `textures` or `models`.
+            files_data: Poly Haven's files response.
+            resolution: The requested resolution.
+            file_format: The requested format, or None for the type's default.
+
+        Returns:
+            dict: That importer's report, or `error` for an unknown type.
+
+        """
+        if asset_type == "hdris":
+            return self._import_hdri(asset_id, files_data, resolution, file_format)
+        if asset_type == "textures":
+            return _import_textures(asset_id, files_data, resolution, file_format)
+        if asset_type == "models":
+            return _import_model(asset_id, files_data, resolution, file_format)
+        return {"error": f"Unsupported asset type: {asset_type}"}
+
+    def import_polyhaven_asset(self, asset_id, asset_type, resolution="1k", file_format=None):
+        """
+        Download one Poly Haven asset and bring it into the open file.
+
+        Args:
+            asset_id: The Poly Haven asset id.
+            asset_type: `hdris`, `textures` or `models`.
+            resolution: The resolution Poly Haven publishes the asset at.
+            file_format: The format to fetch; each asset type has its own default.
+
+        Returns:
+            dict: The report for the asset's type, or `error`. Blender's and the
+            OS's error text names the temp file, so every failure is sanitized.
+
+        """
+        try:
             files_data = get_json(f"https://api.polyhaven.com/files/{asset_id}", headers=REQ_HEADERS)
-
-            # Handle different asset types
-            if asset_type == "hdris":
-                # For HDRIs, download the .hdr or .exr file
-                if not file_format:
-                    file_format = "hdr"  # Default format for HDRIs
-                file_format = file_format.lower()
-                if file_format not in {"hdr", "exr"}:
-                    return {"error": "Poly Haven HDRIs require file_format 'hdr' or 'exr'"}
-                if (
-                    not isinstance(resolution, str)
-                    or not resolution
-                    or any(
-                        character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
-                        for character in resolution
-                    )
-                ):
-                    return {"error": "resolution contains unsupported filename characters"}
-
-                if (
-                    "hdri" in files_data
-                    and resolution in files_data["hdri"]
-                    and file_format in files_data["hdri"][resolution]
-                ):
-                    file_info = files_data["hdri"][resolution][file_format]
-                    file_url = file_info["url"]
-                    safe_asset_id = "".join(
-                        character if character.isalnum() or character in {"-", "_"} else "_" for character in asset_id
-                    ).strip("_")
-                    if not safe_asset_id:
-                        return {"error": "asset_id does not contain a safe filename component"}
-                    cache_directory = bpy.utils.user_resource(
-                        "DATAFILES",
-                        path=os.path.join("blender_mcp", "polyhaven"),
-                        create=True,
-                    )
-                    if not cache_directory:
-                        return {"error": "Could not create the Blender MCP Poly Haven cache directory"}
-                    persistent_path = os.path.join(
-                        cache_directory,
-                        f"{safe_asset_id}_{resolution}.{file_format}",
-                    )
-                    partial_path = f"{persistent_path}.part"
-                    try:
-                        download_file(file_url, partial_path, headers=REQ_HEADERS, max_bytes=_MAX_IMAGE_BYTES)
-                        os.replace(partial_path, persistent_path)
-                        configured = self.configure_hdri_environment(
-                            scene_name=bpy.context.scene.name,
-                            image_path=persistent_path,
-                            strength=1.0,
-                            rotation=0.0,
-                            projection="EQUIRECTANGULAR",
-                            replacement_policy="REPLACE_MANAGED",
-                            world_name="World" if bpy.context.scene.world is None else None,
-                            create_world=bpy.context.scene.world is None,
-                        )
-                        return {
-                            "success": True,
-                            "message": f"HDRI {asset_id} imported successfully",
-                            "image_name": configured["image"],
-                            "image_path": configured["image_path"],
-                            "world": configured["world"],
-                        }
-                    except Exception as e:
-                        return {"error": f"Failed to set up HDRI in Blender: {sanitize_blender_error(e)}"}
-                    finally:
-                        with suppress(FileNotFoundError):
-                            os.remove(partial_path)
-                else:
-                    return {"error": "Requested resolution or format not available for this HDRI"}
-
-            elif asset_type == "textures":
-                if not file_format:
-                    file_format = "jpg"  # Default format for textures
-
-                downloaded_maps = {}
-
-                try:
-                    for map_type in files_data:
-                        if map_type not in {"blend", "gltf"}:  # Skip non-texture files
-                            if resolution in files_data[map_type] and file_format in files_data[map_type][resolution]:
-                                file_info = files_data[map_type][resolution][file_format]
-                                file_url = file_info["url"]
-
-                                # Use NamedTemporaryFile like we do for HDRIs
-                                with tempfile.NamedTemporaryFile(suffix=f".{file_format}", delete=False) as tmp_file:
-                                    tmp_path = tmp_file.name
-                                try:
-                                    download_file(file_url, tmp_path, headers=REQ_HEADERS, max_bytes=_MAX_IMAGE_BYTES)
-                                    image = bpy.data.images.load(tmp_path)
-                                    image.name = f"{asset_id}_{map_type}.{file_format}"
-                                    image.pack()
-                                    if map_type in {"color", "diffuse", "albedo"}:
-                                        with suppress(Exception):
-                                            image.colorspace_settings.name = "sRGB"
-                                    else:
-                                        with suppress(Exception):
-                                            image.colorspace_settings.name = "Non-Color"
-                                    downloaded_maps[map_type] = image
-                                finally:
-                                    with suppress(FileNotFoundError):
-                                        os.unlink(tmp_path)
-
-                    if not downloaded_maps:
-                        return {"error": "No texture maps found for the requested resolution and format"}
-
-                    # Create a new material with the downloaded textures
-                    mat = bpy.data.materials.new(name=asset_id)
-                    mat["blender_mcp_polyhaven_asset_id"] = asset_id
-                    mat.use_nodes = True
-                    nodes = mat.node_tree.nodes
-                    links = mat.node_tree.links
-
-                    # Clear default nodes
-                    for node in nodes:
-                        nodes.remove(node)
-
-                    # Create output node
-                    output = nodes.new(type="ShaderNodeOutputMaterial")
-                    output.location = (300, 0)
-
-                    # Create principled BSDF node
-                    principled = nodes.new(type="ShaderNodeBsdfPrincipled")
-                    principled.location = (0, 0)
-                    links.new(principled.outputs[0], output.inputs[0])
-
-                    # Add texture nodes based on available maps
-                    tex_coord = nodes.new(type="ShaderNodeTexCoord")
-                    tex_coord.location = (-800, 0)
-
-                    mapping = nodes.new(type="ShaderNodeMapping")
-                    mapping.location = (-600, 0)
-                    mapping.vector_type = "TEXTURE"  # Changed from default 'POINT' to 'TEXTURE'
-                    links.new(tex_coord.outputs["UV"], mapping.inputs["Vector"])
-
-                    # Position offset for texture nodes
-                    x_pos = -400
-                    y_pos = 300
-
-                    # Connect different texture maps
-                    for map_type, image in downloaded_maps.items():
-                        tex_node = nodes.new(type="ShaderNodeTexImage")
-                        tex_node.location = (x_pos, y_pos)
-                        tex_node.image = image
-
-                        # Set color space based on map type
-                        if map_type.lower() in {"color", "diffuse", "albedo"}:
-                            with suppress(Exception):
-                                tex_node.image.colorspace_settings.name = "sRGB"  # Use default if sRGB not available
-                        else:
-                            with suppress(Exception):
-                                tex_node.image.colorspace_settings.name = (
-                                    "Non-Color"  # Use default if Non-Color not available
-                                )
-
-                        links.new(mapping.outputs["Vector"], tex_node.inputs["Vector"])
-
-                        # Connect to appropriate input on Principled BSDF
-                        if map_type.lower() in {"color", "diffuse", "albedo"}:
-                            links.new(
-                                tex_node.outputs["Color"],
-                                principled.inputs["Base Color"],
-                            )
-                        elif map_type.lower() in {"roughness", "rough"}:
-                            links.new(
-                                tex_node.outputs["Color"],
-                                principled.inputs["Roughness"],
-                            )
-                        elif map_type.lower() in {"metallic", "metalness", "metal"}:
-                            links.new(tex_node.outputs["Color"], principled.inputs["Metallic"])
-                        elif map_type.lower() in {"normal", "nor"}:
-                            # Add normal map node
-                            normal_map = nodes.new(type="ShaderNodeNormalMap")
-                            normal_map.location = (x_pos + 200, y_pos)
-                            links.new(tex_node.outputs["Color"], normal_map.inputs["Color"])
-                            links.new(
-                                normal_map.outputs["Normal"],
-                                principled.inputs["Normal"],
-                            )
-                        elif map_type in {"displacement", "disp", "height"}:
-                            # Add displacement node
-                            disp_node = nodes.new(type="ShaderNodeDisplacement")
-                            disp_node.location = (x_pos + 200, y_pos - 200)
-                            links.new(tex_node.outputs["Color"], disp_node.inputs["Height"])
-                            links.new(
-                                disp_node.outputs["Displacement"],
-                                output.inputs["Displacement"],
-                            )
-
-                        y_pos -= 250
-
-                    return {
-                        "success": True,
-                        "message": f"Texture {asset_id} imported as material",
-                        "material": mat.name,
-                        "maps": [image.name for image in downloaded_maps.values()],
-                        "map_types": list(downloaded_maps),
-                    }
-
-                except Exception as e:
-                    return {"error": f"Failed to process textures: {sanitize_blender_error(e)}"}
-
-            elif asset_type == "models":
-                # For models, prefer glTF format if available
-                if not file_format:
-                    file_format = "gltf"  # Default format for models
-
-                if file_format in files_data and resolution in files_data[file_format]:
-                    file_info = files_data[file_format][resolution][file_format]
-                    file_url = file_info["url"]
-
-                    # Create a temporary directory to store the model and its dependencies
-                    temp_dir = tempfile.mkdtemp()
-                    main_file_path = ""
-
-                    try:
-                        # Download the main model file
-                        main_file_name = file_url.split("/")[-1]
-                        main_file_path = os.path.join(temp_dir, main_file_name)
-
-                        download_file(file_url, main_file_path, headers=REQ_HEADERS, max_bytes=_MAX_MODEL_FILE_BYTES)
-
-                        # Check for included files and download them
-                        if file_info.get("include"):
-                            for include_path, include_info in file_info["include"].items():
-                                # Get the URL for the included file - this is the fix
-                                include_url = include_info["url"]
-
-                                # Validate include_path — the API response controls these
-                                # dict keys; a malicious or MITM'd response could request an
-                                # absolute path or one containing ".." to escape temp_dir
-                                # and write arbitrary files (e.g. ~/.bashrc, authorized_keys).
-                                # Mirrors the zip-slip check in import_sketchfab_model.
-                                target_path = os.path.join(temp_dir, os.path.normpath(include_path))
-                                abs_temp_dir = os.path.abspath(temp_dir)
-                                abs_target_path = os.path.abspath(target_path)
-                                if (
-                                    os.path.isabs(include_path)
-                                    or ".." in include_path
-                                    or not abs_target_path.startswith(abs_temp_dir + os.sep)
-                                ):
-                                    print(f"Skipping include with unsafe path: {include_path}")
-                                    continue
-
-                                # Create the directory structure for the included file
-                                include_file_path = target_path
-                                os.makedirs(os.path.dirname(include_file_path), exist_ok=True)
-
-                                # Download the included file
-                                download_file(
-                                    include_url,
-                                    include_file_path,
-                                    headers=REQ_HEADERS,
-                                    max_bytes=_MAX_IMAGE_BYTES,
-                                )
-
-                        # Import the model into Blender
-                        before_ids = {obj.session_uid for obj in bpy.data.objects}
-                        operator_result = None
-                        if file_format in {"gltf", "glb"}:
-                            operator_result = bpy.ops.import_scene.gltf(filepath=main_file_path)
-                        elif file_format == "fbx":
-                            operator_result = bpy.ops.import_scene.fbx(filepath=main_file_path)
-                        elif file_format == "obj":
-                            operator_result = bpy.ops.wm.obj_import(filepath=main_file_path)
-                        elif file_format == "blend":
-                            validated = _validated_download(main_file_path, temp_dir)
-                            # An appended object's Python driver runs when this preference is on.
-                            _refuse_scripts_auto_execute("import_polyhaven_asset")
-                            # `bpy.data.libraries.load` is a context manager at
-                            # runtime; the stub declares it returning None.
-                            with bpy.data.libraries.load(validated, link=False) as (  # pyright: ignore[reportGeneralTypeIssues]
-                                data_from,
-                                data_to,
-                            ):
-                                data_to.objects = data_from.objects
-
-                            # Link the objects to the scene
-                            for obj in data_to.objects:
-                                if obj is not None:
-                                    bpy.context.collection.objects.link(obj)
-                        else:
-                            return {"error": f"Unsupported model format: {file_format}"}
-                        if operator_result is not None and "FINISHED" not in operator_result:
-                            return {"error": f"Blender model import was cancelled: {operator_result}"}
-
-                        imported_objects = [obj.name for obj in bpy.data.objects if obj.session_uid not in before_ids]
-                        if not imported_objects:
-                            return {"error": "Blender imported no objects from the downloaded model"}
-
-                        return {
-                            "success": True,
-                            "message": f"Model {asset_id} imported successfully",
-                            "imported_objects": imported_objects,
-                        }
-                    except Exception as e:
-                        # Blender's and the OS's error text name the temp file's absolute path.
-                        return {"error": f"Failed to import model: {sanitize_blender_error(e)}"}
-                    finally:
-                        # Clean up temporary directory
-                        with suppress(Exception):
-                            shutil.rmtree(temp_dir)
-                else:
-                    return {"error": "Requested format or resolution not available for this model"}
-
-            else:
-                return {"error": f"Unsupported asset type: {asset_type}"}
-
+            return self._imported_asset(asset_id, asset_type, files_data, resolution, file_format)
         except Exception as e:
             return {"error": f"Failed to download asset: {sanitize_blender_error(e)}"}
 

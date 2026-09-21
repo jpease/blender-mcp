@@ -1,9 +1,9 @@
 """
 Coverage for the envelope: shaping an addon reply, lifting its `warnings` list, and the byte budget.
 
-`envelope_for` is the half of every tool module's `_call` that has no transport in it, so the rules
-the twelve copies used to each restate - an addon list replaces the tool's guess, the object list is
-bounded, the reply dict is left alone - are asserted here once instead of per package.
+`envelope_for` is the half of `_dispatch.call_blender` that has no transport in it, so the rules
+the twelve per-package copies used to each restate - an addon list replaces the tool's guess, the
+object list is bounded, the reply dict is left alone - are asserted here once instead of per package.
 """
 
 from pydantic_core import to_json
@@ -219,6 +219,37 @@ def test_a_second_page_is_shortened_when_cutting_the_first_one_is_not_enough() -
     assert payload["progress_truncated"] is True
     assert payload["progress_next_offset"] == _RESUMED_OFFSET + len(payload["progress"])
     assert len([warning for warning in result["warnings"] if "was shortened to" in warning]) == 2
+
+
+def test_each_shortened_pages_warning_names_that_page_and_no_other() -> None:
+    """
+    Two pages cut in one reply must each be described by their own numbers.
+
+    The counts and the resume offset differ per page - `progress` resumes from its own offset, not
+    from zero - so a warning carrying the other page's numbers would send the agent to a page that
+    does not exist and tell it the wrong total. Only the pairing is asserted here; the pagination
+    keys themselves are covered above.
+    """
+    data = {
+        "files": _records(_OVER_BUDGET),
+        "files_offset": 0,
+        "files_truncated": False,
+        "progress": _records(_OVER_BUDGET // 2),
+        "progress_offset": _RESUMED_OFFSET,
+        "progress_truncated": False,
+    }
+
+    result = ok(data)
+    payload = result["data"]
+
+    shortened = [warning for warning in result["warnings"] if "was shortened to" in warning]
+    assert shortened == [
+        f"files was shortened to {len(payload['files'])} of {_OVER_BUDGET} records to stay within the "
+        f"{REPLY_BYTE_BUDGET}-byte reply budget; continue with offset={len(payload['files'])}.",
+        f"progress was shortened to {len(payload['progress'])} of {_OVER_BUDGET // 2} records to stay "
+        f"within the {REPLY_BYTE_BUDGET}-byte reply budget; continue with "
+        f"offset={_RESUMED_OFFSET + len(payload['progress'])}.",
+    ]
 
 
 def test_a_reply_too_big_at_one_record_per_page_says_so_rather_than_offering_an_offset() -> None:

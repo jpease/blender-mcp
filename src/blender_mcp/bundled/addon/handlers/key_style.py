@@ -8,6 +8,8 @@ not, which is what stops one keying domain from drifting to a different set of e
 or a different rule for when a handle type is meaningful.
 """
 
+from typing import NamedTuple
+
 INTERPOLATIONS = frozenset(
     {
         "CONSTANT",
@@ -29,35 +31,46 @@ HANDLE_TYPES = frozenset({"FREE", "ALIGNED", "VECTOR", "AUTO", "AUTO_CLAMPED"})
 EASINGS = frozenset({"AUTO", "EASE_IN", "EASE_OUT", "EASE_IN_OUT"})
 
 
-def validate_key_style(interpolation, handle_left, handle_right, easing=None):
+class KeyStyle(NamedTuple):
     """
-    Reject an unsupported key style before anything is keyed.
+    How one call shapes every key it writes: the four values that always travel together.
 
-    Called before an action is created or a bone is moved, so a misspelled mode is a refusal
-    rather than a half-authored frame.
-
-    Args:
-        interpolation: A member of `INTERPOLATIONS`.
-        handle_left: A member of `HANDLE_TYPES`.
-        handle_right: A member of `HANDLE_TYPES`.
-        easing: A member of `EASINGS`, or None to leave each key's easing as Blender set it.
-
-    Raises:
-        ValueError: Naming the offending argument and what it accepts.
-
+    They are validated together before an action exists and applied together to each point, so
+    a bare 4-tuple splatted into three functions made argument order the whole contract - and
+    an easing silently arriving as a handle type is not a type error anywhere. Naming them
+    once is what makes a caller's mistake a refusal at the boundary instead.
     """
-    if interpolation not in INTERPOLATIONS:
-        raise ValueError(f"Unsupported interpolation: {interpolation}; expected one of {sorted(INTERPOLATIONS)}")
-    for label, value in (("handle_left", handle_left), ("handle_right", handle_right)):
-        if value not in HANDLE_TYPES:
-            raise ValueError(f"Unsupported {label}: {value}; expected one of {sorted(HANDLE_TYPES)}")
-    if easing is not None and easing not in EASINGS:
-        raise ValueError(f"Unsupported easing: {easing}; expected one of {sorted(EASINGS)}")
+
+    interpolation: str
+    handle_left: str = "AUTO_CLAMPED"
+    handle_right: str = "AUTO_CLAMPED"
+    easing: str | None = None
+
+    def validate(self) -> None:
+        """
+        Reject an unsupported style before anything is keyed.
+
+        Called before an action is created or a bone is moved, so a misspelled mode is a
+        refusal rather than a half-authored frame.
+
+        Raises:
+            ValueError: Naming the offending field and what it accepts.
+
+        """
+        if self.interpolation not in INTERPOLATIONS:
+            raise ValueError(
+                f"Unsupported interpolation: {self.interpolation}; expected one of {sorted(INTERPOLATIONS)}"
+            )
+        for label, value in (("handle_left", self.handle_left), ("handle_right", self.handle_right)):
+            if value not in HANDLE_TYPES:
+                raise ValueError(f"Unsupported {label}: {value}; expected one of {sorted(HANDLE_TYPES)}")
+        if self.easing is not None and self.easing not in EASINGS:
+            raise ValueError(f"Unsupported easing: {self.easing}; expected one of {sorted(EASINGS)}")
 
 
-def style_point(point, interpolation, *, handle_left, handle_right, easing=None):
+def style_point(point, style):
     """
-    Apply one key's style to one keyframe point.
+    Apply one key style to one keyframe point.
 
     Handle types are only written for BEZIER, because that is the only interpolation whose
     segment a handle shapes; writing them under LINEAR would record a state the graph editor
@@ -66,15 +79,12 @@ def style_point(point, interpolation, *, handle_left, handle_right, easing=None)
 
     Args:
         point: A `bpy.types.Keyframe`.
-        interpolation: The interpolation to set, already validated.
-        handle_left: The left handle type, applied only under BEZIER.
-        handle_right: The right handle type, applied only under BEZIER.
-        easing: The easing direction, or None to leave the point's easing alone.
+        style: The already-validated `KeyStyle` to write.
 
     """
-    point.interpolation = interpolation
-    if interpolation == "BEZIER":
-        point.handle_left_type = handle_left
-        point.handle_right_type = handle_right
-    if easing is not None:
-        point.easing = easing
+    point.interpolation = style.interpolation
+    if style.interpolation == "BEZIER":
+        point.handle_left_type = style.handle_left
+        point.handle_right_type = style.handle_right
+    if style.easing is not None:
+        point.easing = style.easing

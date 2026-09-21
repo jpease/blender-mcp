@@ -9,6 +9,70 @@ from .camera._shared import _camera, _look_quaternion, _object, _vector
 # RENDERED is real render-engine cost, not a cheap single-pass rasterization like these two -
 # offering it here would silently make this "cheap inspection" tool expensive.
 _SHADING_OVERRIDES = frozenset({"SOLID", "MATERIAL"})
+# The lens an ad hoc eye/target view is built with when the caller names none. Its twin is
+# `_DEFAULT_LENS_MM` in `src/blender_mcp/server/tools/viewport.py`, which is also what refuses
+# a `lens_mm` alongside a `camera_object`; the add-on cannot import that package, so the two
+# spellings of this default must be changed together.
+_DEFAULT_LENS_MM = 50.0
+
+
+@contextlib.contextmanager
+def _throwaway_camera(lens_mm):
+    """
+    Yield an unlinked Camera object, removing it and its data whatever happens next.
+
+    Never added to a collection or the view layer: it exists only so the eye/target modes can
+    reuse `Object.calc_matrix_camera` and `_look_quaternion` - the identical look-at math
+    `create_camera`'s look_at_point already uses in production - rather than respelling either.
+
+    Args:
+        lens_mm: Focal length the projection is built with.
+
+    Yields:
+        The camera object, positioned and aimed by the caller.
+
+    """
+    cam_data = bpy.data.cameras.new("_mcp_synthetic_view")
+    cam_obj = bpy.data.objects.new("_mcp_synthetic_view", cam_data)
+    try:
+        cam_data.lens = lens_mm
+        yield cam_obj
+    finally:
+        bpy.data.objects.remove(cam_obj, do_unlink=True)
+        bpy.data.cameras.remove(cam_data)
+
+
+def _camera_matrices(cam_obj, width, height, *, basis):
+    """
+    Build the (view_matrix, window_matrix) pair a camera object projects with.
+
+    `Object.calc_matrix_camera` is the real Blender API for the projection matrix (it lives on
+    Object, not on the Camera data-block, despite being "mostly useful for Camera and Light
+    types" per its own docstring), and needs no care about linking: it is transform-independent,
+    verified identical linked or unlinked on a real Blender 5.2.2.
+
+    Args:
+        cam_obj: The camera object to project through.
+        width: Render width, which with height sets the aspect ratio.
+        height: Render height.
+        basis: Read the view transform off `matrix_basis` rather than `matrix_world`, which is
+            required for a camera outside every view layer.
+
+    Returns:
+        tuple: (view_matrix, window_matrix).
+
+    """
+    # matrix_world is a depsgraph-evaluated result, and an object outside every view layer is in
+    # no depsgraph, so its matrix_world stays the identity no matter what location/rotation it
+    # was given (verified against a real Blender 5.2.2 - matrix_world.inverted() there would aim
+    # every ad hoc capture from the world origin). matrix_basis is composed on demand from
+    # location/rotation/scale with no depsgraph involved, and on an unparented object it is
+    # bit-identical to the matrix_world an equivalent linked camera reports.
+    transform = cam_obj.matrix_basis if basis else cam_obj.matrix_world
+    window_matrix = cam_obj.calc_matrix_camera(
+        bpy.context.evaluated_depsgraph_get(), x=width, y=height, scale_x=1.0, scale_y=1.0
+    )
+    return transform.inverted(), window_matrix
 
 
 def _synthetic_view_matrices(view, scene):
@@ -20,23 +84,8 @@ def _synthetic_view_matrices(view, scene):
     arguments regardless of where they came from, so no live viewport mutation is needed to
     redirect it.
 
-    camera_object reads an existing camera object's own matrix_world/lens via
-    Object.calc_matrix_camera - the real Blender API for this projection matrix (it lives on
-    Object, not on the Camera data-block, despite being "mostly useful for Camera and Light
-    types" per its own docstring). The eye/target modes build a throwaway Camera + Object
-    pair purely to reuse that same call and _look_quaternion (the identical look-at math
-    create_camera's look_at_point already uses in production), then remove both before
-    returning - never added to any collection or the view layer.
-
-    The throwaway pair reads its view matrix off matrix_basis, not matrix_world: matrix_world
-    is a depsgraph-evaluated result, and an object outside every view layer is in no
-    depsgraph, so its matrix_world stays the identity no matter what location/rotation it was
-    given (verified against a real Blender 5.2.2 - matrix_world.inverted() there would aim
-    every ad hoc capture from the world origin). matrix_basis is composed on demand from
-    location/rotation/scale with no depsgraph involved, and on this unparented object it is
-    bit-identical to the matrix_world an equivalent linked camera reports. calc_matrix_camera
-    needs no such care: it is transform-independent (also verified - identical matrix linked
-    or unlinked).
+    camera_object reads an existing camera object's own matrix_world/lens; the eye/target modes
+    build a throwaway camera instead and aim it, then remove it before returning.
 
     Args:
         view: A ViewSpec's fields as a plain dict: exactly one of camera_object or eye (with
@@ -56,37 +105,28 @@ def _synthetic_view_matrices(view, scene):
     """
     bpy.context.view_layer.update()
     width, height = scene.render.resolution_x, scene.render.resolution_y
-
     camera_object = view.get("camera_object")
+    eye = view.get("eye")
+    target = view.get("target")
+    target_object = view.get("target_object")
+    lens_mm = view.get("lens_mm", _DEFAULT_LENS_MM)
+
     if camera_object is not None:
-        cam_obj = _camera(camera_object)
-        view_matrix = cam_obj.matrix_world.inverted()
-        window_matrix = cam_obj.calc_matrix_camera(
-            bpy.context.evaluated_depsgraph_get(), x=width, y=height, scale_x=1.0, scale_y=1.0
-        )
+        view_matrix, window_matrix = _camera_matrices(_camera(camera_object), width, height, basis=False)
         return view_matrix, window_matrix, "camera_object"
 
-    cam_data = bpy.data.cameras.new("_mcp_synthetic_view")
-    cam_obj = bpy.data.objects.new("_mcp_synthetic_view", cam_data)
-    try:
-        cam_data.lens = view.get("lens_mm", 50.0)
-        eye = _vector(view["eye"], "view.eye")
-        target_object = view.get("target_object")
-        if target_object is not None:
-            target = _object(target_object).matrix_world.translation
-        else:
-            target = _vector(view["target"], "view.target")
-        cam_obj.location = eye
-        cam_obj.rotation_mode = "QUATERNION"
-        cam_obj.rotation_quaternion = _look_quaternion(eye, target)
-        view_matrix = cam_obj.matrix_basis.inverted()
-        window_matrix = cam_obj.calc_matrix_camera(
-            bpy.context.evaluated_depsgraph_get(), x=width, y=height, scale_x=1.0, scale_y=1.0
+    with _throwaway_camera(lens_mm) as cam_obj:
+        origin = _vector(eye, "view.eye")
+        aim = (
+            _object(target_object).matrix_world.translation
+            if target_object is not None
+            else _vector(target, "view.target")
         )
-        return view_matrix, window_matrix, "eye_target"
-    finally:
-        bpy.data.objects.remove(cam_obj, do_unlink=True)
-        bpy.data.cameras.remove(cam_data)
+        cam_obj.location = origin
+        cam_obj.rotation_mode = "QUATERNION"
+        cam_obj.rotation_quaternion = _look_quaternion(origin, aim)
+        view_matrix, window_matrix = _camera_matrices(cam_obj, width, height, basis=True)
+    return view_matrix, window_matrix, "eye_target"
 
 
 @contextlib.contextmanager

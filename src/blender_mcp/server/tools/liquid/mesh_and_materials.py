@@ -1,14 +1,13 @@
 """Typed tools for liquid render mesh, secondary particles, diffusion, and materials."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ...app import mcp
-from ._shared import _call, _dump, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _dump, _StrictModel
 from .inspection_and_setup import ExistingPolicy
 
 MeshGenerator = Literal["IMPROVED", "UNION"]
@@ -132,11 +131,10 @@ async def configure_liquid_mesh(
     If both are given, mesh_concave_lower must be <= mesh_concave_upper; the same check is re-run
     against the domain's current values when only one of the pair is supplied.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "configure_liquid_mesh",
         {"domain_object_name": domain_object_name, "modifier_name": modifier_name, "patch": _dump(patch)},
-        [domain_object_name],
+        changed_objects=[domain_object_name],
     )
 
 
@@ -145,11 +143,10 @@ async def configure_liquid_secondary_particles(
     ctx: Context, domain_object_name: str, modifier_name: str, patch: LiquidSecondaryParticlePatch
 ) -> dict:
     """Patch spray, foam, bubble, and tracer generation on an unbaked liquid domain."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "configure_liquid_secondary_particles",
         {"domain_object_name": domain_object_name, "modifier_name": modifier_name, "patch": _dump(patch)},
-        [domain_object_name],
+        changed_objects=[domain_object_name],
     )
 
 
@@ -158,11 +155,10 @@ async def configure_liquid_diffusion(
     ctx: Context, domain_object_name: str, modifier_name: str, config: LiquidDiffusionConfig
 ) -> dict:
     """Configure viscosity and surface tension from direct values, a versioned preset, or SI inputs."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "configure_liquid_diffusion",
         {"domain_object_name": domain_object_name, "modifier_name": modifier_name, "config": _dump(config)},
-        [domain_object_name],
+        changed_objects=[domain_object_name],
     )
 
 
@@ -178,8 +174,7 @@ async def create_liquid_material(
     slot_index: Annotated[int, Field(ge=0)] | None = None,
 ) -> dict:
     """Create and assign a Principled transparent liquid material without clearing unrelated slots."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_liquid_material",
         {
             "domain_object_name": domain_object_name,
@@ -190,7 +185,7 @@ async def create_liquid_material(
             "assignment": assignment,
             "slot_index": slot_index,
         },
-        [domain_object_name],
+        changed_objects=[domain_object_name],
     )
 
 
@@ -210,8 +205,7 @@ async def create_secondary_particle_render_setup(
     max_systems: Annotated[int, Field(ge=1, le=64)] = 16,
 ) -> dict:
     """Configure discovered baked Mantaflow particle systems for bounded object instancing."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_secondary_particle_render_setup",
         {
             "domain_object_name": domain_object_name,
@@ -226,5 +220,5 @@ async def create_secondary_particle_render_setup(
             "particle_size": particle_size,
             "max_systems": max_systems,
         },
-        [name for name in [domain_object_name, instance_object_name] if name],
+        changed_objects=[name for name in [domain_object_name, instance_object_name] if name],
     )

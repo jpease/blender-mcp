@@ -777,7 +777,7 @@ def test_get_session_info_is_registered_and_read_only(monkeypatch: pytest.Monkey
     server, _session, _bpy = _load_server(monkeypatch)
 
     assert "get_session_info" in server._build_command_handlers()
-    assert "get_session_info" in server._READ_ONLY_COMMANDS
+    assert server.command_spec("get_session_info").read_only
 
 
 def test_get_session_info_reports_a_load_failure_without_moving_the_epoch(
@@ -853,9 +853,10 @@ def test_the_session_swap_set_holds_the_commands_that_replace_the_database(
     stay safe to run; treating it as a swap would discard a whole batch on every
     save.
     """
-    server, _session, _bpy = _load_server(monkeypatch)
+    addon, _bpy = _load_addon(monkeypatch, data={"filepath": "", "is_dirty": False, "libraries": []})
+    commands = sys.modules[f"{addon.__name__}.server_core"].COMMANDS
 
-    assert set(server._SESSION_SWAP_COMMANDS) == {"open_shot", "reset_session"}
+    assert {name for name, spec in commands.items() if spec.session_swap} == {"open_shot", "reset_session"}
 
 
 def test_a_session_swap_command_never_reaches_mutation_transaction(
@@ -891,7 +892,7 @@ def test_a_session_swap_command_never_reaches_mutation_transaction(
 
     monkeypatch.setattr(server_core, "mutation_transaction", recording_transaction)
 
-    for cmd_type in server._SESSION_SWAP_COMMANDS:
+    for cmd_type in (name for name, spec in server_core.COMMANDS.items() if spec.session_swap):
         assert server._run_handler(cmd_type, lambda: {"ok": True}, {}) == {"ok": True}
 
     assert not entered

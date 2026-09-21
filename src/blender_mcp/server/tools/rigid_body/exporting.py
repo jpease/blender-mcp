@@ -1,14 +1,13 @@
 """Rigid-body animation interchange tools."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from .inspection_and_setup import _call, mcp
+from .._dispatch import call_blender
+from .inspection_and_setup import mcp
 
 
 @mcp.tool()
@@ -42,8 +41,7 @@ async def export_rigid_body_animation(
         raise ToolError("GLTF uses Y_UP_RIGHT_HANDED coordinates")
     if format == "ALEMBIC" and coordinate_convention != "BLENDER_Z_UP":
         raise ToolError("ALEMBIC export currently preserves Blender's Z-up convention")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "export_rigid_body_animation",
         {
             "scene_name": scene_name,
@@ -57,5 +55,5 @@ async def export_rigid_body_animation(
             "unit_scale": unit_scale,
             "confirm_overwrite": confirm_overwrite,
         },
-        object_names,
+        changed_objects=object_names,
     )

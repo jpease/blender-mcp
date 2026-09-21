@@ -1,14 +1,13 @@
 """Typed tools for IK systems, rig drivers, custom shapes, and shape-key controls."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ...app import mcp
-from ._shared import _call, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _StrictModel
 
 
 class ControlBoneDefinition(_StrictModel):
@@ -184,8 +183,7 @@ async def create_ik_chain(
     pole_control, when given) describe new non-deforming control bones this call creates - use
     create_ik_fk_limb instead when the goal is a switchable FK/IK blend rather than IK-only.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_ik_chain",
         {
             "armature_object_name": armature_object_name,
@@ -196,7 +194,7 @@ async def create_ik_chain(
             "iterations": iterations,
             "use_stretch": use_stretch,
         },
-        [armature_object_name],
+        changed_objects=[armature_object_name],
     )
 
 
@@ -227,8 +225,7 @@ async def create_ik_fk_limb(
     """
     if fk_prefix == ik_prefix:
         raise ValueError("fk_prefix and ik_prefix must differ")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_ik_fk_limb",
         {
             "armature_object_name": armature_object_name,
@@ -242,7 +239,7 @@ async def create_ik_fk_limb(
             "ik_target": ik_target.model_dump() if ik_target else None,
             "pole_control": pole_control.model_dump() if pole_control else None,
         },
-        [armature_object_name],
+        changed_objects=[armature_object_name],
     )
 
 
@@ -277,8 +274,7 @@ async def create_spline_ik_rig(
         raise ValueError("Supply either curve_object_name or all new-curve fields")
     if creating and not (new_curve_name and curve_points and curve_collection_name):
         raise ValueError("new_curve_name, curve_points, and curve_collection_name are required together")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_spline_ik_rig",
         {
             "armature_object_name": armature_object_name,
@@ -293,7 +289,7 @@ async def create_spline_ik_rig(
             "xz_scale_mode": xz_scale_mode,
             "use_curve_radius": use_curve_radius,
         },
-        [armature_object_name],
+        changed_objects=[armature_object_name],
     )
 
 
@@ -333,8 +329,7 @@ async def create_rig_property_driver(
         raise ValueError("soft_minimum must not exceed soft_maximum")
     if property_owner == "POSE_BONE" and not property_bone_name:
         raise ValueError("property_bone_name is required for a POSE_BONE property")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_rig_property_driver",
         {
             "armature_object_name": armature_object_name,
@@ -350,7 +345,7 @@ async def create_rig_property_driver(
             "factor": factor,
             "offset": offset,
         },
-        [armature_object_name, *sorted({item.object_name for item in destinations})],
+        changed_objects=[armature_object_name, *sorted({item.object_name for item in destinations})],
     )
 
 
@@ -372,8 +367,7 @@ async def assign_bone_custom_shapes(
     displayed shape. widget_collection_name, if given, moves referenced widget objects into that
     collection (created if missing).
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "assign_bone_custom_shapes",
         {
             "armature_object_name": armature_object_name,
@@ -381,7 +375,7 @@ async def assign_bone_custom_shapes(
             "widget_collection_name": widget_collection_name,
             "hide_widgets_from_render": hide_widgets_from_render,
         },
-        [armature_object_name],
+        changed_objects=[armature_object_name],
     )
 
 
@@ -405,8 +399,7 @@ async def create_shape_key_controls(
     """
     if property_owner == "POSE_BONE" and not property_bone_name:
         raise ValueError("property_bone_name is required for a POSE_BONE property")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_shape_key_controls",
         {
             "mesh_object_name": mesh_object_name,
@@ -415,5 +408,5 @@ async def create_shape_key_controls(
             "property_bone_name": property_bone_name,
             "controls": [item.model_dump() for item in controls],
         },
-        [mesh_object_name, armature_object_name],
+        changed_objects=[mesh_object_name, armature_object_name],
     )

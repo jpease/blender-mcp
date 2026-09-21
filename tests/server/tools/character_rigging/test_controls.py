@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from pydantic_core import to_json
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import character_rigging
+from blender_mcp.server.tools import _dispatch, character_rigging
 from blender_mcp.server.tools.envelope import REPLY_BYTE_BUDGET, ok
 
 
@@ -87,12 +87,12 @@ def test_spline_ik_requires_exactly_one_curve_source() -> None:
 def test_ik_chain_serializes_explicit_controls(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        character_rigging,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
 
-    _run(
+    result = _run(
         character_rigging.create_ik_chain,
         armature_object_name="Rig",
         chain_bone_names=["thigh.L", "shin.L"],
@@ -109,6 +109,7 @@ def test_ik_chain_serializes_explicit_controls(monkeypatch) -> None:
         ),
     )
 
+    assert result["changed_objects"] == ["Rig"]
     assert calls == [
         (
             "create_ik_chain",
@@ -132,7 +133,6 @@ def test_ik_chain_serializes_explicit_controls(monkeypatch) -> None:
                 "iterations": 500,
                 "use_stretch": False,
             },
-            ["Rig"],
         )
     ]
 
@@ -140,9 +140,9 @@ def test_ik_chain_serializes_explicit_controls(monkeypatch) -> None:
 def test_pose_keyframe_serializes_typed_channels(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        character_rigging,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
 
     _run(
@@ -179,9 +179,9 @@ def test_shape_key_control_modes_are_typed_and_serialized(monkeypatch) -> None:
 
     calls = []
     monkeypatch.setattr(
-        character_rigging,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
     _run(
         character_rigging.create_shape_key_controls,
@@ -230,7 +230,7 @@ def test_dispatch_exposes_complete_character_surface(monkeypatch) -> None:
     }
 
     assert set(handlers) >= new_commands
-    assert not new_commands & server._READ_ONLY_COMMANDS
+    assert not {name for name in new_commands if server.command_spec(name).read_only}
 
 
 def _fake_armature(monkeypatch, bones, *, name="HeroRig", obj_type="ARMATURE"):
@@ -253,9 +253,9 @@ def _bone(name, parent=None, use_deform=True):
 def test_bone_listing_is_registered_read_only_and_paginates(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        character_rigging,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
 
     _run(character_rigging.list_character_bones, armature_object_name="HeroRig", limit=200, offset=200)
@@ -267,7 +267,7 @@ def test_bone_listing_is_registered_read_only_and_paginates(monkeypatch) -> None
         "rest_axes": False,
         "bone_names": None,
     }
-    assert calls == [("list_character_bones", expected, None)]
+    assert calls == [("list_character_bones", expected)]
     advertised = character_rigging.mcp._tool_manager._tools["list_character_bones"].parameters["properties"]
     assert advertised["limit"]["maximum"] == 200
 
@@ -278,7 +278,7 @@ def test_bone_listing_is_registered_read_only_and_paginates(monkeypatch) -> None
     addon, _bpy = _load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
     assert "list_character_bones" in server._build_command_handlers()
-    assert "list_character_bones" in server._READ_ONLY_COMMANDS
+    assert server.command_spec("list_character_bones").read_only
 
 
 def test_bone_listing_validates_the_armature_object(monkeypatch) -> None:
@@ -545,9 +545,9 @@ def test_keyframe_detail_reports_the_pose_that_was_keyed(monkeypatch) -> None:
 def test_pose_tools_forward_the_detail_flag(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        character_rigging,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
     pose = character_rigging.BonePose(bone_name="root", location=(0, 1, 0))
 

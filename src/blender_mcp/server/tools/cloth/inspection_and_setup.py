@@ -2,15 +2,14 @@
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
 """Typed tools for inspecting cloth systems and adding a Cloth modifier."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import _call, _dump
+from .._dispatch import call_blender
+from ._shared import _dump
 from .collisions import ClothCollisionPatch
 from .material_and_solver import ClothMaterialPatch, ClothSolverPatch, MaterialPreset
 
@@ -34,8 +33,7 @@ async def get_cloth_simulation_info(
     records distinguish active relationships from in-scope but disabled collision; objects excluded
     by a cloth collision collection are never reported as affecting that cloth.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "get_cloth_simulation_info",
         {
             "scene_name": scene_name,
@@ -61,8 +59,7 @@ async def get_cloth_object_info(
     Base mesh statistics and vertex indices are object-local; evaluated counts include the live
     dependency graph. Vertex groups are separately paginated and can change after topology edits.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "get_cloth_object_info",
         {
             "object_name": object_name,
@@ -95,8 +92,7 @@ async def add_cloth_simulation(
     including that ``cache_frame_end`` is not before ``cache_frame_start``; failure removes a newly
     created modifier or restores the reused modifier's touched properties.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "add_cloth_simulation",
         {
             "object_name": object_name,
@@ -111,5 +107,5 @@ async def add_cloth_simulation(
             "solver": _dump(solver),
             "collisions": _dump(collisions),
         },
-        [object_name],
+        changed_objects=[object_name],
     )

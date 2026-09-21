@@ -2,8 +2,6 @@
 # a precise schema instead of an unsafe generic RNA property bag.
 """Typed tools for camera object lifecycle: creation, optics/display configuration, and DOF."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
@@ -11,7 +9,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field, model_validator
 
 from ...app import mcp
-from ._shared import _call, _dump, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _dump, _StrictModel
 
 Projection = Literal["PERSP", "ORTHO", "PANO"]
 SensorFit = Literal["AUTO", "HORIZONTAL", "VERTICAL"]
@@ -96,8 +95,7 @@ async def create_camera(
         raise ToolError("Supply only one orientation source: Euler, quaternion, look-at object, or look-at point")
     if optics is not None and optics.projection is not None and optics.projection != projection:
         raise ToolError("projection conflicts with optics.projection; supply projection in only one place")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_camera",
         {
             "scene_name": scene_name,
@@ -132,11 +130,10 @@ async def configure_camera(
     display_payload = _dump(display)
     if not optics_payload and not display_payload:
         raise ToolError("Provide at least one optics or display field to change")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "configure_camera",
         {"camera_name": camera_name, "optics": optics_payload, "display": display_payload},
-        [camera_name],
+        changed_objects=[camera_name],
     )
 
 
@@ -157,8 +154,7 @@ async def set_scene_camera(
     """
     if (marker_name is None) != (marker_frame is None):
         raise ToolError("marker_name and marker_frame must be supplied together")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "set_scene_camera",
         {
             "scene_name": scene_name,
@@ -167,7 +163,7 @@ async def set_scene_camera(
             "marker_frame": marker_frame,
             "replace_marker": replace_marker,
         },
-        [camera_name],
+        changed_objects=[camera_name],
     )
 
 
@@ -198,8 +194,7 @@ async def configure_camera_dof(
     patch_payload = _dump(patch)
     if not patch_payload and focus_object_name is None and focus_distance is None and focus_point is None:
         raise ToolError("Provide at least one depth-of-field or focus change")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "configure_camera_dof",
         {
             "scene_name": scene_name,
@@ -212,5 +207,5 @@ async def configure_camera_dof(
             "focus_collection_name": focus_collection_name,
             "reuse_focus_target": reuse_focus_target,
         },
-        [camera_name],
+        changed_objects=[camera_name],
     )

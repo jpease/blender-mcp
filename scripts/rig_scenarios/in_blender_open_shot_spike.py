@@ -4,8 +4,8 @@ Graft an `open_shot`-shaped command onto the running addon, for `scenario_file_s
 Runs inside Blender as a `--blender-script`, after `scripts/blender_rig.py`'s
 bootstrap has put a server on `bpy.types.blendermcp_server`. Any session-swap command
 exercises the production barrier, epoch and transaction bypass, so the real `open_shot`
-is not needed. `_READ_ONLY_COMMANDS` is left alone, so the bypass that runs is the one
-`_run_handler` gives `_SESSION_SWAP_COMMANDS` (a transaction's rollback would remove the
+is not needed. `CommandSpec.read_only` is left alone, so the bypass that runs is the one
+`_run_handler` gives a `session_swap` command (a transaction's rollback would remove the
 loaded file's data).
 
 On failure the spike raises its own text, not Blender's, which embeds the absolute path.
@@ -144,21 +144,23 @@ def _install() -> None:
         """
         Return the real handler table plus the spike's own entry.
 
+        Copied, not mutated: `_build_command_handlers` memoizes its map per
+        provider-flag combination, so writing into what it returns would leave the
+        spike's entry in the running server's cache after this wrapper is gone.
+
         Returns:
             dict: The command table `get_addon_info` advertises and
             `execute_command_internal` dispatches through.
 
         """
-        handlers = build_handlers()
-        handlers["open_shot"] = _open_shot
-        return handlers
+        return {**build_handlers(), "open_shot": _open_shot}
 
     server._build_command_handlers = _with_open_shot
     SPIKE_READY.write_text(
         json.dumps(
             {
                 "advertised": "open_shot" in server.get_addon_info()["capabilities"],
-                "in_session_swap_commands": "open_shot" in server._SESSION_SWAP_COMMANDS,
+                "in_session_swap_commands": server.command_spec("open_shot").session_swap,
                 "shadowed_read_only_commands": False,
             }
         ),

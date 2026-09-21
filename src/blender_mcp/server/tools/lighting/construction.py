@@ -1,7 +1,5 @@
 """Typed MCP tools for creating, configuring, aiming, and linking lights."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context, Image
@@ -9,7 +7,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field, model_validator
 
 from ...app import mcp
-from ._shared import LightType, StrictLightingInput, StudioLightingMood, call_blender, dump_input
+from .._dispatch import call_blender
+from ._shared import LightType, StrictLightingInput, StudioLightingMood, dump_input
 from .rendering import render_lighting_preview
 
 
@@ -105,8 +104,7 @@ async def create_light(
     unlike light types are not mistaken for directly comparable power values.
     """
     payload = settings or LightSettings()
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "create_light",
         {
             "scene_name": scene_name,
@@ -132,11 +130,8 @@ async def configure_light(ctx: Context, light_name: str, patch: LightPatch) -> d
     payload = dump_input(patch)
     if not payload:
         raise ToolError("Provide at least one light setting to change")
-    return await asyncio.to_thread(
-        call_blender,
-        "configure_light",
-        {"light_name": light_name, "patch": payload},
-        [light_name],
+    return await call_blender(
+        "configure_light", {"light_name": light_name, "patch": payload}, changed_objects=[light_name]
     )
 
 
@@ -169,8 +164,7 @@ async def aim_light(
         raise ToolError("target_bone_name requires target_object_name")
     if method != "STATIC_ROTATION" and (target_point is not None or bounds_position != "CENTER") and not helper_name:
         raise ToolError("helper_name is required for a live point or evaluated-bounds target")
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "aim_light",
         {
             "scene_name": scene_name,
@@ -184,7 +178,7 @@ async def aim_light(
             "helper_name": helper_name,
             "helper_collection_name": helper_collection_name,
         },
-        [light_name],
+        changed_objects=[light_name],
     )
 
 
@@ -216,8 +210,7 @@ async def configure_light_linking(
         and not clear_blockers
     ):
         raise ToolError("Request at least one receiver or blocker change")
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "configure_light_linking",
         {
             "scene_name": scene_name,
@@ -227,7 +220,7 @@ async def configure_light_linking(
             "clear_receivers": clear_receivers,
             "clear_blockers": clear_blockers,
         },
-        [light_name],
+        changed_objects=[light_name],
     )
 
 
@@ -260,8 +253,7 @@ async def create_studio_lighting(
     Returns the rig-creation result (names and roles of the created lights), the preview image(s),
     and the preview's own result envelope, in that order.
     """
-    rig_result = await asyncio.to_thread(
-        call_blender,
+    rig_result = await call_blender(
         "create_studio_lighting",
         {
             "scene_name": scene_name,

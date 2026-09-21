@@ -1,14 +1,13 @@
 """Typed tools for keying liquid flow settings over time."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ...app import mcp
-from ._shared import _call, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _StrictModel
 
 Interpolation = Literal["CONSTANT", "LINEAR", "BEZIER"]
 AnimationPolicy = Literal["INSERT_ONLY", "REPLACE_EXISTING"]
@@ -42,8 +41,7 @@ async def animate_liquid_flow(
     subframes: Annotated[int, Field(ge=0, le=200)] | None = None,
 ) -> dict:
     """Key liquid flow settings with explicit merge policy and per-key interpolation."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "animate_liquid_flow",
         {
             "object_name": object_name,
@@ -53,5 +51,5 @@ async def animate_liquid_flow(
             "policy": policy,
             "subframes": subframes,
         },
-        [object_name, domain_object_name],
+        changed_objects=[object_name, domain_object_name],
     )

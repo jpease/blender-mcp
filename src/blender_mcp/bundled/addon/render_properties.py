@@ -6,10 +6,14 @@ A routing table, not behaviour: the engine guards, the range checks and the roll
 what lets `scripts/render_coverage.py` report the properties no tool schema can reach without
 importing `bpy`.
 
+Every patch key is routed from here: the flat ones through `FLAT_ROUTES` and each nested
+section through `NESTED_SECTIONS`. Both are the same shape, because the handler applies them
+with the same function.
+
 A section can write several owners (an `output` patch splits across `scene.render` and
-`scene.render.image_settings`), so each section maps to an ordered tuple of routes. Every route
-but the last claims exactly the keys its mapping names; the last takes whatever is left, using
-its mapping as a translation table with an identity fallback. That is the rule the handler
+`scene.render.image_settings`), so each maps to an ordered tuple of routes. Every route but
+the last claims exactly the keys its mapping names; the last takes whatever is left, using its
+mapping as a translation table with an identity fallback. That is the rule the handler
 implemented inline before this table existed.
 """
 
@@ -47,8 +51,40 @@ CYCLES_PROPERTY_MAPPING: Mapping[str, str] = MappingProxyType(
 
 # `IDENTITY` marks a route whose patch keys are already the RNA identifiers, which is what
 # `_set_supported(..., mapping=None, ...)` does today; the server-side pydantic model is the
-# gate on which keys exist.
+# gate on which keys exist. Only the last route of a section may be IDENTITY: an earlier one
+# has to name its keys to claim them.
 IDENTITY = None
+
+
+def _identity_routes(names: frozenset[str]) -> Mapping[str, str]:
+    """
+    Build a route mapping for patch keys that are already their own RNA identifiers.
+
+    Args:
+        names: The patch keys this route claims.
+
+    Returns:
+        Mapping[str, str]: Each name mapped to itself, so a non-final route can claim it.
+
+    """
+    return MappingProxyType({name: name for name in sorted(names)})
+
+
+# The four flat groups as routes, in the order a patch writes them: the patch keys that carry
+# no section of their own, routed by exactly the rule `NESTED_SECTIONS` uses. They sit beside
+# that table rather than inside it because `scripts/render_coverage.py` reads it as "the
+# sections a patch nests", and because SCENE_PROPERTIES' owner is the Scene itself, which has
+# no owner path under it. Cycles runs last and so takes the remainder, which is what makes a
+# flat key no route claims reach the handler's availability check and be refused rather than
+# silently dropped.
+FLAT_ROUTES: tuple[tuple[str, Mapping[str, str] | None, str], ...] = (
+    ("render", _identity_routes(RENDER_PROPERTIES), "render"),
+    # The empty owner path is the Scene itself, which frame_start/frame_end/frame_step live on
+    # rather than on its render settings.
+    ("", _identity_routes(SCENE_PROPERTIES), "scene"),
+    ("render.image_settings", IMAGE_PROPERTY_MAPPING, "image output"),
+    ("cycles", CYCLES_PROPERTY_MAPPING, "Cycles"),
+)
 
 # section -> ((owner path relative to the scene, {patch key: RNA identifier} | IDENTITY, label), ...)
 # The label is the one the refusal message uses, so moving a route here cannot silently reword

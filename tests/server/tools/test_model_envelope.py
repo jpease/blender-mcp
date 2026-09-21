@@ -12,7 +12,7 @@ import asyncio
 
 import pytest
 
-from blender_mcp.server.tools import model
+from blender_mcp.server.tools import _dispatch, model
 from blender_mcp.server.tools.envelope import STALE_INDEX_WARNING
 
 
@@ -31,7 +31,7 @@ APPLY_CAPABLE_TOOLS = [
 
 @pytest.mark.parametrize("tool_fn,kwargs", APPLY_CAPABLE_TOOLS)
 def test_apply_true_includes_stale_index_warning(monkeypatch, tool_fn, kwargs) -> None:
-    monkeypatch.setattr(model, "get_blender_connection", lambda: _StubConnection({"name": "Cube"}))
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: _StubConnection({"name": "Cube"}))
 
     result = asyncio.run(tool_fn(ctx=None, apply=True, **kwargs))
 
@@ -40,7 +40,7 @@ def test_apply_true_includes_stale_index_warning(monkeypatch, tool_fn, kwargs) -
 
 @pytest.mark.parametrize("tool_fn,kwargs", APPLY_CAPABLE_TOOLS)
 def test_apply_false_omits_stale_index_warning(monkeypatch, tool_fn, kwargs) -> None:
-    monkeypatch.setattr(model, "get_blender_connection", lambda: _StubConnection({"name": "Cube"}))
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: _StubConnection({"name": "Cube"}))
 
     result = asyncio.run(tool_fn(ctx=None, apply=False, **kwargs))
 

@@ -1,15 +1,13 @@
 # ruff: file-ignore[multi-line-summary-second-line]
 """Typed tool for measuring what a baked liquid shot actually produced against fill/spill targets."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import _call
+from .._dispatch import call_blender
 
 OverflowPolicy = Literal["ALLOW", "FORBID"]
 
@@ -48,8 +46,7 @@ async def validate_liquid_result(
     target_fill_fraction with deadline_frame turns a fill fraction still below target at or after
     that frame into an ERROR finding. ``passed`` is false whenever any ERROR finding was produced.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "validate_liquid_result",
         {
             "domain_object_name": domain_object_name,

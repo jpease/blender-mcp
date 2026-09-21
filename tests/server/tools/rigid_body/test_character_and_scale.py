@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import rigid_body
+from blender_mcp.server.tools import _dispatch, rigid_body
 
 EXTENDED_COMMANDS = {
     "create_rigid_body_debris_field",
@@ -62,11 +62,11 @@ def test_proxy_and_ragdoll_specs_reject_ambiguous_mappings() -> None:
 def test_debris_payload_preserves_seed_and_explicit_sources(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        rigid_body,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
-    _run(
+    result = _run(
         rigid_body.create_rigid_body_debris_field,
         scene_name="Scene",
         field_name="Impact",
@@ -77,19 +77,19 @@ def test_debris_payload_preserves_seed_and_explicit_sources(monkeypatch) -> None
         density=400.0,
     )
 
-    command, params, changed = calls[0]
+    command, params = calls[0]
     assert command == "create_rigid_body_debris_field"
     assert params["seed"] == 42
     assert params["count"] == 12
-    assert changed == ["Shard"]
+    assert result["changed_objects"] == ["Shard"]
 
 
 def test_ragdoll_payload_keeps_reviewed_constraint_limits(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        rigid_body,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
     joint = rigid_body.RagdollJointSpec(
         parent_bone_name="spine",
@@ -99,7 +99,7 @@ def test_ragdoll_payload_keeps_reviewed_constraint_limits(monkeypatch) -> None:
             "angular_z": {"use_limit": True, "lower": -0.5, "upper": 0.5},
         },
     )
-    _run(
+    result = _run(
         rigid_body.create_ragdoll_rig,
         scene_name="Scene",
         armature_object_name="Rig",
@@ -112,10 +112,10 @@ def test_ragdoll_payload_keeps_reviewed_constraint_limits(monkeypatch) -> None:
         total_mass=75.0,
     )
 
-    command, params, changed = calls[0]
+    command, params = calls[0]
     assert command == "create_ragdoll_rig"
     assert params["joints"][0]["configuration"]["angular_z"]["lower"] == pytest.approx(-0.5)
-    assert changed == ["Rig"]
+    assert result["changed_objects"] == ["Rig"]
 
 
 def test_export_coordinate_contract_is_explicit() -> None:

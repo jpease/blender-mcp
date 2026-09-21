@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import rigid_body
+from blender_mcp.server.tools import _dispatch, rigid_body
 
 
 def _run(function, **kwargs):
@@ -65,12 +65,12 @@ def test_constraint_schema_rejects_incompatible_fields() -> None:
 def test_add_bodies_serializes_only_typed_settings(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        rigid_body,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
 
-    _run(
+    result = _run(
         rigid_body.add_rigid_bodies,
         scene_name="Scene",
         object_names=["Crate", "Barrel"],
@@ -78,6 +78,7 @@ def test_add_bodies_serializes_only_typed_settings(monkeypatch) -> None:
         settings=rigid_body.RigidBodySettingsPatch(mass=5.0, collision_shape="CONVEX_HULL"),
     )
 
+    assert result["changed_objects"] == ["Crate", "Barrel"]
     assert calls == [
         (
             "add_rigid_bodies",
@@ -91,7 +92,6 @@ def test_add_bodies_serializes_only_typed_settings(monkeypatch) -> None:
                 "existing_policy": "ERROR",
                 "confirm_delete_baked_cache": False,
             },
-            ["Crate", "Barrel"],
         )
     ]
 
@@ -99,9 +99,9 @@ def test_add_bodies_serializes_only_typed_settings(monkeypatch) -> None:
 def test_constraint_discriminator_and_local_axis_payload(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        rigid_body,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
 
     _run(
@@ -201,8 +201,8 @@ def test_rigid_body_dispatch_and_read_only_contract(monkeypatch) -> None:
     }
 
     assert set(handlers) >= names
-    assert read_only <= server._READ_ONLY_COMMANDS
-    assert not (names - read_only) & server._READ_ONLY_COMMANDS
+    assert all(server.command_spec(name).read_only for name in read_only)
+    assert not {name for name in names - read_only if server.command_spec(name).read_only}
 
 
 def test_layer_profile_map_is_stable_and_one_based(monkeypatch) -> None:

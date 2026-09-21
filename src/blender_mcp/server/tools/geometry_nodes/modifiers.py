@@ -1,14 +1,13 @@
 """Live modifier attachment, parameter, lifecycle, and copy tools."""
 
-import asyncio
-
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import GeometryNodesRequest, call_geometry_nodes, model_records
+from .._dispatch import call_blender
+from ._shared import GeometryNodesRequest, model_records
 
 
 class ModifierInputValue(GeometryNodesRequest):
@@ -68,12 +67,8 @@ async def attach_geometry_nodes_modifier(
         "input_values": model_records(input_values or []),
     }
     resources = [name for name in [node_group_name, new_group_name] if name]
-    return await asyncio.to_thread(
-        call_geometry_nodes,
-        "attach_geometry_nodes_modifier",
-        params,
-        changed_objects=[object_name],
-        changed_resources=resources,
+    return await call_blender(
+        "attach_geometry_nodes_modifier", params, changed_objects=[object_name], changed_resources=resources
     )
 
 
@@ -89,11 +84,8 @@ async def set_geometry_nodes_inputs(
     before the first assignment, preventing a partially updated batch.
     """
     object_names = list(dict.fromkeys(target.object_name for target in targets))
-    return await asyncio.to_thread(
-        call_geometry_nodes,
-        "set_geometry_nodes_inputs",
-        {"targets": model_records(targets)},
-        changed_objects=object_names,
+    return await call_blender(
+        "set_geometry_nodes_inputs", {"targets": model_records(targets)}, changed_objects=object_names
     )
 
 
@@ -119,8 +111,7 @@ async def manage_geometry_nodes_modifier(
     """
     if action in {"REMOVE", "APPLY"} and not confirm_destructive:
         raise ValueError(f"confirm_destructive=True is required for {action}")
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "manage_geometry_nodes_modifier",
         {
             "object_name": object_name,
@@ -162,8 +153,7 @@ async def copy_geometry_node_group(
     objects = list(dict.fromkeys(item.object_name for item in reassign_modifiers or []))
     if duplicated_object_name:
         objects.append(duplicated_object_name)
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "copy_geometry_node_group",
         {
             "node_group_name": node_group_name,

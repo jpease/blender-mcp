@@ -1,6 +1,6 @@
 import asyncio
 
-from blender_mcp.server.tools import polyhaven
+from blender_mcp.server.tools import _dispatch, polyhaven
 from blender_mcp.server.tools.polyhaven import _polyhaven_changed
 
 
@@ -74,7 +74,7 @@ def test_list_assets_forwards_pagination_and_returns_continuation(monkeypatch) -
                 "next_offset": 5,
             }
 
-    monkeypatch.setattr(polyhaven, "get_blender_connection", Connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", Connection)
 
     result = asyncio.run(polyhaven.list_polyhaven_assets(ctx=None, limit=2, offset=4))
 

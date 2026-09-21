@@ -1,13 +1,11 @@
 """Geometry Nodes tool execution and asset publication tools."""
 
-import asyncio
-
 from typing import Any, Literal
 
 from mcp.server.fastmcp import Context
 
 from ...app import mcp
-from ._shared import call_geometry_nodes
+from .._dispatch import call_blender
 
 
 @mcp.tool()
@@ -31,8 +29,7 @@ async def run_geometry_nodes_tool(
     """
     if not confirm_destructive:
         raise ValueError("confirm_destructive=True is required to run a Geometry Nodes tool")
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "run_geometry_nodes_tool",
         {
             "node_group_name": node_group_name,
@@ -65,8 +62,7 @@ async def publish_procedural_asset(
     This does not save, overwrite, or export a .blend file. For tool groups, ``operator_idname`` is
     the Blender operator identifier used by run_geometry_nodes_tool and must be globally unique.
     """
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "publish_procedural_asset",
         {
             "node_group_name": node_group_name,

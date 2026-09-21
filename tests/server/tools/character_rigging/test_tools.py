@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import character_rigging
+from blender_mcp.server.tools import _dispatch, character_rigging
 from server.tools.character_rigging.test_posing import _Action, _FCurve, _head_rig
 
 
@@ -52,11 +52,11 @@ def test_character_models_reject_unknown_and_nonfinite_values() -> None:
 def test_create_armature_serializes_typed_hierarchy(monkeypatch) -> None:
     calls = []
 
-    def fake_call(command, params, changed_objects=None):
-        calls.append((command, params, changed_objects))
+    def fake_call(command, params=None):
+        calls.append((command, params))
         return {"ok": True}
 
-    monkeypatch.setattr(character_rigging, "_call", fake_call)
+    monkeypatch.setattr(_dispatch, "send_command", fake_call)
     result = _run(
         character_rigging.create_armature,
         name="HeroRig",
@@ -74,19 +74,19 @@ def test_create_armature_serializes_typed_hierarchy(monkeypatch) -> None:
         ],
     )
 
-    assert result == {"ok": True}
+    assert result["ok"] is True
+    assert result["changed_objects"] == ["HeroRig"]
     assert calls[0][0] == "create_armature"
     assert calls[0][1]["bones"][1]["parent"] == "root"
     assert calls[0][1]["world_transform"]["rotation_quaternion"] == (1.0, 0.0, 0.0, 0.0)
-    assert calls[0][2] == ["HeroRig"]
 
 
 def test_pose_constraint_is_discriminated_and_serialized(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        character_rigging,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
 
     _run(
@@ -156,12 +156,15 @@ def test_character_dispatch_and_read_only_contract(monkeypatch) -> None:
     }
 
     assert set(handlers) >= names
-    assert {
+    assert all(
+        server.command_spec(name).read_only
+        for name in ("get_character_rig_info", "get_skinning_info", "validate_character_rig")
+    )
+    assert {name for name in names if server.command_spec(name).read_only} == {
         "get_character_rig_info",
         "get_skinning_info",
         "validate_character_rig",
-    } <= server._READ_ONLY_COMMANDS
-    assert not (names - server._READ_ONLY_COMMANDS) & server._READ_ONLY_COMMANDS
+    }
 
 
 def test_hierarchy_preflight_detects_cycles_and_connected_gaps(monkeypatch) -> None:

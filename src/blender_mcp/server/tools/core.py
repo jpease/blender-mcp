@@ -11,6 +11,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from ...addon_manager import EXPECTED_ADDON_PROTOCOL_VERSION, AddonHandshake
 from ..app import mcp
 from ..connection import force_addon_handshake, get_blender_connection
+from ._dispatch import send_blender_command
 from .envelope import ok
 
 logger = logging.getLogger("BlenderMCPServer")
@@ -37,9 +38,9 @@ def _status_payload(result: AddonHandshake, *, detail: bool) -> dict[str, object
     """
     Turn a handshake into the status an agent reads, summarizing the capability list.
 
-    The list is 291 command names; the server itself gates every command on it
-    (`connection.py`), so an agent needs how many there are and which optional
-    integrations they cover, not the names.
+    The list is every command name the addon serves; the server itself gates every
+    command on it (`connection.py`), so an agent needs how many there are and which
+    optional integrations they cover, not the names.
 
     Args:
         result: The handshake, already refreshed.
@@ -90,12 +91,9 @@ def _status_payload(result: AddonHandshake, *, detail: bool) -> dict[str, object
     return payload
 
 
-def _collect_integration_status(provider: Provider | None) -> dict:
+async def _collect_integration_status(provider: Provider | None) -> dict:
     """
     Ask the addon which optional integrations are enabled.
-
-    Blocking: the socket round-trip runs in a worker thread so the MCP event loop
-    stays responsive, matching every other tool module.
 
     Args:
         provider: A single provider to query, or None for all of them.
@@ -104,10 +102,9 @@ def _collect_integration_status(provider: Provider | None) -> dict:
         dict: The provider's status, or a mapping of provider name to status.
 
     """
-    blender = get_blender_connection()
     if provider is not None:
-        return blender.send_command(_STATUS_COMMANDS[provider])
-    return {name: blender.send_command(command) for name, command in _STATUS_COMMANDS.items()}
+        return await send_blender_command(_STATUS_COMMANDS[provider])
+    return {name: await send_blender_command(command) for name, command in _STATUS_COMMANDS.items()}
 
 
 def _collect_addon_status(*, detail: bool) -> dict[str, object]:
@@ -153,7 +150,7 @@ async def get_integration_status(ctx: Context, provider: Provider | None = None)
 
     """
     try:
-        return ok(await asyncio.to_thread(_collect_integration_status, provider))
+        return ok(await _collect_integration_status(provider))
     except Exception as e:
         logger.error(f"Error checking integration status: {e}")
         raise ToolError(f"Error checking integration status: {e}") from e

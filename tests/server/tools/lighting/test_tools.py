@@ -14,8 +14,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import lighting
-from blender_mcp.server.tools.lighting import _shared
+from blender_mcp.server.tools import _dispatch, lighting
 
 LIGHTING_COMMANDS = {
     "list_lights",
@@ -121,7 +120,7 @@ def test_preview_dispatch_is_async_and_paths_are_distinct() -> None:
 
 def test_configure_light_sends_only_explicit_patch_fields(monkeypatch) -> None:
     connection = StubConnection({"object": "Key", "changed_resources": ["Key Light"]})
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = run_tool(
         lighting.configure_light,
@@ -138,7 +137,7 @@ def test_configure_light_sends_only_explicit_patch_fields(monkeypatch) -> None:
 
 def test_aim_light_rejects_ambiguous_target_before_dispatch(monkeypatch) -> None:
     connection = StubConnection()
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     with pytest.raises(ToolError, match="exactly one"):
         run_tool(
@@ -154,7 +153,7 @@ def test_aim_light_rejects_ambiguous_target_before_dispatch(monkeypatch) -> None
 
 def test_create_studio_lighting_dispatches_rig_then_preview(monkeypatch) -> None:
     connection = StubConnection({"lights": [], "changed_objects": []})
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = run_tool(
         lighting.create_studio_lighting,
@@ -184,7 +183,7 @@ def test_create_studio_lighting_dispatches_rig_then_preview(monkeypatch) -> None
 
 def test_lighting_quality_expands_strict_agent_payload(monkeypatch) -> None:
     connection = StubConnection({"changed_resources": ["Scene"]})
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     run_tool(
         lighting.configure_lighting_quality,
@@ -229,7 +228,7 @@ def test_lighting_quality_expands_strict_agent_payload(monkeypatch) -> None:
 
 def test_hdri_requires_an_absolute_hdr_or_exr_path_before_dispatch(monkeypatch) -> None:
     connection = StubConnection()
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     with pytest.raises(ToolError, match="absolute"):
         run_tool(lighting.configure_hdri_environment, scene_name="Scene", image_path="studio.hdr")
@@ -246,8 +245,8 @@ def test_dispatch_advertises_lighting_and_marks_only_inspection_read_only(monkey
     commands = server._build_command_handlers()
 
     assert LIGHTING_COMMANDS.issubset(commands)
-    assert READ_ONLY_LIGHTING_COMMANDS.issubset(server._READ_ONLY_COMMANDS)
-    assert not (LIGHTING_COMMANDS - READ_ONLY_LIGHTING_COMMANDS) & server._READ_ONLY_COMMANDS
+    assert all(server.command_spec(name).read_only for name in READ_ONLY_LIGHTING_COMMANDS)
+    assert not {name for name in LIGHTING_COMMANDS - READ_ONLY_LIGHTING_COMMANDS if server.command_spec(name).read_only}
 
 
 # A float wider than float32 carries, so a rounded field is distinguishable from an unrounded one.
@@ -395,7 +394,7 @@ def test_preview_matched_state_names_its_lights_instead_of_embedding_them(monkey
 
 def test_light_inventory_tools_forward_the_detail_flag(monkeypatch) -> None:
     connection = StubConnection({"lights": []})
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     run_tool(lighting.list_lights, scene_name="Scene")
     run_tool(lighting.list_lights, scene_name="Scene", detail=True)

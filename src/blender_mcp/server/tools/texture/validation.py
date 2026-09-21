@@ -1,14 +1,12 @@
 """Read-only end-to-end PBR asset validation."""
 
-import asyncio
-
 from typing import Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import call_blender
+from .._dispatch import call_blender
 
 
 @mcp.tool()
@@ -27,4 +25,4 @@ async def validate_pbr_asset(
     Each finding includes severity, evidence, and remediation; truncation is disclosed.
     """
     params = {k: v for k, v in locals().items() if k != "ctx"}
-    return await asyncio.to_thread(call_blender, "validate_pbr_asset", params)
+    return await call_blender("validate_pbr_asset", params)

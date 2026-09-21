@@ -1,15 +1,13 @@
 """Agent-facing tools for measuring and validating retopology quality."""
 
-import asyncio
-
 from typing import Annotated
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ..envelope import ok
-from ._shared import RetopologyProfile, _call
+from .._dispatch import call_blender
+from ._shared import RetopologyProfile
 
 
 @mcp.tool()
@@ -35,8 +33,7 @@ async def analyze_surface_conformity(
     conformity. A POINT/FLOAT heat-map attribute is created only when
     `create_heat_map=True`; its values always represent vertex samples.
     """
-    result = await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "analyze_surface_conformity",
         {
             "object_name": object_name,
@@ -49,8 +46,8 @@ async def analyze_surface_conformity(
             "create_heat_map": create_heat_map,
             "attribute_name": attribute_name,
         },
+        changed_objects=[object_name] if create_heat_map else [],
     )
-    return ok(result, changed_objects=[object_name] if create_heat_map else [])
 
 
 @mcp.tool()
@@ -79,7 +76,7 @@ async def validate_retopology(
     only warnings remain, otherwise PASS.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    return ok(await asyncio.to_thread(_call, "validate_retopology", params))
+    return await call_blender("validate_retopology", params)
 
 
 @mcp.tool()
@@ -110,4 +107,4 @@ async def test_deformation(
     vertex when no joint groups are supplied). This inspection changes no datablocks.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    return ok(await asyncio.to_thread(_call, "test_deformation", params))
+    return await call_blender("test_deformation", params)

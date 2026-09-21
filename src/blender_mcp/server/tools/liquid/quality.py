@@ -1,13 +1,12 @@
 """Named liquid quality profiles applied through the existing solver and mesh tools."""
 
-import asyncio
-
 from typing import Literal
 
 from mcp.server.fastmcp import Context
 
 from ...app import mcp
-from ._shared import _call, _dump
+from .._dispatch import call_blender
+from ._shared import _dump
 from .inspection_and_setup import LiquidSolverPatch
 from .mesh_and_materials import LiquidMeshPatch
 
@@ -127,8 +126,7 @@ async def apply_liquid_quality_profile(
     if not apply_solver and not apply_mesh:
         raise ValueError("At least one of apply_solver or apply_mesh must be true")
     solver_patch, mesh_patch = profile_patches(profile)
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "apply_liquid_quality_profile",
         {
             "domain_object_name": domain_object_name,
@@ -137,5 +135,5 @@ async def apply_liquid_quality_profile(
             "solver_patch": solver_patch if apply_solver else None,
             "mesh_patch": mesh_patch if apply_mesh else None,
         },
-        [domain_object_name],
+        changed_objects=[domain_object_name],
     )

@@ -20,7 +20,7 @@ flag (`-y`), which the preference does not reflect. Untrusted deployments would
 need that flag checked, which is not implemented.
 
 Blender puts absolute paths in its error text, so every `except` sanitizes with
-`_operator_failure_message`.
+`blend_files.operator_failure_message`.
 """
 
 import os
@@ -36,13 +36,13 @@ from ..candidates import session_uid_of as _uid_of
 from ..file_paths import canonical_path
 from ..text_hygiene import client_safe_name_leaf, client_safe_text
 from ..transaction import replacing_library_contents
-from .file_lifecycle import (
-    _checked_blend_path,
-    _is_indirect_library,
-    _library_summary,
-    _operator_failure_message,
-    _refuse_scripts_auto_execute,
-    _require_bool,
+from .blend_files import (
+    checked_blend_path,
+    is_indirect_library,
+    library_summary,
+    operator_failure_message,
+    refuse_scripts_auto_execute,
+    require_bool,
 )
 
 DEFAULT_PAGE_SIZE = 25
@@ -64,6 +64,39 @@ _RELOAD_NOTE = (
 
 class LibraryFileNamesError(ValueError):
     """A requested name is not in the library file; raised inside `libraries.load` so no Library is created."""
+
+
+class PartialUnlinkError(RuntimeError):
+    """
+    Blender failed part-way through an unlink, leaving libraries already removed.
+
+    An unlink is not transacted, so the removals that happened cannot be undone:
+    a caller has to know exactly which ones they were. They are attributes rather
+    than a list repr in the message, which only a human could read back.
+
+    Attributes:
+        removed_libraries: Summaries of the libraries removed before the failure.
+        already_removed_uids: Uids that were gone before their turn came.
+
+    """
+
+    def __init__(
+        self, message: str, removed_libraries: Sequence[dict[str, object]], already_removed_uids: Sequence[int]
+    ) -> None:
+        """
+        Record what the failed unlink had already done.
+
+        Args:
+            message: The sanitized failure text, naming no path.
+            removed_libraries: Summaries of the libraries removed before the failure.
+            already_removed_uids: Uids that were gone before their turn came.
+
+        """
+        removed = list(removed_libraries)
+        uids = ", ".join(str(entry["session_uid"]) for entry in removed) or "none"
+        super().__init__(f"{message} (libraries already removed: {uids})")
+        self.removed_libraries = removed
+        self.already_removed_uids = list(already_removed_uids)
 
 
 def _require_uid(name: str, value: object) -> int:
@@ -257,7 +290,7 @@ def _record_page(key: str, items: Sequence[object], describe: object, limit: int
 
 def _library_details(library: object) -> dict[str, object]:
     """
-    Describe a library: `_library_summary`'s identity plus what a reload decision needs.
+    Describe a library: `library_summary`'s identity plus what a reload decision needs.
 
     Args:
         library: A `bpy.types.Library`.
@@ -269,11 +302,41 @@ def _library_details(library: object) -> dict[str, object]:
 
     """
     return {
-        **_library_summary(library),
+        **library_summary(library),
         "version": [int(part) for part in getattr(library, "version", ())],
         "needs_liboverride_resync": bool(getattr(library, "needs_liboverride_resync", False)),
         "users": int(getattr(library, "users", 0)),
     }
+
+
+def _counted_page(
+    items: Sequence[object], describe: object, limit: int, *, detail: bool, name_limit: int | None = MAX_LISTED_NAMES
+) -> dict[str, object]:
+    """
+    Count a sub-list by type and page it: names by default, records under `detail`.
+
+    Args:
+        items: Every item; the exact count is published whatever the page holds.
+        describe: Turns one item into its record, under `detail`.
+        limit: Entries the record page may carry.
+        detail: Page records instead of names.
+        name_limit: Names to publish without `detail`; None publishes none, for a
+            reply that already names every item in `changed_objects`.
+
+    Returns:
+        dict[str, object]: `total`, `by_type`, and one `_record_page` unless
+        `name_limit` is None and `detail` is false.
+
+    """
+    counted: dict[str, object] = {
+        "total": len(items),
+        "by_type": summarize_type_counts(str(getattr(item, "id_type", "")) for item in items),
+    }
+    if detail:
+        return {**counted, **_record_page("records", items, describe, limit)}
+    if name_limit is None:
+        return counted
+    return {**counted, **_record_page("names", items, _display_name, name_limit)}
 
 
 def _linked_datablocks(library: object, *, detail: bool) -> dict[str, object]:
@@ -294,13 +357,7 @@ def _linked_datablocks(library: object, *, detail: bool) -> dict[str, object]:
 
     """
     items = list(getattr(library, "users_id", ()) or ())
-    page = (
-        _record_page("records", items, _linked_entry, MAX_LISTED_DATABLOCKS)
-        if detail
-        else _record_page("names", items, _display_name, MAX_LISTED_NAMES)
-    )
-    type_names = (str(getattr(item, "id_type", "")) for item in items)
-    return {"datablocks": {"total": len(items), "by_type": summarize_type_counts(type_names), **page}}
+    return {"datablocks": _counted_page(items, _linked_entry, MAX_LISTED_DATABLOCKS, detail=detail)}
 
 
 def _missing_warnings(library: object) -> dict[str, object]:
@@ -332,6 +389,27 @@ def _missing_warnings(library: object) -> dict[str, object]:
             f"{missing} datablocks linked from this library are missing from its file; "
             "they are placeholders until relinked"
         ]
+    }
+
+
+def _reload_report(library: object, *, detail: bool) -> dict[str, object]:
+    """
+    Describe a library whose contents were just re-read, for both reload paths.
+
+    Args:
+        library: The library, after `_reload`.
+        detail: Page the reloaded datablocks as records, with their new uids.
+
+    Returns:
+        dict[str, object]: `library`, `datablocks`, the stale-uid `note`, and
+        `warnings` when the file lacks a datablock the session still links.
+
+    """
+    return {
+        "library": _library_details(library),
+        **_linked_datablocks(library, detail=detail),
+        "note": _RELOAD_NOTE,
+        **_missing_warnings(library),
     }
 
 
@@ -409,8 +487,8 @@ def _reload(library: object, command: str, known_paths: tuple[str, ...]) -> None
     try:
         with replacing_library_contents():
             library.reload()  # type: ignore[attr-defined]
-    except Exception as exc:
-        raise RuntimeError(_operator_failure_message(command, exc, known_paths)) from exc
+    except RuntimeError as exc:
+        raise RuntimeError(operator_failure_message(command, exc, known_paths)) from exc
 
 
 def _library_file_names(parameter: str, value: object) -> list[str]:
@@ -557,9 +635,9 @@ def _override_hierarchy(
             scene.view_layers[0],  # type: ignore[attr-defined]
             do_fully_editable=True,
         )
-    except Exception as exc:
+    except RuntimeError as exc:
         known = _library_paths(collection.library)  # type: ignore[attr-defined]
-        raise RuntimeError(_operator_failure_message("create_override", exc, known)) from exc
+        raise RuntimeError(operator_failure_message("create_override", exc, known)) from exc
     if override is None:
         raise RuntimeError(f"create_override failed: Blender created no override for collection session_uid {uid}")
     replaced = 0
@@ -569,10 +647,7 @@ def _override_hierarchy(
             unlinked.append((parent, collection))
             replaced += 1
     objects = list(override.all_objects)
-    type_names = (str(getattr(obj, "id_type", "")) for obj in objects)
-    listed: dict[str, object] = {"total": len(objects), "by_type": summarize_type_counts(type_names)}
-    if detail:
-        listed.update(_record_page("records", objects, _override_entry, MAX_LISTED_DATABLOCKS))
+    listed = _counted_page(objects, _override_entry, MAX_LISTED_DATABLOCKS, detail=detail, name_limit=None)
     return {
         "override": _override_entry(override),
         "scene_uid": _uid_of(scene),
@@ -777,7 +852,7 @@ def _libraries_to_unlink(library_uids: object, confirm: bool) -> list[object]:
             "unlink_libraries removes each named library and every datablock linked from it; pass confirm=true"
         )
     libraries = [_library(uid) for uid in uids]
-    indirect = [library for library in libraries if _is_indirect_library(library)]
+    indirect = [library for library in libraries if is_indirect_library(library)]
     if indirect:
         raise ValueError(
             f"indirect libraries are reached through another library; unlink that one: {_candidates(indirect)}"
@@ -801,10 +876,10 @@ def _remove_libraries(
         tuple: Summaries of the libraries removed, and uids already gone when their turn came.
 
     Raises:
-        RuntimeError: When Blender failed; the message lists the uids already removed.
+        PartialUnlinkError: When Blender failed; it carries what had been removed.
 
     """
-    summaries = [_library_summary(library) for library in libraries]
+    summaries = [library_summary(library) for library in libraries]
     removed: list[dict[str, object]] = []
     already_removed: list[int] = []
     for summary in summaries:
@@ -815,10 +890,9 @@ def _remove_libraries(
             continue
         try:
             bpy.data.libraries.remove(current)
-        except Exception as exc:
-            done = [entry["session_uid"] for entry in removed]
-            message = _operator_failure_message("unlink_libraries", exc, known_paths)
-            raise RuntimeError(f"{message} (libraries already removed: {done})") from exc
+        except (ReferenceError, RuntimeError) as exc:
+            message = operator_failure_message("unlink_libraries", exc, known_paths)
+            raise PartialUnlinkError(message, removed, already_removed) from exc
         removed.append(summary)
     return removed, already_removed
 
@@ -842,8 +916,8 @@ def _purge_newly_orphaned(before: dict[int, tuple[str, int]], known_paths: tuple
     if orphans:
         try:
             bpy.data.batch_remove(ids=[datablock for _name, datablock in orphans])  # type: ignore[arg-type]
-        except Exception as exc:
-            raise RuntimeError(_operator_failure_message("unlink_libraries purge", exc, known_paths)) from exc
+        except (ReferenceError, RuntimeError) as exc:
+            raise RuntimeError(operator_failure_message("unlink_libraries purge", exc, known_paths)) from exc
     return [name for name, _datablock in orphans]
 
 
@@ -879,7 +953,7 @@ class LinkingHandlersMixin:
             scene_uid: The scene to instance or override into; optional when the file has one scene.
 
         Returns:
-            dict[str, object]: `library` (`_library_summary` plus `version`,
+            dict[str, object]: `library` (`library_summary` plus `version`,
             `needs_liboverride_resync`, `users`), `library_already_linked`,
             `scene_uid`, `collections` / `objects` linked (uid, name, id_type),
             and `overrides` (one `create_override` report per collection when
@@ -891,8 +965,8 @@ class LinkingHandlersMixin:
             RuntimeError: When Blender failed; the text carries no path.
 
         """
-        as_override = _require_bool("as_override", as_override)
-        relative = _require_bool("relative", relative)
+        as_override = require_bool("as_override", as_override)
+        relative = require_bool("relative", relative)
         collection_names = _library_file_names("collections", collections)
         object_names = _library_file_names("objects", objects)
         if not (collection_names or object_names):
@@ -901,8 +975,8 @@ class LinkingHandlersMixin:
             raise ValueError("as_override overrides collection hierarchies; link objects without it")
         if relative and not bpy.data.filepath:
             raise ValueError("relative needs a saved open file to be relative to; save_shot first or pass false")
-        canonical = _checked_blend_path(filepath, must_exist=True)
-        _refuse_scripts_auto_execute("link_canon_library")
+        canonical = checked_blend_path(filepath, must_exist=True)
+        refuse_scripts_auto_execute("link_canon_library")
         scene = _scene(scene_uid)
         libraries_before = {library.session_uid for library in bpy.data.libraries}
         try:
@@ -912,8 +986,8 @@ class LinkingHandlersMixin:
                 data_to.objects = list(object_names)
         except LibraryFileNamesError:
             raise
-        except Exception as exc:
-            raise RuntimeError(_operator_failure_message("link_canon_library", exc, (filepath, canonical))) from exc
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError(operator_failure_message("link_canon_library", exc, (filepath, canonical))) from exc
         linked_collections, linked_objects = list(data_to.collections), list(data_to.objects)
         linked = [*linked_collections, *linked_objects]
         library = getattr(linked[0], "library", None) if None not in linked else None
@@ -963,8 +1037,8 @@ class LinkingHandlersMixin:
         """
         uid = _require_uid("collection_uid", collection_uid)
         collection = _by_session_uid(bpy.data.collections, uid, "collection")
-        _refuse_scripts_auto_execute("create_override")
-        report = _override_all([collection], _scene(scene_uid), detail=_require_bool("detail", detail))[0]
+        refuse_scripts_auto_execute("create_override")
+        report = _override_all([collection], _scene(scene_uid), detail=require_bool("detail", detail))[0]
         return {**report, "changed_objects": _override_object_names([report])}
 
     @staticmethod
@@ -980,7 +1054,7 @@ class LinkingHandlersMixin:
             detail: Page each library's datablocks as records instead of names.
 
         Returns:
-            dict[str, object]: `libraries` (each `_library_summary` plus
+            dict[str, object]: `libraries` (each `library_summary` plus
             `version`, `needs_liboverride_resync`, `users`, and `datablocks` -
             see `_linked_datablocks`), `total`, `offset`, `limit`,
             `returned_count`, `truncated`, `next_offset`.
@@ -988,7 +1062,7 @@ class LinkingHandlersMixin:
         """
         limit = _bounded_int("limit", limit, 1, MAX_PAGE_SIZE)
         offset = _bounded_int("offset", offset, 0, None)
-        detail = _require_bool("detail", detail)
+        detail = require_bool("detail", detail)
         libraries = list(bpy.data.libraries)
         page = libraries[offset : offset + limit]
         remaining = offset + len(page) < len(libraries)
@@ -1020,15 +1094,10 @@ class LinkingHandlersMixin:
 
         """
         library = _library(library_uid)
-        detail = _require_bool("detail", detail)
-        _refuse_scripts_auto_execute("reload_library")
+        detail = require_bool("detail", detail)
+        refuse_scripts_auto_execute("reload_library")
         _reload(library, "reload_library", _library_paths(library))
-        return {
-            "library": _library_details(library),
-            **_linked_datablocks(library, detail=detail),
-            "note": _RELOAD_NOTE,
-            **_missing_warnings(library),
-        }
+        return _reload_report(library, detail=detail)
 
     @staticmethod
     def relocate_library(library_uid: object, filepath: object, *, detail: object = False) -> dict[str, object]:
@@ -1055,13 +1124,13 @@ class LinkingHandlersMixin:
 
         """
         library = _library(library_uid)
-        detail = _require_bool("detail", detail)
-        if _is_indirect_library(library):
+        detail = require_bool("detail", detail)
+        if is_indirect_library(library):
             raise ValueError(
                 "that library is indirect - reached only through another library, which re-derives its path - so "
                 "relocating it breaks the parent's link; relocate the parent library instead"
             )
-        canonical = _checked_blend_path(filepath, must_exist=True)
+        canonical = checked_blend_path(filepath, must_exist=True)
         for other in bpy.data.libraries:
             if other.session_uid != library.session_uid and canonical in _library_paths(other):
                 raise ValueError(
@@ -1069,7 +1138,7 @@ class LinkingHandlersMixin:
                     "that library instead"
                 )
         # Before the assignment, so a refusal leaves the library untouched.
-        _refuse_scripts_auto_execute("relocate_library")
+        refuse_scripts_auto_execute("relocate_library")
         name_before = client_safe_name_leaf(library.name)  # type: ignore[attr-defined]
         previous = library.filepath  # type: ignore[attr-defined]
         known = _absolute((filepath, canonical, *_library_paths(library)))
@@ -1080,12 +1149,9 @@ class LinkingHandlersMixin:
             library.filepath = previous  # type: ignore[attr-defined]
             raise
         return {
-            "library": _library_details(library),
-            **_linked_datablocks(library, detail=detail),
+            **_reload_report(library, detail=detail),
             "name_before": name_before,
             "name_after": client_safe_name_leaf(library.name),  # type: ignore[attr-defined]
-            "note": _RELOAD_NOTE,
-            **_missing_warnings(library),
         }
 
     @staticmethod
@@ -1117,8 +1183,8 @@ class LinkingHandlersMixin:
             part-way is a `RuntimeError` listing the uids already removed.
 
         """
-        confirm = _require_bool("confirm", confirm)
-        purge_orphans = _require_bool("purge_orphans", purge_orphans)
+        confirm = require_bool("confirm", confirm)
+        purge_orphans = require_bool("purge_orphans", purge_orphans)
         libraries = _libraries_to_unlink(library_uids, confirm)
         uids = [library.session_uid for library in libraries]  # type: ignore[attr-defined]
         known = tuple(path for library in libraries for path in _library_paths(library))

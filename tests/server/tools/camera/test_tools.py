@@ -11,8 +11,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import camera
-from blender_mcp.server.tools.camera import _shared
+from blender_mcp.server.tools import _dispatch, camera
 
 CAMERA_COMMANDS = {
     "get_camera_rig_info",
@@ -77,7 +76,7 @@ def test_camera_patch_forbids_unknown_rna_and_invalid_optics() -> None:
 
 def test_create_camera_rejects_ambiguous_orientation_before_dispatch(monkeypatch) -> None:
     connection = _StubConnection()
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     with pytest.raises(ToolError, match="only one orientation source"):
         _run(
@@ -94,7 +93,7 @@ def test_create_camera_rejects_ambiguous_orientation_before_dispatch(monkeypatch
 
 def test_point_camera_at_preflights_target_source_before_dispatch(monkeypatch) -> None:
     connection = _StubConnection()
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     with pytest.raises(ToolError, match="exactly one of target_object_name or target_point"):
         _run(
@@ -118,7 +117,7 @@ def test_point_camera_at_preflights_target_source_before_dispatch(monkeypatch) -
 
 def test_point_camera_at_places_before_aiming_and_refuses_a_coincident_placement(monkeypatch) -> None:
     connection = _StubConnection({"camera": "Hero"})
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     _run(
         camera.point_camera_at,
@@ -144,7 +143,7 @@ def test_point_camera_at_places_before_aiming_and_refuses_a_coincident_placement
 
 def test_configure_camera_serializes_only_explicit_patch_fields(monkeypatch) -> None:
     connection = _StubConnection({"camera": "Hero", "changed_resources": ["Hero Data"]})
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = _run(
         camera.configure_camera,
@@ -169,7 +168,7 @@ def test_configure_camera_serializes_only_explicit_patch_fields(monkeypatch) -> 
 
 def test_rig_builder_defaults_are_plain_values_and_context_is_not_forwarded(monkeypatch) -> None:
     connection = _StubConnection({"changed_objects": ["Orbit Root", "Orbit Camera"]})
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     _run(
         camera.create_orbit_camera_rig,
@@ -189,7 +188,7 @@ def test_rig_builder_defaults_are_plain_values_and_context_is_not_forwarded(monk
 
 def test_path_tool_preflights_path_and_frame_intent(monkeypatch) -> None:
     connection = _StubConnection()
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     with pytest.raises(ToolError, match="exactly one"):
         _run(
@@ -220,8 +219,8 @@ def test_dispatch_advertises_all_camera_commands_and_only_inspection_is_read_onl
     commands = server._build_command_handlers()
 
     assert CAMERA_COMMANDS.issubset(commands)
-    assert "get_camera_rig_info" in server._READ_ONLY_COMMANDS
-    assert not (CAMERA_COMMANDS - {"get_camera_rig_info"}) & server._READ_ONLY_COMMANDS
+    assert server.command_spec("get_camera_rig_info").read_only
+    assert not {name for name in CAMERA_COMMANDS - {"get_camera_rig_info"} if server.command_spec(name).read_only}
 
 
 def test_dispatch_advertises_extended_commands_and_validation_is_read_only(monkeypatch) -> None:
@@ -231,14 +230,16 @@ def test_dispatch_advertises_extended_commands_and_validation_is_read_only(monke
     commands = server._build_command_handlers()
 
     assert CAMERA_EXTENDED_COMMANDS.issubset(commands)
-    assert "validate_camera_rig" in server._READ_ONLY_COMMANDS
-    assert not (CAMERA_EXTENDED_COMMANDS - {"validate_camera_rig"}) & server._READ_ONLY_COMMANDS
+    assert server.command_spec("validate_camera_rig").read_only
+    assert not {
+        name for name in CAMERA_EXTENDED_COMMANDS - {"validate_camera_rig"} if server.command_spec(name).read_only
+    }
 
 
 def test_extended_keyframes_serialize_strict_records(monkeypatch) -> None:
     connection = _StubConnection({"changed_objects": ["Hero"]})
-    # _call closes over _shared.get_blender_connection because every camera submodule shares it.
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    # Every tool in every package resolves its connection here, so one patch covers all of them.
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = _run(
         camera.keyframe_camera_rig,
@@ -279,7 +280,7 @@ def test_extended_keyframes_serialize_strict_records(monkeypatch) -> None:
 
 def test_extended_preflights_ambiguous_subjects_and_marker_actions(monkeypatch) -> None:
     connection = _StubConnection()
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     with pytest.raises(ToolError, match="exactly one subject"):
         _run(
@@ -419,7 +420,7 @@ def test_camera_keyframe_requires_exactly_one_timing_source() -> None:
 
 def test_focus_pull_requires_exactly_one_timing_source(monkeypatch) -> None:
     connection = _StubConnection()
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     with pytest.raises(ToolError, match="supply exactly one of start_frame or start_at_seconds"):
         _run(
@@ -446,7 +447,7 @@ def test_focus_pull_requires_exactly_one_timing_source(monkeypatch) -> None:
 
 def test_dolly_zoom_requires_exactly_one_timing_source(monkeypatch) -> None:
     connection = _StubConnection()
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     with pytest.raises(ToolError, match="supply exactly one of start_frame or start_at_seconds"):
         _run(
@@ -488,7 +489,7 @@ def test_dolly_zoom_requires_exactly_one_timing_source(monkeypatch) -> None:
 
 def test_add_camera_shake_requires_exactly_one_timing_source(monkeypatch) -> None:
     connection = _StubConnection()
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     with pytest.raises(ToolError, match="supply exactly one of frame_start or frame_start_at_seconds"):
         _run(

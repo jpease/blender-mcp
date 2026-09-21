@@ -1,14 +1,13 @@
 """Typed tools for keyframing curated cloth-related RNA properties."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import _call, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _StrictModel
 
 AnimationOwner = Literal[
     "CLOTH_SETTINGS",
@@ -51,8 +50,7 @@ async def animate_cloth_parameters(
     FIELD_SETTINGS currently permits force-field strength. Raw vertex-group membership is
     intentionally not animatable through this tool.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "animate_cloth_parameters",
         {
             "object_name": object_name,
@@ -60,5 +58,5 @@ async def animate_cloth_parameters(
             "keyframes": [item.model_dump() for item in keyframes],
             "policy": policy,
         },
-        [object_name],
+        changed_objects=[object_name],
     )

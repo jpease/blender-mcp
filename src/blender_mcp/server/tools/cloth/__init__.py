@@ -1,6 +1,5 @@
 """Production cloth simulation MCP tools grouped by workflow responsibility."""
 
-from ._shared import _call as _call
 from .animation import *  # ruff: ignore[undefined-local-with-import-star]
 from .attachment import *  # ruff: ignore[undefined-local-with-import-star]
 from .character_setup import *  # ruff: ignore[undefined-local-with-import-star]

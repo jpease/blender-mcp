@@ -4,6 +4,7 @@ import asyncio
 
 from test_mutation_transaction import _load_addon
 
+from blender_mcp.server.tools import _dispatch
 from blender_mcp.server.tools import liquid as fluid
 
 
@@ -28,12 +29,14 @@ def test_canonical_fluid_tools_are_registered_and_dispatched(monkeypatch) -> Non
     }
     assert commands <= set(fluid.mcp._tool_manager._tools)
     assert commands <= set(addon.BlenderMCPServer()._build_command_handlers())
-    assert "inspect_fluid_simulation" in addon.BlenderMCPServer._READ_ONLY_COMMANDS
+    assert addon.BlenderMCPServer.command_spec("inspect_fluid_simulation").read_only
 
 
 def test_gas_solver_patch_uses_canonical_domain_discriminator(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(fluid, "_call", lambda command, params, _changed=None: connection.send_command(command, params))
+    monkeypatch.setattr(
+        _dispatch, "send_command", lambda command, params=None: connection.send_command(command, params)
+    )
 
     asyncio.run(
         fluid.configure_fluid_solver(

@@ -18,7 +18,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import rendering
+from blender_mcp.server.tools import _dispatch, image_capture, rendering
 
 RENDER_COMMANDS = {
     "inspect_render_setup",
@@ -44,10 +44,10 @@ def test_render_tools_are_registered_and_dispatched(monkeypatch) -> None:
 
     assert RENDER_COMMANDS <= set(rendering.mcp._tool_manager._tools)
     assert RENDER_COMMANDS <= set(server._build_command_handlers())
-    assert "inspect_render_setup" in server._READ_ONLY_COMMANDS
-    assert "inspect_render_output" in server._READ_ONLY_COMMANDS
-    assert "configure_render_settings" not in server._READ_ONLY_COMMANDS
-    assert "manage_view_layers" not in server._READ_ONLY_COMMANDS
+    assert server.command_spec("inspect_render_setup").read_only
+    assert server.command_spec("inspect_render_output").read_only
+    assert not server.command_spec("configure_render_settings").read_only
+    assert not server.command_spec("manage_view_layers").read_only
 
 
 def test_render_settings_patch_is_strict_and_bounded() -> None:
@@ -88,7 +88,7 @@ def test_view_layer_patch_is_strict_and_cryptomatte_depth_is_even() -> None:
 
 def test_configure_render_settings_serializes_patch(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = asyncio.run(
         rendering.configure_render_settings(
@@ -116,7 +116,7 @@ def test_configure_render_settings_serializes_patch(monkeypatch) -> None:
 
 def test_render_settings_nested_engine_and_output_patches_serialize(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
     patch = rendering.RenderSettingsPatch(
         engine="CYCLES",
         cycles=rendering.CyclesPatch(samples=128, use_adaptive_sampling=True),
@@ -133,7 +133,7 @@ def test_render_settings_nested_engine_and_output_patches_serialize(monkeypatch)
 
 def test_render_inspection_serializes_bounded_graph_request(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(
         rendering.inspect_render_setup(
@@ -149,7 +149,7 @@ def test_render_inspection_serializes_bounded_graph_request(monkeypatch) -> None
 
 def test_view_layer_and_render_confirmation_rules(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     with pytest.raises(ToolError, match="PATCH requires"):
         asyncio.run(
@@ -215,7 +215,7 @@ def test_inspect_render_output_is_async_and_returns_the_image_with_its_envelope(
         return {"width": 500, "height": 300, "source": "output_path", "source_path": "/tmp/render.png"}
 
     connection.send_command = fake_send_command
-    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     items = asyncio.run(rendering.inspect_render_output(ctx=None, output_path="/tmp/render.png", max_size=500))
 
@@ -243,8 +243,8 @@ def test_inspect_render_output_tempfile_is_removed_when_blender_fails(monkeypatc
         descriptor = os.open(rendered, os.O_CREAT | os.O_RDWR)
         return descriptor, str(rendered)
 
-    monkeypatch.setattr(rendering, "get_blender_connection", _FailingConnection)
-    monkeypatch.setattr(rendering.tempfile, "mkstemp", fake_mkstemp)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", _FailingConnection)
+    monkeypatch.setattr(image_capture.tempfile, "mkstemp", fake_mkstemp)
 
     with pytest.raises(Exception, match="Render output inspection failed"):
         asyncio.run(rendering.inspect_render_output(ctx=None))
@@ -447,7 +447,7 @@ def test_configure_render_settings_reports_a_patch_that_writes_nothing(monkeypat
 
 def test_configure_render_settings_forwards_detail(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(
         rendering.configure_render_settings(
@@ -559,7 +559,7 @@ def test_render_setup_reports_whether_ray_tracing_is_on(monkeypatch) -> None:
 
 def test_eevee_patch_carries_the_ray_tracing_controls_to_blender(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
     patch = rendering.RenderSettingsPatch(
         engine="BLENDER_EEVEE",
         eevee=rendering.EeveePatch(
@@ -836,7 +836,7 @@ def test_plan_render_animation_is_registered_and_read_only(monkeypatch) -> None:
     server = addon.BlenderMCPServer()
 
     assert "plan_render_animation" in server._build_command_handlers()
-    assert "plan_render_animation" in server._READ_ONLY_COMMANDS
+    assert server.command_spec("plan_render_animation").read_only
 
 
 # ---------------------------------------------------------------------------
@@ -872,6 +872,52 @@ def _fake_still_reply(frame, path, *, bytes_written=5, render_slot_policy="USE_A
     }
 
 
+def _animation_plan(frame_count=3):
+    """One plan_render_animation reply, as the orchestrator receives it."""
+    return {
+        "requested_filepath": "//renders/beat_",
+        "output": "/tmp/beat_",
+        "frame_current": 1,
+        "frames": [{"frame": f, "path": f"/tmp/beat_{f:04d}.png"} for f in range(1, frame_count + 1)],
+    }
+
+
+def _animation_outcome(
+    *,
+    verify_passes=False,
+    detail=False,
+    cancelled=False,
+    cancellation_reason=None,
+    duration_seconds=0.05,
+    persisted=False,
+):
+    """Build the request/outcome pair the aggregator reads everything but the plan and replies from."""
+    request = rendering._RenderRequest(
+        scene_name="Scene",
+        filepath="//renders/beat_",
+        mode="ANIMATION",
+        view_layer_name=None,
+        frame=None,
+        max_animation_frames=250,
+        confirm_render=True,
+        confirm_overwrite=False,
+        confirm_frame_range=False,
+        render_slot_policy="NEW_SLOT",
+        verify_outputs=True,
+        verify_passes=verify_passes,
+        max_duration_seconds=None,
+        persist_output=False,
+        detail=detail,
+    )
+    return rendering._AnimationOutcome(
+        request=request,
+        cancelled=cancelled,
+        cancellation_reason=cancellation_reason,
+        duration_seconds=duration_seconds,
+        persisted=persisted,
+    )
+
+
 def test_aggregate_animation_summary_combines_per_frame_replies(monkeypatch) -> None:
     replies = [
         _fake_still_reply(1, "/tmp/beat_0001.png", render_slot_policy="NEW_SLOT"),
@@ -880,18 +926,7 @@ def test_aggregate_animation_summary_combines_per_frame_replies(monkeypatch) -> 
     ]
 
     summary = rendering._aggregate_animation_summary(
-        scene_name="Scene",
-        output="/tmp/beat_",
-        frame_current=1,
-        render_slot_policy="NEW_SLOT",
-        persisted=False,
-        verify_passes=True,
-        frame_replies=replies,
-        frame_count_planned=3,
-        cancelled=False,
-        cancellation_reason=None,
-        duration_seconds=0.05,
-        detail=False,
+        _animation_plan(3), replies, _animation_outcome(verify_passes=True)
     )
 
     assert summary == {
@@ -919,20 +954,7 @@ def test_aggregate_animation_summary_combines_per_frame_replies(monkeypatch) -> 
 def test_aggregate_animation_summary_detail_adds_files_and_progress() -> None:
     replies = [_fake_still_reply(f, f"/tmp/beat_{f:04d}.png") for f in (1, 2, 3)]
 
-    detailed = rendering._aggregate_animation_summary(
-        scene_name="Scene",
-        output="/tmp/beat_",
-        frame_current=1,
-        render_slot_policy="NEW_SLOT",
-        persisted=False,
-        verify_passes=False,
-        frame_replies=replies,
-        frame_count_planned=3,
-        cancelled=False,
-        cancellation_reason=None,
-        duration_seconds=0.05,
-        detail=True,
-    )
+    detailed = rendering._aggregate_animation_summary(_animation_plan(3), replies, _animation_outcome(detail=True))
 
     assert [entry["frame"] for entry in detailed["files"]] == [1, 2, 3]
     assert [entry["completed"] for entry in detailed["progress"]] == [1, 2, 3]
@@ -944,18 +966,9 @@ def test_aggregate_animation_summary_reports_a_cancelled_partial_run() -> None:
     replies = [_fake_still_reply(1, "/tmp/beat_0001.png"), _fake_still_reply(2, "/tmp/beat_0002.png")]
 
     summary = rendering._aggregate_animation_summary(
-        scene_name="Scene",
-        output="/tmp/beat_",
-        frame_current=1,
-        render_slot_policy="NEW_SLOT",
-        persisted=False,
-        verify_passes=False,
-        frame_replies=replies,
-        frame_count_planned=3,
-        cancelled=True,
-        cancellation_reason="max_duration_seconds exceeded",
-        duration_seconds=0.02,
-        detail=False,
+        _animation_plan(3),
+        replies,
+        _animation_outcome(cancelled=True, cancellation_reason="max_duration_seconds exceeded", duration_seconds=0.02),
     )
 
     assert summary["status"] == "CANCELLED"
@@ -967,18 +980,9 @@ def test_aggregate_animation_summary_reports_a_cancelled_partial_run() -> None:
 def test_aggregate_animation_summary_zero_completed_frames_reports_empty_not_stale() -> None:
     """Cancelled before frame 1 ever rendered: nothing to report, not a guess from a prior render."""
     summary = rendering._aggregate_animation_summary(
-        scene_name="Scene",
-        output="/tmp/beat_",
-        frame_current=1,
-        render_slot_policy="NEW_SLOT",
-        persisted=False,
-        verify_passes=False,
-        frame_replies=[],
-        frame_count_planned=3,
-        cancelled=True,
-        cancellation_reason="max_duration_seconds exceeded",
-        duration_seconds=0.0,
-        detail=False,
+        _animation_plan(3),
+        [],
+        _animation_outcome(cancelled=True, cancellation_reason="max_duration_seconds exceeded", duration_seconds=0.0),
     )
 
     assert summary["frame_count"] == 0
@@ -992,18 +996,9 @@ def test_aggregate_animation_summary_zero_completed_frames_reports_empty_not_sta
 def test_aggregate_animation_summary_raises_when_verify_passes_finds_none() -> None:
     with pytest.raises(RuntimeError, match="no enabled passes could be verified"):
         rendering._aggregate_animation_summary(
-            scene_name="Scene",
-            output="/tmp/beat_",
-            frame_current=1,
-            render_slot_policy="NEW_SLOT",
-            persisted=False,
-            verify_passes=True,
-            frame_replies=[],
-            frame_count_planned=3,
-            cancelled=True,
-            cancellation_reason="max_duration_seconds exceeded",
-            duration_seconds=0.0,
-            detail=False,
+            _animation_plan(3),
+            [],
+            _animation_outcome(verify_passes=True, cancelled=True, cancellation_reason="max_duration_seconds exceeded"),
         )
 
 
@@ -1045,7 +1040,7 @@ class _FakeReportProgressContext:
 
 def test_orchestrated_animation_calls_plan_then_one_still_per_frame_then_persists(monkeypatch) -> None:
     connection = _AnimationConnection(frame_count=3)
-    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
     ctx = _FakeReportProgressContext()
 
     envelope = asyncio.run(
@@ -1091,7 +1086,7 @@ def test_orchestrated_animation_calls_plan_then_one_still_per_frame_then_persist
 
 def test_orchestrated_animation_rejects_frame_with_animation_mode(monkeypatch) -> None:
     connection = _AnimationConnection()
-    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     with pytest.raises(ToolError, match="frame is only valid for STILL renders"):
         asyncio.run(
@@ -1108,7 +1103,7 @@ def test_orchestrated_animation_rejects_frame_with_animation_mode(monkeypatch) -
 
 def test_orchestrate_animation_false_uses_the_single_legacy_call(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(
         rendering.render_scene(
@@ -1144,7 +1139,7 @@ def test_orchestrated_animation_cancellation_lands_between_frames_and_skips_pers
             return super().send_command(command, params)
 
     connection = _GatedAnimationConnection(frame_count=5, block_at_frame=2)
-    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
     ctx = _FakeReportProgressContext()
 
     async def drive():

@@ -1,7 +1,5 @@
 """One merged tool patching any combination of cloth-solver concerns."""
 
-import asyncio
-
 from collections.abc import Callable
 from typing import Annotated, Any
 
@@ -9,8 +7,9 @@ from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ...app import mcp
+from .._dispatch import call_blender
 from ..envelope import ok
-from ._shared import _call, _dump, _StrictModel
+from ._shared import _dump, _StrictModel
 from .collisions import ClothColliderPatch, ClothCollisionPatch
 from .dynamics import (
     ClothFieldWeightsPatch,
@@ -244,7 +243,7 @@ async def configure_cloth(
         if section is None:
             continue
         command, params, default_changed = build(object_name, modifier_name, section)
-        section_result = await asyncio.to_thread(_call, command, params, default_changed)
+        section_result = await call_blender(command, params, changed_objects=default_changed)
         data[name] = section_result.get("data")
         all_ok = all_ok and bool(section_result.get("ok", True))
         warnings.extend(section_result.get("warnings") or [])

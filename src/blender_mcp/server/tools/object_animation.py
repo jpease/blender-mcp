@@ -1,15 +1,12 @@
 """Typed tool for generic object transform keyframing (location/rotation/scale, local or world space)."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..app import mcp
-from ..connection import get_blender_connection
-from .envelope import envelope_for
+from ._dispatch import call_blender
 from .key_style import HandleType, Interpolation
 
 _MAX_FRAME = 1_048_574
@@ -42,11 +39,6 @@ class ObjectTransformKeyframe(BaseModel):
         ):
             raise ValueError("supply at least one of location, rotation_euler, rotation_quaternion, or scale")
         return self
-
-
-async def _call(command: str, params: dict, *, changed_resources: list[str] | None = None) -> dict:
-    result = await asyncio.to_thread(get_blender_connection().send_command, command, params)
-    return envelope_for(result, changed_resources=changed_resources or ())
 
 
 @mcp.tool()
@@ -90,7 +82,7 @@ async def keyframe_object_transform(
             f"action_name='{action_name}' names one action, but this batch keys several objects: an object "
             "holds one action, so call keyframe_object_transform once per object"
         )
-    return await _call(
+    return await call_blender(
         "keyframe_object_transform",
         {
             "keyframes": [record.model_dump(exclude_none=True) for record in keyframes],

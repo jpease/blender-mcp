@@ -2,15 +2,14 @@
 # ruff: file-ignore[multi-line-summary-second-line]
 """One typed entry point that turns container/source intent into a complete liquid setup."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ...app import mcp
-from ._shared import _call, _dump, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _dump, _StrictModel
 from .delivery import ProxyEffectorSettings
 from .inspection_and_setup import (
     CacheType,
@@ -118,8 +117,7 @@ async def setup_liquid_shot(
     the returned ``simulation_id``.
     """
     solver_patch, mesh_patch = profile_patches(quality)
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "setup_liquid_shot",
         {
             "scene_name": scene_name,
@@ -144,7 +142,7 @@ async def setup_liquid_shot(
             "spill_catch_margin": spill_catch_margin,
             "dry_run": dry_run,
         },
-        None if dry_run else _changed_objects(containers, sources, domain_object_name),
+        changed_objects=None if dry_run else _changed_objects(containers, sources, domain_object_name),
     )
 
 

@@ -1,7 +1,5 @@
 """Typed tools for aiming, targeting, framing, and constraining cameras."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
@@ -9,7 +7,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import ConstraintSpace, FollowForwardAxis, LockAxis, TrackAxis, UpAxis, _call, _tool_params
+from .._dispatch import call_blender
+from ._shared import ConstraintSpace, FollowForwardAxis, LockAxis, TrackAxis, UpAxis, _tool_params
 
 TrackingConstraint = Literal["TRACK_TO", "DAMPED_TRACK", "LOCKED_TRACK"]
 FramePolicy = Literal["MOVE_CAMERA", "CHANGE_LENS", "CHANGE_ORTHO_SCALE"]
@@ -60,8 +59,7 @@ async def point_camera_at(
         # The handler rejects this against the resolved target too (a target_object_name only
         # resolves inside Blender), but when both points are literal the round trip buys nothing.
         raise ToolError(f"camera_location {list(camera_location)} is the same point as target_point")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "point_camera_at",
         {
             "scene_name": scene_name,
@@ -71,7 +69,7 @@ async def point_camera_at(
             "subtarget": subtarget,
             "camera_location": camera_location,
         },
-        [camera_name],
+        changed_objects=[camera_name],
     )
 
 
@@ -97,8 +95,7 @@ async def create_camera_target(
     """
     if (location is None) == (target_object_name is None):
         raise ToolError("Supply exactly one of location or target_object_name")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_camera_target",
         {
             "scene_name": scene_name,
@@ -134,8 +131,7 @@ async def frame_camera_on_objects(
     """
     if not object_names:
         raise ToolError("object_names must not be empty")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "frame_camera_on_objects",
         {
             "scene_name": scene_name,
@@ -145,7 +141,7 @@ async def frame_camera_on_objects(
             "policy": policy,
             "aim_at_center": aim_at_center,
         },
-        [camera_name],
+        changed_objects=[camera_name],
     )
 
 
@@ -187,4 +183,4 @@ async def add_camera_constraint(
         )
     if constraint_type.startswith("LIMIT_") and minimum is None and maximum is None:
         raise ToolError("Limit constraints require minimum and/or maximum")
-    return await asyncio.to_thread(_call, "add_camera_constraint", _tool_params(locals()), [owner_name])
+    return await call_blender("add_camera_constraint", _tool_params(locals()), changed_objects=[owner_name])

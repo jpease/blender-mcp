@@ -1525,6 +1525,7 @@
       "offset",
       "selected_only"
     ],
+    "get_nd_status": [],
     "get_object_info": [
       "limit",
       "name",
@@ -2001,6 +2002,7 @@
       "operations",
       "target"
     ],
+    "ping": [],
     "plan_render_animation": [
       "confirm_frame_range",
       "filepath",
@@ -2541,5 +2543,5 @@
       "scope"
     ]
   },
-  "protocol_version": 33
+  "protocol_version": 34
 }

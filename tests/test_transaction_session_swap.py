@@ -185,7 +185,7 @@ def test_the_datablock_replacing_set_is_the_three_library_commands_and_nothing_r
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    A dedicated constant, disjoint from the swap set and from `_READ_ONLY_COMMANDS`.
+    A dedicated spec field, disjoint from the swap flag and from `read_only`.
 
     The swap set drives the drain loop's file-swap barrier; merging these into it
     would discard a batch on every reload. Adding them to the read-only set would
@@ -193,12 +193,13 @@ def test_the_datablock_replacing_set_is_the_three_library_commands_and_nothing_r
     """
     data = _data_with_libraries()
     addon, _bpy = _load_addon(monkeypatch, data=data)
-    server, _core, _session, _txn = _modules(addon)
+    _server, server_core, _session, _txn = _modules(addon)
 
-    assert set(server._DATABLOCK_REPLACING_COMMANDS) == set(_LIBRARY_COMMANDS)
-    assert not set(server._DATABLOCK_REPLACING_COMMANDS) & set(server._SESSION_SWAP_COMMANDS)
-    assert not set(server._DATABLOCK_REPLACING_COMMANDS) & set(server._READ_ONLY_COMMANDS)
-    assert "link_canon_library" not in server._DATABLOCK_REPLACING_COMMANDS
+    replacing = {name for name, spec in server_core.COMMANDS.items() if spec.datablock_replacing}
+    assert replacing == set(_LIBRARY_COMMANDS)
+    assert not {name for name in replacing if server_core.COMMANDS[name].session_swap}
+    assert not {name for name in replacing if server_core.COMMANDS[name].read_only}
+    assert "link_canon_library" not in replacing
 
 
 def test_a_library_replacing_command_never_reaches_mutation_transaction(monkeypatch: pytest.MonkeyPatch) -> None:

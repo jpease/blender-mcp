@@ -1,13 +1,10 @@
 """Typed tools for scene render configuration, view layers, passes, and rendering."""
 
 import asyncio
-import contextlib
-import logging
-import os
-import tempfile
 import time
 
-from pathlib import Path
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context, Image
@@ -15,14 +12,14 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..app import mcp
-from ..connection import get_blender_connection
-from .envelope import envelope_for, ok
+from ._dispatch import call_blender, send_blender_command, send_command
+from .envelope import envelope_for
+from .image_capture import capture_png
 
-logger = logging.getLogger("BlenderMCPServer")
-
-# Matches the addon's own render_scene(mode="ANIMATION") progress-array cap
-# (bundled/addon/handlers/rendering.py), so an orchestrated run's detail=True reply truncates
-# "progress" at the same length a single-call ANIMATION already does.
+# How many per-frame progress records a detail=True ANIMATION reply carries. Its twin is
+# `_PROGRESS_ENTRY_LIMIT` in `src/blender_mcp/bundled/addon/handlers/rendering.py`, which caps
+# the single-call path at the same length: one animation must truncate identically however it
+# was driven. Change one and change the other.
 _PROGRESS_ENTRY_LIMIT = 1000
 
 
@@ -208,15 +205,6 @@ class ViewLayerPatch(BaseModel):
         return self
 
 
-async def _send(command: str, params: dict) -> dict:
-    return await asyncio.to_thread(get_blender_connection().send_command, command, params)
-
-
-async def _call(command: str, params: dict, *, changed_resources: list[str] | None = None) -> dict:
-    result = await _send(command, params)
-    return envelope_for(result, changed_resources=changed_resources or ())
-
-
 @mcp.tool()
 async def inspect_render_setup(
     ctx: Context,
@@ -226,7 +214,7 @@ async def inspect_render_setup(
     offset: Annotated[int, Field(ge=0)] = 0,
 ) -> dict:
     """Inspect render engine, output, color, camera, view layers, passes, and compositor state."""
-    return await _call(
+    return await call_blender(
         "inspect_render_setup",
         {"scene_name": scene_name, "graph_sections": graph_sections, "limit": limit, "offset": offset},
     )
@@ -251,7 +239,7 @@ async def configure_render_settings(
             metadata, multiview, every view layer, compositor - instead of the patched paths.
 
     """
-    return await _call(
+    return await call_blender(
         "configure_render_settings",
         {"scene_name": scene_name, "patch": patch.model_dump(exclude_none=True), "detail": detail},
         changed_resources=[scene_name],
@@ -274,7 +262,7 @@ async def manage_view_layers(
         raise ToolError("REMOVE does not accept patch")
     if action == "REMOVE" and not confirm_remove:
         raise ToolError("confirm_remove=True is required for REMOVE")
-    return await _call(
+    return await call_blender(
         "manage_view_layers",
         {
             "scene_name": scene_name,
@@ -287,77 +275,174 @@ async def manage_view_layers(
     )
 
 
-def _aggregate_animation_summary(
+@dataclass(frozen=True, slots=True)
+class _RenderRequest:
+    """
+    One render_scene call's arguments, so the same request is spelled exactly once.
+
+    The tool signature, the single-call payload and each orchestrated frame's payload all
+    describe the same render. Holding them as one value object is what stops a parameter added
+    to the signature from reaching only two of the three.
+    """
+
+    scene_name: str
+    filepath: str | None
+    mode: str
+    view_layer_name: str | None
+    frame: int | None
+    max_animation_frames: int
+    confirm_render: bool
+    confirm_overwrite: bool
+    confirm_frame_range: bool
+    render_slot_policy: str
+    verify_outputs: bool
+    verify_passes: bool
+    max_duration_seconds: float | None
+    persist_output: bool
+    detail: bool
+
+    def payload(self) -> dict:
+        """
+        Build the params the addon's own render_scene command takes.
+
+        Returns:
+            dict: Every field of this request, under the addon's parameter names.
+
+        """
+        return {
+            "scene_name": self.scene_name,
+            "filepath": self.filepath,
+            "mode": self.mode,
+            "view_layer_name": self.view_layer_name,
+            "frame": self.frame,
+            "max_animation_frames": self.max_animation_frames,
+            "confirm_render": self.confirm_render,
+            "confirm_overwrite": self.confirm_overwrite,
+            "confirm_frame_range": self.confirm_frame_range,
+            "render_slot_policy": self.render_slot_policy,
+            "verify_outputs": self.verify_outputs,
+            "verify_passes": self.verify_passes,
+            "max_duration_seconds": self.max_duration_seconds,
+            "persist_output": self.persist_output,
+            "detail": self.detail,
+        }
+
+    def frame_payload(self, entry: dict, *, first: bool) -> dict:
+        """
+        Build the params for one frame of an orchestrated ANIMATION.
+
+        Args:
+            entry: One plan_render_animation frame record: its "frame" number and "path".
+            first: Whether this is the run's first frame, which alone chooses the render slot.
+
+        Returns:
+            dict: A STILL render of that one frame, to that one path.
+
+        """
+        # A NEW_SLOT is created once per call, so honouring the caller's policy on every frame
+        # would scatter one animation across N slots. The first frame chooses; the rest follow.
+        render_slot_policy = self.render_slot_policy if first else "USE_ACTIVE"
+        return {
+            "scene_name": self.scene_name,
+            "filepath": entry["path"],
+            "mode": "STILL",
+            "view_layer_name": self.view_layer_name,
+            "frame": entry["frame"],
+            "confirm_overwrite": self.confirm_overwrite,
+            "render_slot_policy": render_slot_policy,
+            "verify_outputs": self.verify_outputs,
+            # The four the orchestrator owns outright rather than forwards: the run as a whole
+            # is already confirmed; passes are verified once over the last frame and the output
+            # template written back once after it, both by the orchestrator; and every frame
+            # must come back detailed whatever the caller asked for, because its "files" record
+            # is what the summary counts, sums and reports first_file/last_file from.
+            "confirm_render": True,
+            "verify_passes": False,
+            "persist_output": False,
+            "detail": True,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class _AnimationOutcome:
+    """
+    How one orchestrated run ended.
+
+    Carries the request it ran so the summary is built from two values - the plan and the
+    outcome - rather than from a dozen loose keywords the caller has to keep in step.
+    """
+
+    request: _RenderRequest
+    cancelled: bool
+    cancellation_reason: str | None
+    duration_seconds: float
+    persisted: bool
+
+
+def _animation_summary(
     *,
     scene_name: str,
+    mode: str,
     output: str,
-    frame_current: int,
-    render_slot_policy: str,
+    frame: int,
+    files: list[dict],
+    frame_total: int,
+    operator_result: list[str],
     persisted: bool,
-    verify_passes: bool,
-    frame_replies: list[dict],
-    frame_count_planned: int,
     cancelled: bool,
     cancellation_reason: str | None,
     duration_seconds: float,
+    render_slot_policy: str,
+    passes: list,
+    pass_verification: str | None,
     detail: bool,
 ) -> dict:
     """
-    Combine N per-frame STILL replies into the exact summary shape a single ANIMATION call returns today.
+    Build a render reply out of the frames that were actually written.
 
-    frame_replies is one detail=True render_scene(mode="STILL") reply per completed frame, in
-    render order. passes/pass_verification come from the LAST completed frame, matching the
-    single-call path reading Render Result once, after its whole loop. An empty frame_replies
-    (cancelled before any frame rendered) reports first_file/last_file as None, bytes_written
-    as 0, and passes as empty - honest about there being no render to report on, rather than the
-    single-call path's own quirk of reading whatever Render Result happened to predate the call.
+    This is the one place the shape is spelled on this side of the socket. Its twin is
+    `_animation_summary` in `src/blender_mcp/bundled/addon/handlers/rendering.py`, which builds
+    the same keys from its own render loop; the add-on cannot import this package, so the shape
+    is stated twice and the two must be changed together.
 
     Args:
-        scene_name: Scene the animation rendered against.
-        output: The animation's resolved absolute output template (plan_render_animation's
-            "output").
-        frame_current: The scene's frame_current before this animation started.
-        render_slot_policy: The caller's original request - echoed back, not each per-frame
-            call's own effective value.
-        persisted: Whether the caller's template was actually written back onto the scene.
-        verify_passes: Whether an empty passes list on the last completed frame must raise.
-        frame_replies: Completed per-frame STILL replies, in render order.
-        frame_count_planned: Number of frames plan_render_animation resolved.
-        cancelled: Whether max_duration_seconds stopped the run early.
-        cancellation_reason: Human-readable reason when cancelled, else None.
-        duration_seconds: Wall-clock time the whole orchestrated run took.
+        scene_name: Name of the scene that rendered.
+        mode: "STILL" or "ANIMATION".
+        output: The resolved absolute output path or per-frame template.
+        frame: The frame the reply reports as current.
+        files: One record per written frame, in render order: "frame", "path", "bytes".
+        frame_total: How many frames the run planned, which is what "fraction" divides by.
+        operator_result: The last rendered frame's sorted operator result, or ["FINISHED"]
+            when no frame rendered.
+        persisted: Whether the caller's output template was written back onto the scene.
+        cancelled: Whether the run stopped before every planned frame.
+        cancellation_reason: Why it stopped, or None.
+        duration_seconds: Wall-clock time the run took.
+        render_slot_policy: The caller's requested slot policy, echoed back.
+        passes: Render passes read after the run.
+        pass_verification: How `passes` was established.
         detail: Whether to add the per-frame "files"/"progress" arrays.
 
     Returns:
-        The same summary shape render_scene(mode="ANIMATION") returns for a single call.
-
-    Raises:
-        RuntimeError: If verify_passes is set and the last completed frame captured no passes.
+        dict: The render reply, with "files"/"progress"/"progress_truncated" only when detail.
 
     """
-    last = frame_replies[-1] if frame_replies else None
-    passes = last["passes"] if last else []
-    pass_verification = last["pass_verification"] if last else None
-    if verify_passes and not passes:
-        raise RuntimeError("Render completed but no enabled passes could be verified")
-    files = [reply["files"][0] for reply in frame_replies]
     progress = [
         {
             "frame": entry["frame"],
             "completed": index + 1,
-            "total": frame_count_planned,
-            "fraction": (index + 1) / frame_count_planned,
+            "total": frame_total,
+            "fraction": (index + 1) / frame_total,
         }
-        for index, entry in enumerate(files)
-        if index < _PROGRESS_ENTRY_LIMIT
+        for index, entry in enumerate(files[:_PROGRESS_ENTRY_LIMIT])
     ]
     summary = {
         "scene": scene_name,
-        "mode": "ANIMATION",
+        "mode": mode,
         "filepath": output,
-        "frame": frame_current,
-        "frame_count": len(frame_replies),
-        "operator_result": last["operator_result"] if last else ["FINISHED"],
+        "frame": frame,
+        "frame_count": len(files),
+        "operator_result": operator_result,
         "settings_restored": not persisted,
         "status": "CANCELLED" if cancelled else "COMPLETED",
         "cancelled": cancelled,
@@ -373,108 +458,133 @@ def _aggregate_animation_summary(
     }
     if not detail:
         return summary
-    return {
-        **summary,
-        "files": files,
-        "progress": progress,
-        "progress_truncated": len(files) > len(progress),
-    }
+    return {**summary, "files": files, "progress": progress, "progress_truncated": len(files) > len(progress)}
 
 
-async def _render_animation_orchestrated(
-    ctx: Context,
-    *,
-    scene_name: str,
-    filepath: str | None,
-    view_layer_name: str | None,
-    max_animation_frames: int,
-    confirm_overwrite: bool,
-    confirm_frame_range: bool,
-    render_slot_policy: str,
-    verify_outputs: bool,
-    verify_passes: bool,
-    max_duration_seconds: float | None,
-    persist_output: bool,
-    detail: bool,
-) -> dict:
+def _aggregate_animation_summary(plan: dict, replies: list[dict], outcome: _AnimationOutcome) -> dict:
+    """
+    Combine N per-frame STILL replies into the exact summary shape a single ANIMATION call returns.
+
+    passes/pass_verification come from the LAST completed frame, matching the single-call path
+    reading Render Result once, after its whole loop. An empty `replies` (cancelled before any
+    frame rendered) reports first_file/last_file as None, bytes_written as 0, and passes as
+    empty - honest about there being no render to report on, rather than the single-call path's
+    own quirk of reading whatever Render Result happened to predate the call.
+
+    Args:
+        plan: The plan_render_animation reply this run was driven from.
+        replies: Completed per-frame detail=True STILL replies, in render order.
+        outcome: How the run ended, and the request it ran.
+
+    Returns:
+        dict: The same summary shape render_scene(mode="ANIMATION") returns for a single call.
+
+    Raises:
+        RuntimeError: If verify_passes was set and the last completed frame captured no passes.
+
+    """
+    request = outcome.request
+    last = replies[-1] if replies else None
+    passes = last["passes"] if last else []
+    pass_verification = last["pass_verification"] if last else None
+    if request.verify_passes and not passes:
+        raise RuntimeError("Render completed but no enabled passes could be verified")
+    return _animation_summary(
+        scene_name=request.scene_name,
+        mode="ANIMATION",
+        output=plan["output"],
+        frame=plan["frame_current"],
+        files=[reply["files"][0] for reply in replies],
+        frame_total=len(plan["frames"]),
+        # The last completed frame's operator result, ["FINISHED"] when none completed: the
+        # same value the add-on's twin reports, whose `result` is its last render's and stays
+        # the initial {"FINISHED"} when its loop never ran.
+        operator_result=last["operator_result"] if last else ["FINISHED"],
+        persisted=outcome.persisted,
+        cancelled=outcome.cancelled,
+        cancellation_reason=outcome.cancellation_reason,
+        duration_seconds=outcome.duration_seconds,
+        render_slot_policy=request.render_slot_policy,
+        passes=passes,
+        pass_verification=pass_verification,
+        detail=request.detail,
+    )
+
+
+async def _iter_rendered_frames(request: _RenderRequest, frames: list[dict], started: float) -> AsyncIterator[dict]:
+    """
+    Render each planned frame as its own STILL call, ending early when the deadline trips.
+
+    Owning the deadline here is what lets the caller read cancellation off the arithmetic -
+    fewer replies than frames - instead of carrying a flag and a reason through the loop.
+
+    Args:
+        request: The animation request every frame is narrowed from.
+        frames: plan_render_animation's frame records, in render order.
+        started: The monotonic clock reading the whole run is timed from.
+
+    Yields:
+        dict: One detail=True STILL reply per rendered frame.
+
+    """
+    for index, entry in enumerate(frames):
+        if request.max_duration_seconds is not None and time.monotonic() - started >= request.max_duration_seconds:
+            return
+        yield await send_blender_command("render_scene", request.frame_payload(entry, first=index == 0))
+
+
+async def _render_animation_orchestrated(ctx: Context, request: _RenderRequest) -> dict:
     """
     Drive mode="ANIMATION" as N independent STILL calls to the existing addon render_scene command.
 
     Reports real per-frame progress and lands real MCP cancellation between frames - instead of
     one blocking call Blender's main-thread timer cannot interrupt or report out of until every
-    frame is done.
+    frame is done. Which parts of the request each frame keeps is `_RenderRequest.frame_payload`;
+    persist_output is one of the parts it drops, because render_scene refuses it on a STILL, so
+    a run that completed uncancelled writes the caller's template back with one extra
+    configure_render_settings call instead - what the single-call path does directly.
 
-    render_slot_policy is honoured only on the first per-frame call (a NEW_SLOT would
-    otherwise be created once per frame); every later frame is forced to USE_ACTIVE so all
-    frames land in the slot the first call chose. persist_output is never forwarded to a
-    per-frame call (render_scene refuses persist_output on a STILL); when the whole run
-    completes uncancelled, the caller's template is written back with one extra
-    configure_render_settings call instead, matching what the single-call path does directly.
+    Args:
+        ctx: MCP request context, reported to after every frame.
+        request: The caller's render request.
+
+    Returns:
+        dict: An envelope over the same summary a single ANIMATION call returns.
+
     """
-    plan = await _send(
+    plan = await send_blender_command(
         "plan_render_animation",
         {
-            "scene_name": scene_name,
-            "filepath": filepath,
-            "max_animation_frames": max_animation_frames,
-            "confirm_frame_range": confirm_frame_range,
+            "scene_name": request.scene_name,
+            "filepath": request.filepath,
+            "max_animation_frames": request.max_animation_frames,
+            "confirm_frame_range": request.confirm_frame_range,
         },
     )
     frames = plan["frames"]
     started = time.monotonic()
     replies: list[dict] = []
-    cancelled = False
-    cancellation_reason: str | None = None
-    for index, entry in enumerate(frames):
-        if max_duration_seconds is not None and time.monotonic() - started >= max_duration_seconds:
-            cancelled = True
-            cancellation_reason = "max_duration_seconds exceeded"
-            break
-        reply = await _send(
-            "render_scene",
-            {
-                "scene_name": scene_name,
-                "filepath": entry["path"],
-                "mode": "STILL",
-                "view_layer_name": view_layer_name,
-                "frame": entry["frame"],
-                "confirm_render": True,
-                "confirm_overwrite": confirm_overwrite,
-                "render_slot_policy": render_slot_policy if index == 0 else "USE_ACTIVE",
-                "verify_outputs": verify_outputs,
-                "verify_passes": False,
-                "persist_output": False,
-                "detail": True,
-            },
-        )
+    async for reply in _iter_rendered_frames(request, frames, started):
         replies.append(reply)
         await ctx.report_progress(
-            index + 1, len(frames), message=f"Rendered frame {entry['frame']} ({index + 1}/{len(frames)})"
+            len(replies), len(frames), message=f"Rendered frame {reply['frame']} ({len(replies)}/{len(frames)})"
         )
 
-    completed = len(replies) == len(frames)
-    persisted = bool(persist_output) and not cancelled and completed
+    cancelled = len(replies) < len(frames)
+    persisted = bool(request.persist_output) and not cancelled
     if persisted:
-        await _send(
+        await send_blender_command(
             "configure_render_settings",
-            {"scene_name": scene_name, "patch": {"output": {"filepath": plan["requested_filepath"]}}},
+            {"scene_name": request.scene_name, "patch": {"output": {"filepath": plan["requested_filepath"]}}},
         )
-
-    summary = _aggregate_animation_summary(
-        scene_name=scene_name,
-        output=plan["output"],
-        frame_current=plan["frame_current"],
-        render_slot_policy=render_slot_policy,
-        persisted=persisted,
-        verify_passes=verify_passes,
-        frame_replies=replies,
-        frame_count_planned=len(frames),
+    outcome = _AnimationOutcome(
+        request=request,
         cancelled=cancelled,
-        cancellation_reason=cancellation_reason,
+        cancellation_reason="max_duration_seconds exceeded" if cancelled else None,
         duration_seconds=time.monotonic() - started,
-        detail=detail,
+        persisted=persisted,
     )
-    return envelope_for(summary, changed_resources=[scene_name])
+    return envelope_for(_aggregate_animation_summary(plan, replies, outcome), changed_resources=[request.scene_name])
 
 
 @mcp.tool()
@@ -529,42 +639,26 @@ async def render_scene(
         raise ToolError("confirm_render=True is required")
     if mode == "ANIMATION" and frame is not None:
         raise ToolError("frame is only valid for STILL renders")
-    if mode == "ANIMATION" and orchestrate_animation:
-        return await _render_animation_orchestrated(
-            ctx,
-            scene_name=scene_name,
-            filepath=filepath,
-            view_layer_name=view_layer_name,
-            max_animation_frames=max_animation_frames,
-            confirm_overwrite=confirm_overwrite,
-            confirm_frame_range=confirm_frame_range,
-            render_slot_policy=render_slot_policy,
-            verify_outputs=verify_outputs,
-            verify_passes=verify_passes,
-            max_duration_seconds=max_duration_seconds,
-            persist_output=persist_output,
-            detail=detail,
-        )
-    return await _call(
-        "render_scene",
-        {
-            "scene_name": scene_name,
-            "filepath": filepath,
-            "mode": mode,
-            "view_layer_name": view_layer_name,
-            "frame": frame,
-            "max_animation_frames": max_animation_frames,
-            "confirm_render": confirm_render,
-            "confirm_overwrite": confirm_overwrite,
-            "confirm_frame_range": confirm_frame_range,
-            "render_slot_policy": render_slot_policy,
-            "verify_outputs": verify_outputs,
-            "verify_passes": verify_passes,
-            "max_duration_seconds": max_duration_seconds,
-            "persist_output": persist_output,
-            "detail": detail,
-        },
+    request = _RenderRequest(
+        scene_name=scene_name,
+        filepath=filepath,
+        mode=mode,
+        view_layer_name=view_layer_name,
+        frame=frame,
+        max_animation_frames=max_animation_frames,
+        confirm_render=confirm_render,
+        confirm_overwrite=confirm_overwrite,
+        confirm_frame_range=confirm_frame_range,
+        render_slot_policy=render_slot_policy,
+        verify_outputs=verify_outputs,
+        verify_passes=verify_passes,
+        max_duration_seconds=max_duration_seconds,
+        persist_output=persist_output,
+        detail=detail,
     )
+    if mode == "ANIMATION" and orchestrate_animation:
+        return await _render_animation_orchestrated(ctx, request)
+    return await call_blender("render_scene", request.payload())
 
 
 def _render_output_metadata(result: dict) -> dict:
@@ -588,56 +682,6 @@ def _render_output_metadata(result: dict) -> dict:
         "source_path": result.get("source_path"),
         "frame": result.get("frame"),
     }
-
-
-def _read_render_output(output_path: str | None, frame: int | None, max_size: int) -> list[Image | dict]:
-    """
-    Copy one rendered frame out of Blender and read the copy back.
-
-    Every step blocks - a socket round-trip, then a temporary file written by Blender, read here,
-    and deleted - so the whole of it lives in one function for `inspect_render_output` to hand to a
-    single `asyncio.to_thread`.
-
-    Args:
-        output_path: Exact path to an existing rendered file, or None to read the in-memory
-            Render Result.
-        frame: Frame number the Render Result must currently hold; only checked without
-            `output_path`.
-        max_size: Maximum pixel length of the returned image's largest dimension.
-
-    Returns:
-        list[Image | dict]: The rendered frame, then the envelope carrying its metadata.
-
-    Raises:
-        Exception: If Blender wrote no copy, or the command itself failed.
-
-    """
-    temp_path = None
-    try:
-        descriptor, temp_path = tempfile.mkstemp(prefix="blender_mcp_render_output_", suffix=".png")
-        os.close(descriptor)
-        result = get_blender_connection().send_command(
-            "inspect_render_output",
-            {
-                "filepath": temp_path,
-                "output_path": output_path,
-                "frame": frame,
-                "max_size": max_size,
-                "format": "png",
-            },
-        )
-        if not os.path.exists(temp_path):
-            raise Exception("Rendered-frame copy was not created")
-        return [Image(data=Path(temp_path).read_bytes(), format="png"), ok(_render_output_metadata(result))]
-    except Exception as e:
-        logger.error(f"Error inspecting render output: {e!s}")
-        raise Exception(f"Render output inspection failed: {e!s}") from e
-    finally:
-        if temp_path:
-            # Blender may never have written the copy, and the client is owed that failure rather
-            # than a cleanup error on top of it.
-            with contextlib.suppress(FileNotFoundError):
-                os.remove(temp_path)
 
 
 @mcp.tool(structured_output=False)
@@ -683,4 +727,13 @@ async def inspect_render_output(
         Exception: If the operation cannot be completed.
 
     """
-    return await asyncio.to_thread(_read_render_output, output_path, frame, max_size)
+    return await asyncio.to_thread(
+        capture_png,
+        send_command,
+        "inspect_render_output",
+        {"output_path": output_path, "frame": frame, "max_size": max_size},
+        prefix="blender_mcp_render_output_",
+        metadata=_render_output_metadata,
+        failure="Render output inspection failed",
+        missing_file="Rendered-frame copy was not created",
+    )

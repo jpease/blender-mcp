@@ -1,7 +1,5 @@
 """Image datablock inventory, loading, interpretation, and explicit saving."""
 
-import asyncio
-
 from typing import Literal
 
 from mcp.server.fastmcp import Context
@@ -9,7 +7,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import absolute_path, call_blender
+from .._dispatch import call_blender
+from ._shared import absolute_path
 
 
 @mcp.tool()
@@ -27,7 +26,7 @@ async def list_texture_images(
     `truncated` is true. No image pixels are read or changed.
     """
     params = {k: v for k, v in locals().items() if k != "ctx"}
-    return await asyncio.to_thread(call_blender, "list_texture_images", params)
+    return await call_blender("list_texture_images", params)
 
 
 @mcp.tool()
@@ -44,8 +43,7 @@ async def load_texture_image(
     The absolute path must exist, use a supported texture extension, and fit `max_bytes`. Blender
     performs decoding on its main thread. The result distinguishes a reused image from a new one.
     """
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "load_texture_image",
         {"path": absolute_path(path, "path"), "name": name, "check_existing": check_existing, "max_bytes": max_bytes},
     )
@@ -67,8 +65,7 @@ async def configure_texture_image(
     """
     if semantic is None and colorspace is None and alpha_mode is None:
         raise ToolError("Provide semantic, colorspace, or alpha_mode")
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "configure_texture_image",
         {"image_name": image_name, "semantic": semantic, "colorspace": colorspace, "alpha_mode": alpha_mode},
     )
@@ -90,8 +87,7 @@ async def save_texture_image(
     The destination directory must already exist. The image filepath and output settings are
     restored if saving fails; successful results report the actual path and byte size.
     """
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "save_texture_image",
         {
             "image_name": image_name,

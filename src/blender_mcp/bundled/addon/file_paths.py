@@ -18,8 +18,13 @@ reaches a client.
 - Directories: a save target's missing directory is refused unless the caller
   opts in, and `create_save_directory` makes it only after the roots check.
 - Scripts: `wm.open_mainfile` can run Python embedded in a `.blend`. Every call
-  passes `use_scripts=False`, and the handler's `_refuse_scripts_auto_execute`
+  passes `use_scripts=False`, and `handlers/blend_files.refuse_scripts_auto_execute`
   checks the auto-execute preference, which needs `bpy`.
+
+Every decision is a pure function over facts (`inside_roots`, `blend_file_refusal`,
+`save_target_refusal`, `contains`); the shells beside them gather those facts and
+raise. `resolve_blend_path` is the single entry point that runs them in the one
+order that never turns a refusal into an existence oracle.
 
 Free of `bpy` so it can be tested without Blender; the caller expands Blender's
 `//` prefix before `resolve_blend_path`.
@@ -29,7 +34,7 @@ import contextlib
 import os
 import re
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from .text_hygiene import client_safe_name_leaf
 
@@ -129,130 +134,91 @@ def is_blend_header(header: bytes) -> bool:
     return header.startswith(BLEND_MAGIC_PREFIXES)
 
 
-def _require_blend_file(path: str) -> None:
+class PathOutsideRootsError(ValueError):
+    """A path resolved outside every configured root; a caller that has its own roots can tell it apart."""
+
+
+# Named by the policy, not by the path or the roots, which the handshake already
+# reports. One string, because one function refuses.
+ROOTS_REFUSAL = "path is outside the allowed file roots (BLENDERMCP_FILE_ROOTS); see file_roots in get_addon_status"
+
+
+def inside_roots(canonical_candidate: str, canonical_roots: Sequence[str]) -> bool:
     """
-    Refuse a path that is not an existing, readable file with a `.blend` header.
+    Decide by spelling alone whether a path is authorized, from facts already gathered.
+
+    The whole authorization rule, and no filesystem: with no roots configured
+    every path is allowed (the local-artist default the handshake reports), and
+    otherwise the path must lie in one of them. Both sides must already be
+    canonical, or a symlink inside a root could point anywhere.
 
     Args:
-        path: A canonical path.
+        canonical_candidate: The path to place, in `canonical_path` form.
+        canonical_roots: The configured roots, in `canonical_path` form; empty
+            means the permissive default.
 
-    Raises:
-        ValueError: With a message that names no path.
+    Returns:
+        bool: True when the path may be used. False only means no root contains
+        it *by spelling*: a case-insensitive volume spells one directory two
+        ways, which `enforce_roots` settles with `_has_ancestor_directory`.
 
     """
-    if os.path.isdir(path):
-        raise ValueError("path is a directory, not a .blend file")
-    if not os.path.isfile(path):
-        raise ValueError("file does not exist")
-    try:
-        with open(path, "rb") as handle:
-            header = handle.read(BLEND_HEADER_BYTES)
-    except OSError as exc:
-        # OSError's own text carries the path, so it is chained, not quoted.
-        raise ValueError("file could not be read") from exc
+    return not canonical_roots or any(contains(root, canonical_candidate) for root in canonical_roots)
+
+
+def blend_file_refusal(*, is_directory: bool, exists: bool, readable: bool, header: bytes) -> str | None:
+    """
+    Decide whether a path the caller wants to open is an existing, readable `.blend`.
+
+    Args:
+        is_directory: Whether the path names a directory.
+        exists: Whether it names a regular file.
+        readable: Whether its first bytes could be read.
+        header: Those bytes; empty when nothing was read.
+
+    Returns:
+        str | None: None when the file may be opened, else the refusal, which
+        names no path.
+
+    """
+    if is_directory:
+        return "path is a directory, not a .blend file"
+    if not exists:
+        return "file does not exist"
+    if not readable:
+        return "file could not be read"
     if not is_blend_header(header):
-        raise ValueError("file is not a .blend file (unrecognised header)")
+        return "file is not a .blend file (unrecognised header)"
+    return None
 
 
-def _require_save_target(path: str, *, create_directories: bool) -> None:
+def save_target_refusal(
+    *, is_directory: bool, directory_exists: bool, directory_writable: bool, create_directories: bool
+) -> str | None:
     """
-    Refuse a save target whose directory is missing (unless it may be created) or unwritable.
+    Decide whether a path the caller wants to save to can be written.
 
     Args:
-        path: A canonical path.
+        is_directory: Whether the target itself names a directory.
+        directory_exists: Whether the target's parent directory exists.
+        directory_writable: Whether this process may write in it.
         create_directories: True when the caller will create a missing directory
             with `create_save_directory`; its writability is then Blender's to report.
 
-    Raises:
-        ValueError: With a message that names no path.
+    Returns:
+        str | None: None when the target may be written, else the refusal, which
+        names no path.
 
     """
-    if os.path.isdir(path):
-        raise ValueError("path is a directory, not a .blend file")
-    directory = os.path.dirname(path)
-    if not os.path.isdir(directory):
+    if is_directory:
+        return "path is a directory, not a .blend file"
+    if not directory_exists:
         if create_directories:
-            return
-        raise ValueError("target directory does not exist; pass create_directories=true to create it")
-    if not os.access(directory, os.W_OK):
-        raise ValueError("target directory is not writable")
-
-
-def resolve_blend_path(raw: object, *, must_exist: bool, create_directories: bool = False) -> str:
-    """
-    Validate a caller-supplied `.blend` path and return its canonical form.
-
-    Refusals give the reason, never a path: echoing the resolved form would reveal
-    where a symlink or `~` led.
-
-    Args:
-        raw: The path, already passed through `bpy.path.abspath` by the caller.
-        must_exist: True to open or link (the file must exist and carry a
-            `.blend` header); False to save (its directory must be writable).
-        create_directories: For a save, accept a directory that does not exist
-            yet; the caller creates it with `create_save_directory`.
-
-    Returns:
-        str: The canonical path, to check with `enforce_roots` and hand to Blender.
-
-    Callers must refuse a `//` path when no .blend is open: `bpy.path.abspath`
-    then leaves it relative, and it would resolve against the working directory.
-    `handlers/file_lifecycle._expand_blender_relative` does this.
-
-    Raises:
-        ValueError: If the path is refused.
-
-    """
-    if not isinstance(raw, str):
-        raise ValueError("path must be a string")
-    if not raw.strip():
-        raise ValueError("path must not be empty")
-    if "\x00" in raw:
-        raise ValueError("path must not contain a NUL byte")
-    if raw.startswith(BLENDER_RELATIVE_PREFIX):
-        raise ValueError("a Blender-relative path must be expanded by the caller before it is resolved")
-    resolved = canonical_path(raw)
-    if not (_has_blend_suffix(raw) and _has_blend_suffix(resolved)):
-        raise ValueError("path must name a file ending in .blend")
-    if must_exist:
-        _require_blend_file(resolved)
-    else:
-        _require_save_target(resolved, create_directories=create_directories)
-    return resolved
-
-
-def create_save_directory(path: str) -> bool:
-    """
-    Create a canonical save target's missing directory, with its missing parents.
-
-    Call it only with `resolve_blend_path`'s result, after `enforce_roots`. That
-    path is symlink-free, so every directory made is inside the root, unless
-    another local process swaps an ancestor for a symlink in between; trusted
-    deployments accept that window.
-
-    Runs on Blender's main thread, so a dead network mount stalls every client
-    until the mount times out.
-
-    Args:
-        path: The canonical `.blend` target.
-
-    Returns:
-        bool: True when a directory was created, False when it already existed.
-
-    Raises:
-        ValueError: When it cannot be created (a file is in the way, or a parent
-            is unwritable), with a message that names no path.
-
-    """
-    directory = os.path.dirname(path)
-    if os.path.isdir(directory):
-        return False
-    try:
-        os.makedirs(directory, exist_ok=True)
-    except OSError as exc:
-        # OSError's own text carries the path, so it is chained, not quoted.
-        raise ValueError("target directory could not be created") from exc
-    return True
+            return None
+        return "target directory does not exist; pass create_directories=true to create it"
+    if not directory_writable:
+        return "target directory is not writable"
+    return None
 
 
 def contains(canonical_root: str, canonical_candidate: str) -> bool:
@@ -260,10 +226,7 @@ def contains(canonical_root: str, canonical_candidate: str) -> bool:
     Decide by spelling alone whether a canonical root holds a canonical candidate.
 
     `os.path.commonpath` rather than a string prefix test, which accepts
-    `/output-evil` for root `/output`. Both sides must already be canonical:
-    unresolved forms let a symlink inside a root point anywhere. Pure, so the
-    decision is testable without a filesystem; the case-insensitive volume that
-    spells one directory two ways needs `_has_ancestor_directory` instead.
+    `/output-evil` for root `/output`.
 
     Args:
         canonical_root: A root in `canonical_path` form.
@@ -279,42 +242,87 @@ def contains(canonical_root: str, canonical_candidate: str) -> bool:
         return False  # different drives on Windows: not contained by spelling
 
 
+def _require_blend_file(path: str) -> None:
+    """
+    Gather what the filesystem says about an open target, then refuse on `blend_file_refusal`'s verdict.
+
+    Args:
+        path: A canonical path.
+
+    Raises:
+        ValueError: With a message that names no path.
+
+    """
+    is_directory = os.path.isdir(path)
+    exists = not is_directory and os.path.isfile(path)
+    header = b""
+    cause: OSError | None = None
+    if exists:
+        try:
+            with open(path, "rb") as handle:
+                header = handle.read(BLEND_HEADER_BYTES)
+        except OSError as exc:
+            cause = exc
+    refusal = blend_file_refusal(is_directory=is_directory, exists=exists, readable=cause is None, header=header)
+    if refusal is not None:
+        # OSError's own text carries the path, so it is chained, not quoted.
+        raise ValueError(refusal) from cause
+
+
+def _require_save_target(path: str, *, create_directories: bool) -> None:
+    """
+    Gather what the filesystem says about a save target, then refuse on `save_target_refusal`'s verdict.
+
+    Args:
+        path: A canonical path.
+        create_directories: Passed to the verdict.
+
+    Raises:
+        ValueError: With a message that names no path.
+
+    """
+    directory = os.path.dirname(path)
+    directory_exists = os.path.isdir(directory)
+    refusal = save_target_refusal(
+        is_directory=os.path.isdir(path),
+        directory_exists=directory_exists,
+        directory_writable=directory_exists and os.access(directory, os.W_OK),
+        create_directories=create_directories,
+    )
+    if refusal is not None:
+        raise ValueError(refusal)
+
+
 def enforce_roots(path: str, roots: Iterable[str]) -> None:
     """
     Refuse a path outside every configured root; with no roots, allow all.
 
-    Each root is canonicalized once per call, and every root is tried by spelling
-    (`contains`) before any root is tried by `_has_ancestor_directory`: that
-    fallback walks the candidate's ancestors with a `stat` each, so a second root
-    that plainly contains the path must not pay for the first root's walk. The
-    refusal names neither roots nor path, since the handshake already reports the
-    roots.
+    The syscalls behind `inside_roots`' verdict: every root is canonicalized
+    once, and every root is tried by spelling before any root is tried by
+    `_has_ancestor_directory`, whose `stat` walk a second root that plainly
+    contains the path must not pay for.
 
     Args:
-        path: The path to check, normally `resolve_blend_path`'s result.
+        path: The path to check. Canonicalized here, so a caller that has not
+            resolved it cannot weaken the check; `canonical_path` is idempotent,
+            so passing an already-canonical path costs one `realpath`.
         roots: Configured roots; empty means the permissive default.
 
     Raises:
-        ValueError: If roots are configured and none contains the path.
+        PathOutsideRootsError: If roots are configured and none contains the path.
 
     """
-    roots = list(roots)
-    if not roots:
+    canonical_roots = [canonical_path(root) for root in roots]
+    if not canonical_roots:
         return  # the permissive default costs no syscall
     candidate = canonical_path(path)
-    canonical_roots: list[str] = []
-    for root in roots:
-        canonical_root = canonical_path(root)
-        if contains(canonical_root, candidate):
-            return
-        canonical_roots.append(canonical_root)
+    if inside_roots(candidate, canonical_roots):
+        return
     # Only once no root contains the path by spelling: this walks the candidate's
     # ancestors with a `stat` each, and answers the case-insensitive volume.
     if any(_has_ancestor_directory(candidate, canonical_root) for canonical_root in canonical_roots):
         return
-    raise ValueError(
-        "path is outside the allowed file roots (BLENDERMCP_FILE_ROOTS); see file_roots in get_addon_status"
-    )
+    raise PathOutsideRootsError(ROOTS_REFUSAL)
 
 
 def _has_ancestor_directory(candidate: str, root: str) -> bool:
@@ -347,6 +355,95 @@ def _has_ancestor_directory(candidate: str, root: str) -> bool:
         if parent == ancestor:
             return False
         ancestor = parent
+
+
+def resolve_blend_path(raw: object, *, roots: Iterable[str], must_exist: bool, create_directories: bool = False) -> str:
+    """
+    Validate, canonicalize and authorize a caller-supplied `.blend` path.
+
+    The one place a `.blend` path becomes trusted, and the one place the refusal
+    order is decided: the shape the client sent, then the canonical form, then
+    the roots, then the `.blend` name, and only then what is on disk. The roots
+    come before every question this host can answer about the path, so one
+    outside them gets the same refusal whether it names a `.blend`, a directory
+    or nothing; otherwise any path on the machine could be probed for existence.
+
+    Refusals give the reason, never a path: echoing the resolved form would reveal
+    where a symlink or `~` led.
+
+    Args:
+        raw: The path, already passed through `bpy.path.abspath` by the caller.
+        roots: The directories this call may touch; empty allows every path.
+        must_exist: True to open or link (the file must exist and carry a
+            `.blend` header); False to save (its directory must be writable).
+        create_directories: For a save, accept a directory that does not exist
+            yet; the caller creates it with `create_save_directory`.
+
+    Returns:
+        str: The canonical path to hand to Blender. Never hand Blender the raw
+        form: it resolves `..` before symlinks, which is not the path that was
+        checked here.
+
+    Callers must refuse a `//` path when no .blend is open: `bpy.path.abspath`
+    then leaves it relative, and it would resolve against the working directory.
+    `handlers/blend_files._expand_blender_relative` does this.
+
+    Raises:
+        PathOutsideRootsError: If the path lies outside `roots`.
+        ValueError: If the path is refused for any other reason.
+
+    """
+    if not isinstance(raw, str):
+        raise ValueError("path must be a string")
+    if not raw.strip():
+        raise ValueError("path must not be empty")
+    if "\x00" in raw:
+        raise ValueError("path must not contain a NUL byte")
+    if raw.startswith(BLENDER_RELATIVE_PREFIX):
+        raise ValueError("a Blender-relative path must be expanded by the caller before it is resolved")
+    resolved = canonical_path(raw)
+    enforce_roots(resolved, roots)
+    if not (_has_blend_suffix(raw) and _has_blend_suffix(resolved)):
+        raise ValueError("path must name a file ending in .blend")
+    if must_exist:
+        _require_blend_file(resolved)
+    else:
+        _require_save_target(resolved, create_directories=create_directories)
+    return resolved
+
+
+def create_save_directory(path: str) -> bool:
+    """
+    Create a canonical save target's missing directory, with its missing parents.
+
+    Call it only with `resolve_blend_path`'s result. That path is symlink-free
+    and inside the roots, so every directory made is inside the root, unless
+    another local process swaps an ancestor for a symlink in between; trusted
+    deployments accept that window.
+
+    Runs on Blender's main thread, so a dead network mount stalls every client
+    until the mount times out.
+
+    Args:
+        path: The canonical `.blend` target.
+
+    Returns:
+        bool: True when a directory was created, False when it already existed.
+
+    Raises:
+        ValueError: When it cannot be created (a file is in the way, or a parent
+            is unwritable), with a message that names no path.
+
+    """
+    directory = os.path.dirname(path)
+    if os.path.isdir(directory):
+        return False
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError as exc:
+        # OSError's own text carries the path, so it is chained, not quoted.
+        raise ValueError("target directory could not be created") from exc
+    return True
 
 
 def sanitize_blender_error(exc: BaseException, known_paths: Iterable[str] = ()) -> str:
@@ -383,7 +480,7 @@ def _leaf_library_name(match: re.Match[str]) -> str:
     """
     Reduce one quoted library name to an admissible leaf, without a filesystem call.
 
-    Uses the same leaf rule as `_library_summary`, which does not stat the
+    Uses the same leaf rule as `handlers/blend_files.library_summary`, which does not stat the
     author-chosen name. The `LI` code is kept for the final strip.
 
     Args:

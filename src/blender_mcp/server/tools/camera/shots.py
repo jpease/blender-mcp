@@ -1,7 +1,5 @@
 """Typed tools for editorial camera markers and the scene render gate."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
@@ -9,7 +7,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field, model_validator
 
 from ...app import mcp
-from ._shared import _call, _dump, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _dump, _StrictModel
 
 MarkerAction = Literal["LIST", "CREATE", "UPDATE", "REMOVE"]
 
@@ -92,8 +91,7 @@ async def create_camera_markers(
     if action == "LIST" and markers:
         raise ToolError("LIST does not accept marker edits")
     payload = [item.model_dump(exclude_none=True) for item in markers or []]
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_camera_markers",
         {"scene_name": scene_name, "action": action, "markers": payload, "replace_existing": replace_existing},
     )
@@ -115,8 +113,7 @@ async def configure_camera_render_gate(
         raise ToolError("Provide at least one render-gate field to change")
     if payloads[3] and camera_name is None:
         raise ToolError("camera_name is required when guides are supplied")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "configure_camera_render_gate",
         {
             "scene_name": scene_name,
@@ -126,5 +123,5 @@ async def configure_camera_render_gate(
             "safe_areas": payloads[2],
             "guides": payloads[3],
         },
-        [camera_name] if camera_name else [],
+        changed_objects=[camera_name] if camera_name else [],
     )

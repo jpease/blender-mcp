@@ -1,4 +1,4 @@
-# ruff: file-ignore[too-many-branches, too-many-locals, too-many-statements, too-many-statements-in-try-clause, undocumented-public-method]
+# ruff: file-ignore[too-many-branches, too-many-locals, too-many-statements, undocumented-public-method]
 """Blender-side scene rendering and view-layer handlers."""
 
 import math
@@ -6,18 +6,11 @@ import os
 import re
 import time
 
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 
 import bpy
 
-from ..render_properties import (
-    CYCLES_PROPERTY_MAPPING,
-    IMAGE_PROPERTY_MAPPING,
-    NESTED_SECTIONS,
-    RENDER_PATCH_PROPERTIES,
-    RENDER_PROPERTIES,
-    SCENE_PROPERTIES,
-)
+from ..render_properties import FLAT_ROUTES, NESTED_SECTIONS, RENDER_PATCH_PROPERTIES
 
 _VIEW_LAYER_PROPERTIES = {
     "use",
@@ -48,6 +41,11 @@ _RENDER_OUTPUT_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".exr", ".tif", 
 # Blender pads a frame number to four digits unless the frame itself needs more (measured on 5.2:
 # "sh010_" -> "sh010_0001.png", frame 12345 -> "sh010_12345.png").
 _FRAME_IN_FILENAME = re.compile(r"(?<![0-9])[0-9]{4}$")
+# How many per-frame progress records a detail=True ANIMATION reply carries. Its twin is
+# `_PROGRESS_ENTRY_LIMIT` in `src/blender_mcp/server/tools/rendering.py`, which caps the
+# orchestrated per-frame path at the same length: one animation must truncate identically
+# however it was driven. Change one and change the other.
+_PROGRESS_ENTRY_LIMIT = 1000
 
 
 def _scene(name):
@@ -319,29 +317,58 @@ def _set_supported(owner, patch, label, mapping=None, applied=None, prefix=""):
     return _set_properties(owner, patch, mapping, applied, prefix)
 
 
+@contextmanager
+def _rolled_back(snapshots):
+    """
+    Undo every property the body wrote if it raises, then re-raise.
+
+    Reverse order, so an owner written by two routes ends on the value it started with.
+
+    Args:
+        snapshots: The (owner, {property: previous value}) list the body appends to as it
+            writes. Read only when the body fails.
+
+    Yields:
+        None.
+
+    Raises:
+        Exception: Whatever the body raised, after the restore.
+
+    """
+    try:
+        yield
+    except Exception:
+        for owner, values in reversed(snapshots):
+            for name, value in values.items():
+                with suppress(Exception):
+                    setattr(owner, name, value)
+        raise
+
+
 def _section_owner(scene, owner_path):
     """
     Walk a `render_properties` owner path from the scene.
 
     Args:
         scene: The scene being patched.
-        owner_path: A dotted path such as `render.image_settings`.
+        owner_path: A dotted path such as `render.image_settings`, or "" for the scene itself.
 
     Returns:
-        The owner struct, or None when this Blender build has no such struct.
+        The owner struct, or None when this Blender build has no such struct - which is also
+        how an engine this build was compiled without (`scene.cycles`) reports itself.
 
     """
     owner = scene
-    for part in owner_path.split("."):
+    for part in owner_path.split(".") if owner_path else ():
         owner = getattr(owner, part, None)
         if owner is None:
             return None
     return owner
 
 
-def _apply_section(scene, section, patch, applied, snapshots):
+def _apply_routes(scene, routes, patch, applied, snapshots, *, prefix):
     """
-    Apply one nested patch section across every owner `NESTED_SECTIONS` routes it to.
+    Apply one group of patch values across every owner `render_properties` routes it to.
 
     Each route but the last claims exactly the keys its mapping names; the last route takes
     whatever is left, with its mapping as a translation table and an identity fallback. That
@@ -349,16 +376,17 @@ def _apply_section(scene, section, patch, applied, snapshots):
 
     Args:
         scene: The scene being patched.
-        section: A key of `NESTED_SECTIONS`.
-        patch: The client's values for that section.
+        routes: `FLAT_ROUTES`, or one section's routes out of `NESTED_SECTIONS`.
+        patch: The client's values for that group.
         applied: The handler's patch-key -> (owner, property) record.
         snapshots: The handler's rollback list, appended to per owner written.
+        prefix: What the group's keys are reported under - "" for the flat routes, whose keys
+            are already the reply's own names.
 
     Raises:
         ValueError: When this Blender build has no such struct, or a key is unsupported.
 
     """
-    routes = NESTED_SECTIONS[section]
     remaining = dict(patch)
     for index, (owner_path, mapping, label) in enumerate(routes):
         is_last = index == len(routes) - 1
@@ -368,7 +396,77 @@ def _apply_section(scene, section, patch, applied, snapshots):
         owner = _section_owner(scene, owner_path)
         if owner is None:
             raise ValueError(f"{label} settings are unavailable in this Blender runtime")
-        snapshots.append((owner, _set_supported(owner, values, label, dict(mapping or {}), applied, f"{section}.")))
+        snapshots.append((owner, _set_supported(owner, values, label, dict(mapping or {}), applied, prefix)))
+
+
+def _pending_sections(scene, patch):
+    """
+    Take the nested sections out of a patch, refuse what this scene cannot take, and order them.
+
+    Args:
+        scene: The scene being patched.
+        patch: The validated client patch.
+
+    Returns:
+        dict: section -> values, in `NESTED_SECTIONS` order rather than the client's key order,
+        so two runs of the same patch write the same owners in the same sequence.
+
+    Raises:
+        ValueError: If a section needs an engine this patch does not leave selected, or its
+            output template names a directory.
+
+    """
+    nested = {key: value for key, value in patch.items() if isinstance(value, dict)}
+    resulting_engine = patch.get("engine", scene.render.engine)
+    if nested.get("cycles") and resulting_engine != "CYCLES":
+        raise ValueError("cycles settings require the CYCLES render engine")
+    if nested.get("eevee") and resulting_engine != "BLENDER_EEVEE":
+        raise ValueError("eevee settings require the BLENDER_EEVEE render engine")
+    pending = {section: dict(values) for section, values in nested.items() if values}
+    # Blender 5.2 keeps the screen-trace controls on a nested RaytraceEEVEE struct,
+    # scene.eevee.ray_tracing_options, so they travel as their own section.
+    ray_tracing = pending.get("eevee", {}).pop("ray_tracing", None)
+    if ray_tracing:
+        pending["eevee.ray_tracing"] = dict(ray_tracing)
+    if pending.get("output", {}).get("filepath") is not None:
+        # Refused here, at the moment it is stored, so a later render that reads the scene's
+        # own template cannot inherit a shape Blender writes beside itself.
+        _refuse_container_output(scene, pending["output"]["filepath"])
+    return {section: pending[section] for section in NESTED_SECTIONS if pending.get(section)}
+
+
+def _patch_reply(scene, applied, *, before, authored_range, detail):
+    """
+    Shape `configure_render_settings`' reply, with or without full before/after render info.
+
+    Args:
+        scene: The patched scene.
+        applied: patch key -> (owner, RNA property) for every key written.
+        before: The pre-patch `_render_info`, when detail was asked for, else None.
+        authored_range: Whether this patch set the scene's frame range, which is reported as
+            its own pseudo-key because it is a scene custom property, not an RNA write.
+        detail: Whether to report the whole render configuration rather than the keys written.
+
+    Returns:
+        dict: "scene", "changed", "changed_resources", and either "before"/"after" render info
+        or an "after" holding just the values this call wrote.
+
+    """
+    changed = sorted([*applied, "frame_range_authored"] if authored_range else applied)
+    if detail:
+        return {
+            "scene": scene.name,
+            "changed": changed,
+            "before": before,
+            "after": _render_info(scene),
+            "changed_resources": [scene.name],
+        }
+    # `applied` holds (owner, property) pairs; the marker is not one, so it is added here
+    # rather than smuggled into a mapping the comprehension below unpacks.
+    after = {path: getattr(owner, name) for path, (owner, name) in applied.items()}
+    if authored_range:
+        after["frame_range_authored"] = True
+    return {"scene": scene.name, "changed": changed, "after": after, "changed_resources": [scene.name]}
 
 
 def _validate_render_patch(patch):
@@ -614,6 +712,90 @@ def _validate_animation_frame_range(scene, max_animation_frames, confirm_frame_r
     return list(range(scene.frame_start, scene.frame_end + 1, scene.frame_step))
 
 
+def _animation_summary(
+    *,
+    scene_name,
+    mode,
+    output,
+    frame,
+    files,
+    frame_total,
+    operator_result,
+    persisted,
+    cancelled,
+    cancellation_reason,
+    duration_seconds,
+    render_slot_policy,
+    passes,
+    pass_verification,
+    detail,
+):
+    """
+    Build a render reply out of the frames that were actually written.
+
+    This is the one place the shape is spelled on this side of the socket. Its twin is
+    `_animation_summary` in `src/blender_mcp/server/tools/rendering.py`, which builds the same
+    keys from N per-frame STILL replies for the orchestrated path; the add-on cannot import the
+    server package, so the shape is stated twice and the two must be changed together.
+
+    Args:
+        scene_name: Name of the scene that rendered.
+        mode: "STILL" or "ANIMATION".
+        output: The resolved absolute output path or per-frame template.
+        frame: The frame the reply reports as current.
+        files: One record per written frame, in render order: "frame", "path", "bytes".
+        frame_total: How many frames the run planned, which is what "fraction" divides by.
+        operator_result: The last rendered frame's sorted operator result, or ["FINISHED"]
+            when no frame rendered.
+        persisted: Whether the caller's output template was written back onto the scene.
+        cancelled: Whether the run stopped before every planned frame.
+        cancellation_reason: Why it stopped, or None.
+        duration_seconds: Wall-clock time the run took.
+        render_slot_policy: The caller's requested slot policy, echoed back.
+        passes: Render passes read after the run.
+        pass_verification: How `passes` was established.
+        detail: Whether to add the per-frame "files"/"progress" arrays.
+
+    Returns:
+        dict: The render reply, with "files"/"progress"/"progress_truncated" only when detail.
+
+    """
+    progress = [
+        {
+            "frame": entry["frame"],
+            "completed": index + 1,
+            "total": frame_total,
+            "fraction": (index + 1) / frame_total,
+        }
+        for index, entry in enumerate(files[:_PROGRESS_ENTRY_LIMIT])
+    ]
+    summary = {
+        "scene": scene_name,
+        "mode": mode,
+        "filepath": output,
+        "frame": frame,
+        "frame_count": len(files),
+        "operator_result": operator_result,
+        "settings_restored": not persisted,
+        "status": "CANCELLED" if cancelled else "COMPLETED",
+        "cancelled": cancelled,
+        "cancellation_reason": cancellation_reason,
+        "duration_seconds": duration_seconds,
+        "render_slot_policy": render_slot_policy,
+        "output_persisted": persisted,
+        "first_file": files[0]["path"] if files else None,
+        "last_file": files[-1]["path"] if files else None,
+        "bytes_written": sum(entry["bytes"] or 0 for entry in files),
+        "passes": passes,
+        "pass_verification": pass_verification,
+    }
+    if not detail:
+        # Absent rather than empty: `envelope._record_pages` shortens a page it can see, and
+        # warning about data nobody asked for spends the reply budget on bookkeeping.
+        return summary
+    return {**summary, "files": files, "progress": progress, "progress_truncated": len(files) > len(progress)}
+
+
 class RenderingHandlersMixin:
     """Expose production render configuration and bounded rendering."""
 
@@ -633,99 +815,23 @@ class RenderingHandlersMixin:
         before = _render_info(scene) if detail else None
         applied = {}
         snapshots = []
-        try:
-            snapshots.append(
-                (
-                    scene.render,
-                    _set_properties(
-                        scene.render,
-                        {k: v for k, v in patch.items() if k in RENDER_PROPERTIES},
-                        applied=applied,
-                    ),
-                )
-            )
-            snapshots.append(
-                (
-                    scene,
-                    _set_properties(scene, {k: v for k, v in patch.items() if k in SCENE_PROPERTIES}, applied=applied),
-                )
-            )
-            snapshots.append(
-                (
-                    scene.render.image_settings,
-                    _set_properties(
-                        scene.render.image_settings,
-                        {k: v for k, v in patch.items() if k in IMAGE_PROPERTY_MAPPING},
-                        IMAGE_PROPERTY_MAPPING,
-                        applied,
-                    ),
-                )
-            )
-            cycles_patch = {k: v for k, v in patch.items() if k in CYCLES_PROPERTY_MAPPING}
-            if cycles_patch:
-                if not hasattr(scene, "cycles"):
-                    raise ValueError("Cycles settings are unavailable in this Blender build")
-                snapshots.append(
-                    (
-                        scene.cycles,
-                        _set_properties(scene.cycles, cycles_patch, CYCLES_PROPERTY_MAPPING, applied),
-                    )
-                )
-            nested = {key: value for key, value in patch.items() if isinstance(value, dict)}
-            resulting_engine = patch.get("engine", scene.render.engine)
-            if nested.get("cycles") and resulting_engine != "CYCLES":
-                raise ValueError("cycles settings require the CYCLES render engine")
-            if nested.get("eevee") and resulting_engine != "BLENDER_EEVEE":
-                raise ValueError("eevee settings require the BLENDER_EEVEE render engine")
-            pending = {section: dict(values) for section, values in nested.items() if values}
-            # Blender 5.2 keeps the screen-trace controls on a nested RaytraceEEVEE struct,
-            # scene.eevee.ray_tracing_options, so they travel as their own section.
-            ray_tracing = pending.get("eevee", {}).pop("ray_tracing", None)
-            if ray_tracing:
-                pending["eevee.ray_tracing"] = dict(ray_tracing)
-            if pending.get("output", {}).get("filepath") is not None:
-                # Refused here, at the moment it is stored, so a later render that reads the
-                # scene's own template cannot inherit a shape Blender writes beside itself.
-                _refuse_container_output(scene, pending["output"]["filepath"])
-            # Table order, not the client's key order, so two runs of the same patch write the
-            # same owners in the same sequence.
-            for section in NESTED_SECTIONS:
-                values = pending.get(section)
-                if values:
-                    _apply_section(scene, section, values, applied, snapshots)
+        with _rolled_back(snapshots):
+            # A non-dict value is a flat property; every nested section arrives as a dict. The
+            # flat routes' last entry takes the remainder, so a flat key no route claims is
+            # refused by name rather than silently skipped.
+            flat = {key: value for key, value in patch.items() if not isinstance(value, dict)}
+            if flat:
+                _apply_routes(scene, FLAT_ROUTES, flat, applied, snapshots, prefix="")
+            for section, values in _pending_sections(scene, patch).items():
+                _apply_routes(scene, NESTED_SECTIONS[section], values, applied, snapshots, prefix=f"{section}.")
             if scene.frame_end < scene.frame_start:
                 raise ValueError("Resulting frame_end must be greater than or equal to frame_start")
-        except Exception:
-            for owner, values in reversed(snapshots):
-                for name, value in values.items():
-                    with suppress(Exception):
-                        setattr(owner, name, value)
-            raise
         # A scene custom property, so "an MCP call chose this range" survives save and reopen.
         # `render_scene`'s default-range guard reads it; nothing else may write it.
         authored_range = any(key in patch for key in ("frame_start", "frame_end"))
         if authored_range:
             scene["blender_mcp_frame_range_authored"] = True
-        changed = sorted([*applied, "frame_range_authored"] if authored_range else applied)
-        if detail:
-            return {
-                "scene": scene.name,
-                "changed": changed,
-                "before": before,
-                "after": _render_info(scene),
-                "changed_resources": [scene.name],
-            }
-        # `applied` holds (owner, property) pairs; the marker is not one, so it is added here
-        # rather than smuggled into a mapping the comprehension below unpacks.
-        after = {path: getattr(owner, name) for path, (owner, name) in applied.items()}
-        if authored_range:
-            after["frame_range_authored"] = True
-        return {
-            "scene": scene.name,
-            "changed": changed,
-            "after": after,
-            "changed_resources": [scene.name],
-        }
+        return _patch_reply(scene, applied, before=before, authored_range=authored_range, detail=detail)
 
     def manage_view_layers(self, scene_name, action, view_layer_name, patch=None, confirm_remove=False):
         scene = _scene(scene_name)
@@ -898,7 +1004,6 @@ class RenderingHandlersMixin:
         original_frame = scene.frame_current
         started = time.monotonic()
         written_files = []
-        progress = []
         cancelled = False
         completed = False
         render_result = bpy.data.images.get("Render Result")
@@ -913,7 +1018,7 @@ class RenderingHandlersMixin:
                 else [frame if frame is not None else scene.frame_current]
             )
             result = {"FINISHED"}
-            for index, current_frame in enumerate(frames):
+            for current_frame in frames:
                 if max_duration_seconds is not None and time.monotonic() - started >= max_duration_seconds:
                     cancelled = True
                     break
@@ -945,15 +1050,6 @@ class RenderingHandlersMixin:
                         "bytes": os.path.getsize(frame_output) if exists else None,
                     }
                 )
-                if len(progress) < 1000:
-                    progress.append(
-                        {
-                            "frame": current_frame,
-                            "completed": index + 1,
-                            "total": len(frames),
-                            "fraction": (index + 1) / len(frames),
-                        }
-                    )
             completed = True
         finally:
             # The caller's template text, never the resolved absolute path: persisting `output`
@@ -966,37 +1062,26 @@ class RenderingHandlersMixin:
         passes, pass_verification = _render_pass_info(scene, view_layer_name, render_result)
         if verify_passes and not passes:
             raise RuntimeError("Render completed but no enabled passes could be verified")
-        duration = time.monotonic() - started
-        summary = {
-            "scene": scene.name,
-            "mode": mode,
-            "filepath": output,
-            "frame": frame if frame is not None else scene.frame_current,
-            "frame_count": len(written_files),
-            "operator_result": sorted(result),
-            "settings_restored": not persisted,
-            "status": "CANCELLED" if cancelled else "COMPLETED",
-            "cancelled": cancelled,
-            "cancellation_reason": "max_duration_seconds exceeded" if cancelled else None,
-            "duration_seconds": duration,
-            "render_slot_policy": render_slot_policy,
-            "output_persisted": persisted,
-            "first_file": written_files[0]["path"] if written_files else None,
-            "last_file": written_files[-1]["path"] if written_files else None,
-            "bytes_written": sum(entry["bytes"] or 0 for entry in written_files),
-            "passes": passes,
-            "pass_verification": pass_verification,
-        }
-        if not detail:
-            # Absent rather than empty: `envelope._record_pages` shortens a page it can see, and
-            # warning about data nobody asked for spends the reply budget on bookkeeping.
-            return summary
-        return {
-            **summary,
-            "files": written_files,
-            "progress": progress,
-            "progress_truncated": len(written_files) > len(progress),
-        }
+        return _animation_summary(
+            scene_name=scene.name,
+            mode=mode,
+            output=output,
+            frame=frame if frame is not None else scene.frame_current,
+            files=written_files,
+            frame_total=len(frames),
+            # `result` is the last frame's operator result, and stays the initial {"FINISHED"}
+            # when the loop never ran - the same value the orchestrated twin reports by reading
+            # the last per-frame reply, or ["FINISHED"] when there was none.
+            operator_result=sorted(result),
+            persisted=persisted,
+            cancelled=cancelled,
+            cancellation_reason="max_duration_seconds exceeded" if cancelled else None,
+            duration_seconds=time.monotonic() - started,
+            render_slot_policy=render_slot_policy,
+            passes=passes,
+            pass_verification=pass_verification,
+            detail=detail,
+        )
 
     def inspect_render_output(self, filepath, output_path=None, frame=None, max_size=1000, format="png"):
         """

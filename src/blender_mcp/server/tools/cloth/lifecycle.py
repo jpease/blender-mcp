@@ -2,15 +2,14 @@
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
 """Typed tools for managing a cloth's point cache and removing cloth-related components."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import _call, _dump, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _dump, _StrictModel
 
 CacheAction = Literal["INSPECT", "CONFIGURE", "BAKE", "BAKE_FROM_CACHE", "FREE"]
 ClothComponentType = Literal[
@@ -55,8 +54,7 @@ async def manage_cloth_cache(
     Baking into or freeing an external cache directory containing files also requires explicit
     overwrite/deletion confirmation.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "manage_cloth_cache",
         {
             "object_name": object_name,
@@ -68,7 +66,7 @@ async def manage_cloth_cache(
             "confirm_external_overwrite": confirm_external_overwrite,
             "max_bake_frames": max_bake_frames,
         },
-        [] if action == "INSPECT" else [object_name],
+        changed_objects=[] if action == "INSPECT" else [object_name],
     )
 
 
@@ -89,8 +87,7 @@ async def remove_cloth_components(
     Vertex groups, meshes, materials, controls, and external cache files are never deleted. Baked
     cloth or affected baked dependencies require the corresponding explicit confirmation flag.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "remove_cloth_components",
         {
             "object_name": object_name,
@@ -100,5 +97,5 @@ async def remove_cloth_components(
             "confirm_baked_removal": confirm_baked_removal,
             "confirm_affected_bakes": confirm_affected_bakes,
         },
-        [object_name],
+        changed_objects=[object_name],
     )

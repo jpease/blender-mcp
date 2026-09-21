@@ -18,10 +18,33 @@ from collections.abc import Iterable, Mapping
 
 MAX_TRACKED_AUTHORED = 500
 
-_ENTRIES: list[dict[str, str]] = []
-# The same (collection, name) pair twice is one datablock touched twice, not two datablocks.
-_KEYS: set[tuple[str, str]] = set()
-_TRUNCATED = False
+
+class _Ledger:
+    """
+    The one mutable cell the authored list lives in.
+
+    One insertion-ordered dict, not a list plus a membership set: the two had to be
+    evicted from together, and "the keys mirror the entries" was an invariant the
+    code had to keep by hand rather than one the data structure enforced. An
+    instance rather than module globals, matching `session._StateStore` and
+    `transaction._DispatchState`, so a writer needs no `global` statement.
+
+    Attributes:
+        entries: `(collection, name)` -> None, oldest first. The same pair twice is
+            one datablock touched twice, not two datablocks.
+        truncated: True once eviction dropped an older entry.
+
+    """
+
+    __slots__ = ("entries", "truncated")
+
+    def __init__(self) -> None:
+        """Start empty, claiming a complete history because it has one."""
+        self.entries: dict[tuple[str, str], None] = {}
+        self.truncated = False
+
+
+_LEDGER = _Ledger()
 
 
 def record(entries: Iterable[Mapping[str, str]]) -> None:
@@ -32,21 +55,16 @@ def record(entries: Iterable[Mapping[str, str]]) -> None:
         entries: `{"collection": ..., "name": ...}` records, already sanitized.
 
     """
-    global _TRUNCATED  # ruff: ignore[global-statement] - module-level ledger; a singleton class buys nothing
     for entry in entries:
-        collection = str(entry.get("collection", ""))
-        name = str(entry.get("name", ""))
-        key = (collection, name)
-        if key in _KEYS:
+        key = (str(entry.get("collection", "")), str(entry.get("name", "")))
+        if key in _LEDGER.entries:
             continue
-        if len(_ENTRIES) >= MAX_TRACKED_AUTHORED:
-            oldest = _ENTRIES.pop(0)
-            # Discard the evicted key too: keeping it would suppress a later datablock that
-            # legitimately reuses the freed name, forever.
-            _KEYS.discard((oldest["collection"], oldest["name"]))
-            _TRUNCATED = True
-        _ENTRIES.append({"collection": collection, "name": name})
-        _KEYS.add(key)
+        if len(_LEDGER.entries) >= MAX_TRACKED_AUTHORED:
+            # Evicting the key as well as the record: keeping it would suppress a
+            # later datablock that legitimately reuses the freed name, forever.
+            del _LEDGER.entries[next(iter(_LEDGER.entries))]
+            _LEDGER.truncated = True
+        _LEDGER.entries[key] = None
 
 
 def snapshot() -> list[dict[str, str]]:
@@ -57,7 +75,7 @@ def snapshot() -> list[dict[str, str]]:
         list[dict[str, str]]: A copy, so a caller cannot mutate the ledger by holding it.
 
     """
-    return [dict(entry) for entry in _ENTRIES]
+    return [{"collection": collection, "name": name} for collection, name in _LEDGER.entries]
 
 
 def was_truncated() -> bool:
@@ -68,12 +86,10 @@ def was_truncated() -> bool:
         bool: True once anything was evicted.
 
     """
-    return _TRUNCATED
+    return _LEDGER.truncated
 
 
 def clear() -> None:
     """Forget everything: the database this ledger described is gone."""
-    global _TRUNCATED  # ruff: ignore[global-statement] - see `record`
-    _ENTRIES.clear()
-    _KEYS.clear()
-    _TRUNCATED = False
+    _LEDGER.entries.clear()
+    _LEDGER.truncated = False

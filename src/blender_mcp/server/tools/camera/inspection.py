@@ -1,14 +1,12 @@
 """Read-only tools for inspecting and validating camera rigs."""
 
-import asyncio
-
 from typing import Annotated
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import _call
+from .._dispatch import call_blender
 
 
 @mcp.tool()
@@ -30,8 +28,7 @@ async def get_camera_rig_info(
     and a bounded descendant page. Continue pages with the returned next offsets. This tool never
     evaluates another frame and never changes the scene.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "get_camera_rig_info",
         {
             "scene_name": scene_name,
@@ -53,8 +50,6 @@ async def validate_camera_rig(
     sample_frames: Annotated[list[int] | None, Field(max_length=24)] = None,
 ) -> dict:
     """Read-only structural validation of explicit or scene camera rigs at bounded sample frames."""
-    return await asyncio.to_thread(
-        _call,
-        "validate_camera_rig",
-        {"scene_name": scene_name, "object_names": object_names, "sample_frames": sample_frames},
+    return await call_blender(
+        "validate_camera_rig", {"scene_name": scene_name, "object_names": object_names, "sample_frames": sample_frames}
     )

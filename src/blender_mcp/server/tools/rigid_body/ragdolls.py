@@ -1,14 +1,13 @@
 """Rigid-body character proxy construction and armature delivery tools."""
 
-import asyncio
-
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .inspection_and_setup import Vector3, _call, mcp, rigid_body_constraint_adapter
+from .._dispatch import call_blender
+from .inspection_and_setup import Vector3, mcp, rigid_body_constraint_adapter
 
 
 class RagdollBodySpec(BaseModel):
@@ -119,8 +118,7 @@ async def create_ragdoll_rig(
         raise ToolError("Ragdoll joint pairs must be unique")
     if len(layers) != len(set(layers)) or any(not 1 <= layer <= 20 for layer in layers):
         raise ToolError("collision_layers must contain unique values in [1, 20]")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_ragdoll_rig",
         {
             "scene_name": scene_name,
@@ -135,7 +133,7 @@ async def create_ragdoll_rig(
             "start_kinematic": start_kinematic,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
-        [
+        changed_objects=[
             armature_object_name,
             *[body.convex_source_object_name for body in bodies if body.convex_source_object_name],
         ],
@@ -174,8 +172,7 @@ async def bake_ragdoll_to_armature(
     proxy_names = [mapping.proxy_object_name for mapping in mappings]
     if len(bone_names) != len(set(bone_names)) or len(proxy_names) != len(set(proxy_names)):
         raise ToolError("Bone and proxy mappings must each be unique")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "bake_ragdoll_to_armature",
         {
             "scene_name": scene_name,
@@ -192,5 +189,5 @@ async def bake_ragdoll_to_armature(
             "angular_tolerance_radians": angular_tolerance_radians,
             "confirm_overwrite_action": confirm_overwrite_action,
         },
-        [armature_object_name, *proxy_names],
+        changed_objects=[armature_object_name, *proxy_names],
     )

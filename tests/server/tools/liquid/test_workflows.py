@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import liquid
+from blender_mcp.server.tools import _dispatch, liquid
 
 
 def _run(function, **kwargs):
@@ -64,13 +64,9 @@ def test_workflow_models_reject_unknown_and_inconsistent_values() -> None:
 
 def test_mesh_tool_serializes_only_supplied_patch(monkeypatch) -> None:
     monkeypatch.setattr(
-        liquid,
-        "_call",
-        lambda command, params, changed_objects=None: {
-            "command": command,
-            "params": params,
-            "changed_objects": changed_objects,
-        },
+        _dispatch,
+        "send_command",
+        lambda command, params=None: {"command": command, "params": params},
     )
 
     result = _run(
@@ -80,19 +76,15 @@ def test_mesh_tool_serializes_only_supplied_patch(monkeypatch) -> None:
         patch=liquid.LiquidMeshPatch(use_mesh=True, mesh_scale=3),
     )
 
-    assert result["command"] == "configure_liquid_mesh"
-    assert result["params"]["patch"] == {"use_mesh": True, "mesh_scale": 3}
+    assert result["data"]["command"] == "configure_liquid_mesh"
+    assert result["data"]["params"]["patch"] == {"use_mesh": True, "mesh_scale": 3}
 
 
 def test_proxy_tool_serializes_explicit_typed_settings(monkeypatch) -> None:
     monkeypatch.setattr(
-        liquid,
-        "_call",
-        lambda command, params, changed_objects=None: {
-            "command": command,
-            "params": params,
-            "changed_objects": changed_objects,
-        },
+        _dispatch,
+        "send_command",
+        lambda command, params=None: {"command": command, "params": params},
     )
 
     result = _run(
@@ -108,20 +100,16 @@ def test_proxy_tool_serializes_explicit_typed_settings(monkeypatch) -> None:
         validation_frames=[1, 12],
     )
 
-    assert result["command"] == "create_liquid_proxy_rig"
-    assert result["params"]["effector_settings"] == {"subframes": 3}
-    assert result["params"]["validation_frames"] == [1, 12]
+    assert result["data"]["command"] == "create_liquid_proxy_rig"
+    assert result["data"]["params"]["effector_settings"] == {"subframes": 3}
+    assert result["data"]["params"]["validation_frames"] == [1, 12]
 
 
 def test_hollow_container_proxy_tool_serializes_new_params(monkeypatch) -> None:
     monkeypatch.setattr(
-        liquid,
-        "_call",
-        lambda command, params, changed_objects=None: {
-            "command": command,
-            "params": params,
-            "changed_objects": changed_objects,
-        },
+        _dispatch,
+        "send_command",
+        lambda command, params=None: {"command": command, "params": params},
     )
 
     result = _run(
@@ -138,18 +126,18 @@ def test_hollow_container_proxy_tool_serializes_new_params(monkeypatch) -> None:
         rim_axis="NEGATIVE_Z",
     )
 
-    assert result["command"] == "create_liquid_proxy_rig"
-    assert result["params"]["geometry"] == "HOLLOW_CONTAINER"
-    assert result["params"]["wall_thickness"] == pytest.approx(0.02)
-    assert result["params"]["bottom_thickness"] == pytest.approx(0.08)
-    assert result["params"]["rim_axis"] == "NEGATIVE_Z"
+    assert result["data"]["command"] == "create_liquid_proxy_rig"
+    assert result["data"]["params"]["geometry"] == "HOLLOW_CONTAINER"
+    assert result["data"]["params"]["wall_thickness"] == pytest.approx(0.02)
+    assert result["data"]["params"]["bottom_thickness"] == pytest.approx(0.08)
+    assert result["data"]["params"]["rim_axis"] == "NEGATIVE_Z"
 
 
 def test_hollow_container_proxy_tool_defaults(monkeypatch) -> None:
     monkeypatch.setattr(
-        liquid,
-        "_call",
-        lambda command, params, changed_objects=None: {"params": params},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: {"params": params},
     )
 
     result = _run(
@@ -162,9 +150,9 @@ def test_hollow_container_proxy_tool_defaults(monkeypatch) -> None:
         role="EFFECTOR",
     )
 
-    assert result["params"]["wall_thickness"] == pytest.approx(0.05)
-    assert result["params"]["bottom_thickness"] is None
-    assert result["params"]["rim_axis"] == "Z"
+    assert result["data"]["params"]["wall_thickness"] == pytest.approx(0.05)
+    assert result["data"]["params"]["bottom_thickness"] is None
+    assert result["data"]["params"]["rim_axis"] == "Z"
 
 
 def test_hollow_container_validates_rim_axis_and_thickness(monkeypatch) -> None:

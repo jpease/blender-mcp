@@ -1,7 +1,5 @@
 """Typed tools for camera-rig keyframing and time-based shot effects."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
@@ -9,8 +7,9 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field, model_validator
 
 from ...app import mcp
+from .._dispatch import call_blender
 from ..key_style import Easing, HandleType, Interpolation
-from ._shared import _call, _StrictModel, _tool_params
+from ._shared import _StrictModel, _tool_params
 
 AnimationOwner = Literal["OBJECT", "CAMERA_DATA", "CONSTRAINT", "DOF"]
 KeyPolicy = Literal["REPLACE", "INSERT_ONLY"]
@@ -59,8 +58,7 @@ async def keyframe_camera_rig(
 ) -> dict:
     """Set coordinated allowlisted camera-rig channels without touching unrelated keys."""
     payload = [item.model_dump(exclude_none=True) for item in keyframes]
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "keyframe_camera_rig",
         {
             "keyframes": payload,
@@ -96,7 +94,7 @@ async def set_camera_interpolation(
     """
     if frame_start > frame_end:
         raise ToolError("frame_start must be less than or equal to frame_end")
-    return await asyncio.to_thread(_call, "set_camera_interpolation", _tool_params(locals()), [object_name])
+    return await call_blender("set_camera_interpolation", _tool_params(locals()), changed_objects=[object_name])
 
 
 @mcp.tool()
@@ -126,7 +124,7 @@ async def create_focus_pull(
         raise ToolError("Supply exactly one start subject or start point")
     if (end_subject_name is None) == (end_point is None):
         raise ToolError("Supply exactly one end subject or end point")
-    return await asyncio.to_thread(_call, "create_focus_pull", _tool_params(locals()), [camera_name])
+    return await call_blender("create_focus_pull", _tool_params(locals()), changed_objects=[camera_name])
 
 
 @mcp.tool()
@@ -157,11 +155,8 @@ async def create_dolly_zoom(
         raise ToolError("start_distance and end_distance must be provided and positive")
     if (subject_object_name is None) == (subject_point is None):
         raise ToolError("Supply exactly one subject_object_name or subject_point")
-    return await asyncio.to_thread(
-        _call,
-        "create_dolly_zoom",
-        _tool_params(locals()),
-        [camera_name, movement_object_name],
+    return await call_blender(
+        "create_dolly_zoom", _tool_params(locals()), changed_objects=[camera_name, movement_object_name]
     )
 
 
@@ -190,4 +185,4 @@ async def add_camera_shake(
         raise ToolError("supply exactly one of frame_end or frame_end_at_seconds")
     if not any(translation_strength) and not any(rotation_strength):
         raise ToolError("At least one shake strength component must be non-zero")
-    return await asyncio.to_thread(_call, "add_camera_shake", _tool_params(locals()), [camera_name])
+    return await call_blender("add_camera_shake", _tool_params(locals()), changed_objects=[camera_name])

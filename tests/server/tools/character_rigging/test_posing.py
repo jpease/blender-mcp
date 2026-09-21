@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from pydantic_core import to_json
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import character_rigging
+from blender_mcp.server.tools import _dispatch, character_rigging
 from blender_mcp.server.tools.envelope import REPLY_BYTE_BUDGET, envelope_for
 
 
@@ -1248,9 +1248,9 @@ def test_bone_reach_allows_at_most_one_pole_form() -> None:
 def test_solve_bone_reach_forwards_reaches_and_omits_unset_optional_fields(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        character_rigging,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
     reach = character_rigging.BoneReach(tip_bone="forearm.L", target=(0.6, -0.1, 1.1))
 
@@ -1343,20 +1343,20 @@ def _reach_rig(monkeypatch, *, solved_tail=_ARM_WRIST, matrix_world=None):
         matrix_world: The rig's object matrix; identity when omitted.
 
     Returns:
-        tuple: the server, and the `bpy` stub, whose `data.objects` also holds any scratch
-        Empty a reach failed to clean up.
+        tuple: the server, the `bpy` stub - whose `data.objects` also holds any scratch Empty
+        a reach failed to clean up - the rig, and its animation data.
 
     """
     shoulder_rest = _rest_bone("upper_arm", _ARM_SHOULDER, _ARM_ELBOW)
     forearm_rest = _rest_bone("forearm", _ARM_ELBOW, _ARM_WRIST, parent=shoulder_rest)
     upper_arm = _ReachPoseBone("upper_arm", _ARM_SHOULDER, _ARM_ELBOW)
     forearm = _ReachPoseBone("forearm", _ARM_ELBOW, solved_tail, parent=upper_arm)
-    server, rig, _animation, _posing_module = _posing(monkeypatch, [upper_arm, forearm], matrix_world=matrix_world)
+    server, rig, animation, _posing_module = _posing(monkeypatch, [upper_arm, forearm], matrix_world=matrix_world)
     rig.data.bones = {"upper_arm": shoulder_rest, "forearm": forearm_rest}
     bpy = sys.modules["bpy"]
     bpy.data.objects = _ReachObjects(bpy.data.objects)
     bpy.context.collection = types.SimpleNamespace(objects=types.SimpleNamespace(link=lambda _obj: None))
-    return server, bpy
+    return server, bpy, rig, animation
 
 
 def _solve(server, target, **kwargs):
@@ -1367,7 +1367,7 @@ def _solve(server, target, **kwargs):
 
 def test_a_reach_inside_its_tolerance_reports_converged_and_says_nothing_else(monkeypatch) -> None:
     """A solve that landed is the quiet case: the caller needs no notice to act on."""
-    server, _bpy = _reach_rig(monkeypatch)
+    server, _bpy, _rig, _animation = _reach_rig(monkeypatch)
 
     reply = _solve(server, (0.80005, 0.0, -1.0))
 
@@ -1383,7 +1383,7 @@ def test_a_reach_inside_its_tolerance_reports_converged_and_says_nothing_else(mo
 
 def test_a_tighter_tolerance_turns_the_same_solve_into_a_miss(monkeypatch) -> None:
     """The tolerance is the caller's to state: the same geometry passes or fails on it."""
-    server, _bpy = _reach_rig(monkeypatch)
+    server, _bpy, _rig, _animation = _reach_rig(monkeypatch)
 
     reply = _solve(server, (0.80005, 0.0, -1.0), tolerance_m=1e-6)
 
@@ -1393,7 +1393,7 @@ def test_a_tighter_tolerance_turns_the_same_solve_into_a_miss(monkeypatch) -> No
 
 def test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig(monkeypatch) -> None:
     """Naming the cause is the point: this one is worth retrying, an out-of-reach one is not."""
-    server, _bpy = _reach_rig(monkeypatch)
+    server, _bpy, _rig, _animation = _reach_rig(monkeypatch)
 
     reply = _solve(server, (0.8, 0.0, -1.0005))
 
@@ -1412,7 +1412,7 @@ def test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the
 
 def test_a_target_beyond_the_chains_reach_is_reported_as_unreachable(monkeypatch) -> None:
     """No pose of this chain reaches 5 m out, so retrying the solve is the wrong next move."""
-    server, _bpy = _reach_rig(monkeypatch)
+    server, _bpy, _rig, _animation = _reach_rig(monkeypatch)
 
     reply = _solve(server, (5.0, 0.0, 0.0))
 
@@ -1431,7 +1431,7 @@ def test_a_target_beyond_the_chains_reach_is_reported_as_unreachable(monkeypatch
 def test_the_chains_reach_is_measured_in_world_space_not_in_rest_bone_lengths(monkeypatch) -> None:
     """A rig scaled x2 reaches twice as far, so rest lengths alone would call a hit a miss."""
     doubled = _Matrix([[2.0, 0.0, 0.0, 0.0], [0.0, 2.0, 0.0, 0.0], [0.0, 0.0, 2.0, 0.0], [0.0, 0.0, 0.0, 1.0]])
-    server, _bpy = _reach_rig(monkeypatch, matrix_world=doubled)
+    server, _bpy, _rig, _animation = _reach_rig(monkeypatch, matrix_world=doubled)
 
     # 2.5 m out: past the 1.8 m of rest bone, inside the 3.6 m the scaled rig actually spans.
     entry = _solve(server, (2.5, 0.0, 0.0))["reaches"][0]
@@ -1443,7 +1443,7 @@ def test_the_chains_reach_is_measured_in_world_space_not_in_rest_bone_lengths(mo
 @pytest.mark.parametrize("tolerance", [0.0, -1e-4, float("nan"), float("inf")])
 def test_a_tolerance_that_names_no_precision_is_refused_before_the_rig_is_touched(monkeypatch, tolerance) -> None:
     """A bad tolerance must not leave a half-solved pose, a live IK constraint or a stray Empty."""
-    server, bpy = _reach_rig(monkeypatch)
+    server, bpy, _rig, _animation = _reach_rig(monkeypatch)
     before = _matrix_rows(bpy.data.objects["CHAR1_rig"].pose.bones["forearm"])
 
     with pytest.raises(ValueError, match="tolerance_m must be"):
@@ -1513,3 +1513,67 @@ def test_a_missed_reach_still_warns_after_the_envelope_has_shortened_the_reply(m
     assert any("was shortened to" in warning for warning in reply["warnings"])
     assert any(f"Reach '{tip}' did not converge" in warning for warning in reply["warnings"])
     assert "warnings" not in reply["data"]
+
+
+def _slot(identifier):
+    return types.SimpleNamespace(identifier=identifier)
+
+
+def _rig_keying_over_root_motion(monkeypatch):
+    """
+    Load the two-bone arm already driven by an action holding keys, slot included.
+
+    That is the state a reach arrives in: `keyframe_object_transform` keyed the root travel
+    into one action first, and the reach names an action of its own.
+
+    Args:
+        monkeypatch: The test's monkeypatch.
+
+    Returns:
+        tuple: the server, the rig, its animation data, the root-motion action and its slot.
+
+    """
+    server, bpy, rig, animation = _reach_rig(monkeypatch)
+    root_motion = bpy.data.actions.new("CHAR1_sh030_root")
+    root_motion.fcurves.append(_FCurve("location", 0, [(1.0, 0.0), (24.0, 5.0)]))
+    root_slot = _slot("OBCHAR1_rig")
+    root_motion.slots = (root_slot,)
+    animation.action = root_motion
+    animation.action_slot = root_slot
+    # Blender's animation_data_create() both creates the block and hangs it off the ID, which
+    # is what the displacement guard reads.
+    rig.animation_data = animation
+    reach_action = bpy.data.actions.new("CHAR1_sh030_reach")
+    reach_action.slots = (_slot("OBreach"),)
+    return server, rig, animation, root_motion, root_slot
+
+
+def _plant(frames, target=_ARM_WRIST):
+    """One reach planting the wrist on a fixed world point across several frames."""
+    return {
+        "tip_bone": "forearm",
+        "pole_target": _ARM_POLE,
+        "keys": [{"frame": float(frame), "target": list(target)} for frame in frames],
+    }
+
+
+def test_a_reach_that_fails_part_way_through_hands_back_the_action_it_arrived_on(monkeypatch) -> None:
+    """
+    A half-keyed reach left the rig pointed at its own action, with the displacement standing.
+
+    Nothing else covers it: the object-state snapshot does not record `animation_data.action`,
+    so the root motion simply stopped driving the character and the only symptom was a shot
+    that had stopped moving.
+    """
+    server, rig, animation, root_motion, root_slot = _rig_keying_over_root_motion(monkeypatch)
+    forearm = rig.pose.bones["forearm"]
+    first_frame_only = forearm.keyframe_insert
+    forearm.keyframe_insert = lambda data_path, frame, group=None: (
+        frame <= 1.0 and first_frame_only(data_path, frame, group)
+    )
+
+    with pytest.raises(RuntimeError, match="Could not insert key"):
+        server.keyframe_bone_reach("CHAR1_rig", "CHAR1_sh030_reach", [_plant((1.0, 2.0))], confirm_displace_action=True)
+
+    assert animation.action is root_motion
+    assert animation.action_slot is root_slot

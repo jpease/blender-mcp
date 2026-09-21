@@ -11,7 +11,6 @@ Submodules are resolved lazily, not star-imported, so the `camera` bundle can le
 from typing import Any
 
 from .._lazy_package import lazy_dir, lazy_getattr
-from ._shared import _call as _call
 
 # First match wins. `rigs` stays last because it shares `FollowForwardAxis` and `UpAxis` with
 # `targeting`; checked earlier, it would be imported, registering its tools, to serve them.

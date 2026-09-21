@@ -2,15 +2,14 @@
 # ruff: file-ignore[multi-line-summary-second-line]
 """Typed tools for production Mantaflow liquid delivery workflows."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ...app import mcp
-from ._shared import _call, _dump, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _dump, _StrictModel
 from .inspection_and_setup import ExistingPolicy, FlowBehavior
 
 ProxyGeometry = Literal["BOX", "CAPSULE", "CONVEX_HULL", "DECIMATED", "HOLLOW_CONTAINER", "SUPPLIED"]
@@ -100,8 +99,7 @@ async def create_liquid_proxy_rig(
     base via a vertex group over the detected opposite cap. Both are validated against the domain's
     cell size, matching ``validate_liquid_setup``'s thin-wall leak check.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_liquid_proxy_rig",
         {
             "scene_name": scene_name,
@@ -124,7 +122,7 @@ async def create_liquid_proxy_rig(
             "effector_settings": _dump(effector_settings),
             "validation_frames": validation_frames or [],
         },
-        [source_object_name, domain_object_name],
+        changed_objects=[source_object_name, domain_object_name],
     )
 
 
@@ -147,8 +145,7 @@ async def duplicate_liquid_setup_variant(
     Flow, effector, force, and guide dependencies discovered from the domain are duplicated. One domain
     is explicitly disabled so overlapping variants cannot evaluate together accidentally.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "duplicate_liquid_setup_variant",
         {
             "source_domain_object_name": source_domain_object_name,
@@ -162,7 +159,7 @@ async def duplicate_liquid_setup_variant(
             "animation_policy": animation_policy,
             "activation_policy": activation_policy,
         },
-        [source_domain_object_name],
+        changed_objects=[source_domain_object_name],
     )
 
 
@@ -183,8 +180,7 @@ async def prepare_liquid_render_mesh(
     delivery_object_name: str | None = None,
 ) -> dict:
     """Add reversible post-fluid render finishing or create an explicit current-frame delivery mesh."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "prepare_liquid_render_mesh",
         {
             "domain_object_name": domain_object_name,
@@ -200,7 +196,7 @@ async def prepare_liquid_render_mesh(
             "existing_policy": existing_policy,
             "delivery_object_name": delivery_object_name,
         },
-        [domain_object_name],
+        changed_objects=[domain_object_name],
     )
 
 
@@ -227,8 +223,7 @@ async def export_liquid_simulation(
     max_frames: Annotated[int, Field(ge=1, le=2_000)] = 500,
 ) -> dict:
     """Atomically export a baked liquid surface and optional secondary particles to Alembic or USD."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "export_liquid_simulation",
         {
             "scene_name": scene_name,
@@ -250,7 +245,7 @@ async def export_liquid_simulation(
             "overwrite": overwrite,
             "max_frames": max_frames,
         },
-        [domain_object_name],
+        changed_objects=[domain_object_name],
     )
 
 
@@ -266,8 +261,7 @@ async def analyze_liquid_performance(
     max_cache_entries: Annotated[int, Field(ge=1, le=100_000)] = 10_000,
 ) -> dict:
     """Report bounded structural cost evidence and optional measured replay frame-evaluation timings."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "analyze_liquid_performance",
         {
             "domain_object_name": domain_object_name,
@@ -278,5 +272,5 @@ async def analyze_liquid_performance(
             "max_dependency_objects": max_dependency_objects,
             "max_cache_entries": max_cache_entries,
         },
-        [domain_object_name] if measure_replay_evaluation else [],
+        changed_objects=[domain_object_name] if measure_replay_evaluation else [],
     )

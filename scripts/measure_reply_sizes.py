@@ -795,37 +795,45 @@ def _capability_names() -> tuple[str, ...]:
     """
     Read the add-on's advertised command names out of its own source, without importing `bpy`.
 
-    `server_core.py:1859 get_addon_info` publishes `sorted({"ping", "get_polyhaven_status",
-    "get_nd_status", *self._build_command_handlers()})`. The always-available handlers are the
-    first dict literal in `_build_command_handlers`; the provider-gated ones are added later and
-    are absent while the providers are disabled, which is the default.
+    `server_core.get_addon_info` publishes `sorted(self._build_command_handlers())`, which is
+    every row of the module-level `COMMANDS` registry whose spec carries no `provider` gate.
+    The provider-gated rows come and go with the open .blend's scene flags and are absent
+    while those integrations are disabled, which is the default.
 
     Returns:
         tuple[str, ...]: The sorted capability names, as a handshake really reports them.
 
     Raises:
-        SystemExit: If the add-on's handler table cannot be found, so a silently short
+        SystemExit: If the add-on's command registry cannot be found, so a silently short
             capability list cannot be mistaken for a measurement.
 
     """
     import ast  # ruff: ignore[import-outside-top-level] - kept local so importing this module parses nothing.
 
     source = (_SRC_ROOT / "blender_mcp" / "bundled" / "addon" / "server_core.py").read_text(encoding="utf-8")
-    builder = next(
+    registry = next(
         (
-            node
-            for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.FunctionDef) and node.name == "_build_command_handlers"
+            node.value
+            for node in ast.parse(source).body
+            if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", None) == "COMMANDS"
         ),
         None,
     )
-    if builder is None:
-        raise SystemExit("refusing to measure: server_core._build_command_handlers not found")
-    table = next((node for node in ast.walk(builder) if isinstance(node, ast.Dict)), None)
-    if table is None or not table.keys:
-        raise SystemExit("refusing to measure: server_core._build_command_handlers has no handler table")
-    names = {key.value for key in table.keys if isinstance(key, ast.Constant) and isinstance(key.value, str)}
-    return tuple(sorted(names | {"ping", "get_polyhaven_status", "get_nd_status"}))
+    if registry is None:
+        raise SystemExit("refusing to measure: server_core.COMMANDS not found")
+    table = next((node for node in ast.walk(registry) if isinstance(node, ast.Dict) and node.keys), None)
+    if table is None:
+        raise SystemExit("refusing to measure: server_core.COMMANDS holds no command rows")
+    return tuple(
+        sorted(
+            key.value
+            for key, spec in zip(table.keys, table.values, strict=True)
+            if isinstance(key, ast.Constant)
+            and isinstance(key.value, str)
+            # A provider-gated row is off unless the open .blend turns it on.
+            and not any(keyword.arg == "provider" for keyword in spec.keywords)
+        )
+    )
 
 
 _SESSION_FIELDS: Mapping[str, object] = MappingProxyType(

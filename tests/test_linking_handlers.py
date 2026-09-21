@@ -1254,7 +1254,7 @@ def test_list_libraries_is_a_read_only_command_and_never_enters_a_transaction(
     """A pure read must not pay for a snapshot and a rollback wrapper."""
     server, _bpy, _world = _server(monkeypatch)
 
-    assert "list_libraries" in server._READ_ONLY_COMMANDS  # type: ignore[attr-defined]
+    assert server.command_spec("list_libraries").read_only  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -1617,6 +1617,38 @@ def test_an_unlink_failure_reaches_the_client_sanitized(monkeypatch: pytest.Monk
     _assert_no_path(response["message"], tmp_path.name)
 
 
+def test_a_part_way_unlink_failure_carries_what_it_already_removed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An unlink is not transacted, so which libraries went has to survive as data, not as prose."""
+    server, _bpy, world = _server(monkeypatch)
+    first, _c1 = _linked(server, world, _canon(tmp_path, world, "a.blend"))
+    second, _c2 = _linked(server, world, _canon(tmp_path, world, "b.blend"))
+    real_remove = world.data["libraries"].remove
+
+    def fail_on_the_second(datablock: StubID, do_unlink: bool = True) -> None:
+        """
+        Remove the first library and refuse the second, as a partial failure does.
+
+        Args:
+            datablock: The library.
+            do_unlink: Passed through.
+
+        """
+        if datablock is second:
+            raise RuntimeError(f"Error: cannot free library '{second.filepath}'")
+        real_remove(datablock, do_unlink)
+
+    world.data["libraries"].remove = fail_on_the_second  # type: ignore[method-assign]
+
+    with pytest.raises(_linking_module(server).PartialUnlinkError) as caught:
+        server.unlink_libraries([first.session_uid, second.session_uid], confirm=True)  # type: ignore[attr-defined]
+
+    assert [entry["session_uid"] for entry in caught.value.removed_libraries] == [first.session_uid]
+    assert caught.value.already_removed_uids == []
+    _assert_no_path(str(caught.value), tmp_path.name)
+
+
 # ---------------------------------------------------------------------------
 # pure helpers, transaction routing, and the command contract
 # ---------------------------------------------------------------------------
@@ -1709,7 +1741,7 @@ def test_the_linking_commands_are_dispatchable_and_advertised(monkeypatch: pytes
     for name in LINKING_COMMANDS:
         assert name in capabilities
         assert name in server._build_command_handlers()  # type: ignore[attr-defined]
-    read_only = set(LINKING_COMMANDS) & set(server._READ_ONLY_COMMANDS)  # type: ignore[attr-defined]
+    read_only = {name for name in LINKING_COMMANDS if server.command_spec(name).read_only}  # type: ignore[attr-defined]
     assert read_only == {"list_libraries"}
 
 

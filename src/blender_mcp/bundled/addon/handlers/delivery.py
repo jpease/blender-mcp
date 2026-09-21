@@ -19,28 +19,20 @@ the opened file and is author-controlled), bounded per file and per call, and
 applied only to the libraries on the returned page.
 """
 
-import json
 import os
 
 import bpy
 
-from ..file_digest import MAX_DIGEST_FILES, MAX_DIGEST_TOTAL_BYTES, file_digest
-from ..file_paths import canonical_path, enforce_roots
-from ..output_roots import configured_file_roots
+from ..library_digest import library_digests, require_digest_roots
 from ..text_hygiene import (
     client_safe_leaf,
     client_safe_name_leaf,
-    client_safe_text,
     relative_link_body,
     safe_relative_link,
     strip_unsafe,
 )
-from .file_lifecycle import (
-    _MAX_REPORTED_LINK_CHARS,
-    PROVENANCE_PROPERTY,
-    _is_indirect_library,
-    _library_summary,
-)
+from .blend_files import MAX_REPORTED_LINK_CHARS, is_indirect_library, library_summary
+from .provenance import read_provenance
 from .simulation_cache import point_cache_info
 from .texture._shared import image_path_missing
 
@@ -75,7 +67,7 @@ def _published_path(raw: object, *, is_directory: bool = False) -> str:
     text = str(raw or "")
     if not text.strip():
         return ""
-    whole = safe_relative_link(text, _MAX_REPORTED_LINK_CHARS)
+    whole = safe_relative_link(text, MAX_REPORTED_LINK_CHARS)
     return whole if whole is not None else client_safe_leaf(text, is_directory=is_directory)
 
 
@@ -204,7 +196,7 @@ def _library_entries(room: int) -> tuple[list[dict], dict[int, object], bool]:
         if len(entries) >= room:
             capped = True
             break
-        summary = _library_summary(library)
+        summary = library_summary(library)
         raw = str(getattr(library, "filepath", "") or "")
         if summary["is_missing"]:
             verdict = "MISSING"
@@ -218,7 +210,7 @@ def _library_entries(room: int) -> tuple[list[dict], dict[int, object], bool]:
             "path": summary["filepath"],
             "absolute": _absolute(raw),
             "verdict": verdict,
-            "detail": {"indirect": _is_indirect_library(library), "sha256": "", "hash_skipped": ""},
+            "detail": {"indirect": is_indirect_library(library), "sha256": "", "hash_skipped": ""},
         }
         owners[id(entry)] = library
         entries.append(entry)
@@ -520,9 +512,9 @@ def _hash_page_libraries(page: list[dict], owners: dict[int, object], roots: lis
     """
     Fill in `sha256`/`hash_skipped` for the libraries on this page, in place.
 
-    Each path is resolved and confined to the configured roots before it is
-    opened: a `Library.filepath` comes out of the opened `.blend` and would
-    otherwise turn a checksum into an arbitrary-file read oracle.
+    The reading itself belongs to `library_digest`, which `save_shot`'s
+    provenance checksums share: one loop owns the confinement, the per-file
+    bound, the file-count cutoff and the call's byte budget.
 
     Args:
         page: The entries being returned.
@@ -531,28 +523,11 @@ def _hash_page_libraries(page: list[dict], owners: dict[int, object], roots: lis
         max_hash_bytes: Largest single file to read.
 
     """
-    budget = MAX_DIGEST_TOTAL_BYTES
-    hashed = 0
-    for entry in page:
-        library = owners.get(id(entry))
-        if entry["kind"] != "LIBRARY" or library is None:
-            continue
-        if hashed >= MAX_DIGEST_FILES:
-            entry["detail"]["hash_skipped"] = "call hash file limit reached"
-            continue
-        resolved = canonical_path(_resolved(getattr(library, "filepath", ""), getattr(library, "parent", None)))
-        try:
-            enforce_roots(resolved, roots)
-        except ValueError:
-            entry["detail"]["hash_skipped"] = "outside the configured file roots"
-            continue
-        digest, reason = file_digest(resolved, max_hash_bytes, budget)
-        hashed += 1
-        if digest is None:
-            entry["detail"]["hash_skipped"] = reason or "unreadable"
-            continue
-        entry["detail"]["sha256"] = digest
-        budget -= os.path.getsize(resolved)
+    hashable = [(entry, owners[id(entry)]) for entry in page if entry["kind"] == "LIBRARY" and id(entry) in owners]
+    digests = library_digests([library for _entry, library in hashable], roots, max_file_bytes=max_hash_bytes)
+    for (entry, _library), (sha256, skipped) in zip(hashable, digests, strict=True):
+        entry["detail"]["sha256"] = sha256
+        entry["detail"]["hash_skipped"] = skipped
 
 
 def _bounded_int(name: str, value: object, low: int, high: int) -> int:
@@ -575,65 +550,6 @@ def _bounded_int(name: str, value: object, low: int, high: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
         raise ValueError(f"{name} must be an integer in [{low}, {high}]")
     return value
-
-
-class DeliveryHandlersMixin:
-    """Answer whether the open file's external references travel with it."""
-
-    @staticmethod
-    def inspect_delivery(
-        scene_name: object,
-        limit: object = 50,
-        offset: object = 0,
-        hash_libraries: object = False,
-        max_hash_bytes: object = 268_435_456,
-    ) -> dict:
-        """
-        Report every external reference this file carries, and whether it would resolve elsewhere.
-
-        Args:
-            scene_name: The scene whose render output and rigid-body cache are
-                included; every other source is file-wide.
-            limit: Entries per page, 1 to 200.
-            offset: Entries to skip.
-            hash_libraries: Also SHA-256 each linked library on the returned
-                page. Reads those files from disk on Blender's main thread, so
-                it requires configured file roots and is bounded per file and
-                per call.
-            max_hash_bytes: Largest single library to hash.
-
-        Returns:
-            dict: `scene`, `blend_filepath` (absolute), `saved`, `portable`,
-            `classes` (per kind: `total`, `unportable`), `entries` (the page),
-            `limit`, `offset`, `total`, `truncated`, `next_offset`,
-            `provenance`, `changed_objects`, `warnings`, `limitations`.
-
-        Raises:
-            ValueError: When an argument is out of range, the scene is unknown,
-                or hashing was requested with no file roots configured.
-
-        """
-        limit = _bounded_int("limit", limit, 1, 200)
-        offset = _bounded_int("offset", offset, 0, 2**31 - 1)
-        max_hash_bytes = _bounded_int("max_hash_bytes", max_hash_bytes, 1, 8 * 1024**3)
-        hash_libraries = bool(hash_libraries)
-        if not isinstance(scene_name, str) or not scene_name.strip():
-            raise ValueError("scene_name must be a non-empty string")
-        scene = bpy.data.scenes.get(scene_name.strip())
-        if scene is None:
-            raise ValueError(f"Scene not found: {scene_name}")
-        roots = configured_file_roots() if hash_libraries else []
-        if hash_libraries and not roots:
-            raise ValueError(
-                "hash_libraries requires BLENDERMCP_FILE_ROOTS (or BLENDERMCP_OUTPUT_ROOTS) to be configured; "
-                "without roots a checksum would read any file on this host"
-            )
-
-        entries, owners, capped = _collect_entries(scene)
-        page = entries[offset : offset + limit]
-        if hash_libraries:
-            _hash_page_libraries(page, owners, roots, max_hash_bytes)
-        return _delivery_report(scene, entries, page, limit, offset, capped)
 
 
 def _collect_entries(scene) -> tuple[list[dict], dict[int, object], bool]:
@@ -675,126 +591,6 @@ def _collect_entries(scene) -> tuple[list[dict], dict[int, object], bool]:
         entries.extend(produced)
         capped = capped or stopped
     return entries, owners, capped
-
-
-# A `.blend` anyone could have authored carries this block, so it is untrusted input: without
-# a bound it injects arbitrary text into the agent's context and spends the whole reply budget.
-MAX_PROVENANCE_CHARS = 16_384
-MAX_PROVENANCE_FIELD_CHARS = 120
-MAX_PROVENANCE_ENTRIES = 50
-# The only keys read back. Anything else a file carries under this name is dropped.
-_PROVENANCE_SCALARS = ("claim_generator", "protocol_version", "blender_version", "saved_utc")
-
-
-def _clean_scalar(value: object) -> str:
-    """
-    Reduce one provenance scalar to bounded, control-free text.
-
-    Args:
-        value: Whatever the file carried.
-
-    Returns:
-        str: Safe text.
-
-    """
-    return client_safe_text(value, MAX_PROVENANCE_FIELD_CHARS)
-
-
-def _clean_provenance(block: dict) -> dict:
-    """
-    Keep only the known keys of a provenance block, each bounded and control-free.
-
-    Args:
-        block: The parsed block.
-
-    Returns:
-        dict: `present`, `valid`, the known scalars, `ingredients` and `actions`.
-
-    """
-    cleaned: dict[str, object] = {"present": True, "valid": True}
-    for key in _PROVENANCE_SCALARS:
-        cleaned[key] = _clean_scalar(block.get(key, ""))
-    ingredients = block.get("ingredients")
-    cleaned["ingredients"] = [
-        {
-            "name": _clean_scalar(entry.get("name", "")),
-            "filepath": _clean_scalar(entry.get("filepath", "")),
-            "sha256": _clean_scalar(entry.get("sha256", "")),
-            "skipped": _clean_scalar(entry.get("skipped", "")),
-        }
-        for entry in (ingredients if isinstance(ingredients, list) else [])[:MAX_PROVENANCE_ENTRIES]
-        if isinstance(entry, dict)
-    ]
-    actions = block.get("actions")
-    cleaned["actions"] = [_clean_action(entry) for entry in _bounded_dicts(actions)]
-    return cleaned
-
-
-def _bounded_dicts(value: object) -> list[dict]:
-    """
-    Take at most `MAX_PROVENANCE_ENTRIES` dicts out of whatever the file carried.
-
-    Args:
-        value: The parsed value, of any shape.
-
-    Returns:
-        list[dict]: The usable entries.
-
-    """
-    if not isinstance(value, list):
-        return []
-    return [entry for entry in value[:MAX_PROVENANCE_ENTRIES] if isinstance(entry, dict)]
-
-
-def _clean_action(entry: dict) -> dict:
-    """
-    Reduce one recorded action, including the datablock names it claims.
-
-    Args:
-        entry: The parsed action.
-
-    Returns:
-        dict: `action`, `software_agent`, `datablocks`, `datablocks_truncated`.
-
-    """
-    names = entry.get("datablocks")
-    return {
-        "action": _clean_scalar(entry.get("action", "")),
-        "software_agent": _clean_scalar(entry.get("software_agent", "")),
-        "datablocks": [
-            _clean_scalar(name) for name in (names[:MAX_PROVENANCE_ENTRIES] if isinstance(names, list) else [])
-        ],
-        "datablocks_truncated": bool(entry.get("datablocks_truncated")),
-    }
-
-
-def _read_provenance(scene) -> dict | None:
-    """
-    Read this scene's provenance block back, treating it as text a stranger wrote.
-
-    Args:
-        scene: The scene under inspection.
-
-    Returns:
-        dict | None: None when the file carries no block; otherwise `present` with either
-        `valid: False` and a reason, or the cleaned block.
-
-    """
-    try:
-        raw = scene.get(PROVENANCE_PROPERTY)
-    except Exception:
-        return None
-    if raw is None:
-        return None
-    if not isinstance(raw, str) or len(raw) > MAX_PROVENANCE_CHARS:
-        return {"present": True, "valid": False, "reason": "not a JSON string of the expected size"}
-    try:
-        block = json.loads(raw)
-    except (TypeError, ValueError):
-        return {"present": True, "valid": False, "reason": "unparseable"}
-    if not isinstance(block, dict):
-        return {"present": True, "valid": False, "reason": "unparseable"}
-    return _clean_provenance(block)
 
 
 def _delivery_report(scene, entries: list[dict], page: list[dict], limit: int, offset: int, capped: bool) -> dict:
@@ -846,7 +642,7 @@ def _delivery_report(scene, entries: list[dict], page: list[dict], limit: int, o
         "total": len(entries),
         "truncated": returned_end < len(entries),
         "next_offset": returned_end if returned_end < len(entries) else None,
-        "provenance": _read_provenance(scene),
+        "provenance": read_provenance(scene),
         "changed_objects": [],
         "warnings": warnings,
         "limitations": [
@@ -856,3 +652,57 @@ def _delivery_report(scene, entries: list[dict], page: list[dict], limit: int, o
             "Verdicts describe path shape and existence on this machine, not whether the destination can read them.",
         ],
     }
+
+
+class DeliveryHandlersMixin:
+    """Answer whether the open file's external references travel with it."""
+
+    @staticmethod
+    def inspect_delivery(
+        scene_name: object,
+        limit: object = 50,
+        offset: object = 0,
+        hash_libraries: object = False,
+        max_hash_bytes: object = 268_435_456,
+    ) -> dict:
+        """
+        Report every external reference this file carries, and whether it would resolve elsewhere.
+
+        Args:
+            scene_name: The scene whose render output and rigid-body cache are
+                included; every other source is file-wide.
+            limit: Entries per page, 1 to 200.
+            offset: Entries to skip.
+            hash_libraries: Also SHA-256 each linked library on the returned
+                page. Reads those files from disk on Blender's main thread, so
+                it requires configured file roots and is bounded per file and
+                per call.
+            max_hash_bytes: Largest single library to hash.
+
+        Returns:
+            dict: `scene`, `blend_filepath` (absolute), `saved`, `portable`,
+            `classes` (per kind: `total`, `unportable`), `entries` (the page),
+            `limit`, `offset`, `total`, `truncated`, `next_offset`,
+            `provenance`, `changed_objects`, `warnings`, `limitations`.
+
+        Raises:
+            ValueError: When an argument is out of range, the scene is unknown,
+                or hashing was requested with no file roots configured.
+
+        """
+        limit = _bounded_int("limit", limit, 1, 200)
+        offset = _bounded_int("offset", offset, 0, 2**31 - 1)
+        max_hash_bytes = _bounded_int("max_hash_bytes", max_hash_bytes, 1, 8 * 1024**3)
+        hash_libraries = bool(hash_libraries)
+        if not isinstance(scene_name, str) or not scene_name.strip():
+            raise ValueError("scene_name must be a non-empty string")
+        scene = bpy.data.scenes.get(scene_name.strip())
+        if scene is None:
+            raise ValueError(f"Scene not found: {scene_name}")
+        roots = require_digest_roots("hash_libraries") if hash_libraries else []
+
+        entries, owners, capped = _collect_entries(scene)
+        page = entries[offset : offset + limit]
+        if hash_libraries:
+            _hash_page_libraries(page, owners, roots, max_hash_bytes)
+        return _delivery_report(scene, entries, page, limit, offset, capped)

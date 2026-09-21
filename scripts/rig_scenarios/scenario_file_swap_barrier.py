@@ -273,8 +273,8 @@ def run(rig: Rig) -> None:
     spike = json.loads((rig.work_dir / SPIKE_READY_FILE_NAME).read_text(encoding="utf-8"))
     print(f"RIG: spike = {spike}", flush=True)
     assert spike["advertised"], "the open_shot spike is not in the advertised capability set"
-    assert spike["in_session_swap_commands"], "open_shot is not in the production _SESSION_SWAP_COMMANDS"
-    assert not spike["shadowed_read_only_commands"], "the spike shadowed _READ_ONLY_COMMANDS"
+    assert spike["in_session_swap_commands"], "open_shot is not a session_swap command in the production registry"
+    assert not spike["shadowed_read_only_commands"], "the spike shadowed the registry's read-only classification"
 
     info = rig.send("get_addon_info")["result"]
     session = rig.send("get_session_info")["result"]

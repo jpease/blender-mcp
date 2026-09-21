@@ -35,7 +35,7 @@ def test_scene_tools_are_registered_and_dispatched(monkeypatch: pytest.MonkeyPat
     # Importing both modules is what a `scene-authoring` process does.
     assert set(scene.mcp._tool_manager._tools) >= SCENE_COMMANDS
     assert set(addon.BlenderMCPServer()._build_command_handlers()) >= SCENE_COMMANDS
-    assert not SCENE_COMMANDS & addon.BlenderMCPServer._READ_ONLY_COMMANDS
+    assert not {name for name in SCENE_COMMANDS if addon.BlenderMCPServer.command_spec(name).read_only}
 
 
 def test_create_geometry_object_serializes_discriminated_geometry(stub_blender_connection: StubFactory) -> None:

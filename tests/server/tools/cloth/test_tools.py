@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import cloth
+from blender_mcp.server.tools import _dispatch, cloth
 
 
 def _run(function, **kwargs):
@@ -30,11 +30,10 @@ def test_vertex_weight_assignment_rejects_out_of_range_weights(weight) -> None:
 def test_configure_material_serializes_only_explicit_patch_fields(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        cloth,
-        "_call",
-        lambda command, params, changed_objects=None: (
-            calls.append((command, params, changed_objects))
-            or {"ok": True, "data": {"mass": {"old": 0.3, "new": 0.42}}, "changed_objects": ["Cape"]}
+        _dispatch,
+        "send_command",
+        lambda command, params=None: (
+            calls.append((command, params)) or {"mass": {"old": 0.3, "new": 0.42}, "changed_objects": ["Cape"]}
         ),
     )
 
@@ -59,7 +58,6 @@ def test_configure_material_serializes_only_explicit_patch_fields(monkeypatch) -
                 "patch": {"mass": 0.42},
                 "preset": "COTTON",
             },
-            ["Cape"],
         )
     ]
 
@@ -67,24 +65,22 @@ def test_configure_material_serializes_only_explicit_patch_fields(monkeypatch) -
 def test_configure_cloth_dispatches_multiple_sections_in_fixed_order_and_merges_metadata(monkeypatch) -> None:
     calls = []
 
-    def fake_call(command, params, changed_objects=None):
-        calls.append((command, params, changed_objects))
+    def fake_call(command, params=None):
+        calls.append((command, params))
         if command == "configure_cloth_pinning":
             return {
-                "ok": True,
-                "data": {"pin_stiffness": {"old": 1.0, "new": 5.0}},
+                "pin_stiffness": {"old": 1.0, "new": 5.0},
                 "warnings": ["pin group already existed"],
                 "changed_objects": ["Cape"],
             }
         return {
-            "ok": True,
-            "data": {"uniform_pressure_force": {"old": 0.0, "new": 2.0}},
+            "uniform_pressure_force": {"old": 0.0, "new": 2.0},
             "warnings": ["pressure enabled"],
             "changed_objects": ["Cape"],
             "changed_resources": ["Cape Cloth"],
         }
 
-    monkeypatch.setattr(cloth, "_call", fake_call)
+    monkeypatch.setattr(_dispatch, "send_command", fake_call)
 
     result = _run(
         cloth.configure_cloth,
@@ -117,36 +113,15 @@ def test_cloth_patch_forbids_unknown_section() -> None:
         cloth.ClothPatch(bogus_section={"foo": "bar"})  # pyright: ignore[reportCallIssue] - rejection is the assertion
 
 
-def test_configure_cloth_merges_ok_false_from_any_section(monkeypatch) -> None:
-    def fake_call(command, params, changed_objects=None):
-        if command == "configure_cloth_solver":
-            return {"ok": True, "data": {}, "changed_objects": ["Cape"]}
-        return {"ok": False, "data": {}, "changed_objects": []}
-
-    monkeypatch.setattr(cloth, "_call", fake_call)
-
-    result = _run(
-        cloth.configure_cloth,
-        object_name="Cape",
-        modifier_name="Cape Cloth",
-        patch=cloth.ClothPatch(
-            solver=cloth.ClothSolverPatch(quality=10),
-            collisions=cloth.ClothCollisionPatch(use_collision=False),
-        ),
-    )
-
-    assert result["ok"] is False
-
-
 def test_set_weights_serializes_typed_assignments(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        cloth,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
 
-    _run(
+    result = _run(
         cloth.set_cloth_vertex_weights,
         object_name="Cape",
         modifier_name="Cloth",
@@ -156,6 +131,7 @@ def test_set_weights_serializes_typed_assignments(monkeypatch) -> None:
         operation="REPLACE",
     )
 
+    assert result["changed_objects"] == ["Cape"]
     assert calls[0] == (
         "set_cloth_vertex_weights",
         {
@@ -166,18 +142,16 @@ def test_set_weights_serializes_typed_assignments(monkeypatch) -> None:
             "assignments": [{"vertex_index": 3, "weight": 0.75}],
             "operation": "REPLACE",
         },
-        ["Cape"],
     )
 
 
 def test_read_only_cloth_tool_does_not_report_changes(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        cloth,
-        "_call",
-        lambda command, params, changed_objects=None: (
-            calls.append((command, params, changed_objects))
-            or {"objects": [], "dependencies": [], "changed_objects": []}
+        _dispatch,
+        "send_command",
+        lambda command, params=None: (
+            calls.append((command, params)) or {"objects": [], "dependencies": [], "changed_objects": []}
         ),
     )
 
@@ -185,17 +159,14 @@ def test_read_only_cloth_tool_does_not_report_changes(monkeypatch) -> None:
 
     assert result["changed_objects"] == []
     assert calls[0][0] == "get_cloth_simulation_info"
-    assert calls[0][2] is None
 
 
 def test_resource_estimate_forwards_bounded_object_page(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        cloth,
-        "_call",
-        lambda command, params, changed_objects=None: (
-            calls.append((command, params, changed_objects)) or {"estimates": []}
-        ),
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"estimates": []},
     )
 
     _run(
@@ -216,7 +187,6 @@ def test_resource_estimate_forwards_bounded_object_page(monkeypatch) -> None:
                 "object_limit": 10,
                 "object_offset": 20,
             },
-            None,
         )
     ]
 
@@ -224,10 +194,10 @@ def test_resource_estimate_forwards_bounded_object_page(monkeypatch) -> None:
 def test_handler_supplied_change_and_warning_metadata_wins(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        cloth,
-        "_call",
-        lambda command, params, changed_objects=None: (
-            calls.append((command, params, changed_objects))
+        _dispatch,
+        "send_command",
+        lambda command, params=None: (
+            calls.append((command, params))
             or {"changed_objects": ["Cape", "BodyProxy"], "warnings": ["cache invalidated"]}
         ),
     )
@@ -503,18 +473,17 @@ def test_dispatch_advertises_cloth_and_marks_only_inspection_read_only(monkeypat
     assert "get_cloth_simulation_info" in commands
     assert "create_character_cloth_setup" in commands
     assert "manage_cloth_cache" in commands
-    assert "validate_cloth_setup" in server._READ_ONLY_COMMANDS
-    assert "configure_cloth_solver" not in server._READ_ONLY_COMMANDS
+    assert server.command_spec("validate_cloth_setup").read_only
+    assert not server.command_spec("configure_cloth_solver").read_only
 
 
 def test_sewing_dry_run_forwards_exact_pairs_without_reporting_changes(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        cloth,
-        "_call",
-        lambda command, params, changed_objects=None: (
-            calls.append((command, params, changed_objects))
-            or {"ok": True, "data": {"dry_run": True, "analysis": {"pairs": 1}}, "changed_objects": []}
+        _dispatch,
+        "send_command",
+        lambda command, params=None: (
+            calls.append((command, params)) or {"dry_run": True, "analysis": {"pairs": 1}, "changed_objects": []}
         ),
     )
 
@@ -544,7 +513,6 @@ def test_sewing_dry_run_forwards_exact_pairs_without_reporting_changes(monkeypat
                 "dry_run": True,
                 "max_pair_distance": None,
             },
-            [],
         )
     ]
 
@@ -552,9 +520,9 @@ def test_sewing_dry_run_forwards_exact_pairs_without_reporting_changes(monkeypat
 def test_animation_records_and_cache_index_are_strictly_serialized(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        cloth,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
 
     _run(
@@ -596,9 +564,9 @@ def test_animation_records_and_cache_index_are_strictly_serialized(monkeypatch) 
 def test_character_setup_forwards_explicit_modifier_names(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        cloth,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
 
     _run(
@@ -725,11 +693,12 @@ def test_owned_membership_lookup_is_exact(monkeypatch) -> None:
 def test_p1_dispatch_targets_and_geometry_capture_are_declared(monkeypatch) -> None:
     addon, _bpy = _load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
+    target_names = sys.modules[f"{addon.__name__}.server_core"].target_names
 
-    assert "cloth_object_name" in server._TARGET_NAME_PARAMS
-    assert "garment_object_name" in server._TARGET_NAME_PARAMS
-    assert "body_collider_object_names" in server._TARGET_NAMES_PARAMS
-    assert "configure_cloth_sewing" in server._GEOMETRY_MUTATING_COMMANDS
+    assert target_names({"cloth_object_name": "Cape"}) == ["Cape"]
+    assert target_names({"garment_object_name": "Skirt"}) == ["Skirt"]
+    assert target_names({"body_collider_object_names": ["Torso", "Arm"]}) == ["Torso", "Arm"]
+    assert server.command_spec("configure_cloth_sewing").geometry
 
 
 def test_field_strength_is_the_only_direct_field_animation_control(monkeypatch) -> None:
@@ -741,9 +710,9 @@ def test_field_strength_is_the_only_direct_field_animation_control(monkeypatch) 
 def test_proxy_rig_serializes_explicit_topology_permission(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        cloth,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
 
     _run(
@@ -756,7 +725,7 @@ def test_proxy_rig_serializes_explicit_topology_permission(monkeypatch) -> None:
         validation_frames=[1, 12, 24],
     )
 
-    command, params, _changed_objects = calls[0]
+    command, params = calls[0]
     assert command == "create_cloth_proxy_rig"
     assert params["allow_topology_change"] is True
     assert params["decimate_ratio"] == pytest.approx(0.2)
@@ -766,9 +735,9 @@ def test_proxy_rig_serializes_explicit_topology_permission(monkeypatch) -> None:
 def test_variant_requires_explicit_dependency_policies(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        cloth,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
 
     _run(
@@ -785,7 +754,7 @@ def test_variant_requires_explicit_dependency_policies(monkeypatch) -> None:
         render_surface_policy="DUPLICATE",
     )
 
-    command, params, _changed_objects = calls[0]
+    command, params = calls[0]
     assert command == "duplicate_cloth_setup_variant"
     assert params["mesh_data_policy"] == "COPY"
     assert params["render_surface_policy"] == "DUPLICATE"
@@ -794,9 +763,9 @@ def test_variant_requires_explicit_dependency_policies(monkeypatch) -> None:
 def test_render_surface_serializes_typed_modifier_patches(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        cloth,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
 
     _run(
@@ -807,7 +776,7 @@ def test_render_surface_serializes_typed_modifier_patches(monkeypatch) -> None:
         solidify=cloth.ClothSolidifyPatch(thickness=0.003, use_even_offset=True),
     )
 
-    command, params, _changed_objects = calls[0]
+    command, params = calls[0]
     assert command == "prepare_cloth_render_surface"
     assert params["subdivision"] == {"levels": 1, "render_levels": 2}
     assert params["solidify"] == {"thickness": 0.003, "use_even_offset": True}
@@ -817,9 +786,9 @@ def test_render_surface_serializes_typed_modifier_patches(monkeypatch) -> None:
 
 def test_cloth_envelope_lifts_changed_resources(monkeypatch) -> None:
     monkeypatch.setattr(
-        cloth,
-        "_call",
-        lambda command, params, changed_objects=None: {
+        _dispatch,
+        "send_command",
+        lambda command, params=None: {
             "changed_objects": ["Cape Final"],
             "changed_resources": ["Cape Final Mesh", "Cape Final Material"],
         },
@@ -839,11 +808,9 @@ def test_cloth_envelope_lifts_changed_resources(monkeypatch) -> None:
 def test_export_forwards_complete_delivery_contract(monkeypatch, tmp_path) -> None:
     calls = []
     monkeypatch.setattr(
-        cloth,
-        "_call",
-        lambda command, params, changed_objects=None: (
-            calls.append((command, params, changed_objects)) or {"filepath": str(tmp_path / "cape.usdc")}
-        ),
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"filepath": str(tmp_path / "cape.usdc")},
     )
 
     _run(
@@ -864,7 +831,7 @@ def test_export_forwards_complete_delivery_contract(monkeypatch, tmp_path) -> No
         overwrite=True,
     )
 
-    command, params, _changed_objects = calls[0]
+    command, params = calls[0]
     assert command == "export_cloth_simulation"
     assert params["scene_name"] == "Shot"
     assert params["object_names"] == ["Cape"]
@@ -891,5 +858,6 @@ def test_phase_two_commands_are_dispatched_and_transaction_targets_are_declared(
     assert "prepare_cloth_render_surface" in commands
     assert "export_cloth_simulation" in commands
     assert "analyze_cloth_performance" in commands
-    assert "render_object_name" in server._TARGET_NAME_PARAMS
-    assert "source_object_name" in server._TARGET_NAME_PARAMS
+    assert sys.modules[f"{addon.__name__}.server_core"].target_names(
+        {"render_object_name": "Cape_render", "source_object_name": "Cape"}
+    ) == ["Cape_render", "Cape"]

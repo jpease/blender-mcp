@@ -1,6 +1,5 @@
 """Direct mesh-editing tools."""
 
-import asyncio
 import logging
 
 from typing import Annotated, Literal
@@ -10,8 +9,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from ..app import mcp
-from ..connection import get_blender_connection
-from .envelope import STALE_INDEX_WARNING, ok
+from ._dispatch import call_blender, send_blender_command
+from .envelope import STALE_INDEX_WARNING, envelope_for
 
 logger = logging.getLogger("BlenderMCPServer")
 
@@ -52,9 +51,7 @@ async def create_primitive_object(
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(
-            blender.send_command,
+        reply = await send_blender_command(
             "create_primitive",
             {
                 "primitive_type": primitive_type,
@@ -66,9 +63,9 @@ async def create_primitive_object(
                 "purpose": purpose,
             },
         )
-        created_name = result.get("name") if isinstance(result, dict) else None
+        created_name = reply.get("name") if isinstance(reply, dict) else None
         changed = [created_name] if isinstance(created_name, str) else []
-        return ok(result, changed_objects=changed)
+        return envelope_for(reply, changed_objects=changed)
     except Exception as e:
         logger.error(f"Error creating primitive: {e}")
         raise ToolError(f"Error creating primitive: {e}") from e
@@ -102,17 +99,16 @@ async def mesh_extrude(
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(
-            blender.send_command,
+        return await call_blender(
             "mesh_extrude",
             {
                 "object_name": object_name,
                 "offset": list(offset),
                 "face_indices": face_indices,
             },
+            changed_objects=[object_name],
+            warnings=[STALE_INDEX_WARNING],
         )
-        return ok(result, changed_objects=[object_name], warnings=[STALE_INDEX_WARNING])
     except Exception as e:
         logger.error(f"Error extruding mesh: {e}")
         raise ToolError(f"Error extruding mesh: {e}") from e
@@ -148,9 +144,7 @@ async def mesh_inset(
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(
-            blender.send_command,
+        return await call_blender(
             "mesh_inset",
             {
                 "object_name": object_name,
@@ -158,8 +152,9 @@ async def mesh_inset(
                 "depth": depth,
                 "face_indices": face_indices,
             },
+            changed_objects=[object_name],
+            warnings=[STALE_INDEX_WARNING],
         )
-        return ok(result, changed_objects=[object_name], warnings=[STALE_INDEX_WARNING])
     except Exception as e:
         logger.error(f"Error insetting mesh faces: {e}")
         raise ToolError(f"Error insetting mesh faces: {e}") from e
@@ -201,9 +196,7 @@ async def mesh_bevel(
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(
-            blender.send_command,
+        return await call_blender(
             "mesh_bevel",
             {
                 "object_name": object_name,
@@ -213,8 +206,9 @@ async def mesh_bevel(
                 "edge_indices": edge_indices,
                 "vertex_indices": vertex_indices,
             },
+            changed_objects=[object_name],
+            warnings=[STALE_INDEX_WARNING],
         )
-        return ok(result, changed_objects=[object_name], warnings=[STALE_INDEX_WARNING])
     except Exception as e:
         logger.error(f"Error beveling mesh: {e}")
         raise ToolError(f"Error beveling mesh: {e}") from e
@@ -262,9 +256,7 @@ async def mesh_bridge(
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(
-            blender.send_command,
+        return await call_blender(
             "mesh_bridge",
             {
                 "object_name": object_name,
@@ -277,8 +269,9 @@ async def mesh_bridge(
                 "twist_offset": twist_offset,
                 "expected_revision": expected_revision,
             },
+            changed_objects=[object_name],
+            warnings=[STALE_INDEX_WARNING],
         )
-        return ok(result, changed_objects=[object_name], warnings=[STALE_INDEX_WARNING])
     except Exception as e:
         logger.error(f"Error bridging mesh edge loops: {e}")
         raise ToolError(f"Error bridging mesh edge loops: {e}") from e
@@ -308,16 +301,15 @@ async def mesh_symmetrize(ctx: Context, object_name: str, direction: SymmetrizeD
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(
-            blender.send_command,
+        return await call_blender(
             "mesh_symmetrize",
             {
                 "object_name": object_name,
                 "direction": direction,
             },
+            changed_objects=[object_name],
+            warnings=[STALE_INDEX_WARNING],
         )
-        return ok(result, changed_objects=[object_name], warnings=[STALE_INDEX_WARNING])
     except Exception as e:
         logger.error(f"Error symmetrizing mesh: {e}")
         raise ToolError(f"Error symmetrizing mesh: {e}") from e
@@ -353,9 +345,8 @@ async def mesh_boolean(
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(
-            blender.send_command,
+        changed = [object_name] + ([] if keep_cutter else [cutter_object_name])
+        return await call_blender(
             "mesh_boolean",
             {
                 "object_name": object_name,
@@ -363,9 +354,9 @@ async def mesh_boolean(
                 "operation": operation,
                 "keep_cutter": keep_cutter,
             },
+            changed_objects=changed,
+            warnings=[STALE_INDEX_WARNING],
         )
-        changed = [object_name] + ([] if keep_cutter else [cutter_object_name])
-        return ok(result, changed_objects=changed, warnings=[STALE_INDEX_WARNING])
     except Exception as e:
         logger.error(f"Error applying mesh boolean: {e}")
         raise ToolError(f"Error applying mesh boolean: {e}") from e
@@ -399,17 +390,16 @@ async def mesh_subdivide(
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(
-            blender.send_command,
+        return await call_blender(
             "mesh_subdivide",
             {
                 "object_name": object_name,
                 "cuts": cuts,
                 "face_indices": face_indices,
             },
+            changed_objects=[object_name],
+            warnings=[STALE_INDEX_WARNING],
         )
-        return ok(result, changed_objects=[object_name], warnings=[STALE_INDEX_WARNING])
     except Exception as e:
         logger.error(f"Error subdividing mesh: {e}")
         raise ToolError(f"Error subdividing mesh: {e}") from e
@@ -436,16 +426,15 @@ async def mesh_remesh(ctx: Context, object_name: str, voxel_size: Annotated[floa
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(
-            blender.send_command,
+        return await call_blender(
             "mesh_remesh",
             {
                 "object_name": object_name,
                 "voxel_size": voxel_size,
             },
+            changed_objects=[object_name],
+            warnings=[STALE_INDEX_WARNING],
         )
-        return ok(result, changed_objects=[object_name], warnings=[STALE_INDEX_WARNING])
     except Exception as e:
         logger.error(f"Error remeshing mesh: {e}")
         raise ToolError(f"Error remeshing mesh: {e}") from e
@@ -480,18 +469,16 @@ async def mesh_solidify(
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(
-            blender.send_command,
+        return await call_blender(
             "mesh_solidify",
             {
                 "object_name": object_name,
                 "thickness": thickness,
                 "apply": apply,
             },
+            changed_objects=[object_name],
+            warnings=[STALE_INDEX_WARNING] if apply else [],
         )
-        warnings = [STALE_INDEX_WARNING] if apply else None
-        return ok(result, changed_objects=[object_name], warnings=warnings)
     except Exception as e:
         logger.error(f"Error solidifying mesh: {e}")
         raise ToolError(f"Error solidifying mesh: {e}") from e
@@ -521,9 +508,7 @@ async def clear_materials(
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(blender.send_command, "clear_materials", {"object_names": object_names})
-        return ok(result, changed_objects=object_names)
+        return await call_blender("clear_materials", {"object_names": object_names}, changed_objects=object_names)
     except Exception as e:
         logger.error(f"Error clearing materials: {e}")
         raise ToolError(f"Error clearing materials: {e}") from e
@@ -551,9 +536,7 @@ async def clear_vertex_groups(ctx: Context, object_name: str) -> dict:
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(blender.send_command, "clear_vertex_groups", {"object_name": object_name})
-        return ok(result, changed_objects=[object_name])
+        return await call_blender("clear_vertex_groups", {"object_name": object_name}, changed_objects=[object_name])
     except Exception as e:
         logger.error(f"Error clearing vertex groups: {e}")
         raise ToolError(f"Error clearing vertex groups: {e}") from e
@@ -582,9 +565,7 @@ async def clear_edge_marks(ctx: Context, object_name: str) -> dict:
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(blender.send_command, "clear_edge_marks", {"object_name": object_name})
-        return ok(result, changed_objects=[object_name])
+        return await call_blender("clear_edge_marks", {"object_name": object_name}, changed_objects=[object_name])
     except Exception as e:
         logger.error(f"Error clearing edge marks: {e}")
         raise ToolError(f"Error clearing edge marks: {e}") from e

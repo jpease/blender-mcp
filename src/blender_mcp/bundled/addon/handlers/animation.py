@@ -7,7 +7,7 @@ import re
 
 import bpy
 
-from .key_style import style_point, validate_key_style
+from .key_style import KeyStyle, style_point
 
 _TARGET_COLLECTIONS = {
     "OBJECT": "objects",
@@ -39,6 +39,8 @@ _NLA_STRIP_PROPERTIES = {
     "scale",
     "mute",
 }
+# One edit addresses array_index 0..63, so a wider property could never be keyed whole.
+_MAX_ARRAY_CHANNELS = 64
 _DRIVER_TYPES = {"AVERAGE", "SUM", "SCRIPTED", "MIN", "MAX"}
 _DRIVER_VARIABLE_TYPES = {"SINGLE_PROP", "TRANSFORMS"}
 _DRIVER_TRANSFORM_TYPES = {
@@ -343,28 +345,161 @@ def _append_transform_samples(channels, owner, matrix, transforms, frame, prefix
             channels.setdefault((data_path, index), []).append((frame, float(value)))
 
 
+def _path_tail(data_path):
+    """
+    Split a data path into its owner path and the final segment it addresses.
+
+    `rpartition(".")` cannot do this: a subscript key may itself contain dots,
+    so `pose.bones["hand_ik.L"]["IK_FK"]` splits inside the bone name and the
+    custom property becomes unreachable. This scans instead, ignoring dots that
+    sit inside quotes or brackets.
+
+    Args:
+        data_path: The RNA data path to split.
+
+    Returns:
+        tuple: `(owner_path, key, is_custom)`. `key` names an RNA property when
+        `is_custom` is False and a custom (ID) property when it is True.
+        `owner_path` is empty when the property sits on the target itself.
+
+    Raises:
+        ValueError: If quotes or brackets are unbalanced, the path ends in an
+            array subscript (that belongs in `array_index`), or the final
+            segment is neither an identifier nor a string key.
+
+    """
+    quote = None
+    escaped = False
+    depth = 0
+    last_dot = -1
+    subscript_start = -1
+    for position, character in enumerate(data_path):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+        elif character in {'"', "'"}:
+            quote = character
+        elif character == "[":
+            if depth == 0:
+                subscript_start = position
+            depth += 1
+        elif character == "]":
+            depth -= 1
+            if depth < 0:
+                raise ValueError(f"Unbalanced brackets in data_path: {data_path!r}")
+        elif character == "." and depth == 0:
+            last_dot = position
+            # An attribute after a subscript starts a fresh segment, so the
+            # bracket that opened the previous one is no longer the tail.
+            subscript_start = -1
+    if quote is not None or depth:
+        raise ValueError(f"Unbalanced quotes or brackets in data_path: {data_path!r}")
+    if subscript_start >= 0 and data_path.endswith("]"):
+        try:
+            key = ast.literal_eval(data_path[subscript_start + 1 : -1])
+        except Exception as exc:
+            raise ValueError(f"Unsupported subscript in data_path {data_path!r}: {exc}") from exc
+        if isinstance(key, str):
+            return data_path[:subscript_start], key, True
+        if isinstance(key, int) and not isinstance(key, bool):
+            raise ValueError(f"data_path {data_path!r} must not end in an array index; use array_index instead")
+        raise ValueError(f"Unsupported subscript in data_path: {data_path!r}")
+    name = data_path[last_dot + 1 :]
+    if not name.isidentifier():
+        raise ValueError(f'data_path {data_path!r} must end in an RNA property identifier or a ["custom property"] key')
+    return (data_path[:last_dot] if last_dot >= 0 else ""), name, False
+
+
+def _custom_property(property_owner, key, data_path):
+    """
+    Read one animatable custom (ID) property addressed by a `["key"]` subscript.
+
+    Rig controls - IK/FK switches, visibility sliders - are custom properties,
+    and Blender keys them through the same F-Curve API as RNA properties. Only
+    `bpy_struct` carries them: `id_properties_ensure` is absent on collections,
+    which is what keeps `pose.bones["Hand"]` (a collection member, not a
+    property) from being mistaken for one.
+
+    Args:
+        property_owner: The struct the subscript resolves against.
+        key: The custom-property key.
+        data_path: The full path, for error messages.
+
+    Returns:
+        tuple: `(array_length, value)`, with `array_length` 0 for a scalar.
+
+    Raises:
+        ValueError: If the owner cannot hold custom properties, the key is
+            absent, or its value cannot drive an F-Curve.
+
+    """
+    ensure = getattr(property_owner, "id_properties_ensure", None)
+    if ensure is None:
+        raise ValueError(f"data_path does not address a custom property holder: {data_path}")
+    group = ensure()
+    if key not in group:
+        raise ValueError(f"Custom property not found: {data_path}")
+    value = group[key]
+    return _custom_array_length(value, data_path), value
+
+
+def _custom_array_length(value, data_path):
+    """
+    Classify a custom property's value as a count of F-Curve channels.
+
+    Args:
+        value: The custom property's current value.
+        data_path: The full path, for error messages.
+
+    Returns:
+        int: 0 for a scalar, or the component count of a numeric array.
+
+    Raises:
+        ValueError: If the value cannot drive an F-Curve - a string, a nested
+            group, or an array wider than one edit may address.
+
+    """
+    if isinstance(value, (bool, int, float)):
+        return 0
+    if not isinstance(value, (str, bytes)):
+        try:
+            items = list(value)
+        except TypeError:
+            items = None
+        if items and all(isinstance(item, (bool, int, float)) for item in items):
+            if len(items) > _MAX_ARRAY_CHANNELS:
+                raise ValueError(
+                    f"Custom property arrays wider than {_MAX_ARRAY_CHANNELS} channels are unsupported: {data_path}"
+                )
+            return len(items)
+    raise ValueError(f"Custom property is not animatable: {data_path}")
+
+
 def _resolve_property(owner, data_path):
     data_path = _required_name(data_path, "data_path")
-    owner_path, separator, property_name = data_path.rpartition(".")
-    if not separator:
-        property_name = data_path
-        property_owner = owner
-    else:
+    owner_path, key, is_custom = _path_tail(data_path)
+    if owner_path:
         try:
             property_owner = owner.path_resolve(owner_path)
         except Exception as exc:
             raise ValueError(f"Invalid data_path owner {owner_path!r}: {exc}") from exc
-    if not property_name.isidentifier():
-        raise ValueError("data_path must end in an RNA property identifier")
+    else:
+        property_owner = owner
+    if is_custom:
+        return _custom_property(property_owner, key, data_path)
     properties = getattr(getattr(property_owner, "bl_rna", None), "properties", None)
-    rna_property = properties.get(property_name) if properties is not None else None
+    rna_property = properties.get(key) if properties is not None else None
     if rna_property is None:
         raise ValueError(f"RNA property not found: {data_path}")
     if rna_property.is_readonly:
         raise ValueError(f"RNA property is read-only: {data_path}")
     if not rna_property.is_animatable:
         raise ValueError(f"RNA property is not animatable: {data_path}")
-    value = getattr(property_owner, property_name)
+    value = getattr(property_owner, key)
     array_length = getattr(rna_property, "array_length", 0)
     return array_length, value
 
@@ -384,13 +519,13 @@ def _expanded_edit(owner, edit):
     index = edit.get("array_index", -1)
     if isinstance(index, bool) or not isinstance(index, int) or not -1 <= index <= 63:
         raise ValueError("array_index must be an integer from -1 to 63")
-    style = {
-        "interpolation": str(edit.get("interpolation", "BEZIER")).upper(),
-        "handle_left": str(edit.get("handle_left", "AUTO_CLAMPED")).upper(),
-        "handle_right": str(edit.get("handle_right", "AUTO_CLAMPED")).upper(),
-        "easing": str(edit["easing"]).upper() if edit.get("easing") is not None else None,
-    }
-    validate_key_style(**style)
+    style = KeyStyle(
+        str(edit.get("interpolation", "BEZIER")).upper(),
+        str(edit.get("handle_left", "AUTO_CLAMPED")).upper(),
+        str(edit.get("handle_right", "AUTO_CLAMPED")).upper(),
+        str(edit["easing"]).upper() if edit.get("easing") is not None else None,
+    )
+    style.validate()
     array_length, _current = _resolve_property(owner, data_path)
     if index >= 0 and (not array_length or index >= array_length):
         raise ValueError(f"array_index {index} is invalid for {data_path} (length {array_length})")
@@ -631,14 +766,13 @@ def _write_baked_curves(bag, channels, channel_tolerances, transform_tolerance, 
         channels: `_sampled_bake_channels`' samples.
         channel_tolerances: Per-channel reduction tolerances.
         transform_tolerance: The tolerance for channels with none of their own.
-        style: `(interpolation, handle_left, handle_right, easing)` applied to every key.
+        style: The `KeyStyle` applied to every key.
 
     Returns:
         dict: key_count, curves (one record per channel) and max_reconstruction_error - the
         worst distance between a reduced curve and the samples it replaced.
 
     """
-    interpolation, handle_left, handle_right, easing = style
     key_count = 0
     maximum_error = 0.0
     curve_records = []
@@ -648,7 +782,7 @@ def _write_baked_curves(bag, channels, channel_tolerances, transform_tolerance, 
         fcurve = bag.fcurves.new(data_path, index=index)
         for key_frame, value in reduced:
             key = fcurve.keyframe_points.insert(key_frame, value, options={"FAST"})
-            style_point(key, interpolation, handle_left=handle_left, handle_right=handle_right, easing=easing)
+            style_point(key, style)
         fcurve.update()
         key_count += len(reduced)
         curve_records.append(
@@ -845,13 +979,7 @@ class AnimationHandlersMixin:
                 key = fcurve.keyframe_points.insert(frame, value, options={"FAST"})
             else:
                 key.co[1] = value
-            style_point(
-                key,
-                style["interpolation"],
-                handle_left=style["handle_left"],
-                handle_right=style["handle_right"],
-                easing=style["easing"],
-            )
+            style_point(key, style)
             fcurve.update()
             changed.append(
                 {
@@ -886,7 +1014,8 @@ class AnimationHandlersMixin:
     ):
         if not confirm_bake:
             raise ValueError("confirm_bake=True is required")
-        validate_key_style(interpolation, handle_left, handle_right, easing)
+        style = KeyStyle(interpolation, handle_left, handle_right, easing)
+        style.validate()
         object_name = _required_name(target.get("object_name"), "target.object_name")
         obj = bpy.data.objects.get(object_name)
         if obj is None:
@@ -923,7 +1052,7 @@ class AnimationHandlersMixin:
                 channels,
                 channel_tolerances,
                 transform_tolerance,
-                (interpolation, handle_left, handle_right, easing),
+                style,
             )
         except Exception:
             bpy.data.actions.remove(action)
@@ -975,10 +1104,20 @@ class AnimationHandlersMixin:
         curves = [curve for _bag, curve in _iter_fcurves(action, slot_handle)]
         if not curves:
             raise ValueError(f"Action {action.name} has no F-Curves in slot {slot_identifier}")
+        selected = [
+            curve for curve in curves if data_path_prefix is None or curve.data_path.startswith(data_path_prefix)
+        ]
+        if not selected:
+            # A prefix that names nothing is a typo, not a finished job: reported as success it
+            # reads as "made cyclic", and the caller only finds out when playback does not loop.
+            # A selected curve that simply has no modifier to REMOVE is a different thing, and
+            # stays a success below.
+            raise ValueError(
+                f"Action {action.name} has no F-Curve in slot {slot_identifier} whose data_path starts with "
+                f"{data_path_prefix!r}"
+            )
         records = []
-        for curve in curves:
-            if data_path_prefix is not None and not curve.data_path.startswith(data_path_prefix):
-                continue
+        for curve in selected:
             modifier = next((item for item in curve.modifiers if item.type == "CYCLES"), None)
             if operation == "REMOVE":
                 if modifier is None:

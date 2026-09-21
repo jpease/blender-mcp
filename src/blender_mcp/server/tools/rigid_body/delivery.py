@@ -1,13 +1,12 @@
 """Non-destructive rigid-body transform animation delivery tools."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
-from .inspection_and_setup import _call, mcp
+from .._dispatch import call_blender
+from .inspection_and_setup import mcp
 
 
 @mcp.tool()
@@ -36,8 +35,7 @@ async def bake_rigid_bodies_to_keyframes(
     """
     if frame_start > frame_end:
         raise ValueError("frame_start must not exceed frame_end")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "bake_rigid_bodies_to_keyframes",
         {
             "scene_name": scene_name,
@@ -51,5 +49,5 @@ async def bake_rigid_bodies_to_keyframes(
             "key_scale": key_scale,
             "confirm_overwrite_animation": confirm_overwrite_animation,
         },
-        object_names,
+        changed_objects=object_names,
     )

@@ -1,14 +1,13 @@
 """Read-only MCP tools for lighting inventory, diagnosis, and compatibility validation."""
 
-import asyncio
-
 from typing import Annotated
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import LightType, TargetEngine, call_blender
+from .._dispatch import call_blender
+from ._shared import LightType, TargetEngine
 
 
 @mcp.tool()
@@ -41,8 +40,7 @@ async def list_lights(
             and receiver/blocker collections. Costs roughly ten times the bytes per light.
 
     """
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "list_lights",
         {
             "scene_name": scene_name,
@@ -64,11 +62,7 @@ async def inspect_light(ctx: Context, scene_name: str, light_name: str) -> dict:
     settings, constraints, linking, animation, and a bounded summary of shader nodes and external
     image/IES dependencies. Compatibility notes distinguish shared, Cycles-only, and EEVEE behavior.
     """
-    return await asyncio.to_thread(
-        call_blender,
-        "inspect_light",
-        {"scene_name": scene_name, "light_name": light_name},
-    )
+    return await call_blender("inspect_light", {"scene_name": scene_name, "light_name": light_name})
 
 
 @mcp.tool()
@@ -96,10 +90,8 @@ async def inspect_lighting_setup(
             Everything outside the light inventory is unaffected.
 
     """
-    return await asyncio.to_thread(
-        call_blender,
-        "inspect_lighting_setup",
-        {"scene_name": scene_name, "limit": limit, "offset": offset, "detail": detail},
+    return await call_blender(
+        "inspect_lighting_setup", {"scene_name": scene_name, "limit": limit, "offset": offset, "detail": detail}
     )
 
 
@@ -121,8 +113,7 @@ async def validate_lighting_setup(
     also detects directional lights aimed away from them. ``BOTH`` explicitly reports cross-engine
     differences rather than claiming visual parity. Page findings with ``next_offset``.
     """
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "validate_lighting_setup",
         {
             "scene_name": scene_name,

@@ -1,14 +1,12 @@
 # ruff: file-ignore[multi-line-summary-second-line]
 """Procedural output delivery tools."""
 
-import asyncio
-
 from typing import Literal
 
 from mcp.server.fastmcp import Context
 
 from ...app import mcp
-from ._shared import call_geometry_nodes
+from .._dispatch import call_blender
 
 
 @mcp.tool()
@@ -36,8 +34,7 @@ async def realize_procedural_output(
             raise ValueError("APPLIED_MODIFIER_COPY requires modifier_name")
         if not confirm_destructive:
             raise ValueError("confirm_destructive=True is required for APPLIED_MODIFIER_COPY")
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "realize_procedural_output",
         {
             "object_name": object_name,

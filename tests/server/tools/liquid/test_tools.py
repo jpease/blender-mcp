@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import liquid
+from blender_mcp.server.tools import _dispatch, liquid
 
 
 def _run(function, **kwargs):
@@ -32,9 +32,9 @@ def test_solver_patch_rejects_inverted_ranges() -> None:
 def test_solver_tool_serializes_only_explicit_patch_fields(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        liquid,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
 
     result = _run(
@@ -45,6 +45,7 @@ def test_solver_tool_serializes_only_explicit_patch_fields(monkeypatch) -> None:
     )
 
     assert result["ok"] is True
+    assert result["changed_objects"] == ["Domain"]
     assert calls == [
         (
             "configure_liquid_solver",
@@ -53,7 +54,6 @@ def test_solver_tool_serializes_only_explicit_patch_fields(monkeypatch) -> None:
                 "modifier_name": "Liquid Domain",
                 "patch": {"resolution_max": 96, "flip_ratio": 0.9},
             },
-            ["Domain"],
         )
     ]
 
@@ -61,11 +61,9 @@ def test_solver_tool_serializes_only_explicit_patch_fields(monkeypatch) -> None:
 def test_flow_tool_forwards_typed_liquid_only_settings(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        liquid,
-        "_call",
-        lambda command, params, changed_objects=None: (
-            calls.append((command, params, changed_objects)) or {"changed_objects": ["Pour", "Domain"]}
-        ),
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"changed_objects": ["Pour", "Domain"]},
     )
 
     result = _run(
@@ -87,11 +85,10 @@ def test_flow_tool_forwards_typed_liquid_only_settings(monkeypatch) -> None:
 def test_read_only_liquid_tool_reports_no_changes(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        liquid,
-        "_call",
-        lambda command, params, changed_objects=None: (
-            calls.append((command, params, changed_objects))
-            or {"domains": [], "dependencies": [], "changed_objects": []}
+        _dispatch,
+        "send_command",
+        lambda command, params=None: (
+            calls.append((command, params)) or {"domains": [], "dependencies": [], "changed_objects": []}
         ),
     )
 
@@ -169,10 +166,10 @@ def test_liquid_commands_dispatch_and_read_only_classification(monkeypatch) -> N
 
     assert "create_liquid_domain" in commands
     assert "validate_liquid_setup" in commands
-    assert "get_liquid_simulation_info" in server._READ_ONLY_COMMANDS
-    assert "estimate_liquid_resources" in server._READ_ONLY_COMMANDS
-    assert "create_liquid_domain" not in server._READ_ONLY_COMMANDS
-    assert "fit_liquid_domain" in server._GEOMETRY_MUTATING_COMMANDS
+    assert server.command_spec("get_liquid_simulation_info").read_only
+    assert server.command_spec("estimate_liquid_resources").read_only
+    assert not server.command_spec("create_liquid_domain").read_only
+    assert server.command_spec("fit_liquid_domain").geometry
 
 
 def test_resource_estimate_formula_is_explicit_and_conservative(monkeypatch) -> None:

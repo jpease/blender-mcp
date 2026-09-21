@@ -57,6 +57,7 @@ RIG = ROOT / "scripts/blender_rig.py"
 ADDON_MANAGER = ROOT / "src/blender_mcp/addon_manager.py"
 ADDON_OUTPUT_ROOTS = ROOT / "src/blender_mcp/bundled/addon/output_roots.py"
 ADDON_FILE_PATHS = ROOT / "src/blender_mcp/bundled/addon/file_paths.py"
+ADDON_LIBRARY_DIGEST = ROOT / "src/blender_mcp/bundled/addon/library_digest.py"
 ADDON_POLYHAVEN = ROOT / "src/blender_mcp/bundled/addon/handlers/polyhaven.py"
 ADDON_SERVER_CORE = ROOT / "src/blender_mcp/bundled/addon/server_core.py"
 ADDON_CAPABILITY_INTROSPECTION = ROOT / "src/blender_mcp/bundled/addon/capability_introspection.py"
@@ -65,14 +66,21 @@ SERVER_CORE_TOOL = ROOT / "src/blender_mcp/server/tools/core.py"
 SERVER_CONNECTION = ROOT / "src/blender_mcp/server/connection.py"
 ADDON_SESSION = ROOT / "src/blender_mcp/bundled/addon/session.py"
 ADDON_TRANSACTION = ROOT / "src/blender_mcp/bundled/addon/transaction.py"
+ADDON_AUTHORED = ROOT / "src/blender_mcp/bundled/addon/authored.py"
 ADDON_OBJECT_STATE = ROOT / "src/blender_mcp/bundled/addon/object_state.py"
 ADDON_TEXT_HYGIENE = ROOT / "src/blender_mcp/bundled/addon/text_hygiene.py"
 SERVER_TEXT_HYGIENE = ROOT / "src/blender_mcp/text_hygiene.py"
 ADDON_FILE_LIFECYCLE = ROOT / "src/blender_mcp/bundled/addon/handlers/file_lifecycle.py"
+# What every command touching a `.blend` on disk shares (paths, flags, library summaries,
+# operator failures), and the provenance block a save stamps and a delivery scan reads back.
+ADDON_BLEND_FILES = ROOT / "src/blender_mcp/bundled/addon/handlers/blend_files.py"
+ADDON_PROVENANCE = ROOT / "src/blender_mcp/bundled/addon/handlers/provenance.py"
 ADDON_LINKING = ROOT / "src/blender_mcp/bundled/addon/handlers/linking.py"
 ADDON_VIEWPORT = ROOT / "src/blender_mcp/bundled/addon/handlers/viewport.py"
 # Server-side tool wrappers and their registration/documentation surface.
 SERVER_FILE_LIFECYCLE_TOOL = ROOT / "src/blender_mcp/server/tools/file_lifecycle.py"
+# The one socket round trip every server-side tool makes.
+SERVER_DISPATCH = ROOT / "src/blender_mcp/server/tools/_dispatch.py"
 # `save_shot.create_directories` and name resolution after a library override.
 ADDON_OBJECT_LOOKUP = ROOT / "src/blender_mcp/bundled/addon/object_lookup.py"
 ADDON_CANDIDATES = ROOT / "src/blender_mcp/bundled/addon/candidates.py"
@@ -170,14 +178,23 @@ CRTT = "tests/server/tools/character_rigging/test_tools.py"
 OANIMT = "tests/server/tools/test_object_animation.py"
 # Named because inline it passes the line limit, and `ruff format` rejoins a split f-string.
 _LIST_SCALAR = "test_a_string_where_a_list_belongs_is_not_iterated_character_by_character"
+# The two table tests over `file_paths`' pure verdicts: their parameter ids are readable,
+# which makes the full node ids too long to inline.
+_OPEN_VERDICT = f"{FPT}::test_the_open_verdict_is_decided_from_facts_alone"
+_SAVE_VERDICT = f"{FPT}::test_the_save_verdict_holds_when_the_caller_opted_into_creating_directories"
 SESSIONT = "tests/test_session_state.py"
 TSWAPT = "tests/test_transaction_session_swap.py"
 MUTT = "tests/test_mutation_transaction.py"
+# The two files this wave's command-registry work added: the dispatch/classification
+# gate itself, and the bounded provenance ledger `save_shot` writes into the .blend.
+REGT = "tests/test_command_registry.py"
+AUTHT = "tests/test_authored_ledger.py"
 QBT = "tests/test_quiet_box.py"
 THREADT = "tests/server/test_threading.py"
 CONNT = "tests/server/test_connection_framing.py"
 CAPT = "tests/test_capability_introspection.py"
 KEYSTYLET = "tests/test_key_style.py"
+DISPT = "tests/server/tools/test_dispatch.py"
 HOSTILE_LIB = f"{SESSIONT}::test_a_hostile_library_path_is_reduced_the_same_way_a_failure_note_is"
 # The `name` half of the same table, with short ids so a row can list its nodes; the
 # `filepath` half's ids run to hundreds of characters.
@@ -215,7 +232,13 @@ NFKC_BACKSLASH_LIB = (
 # which is the outermost trust boundary this server has. SURFT joins it because the file is not
 # about a feature at all - it is the freshness gate itself, and a node added there is by
 # construction another claim about the committed snapshot, so leaving one unaccounted for would
-# be leaving the gate's own coverage to chance.
+# be leaving the gate's own coverage to chance. DISPT joins it because every tool in every
+# package now reaches Blender through that one function, so a node added there is a claim about
+# the whole server's transport, not about one feature. REGT joins it on the SURFT rule: it is
+# not about a feature either, it is the dispatch-and-classification gate itself, and every node
+# in it is a claim about which command the add-on runs and what protection it runs under. AUTHT
+# joins it because every node in it is a claim the add-on writes into a shipped `.blend`'s
+# provenance block, which a recipient cannot check against anything else.
 NEW_TEST_FILES = (
     RIGT,
     DOCKT,
@@ -237,6 +260,9 @@ NEW_TEST_FILES = (
     STRICTT,
     SURFT,
     KEYSTYLET,
+    DISPT,
+    REGT,
+    AUTHT,
 )
 # Nodes in files the matrix does not own. `coverage_gaps()` sees only these and the nodes
 # collected from NEW_TEST_FILES, so a node left off this list is never checked.
@@ -481,6 +507,29 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{POSET}::test_a_keyed_aim_takes_the_short_way_round_from_the_previous_key",
     f"{POSET}::test_a_keyed_euler_aim_stays_on_the_previous_keys_branch",
     f"{POSET}::test_rest_axes_are_reported_only_when_asked_for",
+    # --- the chain, pole and target resolution both reach tools share ---
+    f"{POSET}::test_unbranched_ancestor_chain_stops_before_a_mid_chain_fork",
+    f"{POSET}::test_unbranched_ancestor_chain_stops_before_a_root_level_fork",
+    f"{POSET}::test_unbranched_ancestor_chain_includes_an_unforked_root",
+    f"{POSET}::test_unbranched_ancestor_chain_respects_max_length",
+    f"{POSET}::test_unbranched_ancestor_chain_of_a_root_bone_is_just_that_bone",
+    f"{POSET}::test_rest_ancestor_chain_returns_the_exact_requested_length",
+    f"{POSET}::test_rest_ancestor_chain_refuses_a_length_past_the_root",
+    f"{POSET}::test_synthesize_pole_finds_the_bend_side_of_a_bent_two_bone_chain",
+    f"{POSET}::test_synthesize_pole_refuses_a_straight_two_bone_rest_chain",
+    f"{POSET}::test_synthesize_pole_refuses_a_single_bone_chain",
+    f"{POSET}::test_synthesize_pole_refuses_a_chain_whose_root_and_tip_coincide",
+    f"{POSET}::test_synthesize_pole_converts_through_the_armatures_world_matrix",
+    f"{POSET}::test_resolve_reach_chain_refuses_an_unknown_tip_bone",
+    f"{POSET}::test_resolve_reach_chain_reports_resolved_when_chain_length_is_omitted",
+    f"{POSET}::test_resolve_reach_chain_reports_explicit_when_chain_length_is_given",
+    f"{POSET}::test_resolve_reach_chain_refuses_a_bone_already_claimed_by_an_earlier_reach",
+    f"{POSET}::test_resolved_reach_target_refuses_an_unknown_object_name",
+    f"{POSET}::test_a_reach_whose_pole_cannot_be_resolved_removes_the_targets_scratch_empty",
+    f"{POSET}::test_a_constraint_value_blender_refuses_removes_the_constraint_it_already_added",
+    f"{POSET}::test_bone_reach_requires_exactly_one_target_form",
+    f"{POSET}::test_bone_reach_allows_at_most_one_pole_form",
+    f"{POSET}::test_solve_bone_reach_forwards_reaches_and_omits_unset_optional_fields",
     # --- solve_bone_reach says whether it converged, and why not ---
     f"{POSET}::test_a_reach_inside_its_tolerance_reports_converged_and_says_nothing_else",
     f"{POSET}::test_a_tighter_tolerance_turns_the_same_solve_into_a_miss",
@@ -492,6 +541,8 @@ NEW_NODES_IN_EXISTING_FILES = (
         for case in ("0.0", "-0.0001", "nan", "inf")
     ),
     f"{POSET}::test_a_missed_reach_still_warns_after_the_envelope_has_shortened_the_reply",
+    # --- a reach that raises part way through hands the rig back the action it arrived on ---
+    f"{POSET}::test_a_reach_that_fails_part_way_through_hands_back_the_action_it_arrived_on",
     # --- configure_render_settings answers with the paths it wrote, not the whole state ---
     f"{RENDT}::test_configure_render_settings_returns_only_the_patched_values",
     f"{RENDT}::test_configure_render_settings_detail_returns_both_full_state_blocks",
@@ -559,6 +610,22 @@ SPLICED_MODEL_CONTEXT = '''    for definition in schema.get("$defs", {}).values(
                     property_schema["description"] = f"Numeric value for {spaced}."'''
 
 NOT_INDIVIDUALLY_FALSIFIABLE: dict[str, str] = {
+    f"{REGT}::test_target_names_reads_the_naming_convention[nothing-named]": (
+        "it is the empty-input control for the eleven parametrized cases beside it: no line of "
+        "`target_names` can be reverted so that a params dict naming nothing yields a name, because "
+        "every branch there is a lookup keyed on a param the dict does not carry. Its job is the "
+        "opposite direction - it stops the collecting rows being satisfied by a `target_names` that "
+        "returned a constant, which is what the reverts for `scalar-key`, `list-key` and "
+        "`records-in-a-list` would otherwise be free to do."
+    ),
+    f"{AUTHT}::test_the_snapshot_cannot_be_used_to_edit_the_ledger": (
+        "the ledger stores `(collection, name)` tuples and `snapshot` builds a fresh dict per entry on "
+        "every call, so the copy is a property of the data structure rather than of a line: no single "
+        "reversal hands a caller the ledger's own objects without also changing what the ledger stores. "
+        "The invariant it guards - that a caller holding a reply cannot rewrite what the saved .blend "
+        "will claim - is why the entries are tuples, and the entries themselves are read back by "
+        "`test_records_arrive_oldest_first_and_a_repeat_is_one_datablock`, which a row does falsify."
+    ),
     f"{ENVT}::test_a_reply_within_the_budget_is_sent_whole": (
         "the early return in `_fit_budget` is a performance guard, not a decision: the loop below it "
         "re-measures and returns before shortening anything, so a within-budget reply is left whole "
@@ -1716,13 +1783,13 @@ REVERTS: list[Revert] = [
     Revert(
         "session: get_session_info is absent from the dispatch table, so the poll surface cannot be polled",
         ADDON_SERVER_CORE,
-        '            "get_session_info": self.get_session_info,',
-        '            "get_session_info_reverted": self.get_session_info,',
+        '        "get_session_info": CommandSpec(read_only=True, indeterminate_safe=True),',
+        '        "get_session_info_reverted": CommandSpec(read_only=True, indeterminate_safe=True),',
         (f"{SESSIONT}::test_get_session_info_is_registered_and_read_only",),
     ),
     Revert(
         "text hygiene: the library summary publishes an absolute filepath, mapping the asset library out",
-        ADDON_FILE_LIFECYCLE,
+        ADDON_BLEND_FILES,
         '        "filepath": whole if whole is not None else client_safe_leaf(filepath),',
         '        "filepath": filepath,',
         (f"{SESSIONT}::test_the_library_summary_reports_identity_without_the_asset_library_layout",),
@@ -1730,14 +1797,14 @@ REVERTS: list[Revert] = [
     Revert(
         "session: save_shot joins the swap set, discarding a whole batch every time a client checkpoints",
         ADDON_SERVER_CORE,
-        '_SESSION_SWAP_COMMANDS = frozenset({"open_shot", "reset_session"})',
-        '_SESSION_SWAP_COMMANDS = frozenset({"open_shot", "reset_session", "save_shot"})',
+        '        "save_shot": CommandSpec(tick_ending=True),',
+        '        "save_shot": CommandSpec(tick_ending=True, session_swap=True),',
         (f"{SESSIONT}::test_the_session_swap_set_holds_the_commands_that_replace_the_database",),
     ),
     Revert(
         "session: a swap is wrapped in mutation_transaction, whose rollback would enumerate the whole new file",
         ADDON_SERVER_CORE,
-        "            or cmd_type in self._SESSION_SWAP_COMMANDS\n",
+        "            or spec.session_swap\n",
         "",
         (f"{SESSIONT}::test_a_session_swap_command_never_reaches_mutation_transaction",),
     ),
@@ -1814,8 +1881,8 @@ REVERTS: list[Revert] = [
     Revert(
         "barrier: the dequeue comparison goes away, so a stale stamp is never acted on",
         ADDON_SERVER_CORE,
-        "            if stamp != self._session_marker():",
-        "            if False:",
+        "        if stamp != self._session_marker():",
+        "        if False:",
         (
             f"{THREADT}::test_a_command_queued_before_a_swap_that_lands_elsewhere_is_rejected_at_dequeue",
             f"{THREADT}::test_the_queue_is_snapshotted_before_the_swap_runs_not_after",
@@ -1824,8 +1891,8 @@ REVERTS: list[Revert] = [
     Revert(
         "barrier: the enqueue path reaches for bpy on a client thread",
         ADDON_SERVER_CORE,
-        "        self._stamp_session(command)\n        print(",
-        "        self._stamp_session(command)\n        _ = bpy.data\n        print(",
+        "        self._stamp_session(command)\n        logger.debug(",
+        "        self._stamp_session(command)\n        _ = bpy.data\n        logger.debug(",
         (f"{THREADT}::test_the_stamp_is_read_without_touching_bpy_on_the_client_thread",),
     ),
     Revert(
@@ -1917,9 +1984,9 @@ REVERTS: list[Revert] = [
         (
             "            self._execute_and_answer(command, client)\n"
             "            processed += 1\n"
-            '            if command.get("type") in self._TICK_ENDING_COMMANDS:'
+            '            if self.command_spec(command.get("type")).tick_ending:'
         ),
-        '            processed += 1\n            if command.get("type") in self._TICK_ENDING_COMMANDS:',
+        '            processed += 1\n            if self.command_spec(command.get("type")).tick_ending:',
         (
             f"{THREADT}::test_a_command_that_arrives_after_the_swap_is_serviced_normally",
             f"{THREADT}::test_a_command_queued_after_the_swap_is_serviced_normally_under_the_stamp",
@@ -2072,8 +2139,10 @@ REVERTS: list[Revert] = [
         "barrier: a failed timeout restore reports the frame as delivered, leaving the peer spinning",
         ADDON_SERVER_CORE,
         (
-            "            print(\"Could not restore a client socket's own timeout"
-            ' - closing it rather than leaving it spinning")\n'
+            "            logger.warning(\n"
+            "                \"Could not restore a client socket's own timeout"
+            ' - closing it rather than leaving it spinning"\n'
+            "            )\n"
             "            return False"
         ),
         "            pass  # restore failure ignored",
@@ -2082,8 +2151,8 @@ REVERTS: list[Revert] = [
     Revert(
         "barrier: the drain loop fails OPEN again, so an unstamped command runs",
         ADDON_SERVER_CORE,
-        "            if stamp != self._session_marker():",
-        "            if stamp is not None and stamp != self._session_marker():",
+        "        if stamp != self._session_marker():",
+        "        if stamp is not None and stamp != self._session_marker():",
         (f"{THREADT}::test_a_command_that_reached_the_queue_unstamped_is_rejected_not_run",),
     ),
     Revert(
@@ -2187,7 +2256,7 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "text hygiene: the gate admits one string and the publisher returns another, manufacturing what it rejected",
-        ADDON_FILE_LIFECYCLE,
+        ADDON_BLEND_FILES,
         '        "filepath": whole if whole is not None else client_safe_leaf(filepath),',
         '        "filepath": filepath if whole is not None else client_safe_leaf(filepath),',
         (
@@ -2197,8 +2266,8 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "text hygiene: the library summary loses the hygiene its sibling field has, on both branches",
-        ADDON_FILE_LIFECYCLE,
-        ('        "filepath": whole if whole is not None else client_safe_leaf(filepath),'),
+        ADDON_BLEND_FILES,
+        '        "filepath": whole if whole is not None else client_safe_leaf(filepath),',
         '        "filepath": filepath,',
         (
             f"{HOSTILE_LIB}[ANSI escape, relative branch-//shots/\\x1b[31mx.blend-forbidden1]",
@@ -2636,16 +2705,27 @@ REVERTS: list[Revert] = [
     Revert(
         "barrier: the drain loop stops enforcing the latch, so a command runs against a half-replaced database",
         ADDON_SERVER_CORE,
-        '            if session_is_indeterminate() and command.get("type") not in self._INDETERMINATE_SAFE_COMMANDS:',
-        "            if False:",
+        '        if session_is_indeterminate() and not self.command_spec(command.get("type")).indeterminate_safe:',
+        "        if False:",
         (f"{THREADT}::test_a_command_is_refused_while_the_session_is_indeterminate",),
     ),
     Revert(
         "barrier: the latch refuses the commands that repair and report it, wedging the addon for good",
         ADDON_SERVER_CORE,
-        "    _INDETERMINATE_SAFE_COMMANDS = frozenset("
-        '{"get_addon_info", "get_session_info", "open_shot", "reset_session"})',
-        "    _INDETERMINATE_SAFE_COMMANDS = frozenset()",
+        (
+            '        "get_addon_info": CommandSpec(read_only=True, indeterminate_safe=True),\n'
+            '        "get_session_info": CommandSpec(read_only=True, indeterminate_safe=True),\n'
+            '        "open_shot": CommandSpec(session_swap=True, indeterminate_safe=True),\n'
+            '        "save_shot": CommandSpec(tick_ending=True),\n'
+            '        "reset_session": CommandSpec(session_swap=True, indeterminate_safe=True),'
+        ),
+        (
+            '        "get_addon_info": CommandSpec(read_only=True),\n'
+            '        "get_session_info": CommandSpec(read_only=True),\n'
+            '        "open_shot": CommandSpec(session_swap=True),\n'
+            '        "save_shot": CommandSpec(tick_ending=True),\n'
+            '        "reset_session": CommandSpec(session_swap=True),'
+        ),
         (f"{THREADT}::test_the_commands_that_report_or_repair_an_indeterminate_session_still_run",),
     ),
     Revert(
@@ -2655,7 +2735,7 @@ REVERTS: list[Revert] = [
             "            mid_load = load_in_flight()\n"
             "            if mid_load:\n"
             "                mark_session_indeterminate()\n"
-            '            if not receipt["answered"]:\n'
+            "            if not receipt.answered:\n"
             "                self._answer(command, client, "
             '{"status": "error", "message": self._abort_message(mid_load)})'
         ),
@@ -2677,12 +2757,12 @@ REVERTS: list[Revert] = [
             "            mid_load = load_in_flight()\n"
             "            if mid_load:\n"
             "                mark_session_indeterminate()\n"
-            '            if not receipt["answered"]:\n'
+            "            if not receipt.answered:\n"
             "                self._answer(command, client, "
             '{"status": "error", "message": self._abort_message(mid_load)})'
         ),
         (
-            '            if not receipt["answered"]:\n'
+            "            if not receipt.answered:\n"
             "                self._answer(command, client, "
             '{"status": "error", "message": self._ABORTED_BEFORE_HANDOFF})\n'
             "            elif load_in_flight():\n"
@@ -2782,7 +2862,7 @@ REVERTS: list[Revert] = [
     # --- the library name, is_confusable, the refresh, and abort accounting ---
     Revert(
         "text hygiene: the library name goes back through client_safe_text, which allowlists nothing",
-        ADDON_FILE_LIFECYCLE,
+        ADDON_BLEND_FILES,
         '        "name": client_safe_name_leaf(getattr(library, "name", "")),',
         '        "name": _reverted_unallowlisted_name(getattr(library, "name", "")),',
         tuple(f"{HOSTILE_LIB_NAME}[{case}]" for case in HOSTILE_LIB_NAME_IDS),
@@ -2815,7 +2895,7 @@ REVERTS: list[Revert] = [
     Revert(
         "barrier: an abort during the pre-swap drain leaves the swap's own client with nothing",
         ADDON_SERVER_CORE,
-        '            if not receipt["answered"]:',
+        "            if not receipt.answered:",
         "            if False:",
         (
             f"{THREADT}::test_an_abort_during_the_pre_swap_drain_answers_the_swaps_own_client",
@@ -2826,7 +2906,7 @@ REVERTS: list[Revert] = [
         "barrier: the answer receipt goes back to a prediction the caller writes up front",
         ADDON_SERVER_CORE,
         "        try:\n            self._drain_queue_into(superseded)",
-        '        try:\n            receipt["answered"] = True\n            self._drain_queue_into(superseded)',
+        "        try:\n            receipt.answered = True\n            self._drain_queue_into(superseded)",
         (f"{THREADT}::test_an_abort_in_the_swaps_prologue_still_answers_the_swaps_own_client",),
     ),
     Revert(
@@ -3015,7 +3095,7 @@ REVERTS: list[Revert] = [
     Revert(
         "barrier: _answer stops writing the receipt, so the guard answers a client that was already answered",
         ADDON_SERVER_CORE,
-        '        if receipt is not None:\n            receipt["answered"] = True\n\n',
+        "        if receipt is not None:\n            receipt.answered = True\n\n",
         "",
         (f"{THREADT}::test_a_swap_that_answers_normally_is_not_answered_a_second_time_by_the_guard",),
     ),
@@ -3023,7 +3103,7 @@ REVERTS: list[Revert] = [
     Revert(
         "transaction: the library commands enter mutation_transaction, so a failed reload deletes what it reloaded",
         ADDON_SERVER_CORE,
-        "            or cmd_type in self._DATABLOCK_REPLACING_COMMANDS\n",
+        "            or spec.datablock_replacing\n",
         "",
         (
             f"{TSWAPT}::test_a_library_replacing_command_never_reaches_mutation_transaction",
@@ -3033,9 +3113,8 @@ REVERTS: list[Revert] = [
     Revert(
         "transaction: link_canon_library joins the datablock-replacing set, so a failed link leaks its library",
         ADDON_SERVER_CORE,
-        '_DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries"})',
-        '_DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries", '
-        '"link_canon_library"})',
+        '        "link_canon_library": CommandSpec(),',
+        '        "link_canon_library": CommandSpec(datablock_replacing=True),',
         (
             f"{TSWAPT}::test_the_datablock_replacing_set_is_the_three_library_commands_and_nothing_read_only",
             f"{TSWAPT}::test_link_canon_library_still_enters_mutation_transaction",
@@ -3330,15 +3409,34 @@ REVERTS: list[Revert] = [
     Revert(
         "file paths: no configured roots refuses everything instead of enforcing nothing",
         ADDON_FILE_PATHS,
-        "    if not roots:\n        return  # the permissive default costs no syscall\n",
-        "",
+        (
+            "    canonical_roots = [canonical_path(root) for root in roots]\n"
+            "    if not canonical_roots:\n"
+            "        return  # the permissive default costs no syscall\n"
+            "    candidate = canonical_path(path)\n"
+            "    if inside_roots(candidate, canonical_roots):\n"
+            "        return\n"
+        ),
+        (
+            "    canonical_roots = [canonical_path(root) for root in roots]\n"
+            "    candidate = canonical_path(path)\n"
+            "    if canonical_roots and inside_roots(candidate, canonical_roots):\n"
+            "        return\n"
+        ),
         (f"{FPT}::test_no_configured_roots_enforces_nothing",),
+    ),
+    Revert(
+        "file paths: unset roots authorize nothing instead of everything, at the verdict itself",
+        ADDON_FILE_PATHS,
+        "    return not canonical_roots or any(contains(root, canonical_candidate) for root in canonical_roots)",
+        "    return any(contains(root, canonical_candidate) for root in canonical_roots)",
+        (f"{FPT}::test_a_path_is_authorized_by_any_one_root_and_by_no_roots_at_all",),
     ),
     Revert(
         "file paths: the containment refusal echoes the resolved path",
         ADDON_FILE_PATHS,
-        '        "path is outside the allowed file roots',
-        '        f"path {candidate} is outside the allowed file roots',
+        "    raise PathOutsideRootsError(ROOTS_REFUSAL)",
+        '    raise PathOutsideRootsError(f"path {candidate} is outside the allowed file roots")',
         (
             f"{FPT}::test_the_containment_refusal_names_the_policy_not_a_path",
             f"{FPT}::test_a_sibling_directory_sharing_the_roots_prefix_is_refused",
@@ -3347,31 +3445,59 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "file paths: a directory is read as a missing file",
+        "file paths: the open verdict decides nothing, so a directory, a missing file and a zip all pass",
         ADDON_FILE_PATHS,
         (
-            "    if os.path.isdir(path):\n"
-            '        raise ValueError("path is a directory, not a .blend file")\n'
-            "    if not os.path.isfile(path):"
+            "    if is_directory:\n"
+            '        return "path is a directory, not a .blend file"\n'
+            "    if not exists:\n"
+            '        return "file does not exist"\n'
+            "    if not readable:\n"
+            '        return "file could not be read"\n'
+            "    if not is_blend_header(header):\n"
+            '        return "file is not a .blend file (unrecognised header)"\n'
+            "    return None\n"
         ),
-        "    if not os.path.isfile(path):",
+        "    return None\n",
+        (
+            f"{_OPEN_VERDICT}[a directory named x.blend is not a file]",
+            f"{_OPEN_VERDICT}[missing]",
+            f"{_OPEN_VERDICT}[unreadable is refused, not treated as a bad header]",
+            f"{_OPEN_VERDICT}[a zip renamed .blend]",
+        ),
+    ),
+    Revert(
+        "file paths control: the header test refuses every file, a real .blend included",
+        ADDON_FILE_PATHS,
+        "    if not is_blend_header(header):\n",
+        "    if True:\n",
+        (f"{_OPEN_VERDICT}[a real .blend]",),
+    ),
+    Revert(
+        "file paths: a directory is read as a missing file",
+        ADDON_FILE_PATHS,
+        ('    if is_directory:\n        return "path is a directory, not a .blend file"\n    if not exists:\n'),
+        "    if not exists:\n",
         (f"{FPT}::test_a_directory_where_a_file_is_expected_is_refused",),
     ),
     Revert(
         "file paths: a directory is accepted as a save target",
         ADDON_FILE_PATHS,
         (
-            "    if os.path.isdir(path):\n"
-            '        raise ValueError("path is a directory, not a .blend file")\n'
-            "    directory = os.path.dirname(path)"
+            "    if is_directory:\n"
+            '        return "path is a directory, not a .blend file"\n'
+            "    if not directory_exists:\n"
         ),
-        "    directory = os.path.dirname(path)",
-        (f"{FPT}::test_a_directory_where_a_save_target_is_expected_is_refused",),
+        "    if not directory_exists:\n",
+        (
+            f"{FPT}::test_a_directory_where_a_save_target_is_expected_is_refused",
+            f"{_SAVE_VERDICT}[saving over a directory]",
+        ),
     ),
     Revert(
         "file paths: a missing file is not refused before it is opened",
         ADDON_FILE_PATHS,
-        '    if not os.path.isfile(path):\n        raise ValueError("file does not exist")\n',
+        ('    if not exists:\n        return "file does not exist"\n'),
         "",
         (f"{FPT}::test_a_missing_file_is_refused",),
     ),
@@ -3388,26 +3514,37 @@ REVERTS: list[Revert] = [
     Revert(
         "file paths: an unreadable file's OSError text (and its path) reaches the refusal",
         ADDON_FILE_PATHS,
-        '        raise ValueError("file could not be read") from exc',
-        '        raise ValueError(f"file could not be read: {exc}") from exc',
+        ("        except OSError as exc:\n            cause = exc\n"),
+        ('        except OSError as exc:\n            raise ValueError(f"file could not be read: {exc}") from exc\n'),
         (f"{FPT}::test_an_unreadable_file_is_refused_without_naming_it",),
     ),
     Revert(
         "file paths: a save target's missing directory is not refused",
         ADDON_FILE_PATHS,
-        '        raise ValueError("target directory does not exist; pass create_directories=true to create it")\n',
-        "        return\n",
+        '        return "target directory does not exist; pass create_directories=true to create it"\n',
+        "        return None\n",
         (
             f"{FPT}::test_a_save_target_whose_directory_does_not_exist_is_refused",
             f"{FLT}::test_save_shot_refuses_a_missing_directory_unless_asked_to_create_it",
+            f"{FPT}::test_a_missing_save_directory_is_refused_without_the_opt_in",
         ),
+    ),
+    Revert(
+        "create_directories: the opt-in is ignored, so a missing directory is refused anyway",
+        ADDON_FILE_PATHS,
+        ("    if not directory_exists:\n        if create_directories:\n            return None\n"),
+        ("    if not directory_exists:\n        if False:\n            return None\n"),
+        (f"{_SAVE_VERDICT}[a missing directory the caller opted into creating]",),
     ),
     Revert(
         "file paths: a save target's read-only directory is not refused",
         ADDON_FILE_PATHS,
-        '    if not os.access(directory, os.W_OK):\n        raise ValueError("target directory is not writable")\n',
+        ('    if not directory_writable:\n        return "target directory is not writable"\n'),
         "",
-        (f"{FPT}::test_a_save_target_in_a_read_only_directory_is_refused",),
+        (
+            f"{FPT}::test_a_save_target_in_a_read_only_directory_is_refused",
+            f"{_SAVE_VERDICT}[create_directories does not excuse an unwritable existing directory]",
+        ),
     ),
     Revert(
         "file paths: the magic check accepts only b'BLENDER', rejecting every compressed .blend",
@@ -3573,24 +3710,24 @@ REVERTS: list[Revert] = [
     Revert(
         "polyhaven: Poly Haven loads the download without checking it is a .blend",
         ADDON_POLYHAVEN,
-        "    blend_path = resolve_blend_path(path, must_exist=True)",
-        "    blend_path = path",
+        "        return resolve_blend_path(path, roots=[download_dir], must_exist=True)",
+        "        return path",
         (f"{PHT}::test_a_downloaded_blend_whose_header_is_not_a_blend_is_never_loaded",),
     ),
     Revert(
         "polyhaven: Poly Haven does not contain the download to its own directory",
         ADDON_POLYHAVEN,
-        "        enforce_roots(blend_path, [download_dir])",
-        "        enforce_roots(blend_path, [])",
+        "        return resolve_blend_path(path, roots=[download_dir], must_exist=True)",
+        "        return resolve_blend_path(path, roots=[], must_exist=True)",
         (f"{PHT}::test_a_downloaded_blend_resolving_outside_its_download_directory_is_never_loaded",),
     ),
     Revert(
         "polyhaven: Poly Haven's download is held to the deployment's file roots, breaking the import",
         ADDON_POLYHAVEN,
-        "        enforce_roots(blend_path, [download_dir])",
-        "        enforce_roots(blend_path, configured_file_roots())",
+        "        return resolve_blend_path(path, roots=[download_dir], must_exist=True)",
+        "        return resolve_blend_path(path, roots=configured_file_roots(), must_exist=True)",
         (f"{PHT}::test_a_valid_downloaded_blend_is_still_imported",),
-        also="\nfrom ..output_roots import configured_file_roots\n",
+        ("\n\nfrom ..output_roots import configured_file_roots\n"),
     ),
     Revert(
         "polyhaven: Poly Haven's import error reaches the client unsanitized",
@@ -3792,8 +3929,8 @@ REVERTS: list[Revert] = [
     Revert(
         "polyhaven: the asset listing error goes out raw",
         ADDON_POLYHAVEN,
-        '            return {"error": sanitize_blender_error(e)}\n\n    def import_polyhaven_asset',
-        '            return {"error": str(e)}\n\n    def import_polyhaven_asset',
+        ('            return {"error": sanitize_blender_error(e)}\n\n    def _configured_environment'),
+        ('            return {"error": str(e)}\n\n    def _configured_environment'),
         (f"{PHT}::test_a_failure_before_any_download_reports_no_absolute_path[list_polyhaven_assets-arguments2]",),
     ),
     # --- open_shot, save_shot, reset_session ---
@@ -3843,7 +3980,7 @@ REVERTS: list[Revert] = [
     Revert(
         "file lifecycle: use_scripts_auto_execute is not checked before the load",
         ADDON_FILE_LIFECYCLE,
-        "        _refuse_scripts_auto_execute()\n",
+        "        refuse_scripts_auto_execute()\n",
         "",
         (
             f"{FLT}::test_open_shot_refuses_while_scripts_auto_execute_is_enabled",
@@ -3852,23 +3989,35 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "file lifecycle: an unreadable auto-execute preference is read as off (fail open)",
-        ADDON_FILE_LIFECYCLE,
+        ADDON_BLEND_FILES,
         'if getattr(filepaths, "use_scripts_auto_execute", True) is not False:',
         'if getattr(filepaths, "use_scripts_auto_execute", False) is True:',
         (f"{FLT}::test_open_shot_refuses_when_the_auto_execute_preference_cannot_be_read",),
     ),
     Revert(
         "file lifecycle: the auto-execute check refuses whatever the preference says",
-        ADDON_FILE_LIFECYCLE,
+        ADDON_BLEND_FILES,
         'if getattr(filepaths, "use_scripts_auto_execute", True) is not False:',
         "if True:",
         (f"{FLT}::test_open_shot_proceeds_while_scripts_auto_execute_is_disabled",),
     ),
     Revert(
         "file lifecycle: resolve_blend_path skipped, the raw path reaches the operator",
-        ADDON_FILE_LIFECYCLE,
-        "    return resolve_blend_path(expanded, must_exist=must_exist, create_directories=create_directories)\n",
-        "    return str(expanded)\n",
+        ADDON_BLEND_FILES,
+        (
+            "    return resolve_blend_path(\n"
+            "        _expand_blender_relative(raw),\n"
+            "        roots=configured_file_roots(),\n"
+            "        must_exist=must_exist,\n"
+            "        create_directories=create_directories,\n"
+            "    )\n"
+        ),
+        (
+            "    expanded = _expand_blender_relative(raw)\n"
+            '    if isinstance(expanded, str) and expanded.strip() and "\\x00" not in expanded:\n'
+            "        enforce_roots(expanded, configured_file_roots())\n"
+            "    return str(expanded)\n"
+        ),
         (
             *(
                 f"{FLT}::test_open_shot_validates_the_path_before_any_operator_runs[{case}]"
@@ -3876,12 +4025,13 @@ REVERTS: list[Revert] = [
             ),
             f"{FLT}::test_each_file_command_is_answered_exactly_once_through_the_drain_loop[open refused]",
         ),
+        ("\n\nfrom ..file_paths import enforce_roots\n"),
     ),
     Revert(
         "file lifecycle: a // path in an unsaved session resolves against the process CWD",
-        ADDON_FILE_LIFECYCLE,
-        '    if not bpy.data.filepath:\n        raise ValueError(\n            "a Blender-relative',
-        '    if False:\n        raise ValueError(\n            "a Blender-relative',
+        ADDON_BLEND_FILES,
+        ('    if not bpy.data.filepath:\n        raise ValueError(\n            "a Blender-relative'),
+        ('    if False:\n        raise ValueError(\n            "a Blender-relative'),
         (
             f"{FLT}::test_open_shot_refuses_a_blender_relative_path_in_an_unsaved_session",
             f"{FLT}::test_save_shot_refuses_a_blender_relative_path_in_an_unsaved_session",
@@ -3889,16 +4039,16 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "file lifecycle: a // path is never expanded",
-        ADDON_FILE_LIFECYCLE,
+        ADDON_BLEND_FILES,
         "    return bpy.path.abspath(raw)\n",
         "    return raw\n",
         (f"{FLT}::test_open_shot_expands_a_blender_relative_path_against_the_open_file",),
     ),
     Revert(
         "file lifecycle: file roots not enforced on open or save",
-        ADDON_FILE_LIFECYCLE,
-        "        enforce_roots(expanded, configured_file_roots())\n",
-        "        pass\n",
+        ADDON_BLEND_FILES,
+        "        roots=configured_file_roots(),\n",
+        "        roots=[],\n",
         (
             f"{FLT}::test_open_shot_enforces_the_configured_roots",
             f"{FLT}::test_open_shot_refuses_outside_the_roots_before_saying_whether_the_file_exists",
@@ -3908,30 +4058,46 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "file lifecycle: roots checked after the file checks, so existence leaks outside the roots",
-        ADDON_FILE_LIFECYCLE,
-        '    if isinstance(expanded, str) and expanded.strip() and "\\x00" not in expanded:\n'
-        "        enforce_roots(expanded, configured_file_roots())\n"
-        "    return resolve_blend_path(expanded, must_exist=must_exist, create_directories=create_directories)\n",
-        "    canonical = resolve_blend_path(expanded, must_exist=must_exist, create_directories=create_directories)\n"
-        "    enforce_roots(canonical, configured_file_roots())\n"
-        "    return canonical\n",
+        ADDON_FILE_PATHS,
+        (
+            "    resolved = canonical_path(raw)\n"
+            "    enforce_roots(resolved, roots)\n"
+            "    if not (_has_blend_suffix(raw) and _has_blend_suffix(resolved)):\n"
+            '        raise ValueError("path must name a file ending in .blend")\n'
+            "    if must_exist:\n"
+            "        _require_blend_file(resolved)\n"
+            "    else:\n"
+            "        _require_save_target(resolved, create_directories=create_directories)\n"
+        ),
+        (
+            "    resolved = canonical_path(raw)\n"
+            "    if not (_has_blend_suffix(raw) and _has_blend_suffix(resolved)):\n"
+            '        raise ValueError("path must name a file ending in .blend")\n'
+            "    if must_exist:\n"
+            "        _require_blend_file(resolved)\n"
+            "    else:\n"
+            "        _require_save_target(resolved, create_directories=create_directories)\n"
+            "    enforce_roots(resolved, roots)\n"
+        ),
         (f"{FLT}::test_open_shot_refuses_outside_the_roots_before_saying_whether_the_file_exists",),
     ),
     Revert(
         "file lifecycle: the in-place save target is not held to the roots",
         ADDON_FILE_LIFECYCLE,
-        "        canonical = _checked_blend_path(requested, must_exist=False, create_directories=create_directories)\n",
-        "        canonical = (\n"
-        "            str(requested)\n"
-        "            if in_place\n"
-        "            else _checked_blend_path(requested, must_exist=False, create_directories=create_directories)\n"
-        "        )\n",
+        "        canonical = checked_blend_path(requested, must_exist=False, create_directories=create_directories)\n",
+        (
+            "        canonical = (\n"
+            "            str(requested)\n"
+            "            if in_place\n"
+            "            else checked_blend_path(requested, must_exist=False, create_directories=create_directories)\n"
+            "        )\n"
+        ),
         (f"{FLT}::test_save_shot_enforces_the_roots_for_an_explicit_target_and_for_the_open_file",),
     ),
     Revert(
         "file lifecycle: open_mainfile's RuntimeError reaches the client raw",
         ADDON_FILE_LIFECYCLE,
-        'raise RuntimeError(_operator_failure_message("open_shot", exc, (filepath, canonical))) from exc',
+        'raise RuntimeError(operator_failure_message("open_shot", exc, (filepath, canonical))) from exc',
         "raise RuntimeError(str(exc)) from exc",
         (
             f"{FLT}::test_a_runtime_error_from_open_mainfile_is_a_clean_error_response",
@@ -3940,7 +4106,7 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "file lifecycle: the sanitizer is not given the known paths (structural detection only)",
-        ADDON_FILE_LIFECYCLE,
+        ADDON_BLEND_FILES,
         "sanitize_blender_error(exc, known_paths=known)",
         "sanitize_blender_error(exc)",
         (f"{FLT}::test_the_known_path_closes_what_structural_detection_leaves_behind",),
@@ -3948,8 +4114,11 @@ REVERTS: list[Revert] = [
     Revert(
         "file lifecycle: a save operator's RuntimeError reaches the client raw",
         ADDON_FILE_LIFECYCLE,
-        'raise RuntimeError(_operator_failure_message("save_shot", exc, (requested, canonical))) from exc',
-        "raise RuntimeError(str(exc)) from exc",
+        (
+            '        message = operator_failure_message("save_shot", exc, (request.requested, request.canonical))\n'
+            "        raise RuntimeError(message) from exc\n"
+        ),
+        "        raise RuntimeError(str(exc)) from exc\n",
         (
             f"{FLT}::test_a_runtime_error_from_a_save_operator_is_a_clean_error_response[save_as_mainfile]",
             f"{FLT}::test_a_runtime_error_from_a_save_operator_is_a_clean_error_response[save_mainfile]",
@@ -3959,7 +4128,7 @@ REVERTS: list[Revert] = [
     Revert(
         "file lifecycle: the reset operator's RuntimeError reaches the client raw",
         ADDON_FILE_LIFECYCLE,
-        'raise RuntimeError(_operator_failure_message("reset_session", exc, (previous,))) from exc',
+        'raise RuntimeError(operator_failure_message("reset_session", exc, (previous,))) from exc',
         "raise RuntimeError(str(exc)) from exc",
         (
             f"{FLT}::test_a_runtime_error_from_the_reset_operator_is_a_clean_error_response",
@@ -3987,16 +4156,18 @@ REVERTS: list[Revert] = [
     Revert(
         "file lifecycle: a failing post-swap report turns a landed swap into an error",
         ADDON_FILE_LIFECYCLE,
-        '        except Exception as exc:\n            print(f"BlenderMCP: the swap completed',
-        '        except ZeroDivisionError as exc:\n            print(f"BlenderMCP: the swap completed',
+        ('        except _POST_SWAP_READ_ERRORS as exc:\n            print(f"BlenderMCP: the swap completed'),
+        ('        except ZeroDivisionError as exc:\n            print(f"BlenderMCP: the swap completed'),
         (f"{FLT}::test_a_swap_that_landed_is_still_reported_as_a_success_when_its_report_fails",),
     ),
     Revert(
         "file lifecycle: flags are coerced with bool(), so the string 'true' confirms",
-        ADDON_FILE_LIFECYCLE,
-        "    if not isinstance(value, bool):\n"
-        '        raise ValueError(f"{name} must be true or false")\n'
-        "    return value\n",
+        ADDON_BLEND_FILES,
+        (
+            "    if not isinstance(value, bool):\n"
+            '        raise ValueError(f"{name} must be true or false")\n'
+            "    return value\n"
+        ),
         "    return bool(value)\n",
         tuple(
             f"{FLT}::test_a_flag_that_is_not_a_real_bool_is_refused[{case}]"
@@ -4013,8 +4184,8 @@ REVERTS: list[Revert] = [
     Revert(
         "file lifecycle: save inherits relative_remap (save_as_mainfile's default is True)",
         ADDON_FILE_LIFECYCLE,
-        "operator(filepath=canonical, compress=compress, relative_remap=relative_remap)",
-        "operator(filepath=canonical, compress=compress)",
+        "operator(filepath=request.canonical, compress=request.compress, relative_remap=request.relative_remap)",
+        "operator(filepath=request.canonical, compress=request.compress)",
         (
             f"{FLT}::test_save_shot_passes_compress_and_relative_remap_false_explicitly",
             f"{FLT}::test_save_shot_in_place_uses_save_mainfile_with_explicit_arguments",
@@ -4023,8 +4194,8 @@ REVERTS: list[Revert] = [
     Revert(
         "file lifecycle: save inherits compress (use_file_compression wins at factory settings)",
         ADDON_FILE_LIFECYCLE,
-        "operator(filepath=canonical, compress=compress, relative_remap=relative_remap)",
-        "operator(filepath=canonical, relative_remap=relative_remap)",
+        "operator(filepath=request.canonical, compress=request.compress, relative_remap=request.relative_remap)",
+        "operator(filepath=request.canonical, relative_remap=request.relative_remap)",
         (
             f"{FLT}::test_save_shot_passes_compress_and_relative_remap_false_explicitly",
             f"{FLT}::test_save_shot_in_place_uses_save_mainfile_with_explicit_arguments",
@@ -4033,8 +4204,8 @@ REVERTS: list[Revert] = [
     Revert(
         "file lifecycle: an explicit compress / relative_remap opt-in is dropped",
         ADDON_FILE_LIFECYCLE,
-        "operator(filepath=canonical, compress=compress, relative_remap=relative_remap)",
-        "operator(filepath=canonical, compress=False, relative_remap=False)",
+        "operator(filepath=request.canonical, compress=request.compress, relative_remap=request.relative_remap)",
+        "operator(filepath=request.canonical, compress=False, relative_remap=False)",
         (f"{FLT}::test_save_shot_forwards_an_explicit_opt_in",),
     ),
     Revert(
@@ -4069,8 +4240,8 @@ REVERTS: list[Revert] = [
     Revert(
         "file lifecycle: an in-place save goes through save_as_mainfile",
         ADDON_FILE_LIFECYCLE,
-        "operator = bpy.ops.wm.save_mainfile if in_place else bpy.ops.wm.save_as_mainfile",
-        "operator = bpy.ops.wm.save_as_mainfile",
+        "    operator = bpy.ops.wm.save_mainfile if request.in_place else bpy.ops.wm.save_as_mainfile",
+        "    operator = bpy.ops.wm.save_as_mainfile",
         (
             f"{FLT}::test_save_shot_in_place_uses_save_mainfile_with_explicit_arguments",
             f"{FLT}::test_a_runtime_error_from_a_save_operator_is_a_clean_error_response[save_mainfile]",
@@ -4079,8 +4250,8 @@ REVERTS: list[Revert] = [
     Revert(
         "file lifecycle: reset_session runs without confirm",
         ADDON_FILE_LIFECYCLE,
-        '        if not _require_bool("confirm", confirm):\n',
-        '        if not _require_bool("confirm", True):\n',
+        '        if not require_bool("confirm", confirm):\n',
+        '        if not require_bool("confirm", True):\n',
         (
             f"{FLT}::test_reset_session_without_confirm_is_refused",
             f"{FLT}::test_a_flag_that_is_not_a_real_bool_is_refused[reset_session-confirm]",
@@ -4101,9 +4272,9 @@ REVERTS: list[Revert] = [
     Revert(
         "file lifecycle: the three commands are not in the dispatch table",
         ADDON_SERVER_CORE,
-        '            "open_shot": self.open_shot,\n'
-        '            "save_shot": self.save_shot,\n'
-        '            "reset_session": self.reset_session,\n',
+        '        "open_shot": CommandSpec(session_swap=True, indeterminate_safe=True),\n'
+        '        "save_shot": CommandSpec(tick_ending=True),\n'
+        '        "reset_session": CommandSpec(session_swap=True, indeterminate_safe=True),\n',
         "",
         (
             f"{FLT}::test_the_file_commands_are_dispatchable_and_advertised_beside_get_session_info",
@@ -4117,23 +4288,25 @@ REVERTS: list[Revert] = [
     Revert(
         "file lifecycle: the drain tick does not end after save_shot, so an edit behind it loses its dirty flag",
         ADDON_SERVER_CORE,
-        '            if command.get("type") in self._TICK_ENDING_COMMANDS:\n                break\n',
+        '            if self.command_spec(command.get("type")).tick_ending:\n                break\n',
         "",
         (f"{FLT}::test_the_drain_tick_ends_after_a_save_so_a_queued_edit_runs_after_blender_clears_the_dirty_flag",),
     ),
     Revert(
         "file lifecycle: save_shot reports a same-tick is_dirty that Blender has not cleared yet",
         ADDON_FILE_LIFECYCLE,
-        '        "relative_remap": relative_remap,\n        "session_id": session["session_id"],\n',
-        '        "relative_remap": relative_remap,\n'
-        '        "is_dirty": bool(bpy.data.is_dirty),\n'
-        '        "session_id": session["session_id"],\n',
+        ('        "relative_remap": request.relative_remap,\n        "session_id": session["session_id"],\n'),
+        (
+            '        "relative_remap": request.relative_remap,\n'
+            '        "is_dirty": bool(bpy.data.is_dirty),\n'
+            '        "session_id": session["session_id"],\n'
+        ),
         (f"{FLT}::test_save_shot_does_not_report_a_dirty_flag_blender_has_not_cleared_yet",),
     ),
     Revert(
         "file lifecycle: no warning for //-relative links a save to a new directory breaks",
         ADDON_FILE_LIFECYCLE,
-        "        broken_links = _unresolvable_relative_paths(canonical, relative_remap)\n",
+        "        broken_links = _unresolvable_relative_paths(request.canonical, request.relative_remap)\n",
         "        broken_links = 0\n",
         (
             f"{FLT}::test_saving_to_another_directory_warns_about_relative_links_that_will_not_resolve",
@@ -4208,7 +4381,7 @@ REVERTS: list[Revert] = [
     Revert(
         "file lifecycle: indirect libraries are counted although they re-resolve from their parent",
         ADDON_FILE_LIFECYCLE,
-        "for library in bpy.data.libraries if _is_indirect_library(library)",
+        "for library in bpy.data.libraries if is_indirect_library(library)",
         "for library in bpy.data.libraries if False",
         (f"{FLT}::test_an_indirect_library_is_not_counted_because_blender_rederives_it_from_its_parent",),
     ),
@@ -4216,9 +4389,11 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: link hands the raw path to Blender without roots or file checks",
         ADDON_LINKING,
-        "        canonical = _checked_blend_path(filepath, must_exist=True)\n"
-        '        _refuse_scripts_auto_execute("link_canon_library")\n',
-        '        canonical = str(filepath)\n        _refuse_scripts_auto_execute("link_canon_library")\n',
+        (
+            "        canonical = checked_blend_path(filepath, must_exist=True)\n"
+            '        refuse_scripts_auto_execute("link_canon_library")\n'
+        ),
+        ('        canonical = str(filepath)\n        refuse_scripts_auto_execute("link_canon_library")\n'),
         (f"{LKT}::test_link_validates_its_path_before_blender_reads_it", f"{LKT}::test_link_enforces_the_file_roots"),
     ),
     Revert(
@@ -4231,9 +4406,8 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: link_canon_library joins the replacing set, so a failed link keeps its Library",
         ADDON_SERVER_CORE,
-        '_DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries"})',
-        '_DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries", '
-        '"link_canon_library"})',
+        '        "link_canon_library": CommandSpec(),',
+        '        "link_canon_library": CommandSpec(datablock_replacing=True),',
         (
             f"{LKT}::test_a_link_that_fails_after_linking_rolls_its_library_back",
             f"{LKT}::test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_does",
@@ -4242,8 +4416,8 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: reload_library leaves the replacing set and is transacted",
         ADDON_SERVER_CORE,
-        '_DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries"})',
-        '_DATABLOCK_REPLACING_COMMANDS = frozenset({"relocate_library", "unlink_libraries"})',
+        '        "reload_library": CommandSpec(datablock_replacing=True),',
+        '        "reload_library": CommandSpec(),',
         (f"{LKT}::test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_does",),
     ),
     Revert(
@@ -4284,9 +4458,11 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: link flags are coerced with bool()",
         ADDON_LINKING,
-        '        as_override = _require_bool("as_override", as_override)\n'
-        '        relative = _require_bool("relative", relative)\n',
-        "        as_override = bool(as_override)\n        relative = bool(relative)\n",
+        (
+            '        as_override = require_bool("as_override", as_override)\n'
+            '        relative = require_bool("relative", relative)\n'
+        ),
+        ("        as_override = bool(as_override)\n        relative = bool(relative)\n"),
         (
             f"{LKT}::test_link_flags_must_be_real_bools[as_override]",
             f"{LKT}::test_link_flags_must_be_real_bools[relative]",
@@ -4295,7 +4471,7 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: a libraries.load failure goes out raw",
         ADDON_LINKING,
-        'raise RuntimeError(_operator_failure_message("link_canon_library", exc, (filepath, canonical))) from exc',
+        'raise RuntimeError(operator_failure_message("link_canon_library", exc, (filepath, canonical))) from exc',
         "raise RuntimeError(str(exc)) from exc",
         (f"{LKT}::test_a_blender_link_failure_reaches_the_client_without_its_path",),
     ),
@@ -4313,8 +4489,8 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: create_override takes the scene from bpy.context",
         ADDON_LINKING,
-        '        report = _override_all([collection], _scene(scene_uid), detail=_require_bool("detail", detail))[0]\n',
-        '        report = _override_all([collection], bpy.context.scene, detail=_require_bool("detail", detail))[0]\n',
+        '        report = _override_all([collection], _scene(scene_uid), detail=require_bool("detail", detail))[0]\n',
+        '        report = _override_all([collection], bpy.context.scene, detail=require_bool("detail", detail))[0]\n',
         (f"{LKT}::test_create_override_takes_the_scene_from_bpy_data_not_bpy_context",),
     ),
     Revert(
@@ -4380,15 +4556,15 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: an override failure goes out raw",
         ADDON_LINKING,
-        'raise RuntimeError(_operator_failure_message("create_override", exc, known)) from exc',
+        'raise RuntimeError(operator_failure_message("create_override", exc, known)) from exc',
         "raise RuntimeError(str(exc)) from exc",
         (f"{LKT}::test_an_override_failure_reaches_the_client_sanitized",),
     ),
     Revert(
         "linking: list_libraries is not read-only, so it pays for a transaction",
         ADDON_SERVER_CORE,
-        '            "get_session_info",\n            "list_libraries",\n',
-        '            "get_session_info",\n',
+        '        "list_libraries": CommandSpec(read_only=True),',
+        '        "list_libraries": CommandSpec(),',
         (
             f"{LKT}::test_list_libraries_is_a_read_only_command_and_never_enters_a_transaction",
             f"{LKT}::test_the_linking_commands_are_dispatchable_and_advertised",
@@ -4457,7 +4633,7 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: a reload failure goes out raw",
         ADDON_LINKING,
-        "        raise RuntimeError(_operator_failure_message(command, exc, known_paths)) from exc\n",
+        "        raise RuntimeError(operator_failure_message(command, exc, known_paths)) from exc\n",
         '        raise RuntimeError(f"{command} failed: {exc}") from exc\n',
         (
             f"{LKT}::test_reload_failure_reaches_the_client_sanitized_from_a_captured_blender_error",
@@ -4475,9 +4651,11 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: relocate hands the raw path to Blender without roots or file checks",
         ADDON_LINKING,
-        "        canonical = _checked_blend_path(filepath, must_exist=True)\n"
-        "        for other in bpy.data.libraries:\n",
-        "        canonical = str(filepath)\n        for other in bpy.data.libraries:\n",
+        (
+            "        canonical = checked_blend_path(filepath, must_exist=True)\n"
+            "        for other in bpy.data.libraries:\n"
+        ),
+        ("        canonical = str(filepath)\n        for other in bpy.data.libraries:\n"),
         (
             f"{LKT}::test_relocate_validates_the_new_path_through_the_roots",
             f"{LKT}::test_relocate_assigns_the_canonical_path_reloads_and_reports_the_name_both_sides",
@@ -4524,7 +4702,7 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: unlink's confirm is coerced with bool()",
         ADDON_LINKING,
-        '        confirm = _require_bool("confirm", confirm)\n',
+        '        confirm = require_bool("confirm", confirm)\n',
         "        confirm = bool(confirm)\n",
         (
             f"{LKT}::test_unlink_refuses_without_a_real_confirmation[string]",
@@ -4620,9 +4798,16 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: a libraries.remove failure goes out raw",
         ADDON_LINKING,
-        '            message = _operator_failure_message("unlink_libraries", exc, known_paths)\n',
+        '            message = operator_failure_message("unlink_libraries", exc, known_paths)\n',
         "            message = str(exc)\n",
         (f"{LKT}::test_an_unlink_failure_reaches_the_client_sanitized",),
+    ),
+    Revert(
+        "linking: a part-way unlink failure reports what it removed as prose, not as data",
+        ADDON_LINKING,
+        "            raise PartialUnlinkError(message, removed, already_removed) from exc\n",
+        '            raise RuntimeError(f"{message} (libraries already removed: {removed})") from exc\n',
+        (f"{LKT}::test_a_part_way_unlink_failure_carries_what_it_already_removed",),
     ),
     # `linking: the name helper returns the first of several matches` stood here. The helper
     # it guarded, `resolve_unique_name`, is gone: no command took a datablock name as a
@@ -4642,7 +4827,7 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: unlink_libraries is not registered",
         ADDON_SERVER_CORE,
-        '            "unlink_libraries": self.unlink_libraries,\n',
+        '        "unlink_libraries": CommandSpec(datablock_replacing=True),\n',
         "",
         (
             f"{LKT}::test_the_linking_commands_are_dispatchable_and_advertised",
@@ -4653,7 +4838,7 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: link_canon_library does not check use_scripts_auto_execute",
         ADDON_LINKING,
-        '        _refuse_scripts_auto_execute("link_canon_library")\n',
+        '        refuse_scripts_auto_execute("link_canon_library")\n',
         "",
         (
             f"{LKT}::test_link_refuses_while_scripts_auto_execute_is_on[on]",
@@ -4663,7 +4848,7 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: reload_library does not check use_scripts_auto_execute",
         ADDON_LINKING,
-        '        _refuse_scripts_auto_execute("reload_library")\n',
+        '        refuse_scripts_auto_execute("reload_library")\n',
         "",
         (
             f"{LKT}::test_reload_and_relocate_refuse_while_scripts_auto_execute_is_on[on]",
@@ -4673,7 +4858,7 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: relocate_library does not check use_scripts_auto_execute",
         ADDON_LINKING,
-        '        _refuse_scripts_auto_execute("relocate_library")\n',
+        '        refuse_scripts_auto_execute("relocate_library")\n',
         "",
         (
             f"{LKT}::test_reload_and_relocate_refuse_while_scripts_auto_execute_is_on[on]",
@@ -4682,7 +4867,7 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "linking: the scripts check refuses even with the preference off",
-        ADDON_FILE_LIFECYCLE,
+        ADDON_BLEND_FILES,
         '    if getattr(filepaths, "use_scripts_auto_execute", True) is not False:\n',
         "    if True:\n",
         (
@@ -4694,7 +4879,7 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "linking: the scripts refusal always names open_shot",
-        ADDON_FILE_LIFECYCLE,
+        ADDON_BLEND_FILES,
         '            f"{command} refuses to load while',
         '            f"open_shot refuses to load while',
         (
@@ -4705,7 +4890,7 @@ REVERTS: list[Revert] = [
     Revert(
         "polyhaven: the Poly Haven .blend import does not check use_scripts_auto_execute",
         ADDON_POLYHAVEN,
-        '                            _refuse_scripts_auto_execute("import_polyhaven_asset")\n',
+        '    refuse_scripts_auto_execute("import_polyhaven_asset")\n',
         "",
         (
             f"{PHT}::test_a_downloaded_blend_is_never_loaded_while_scripts_auto_execute_is_on[on]",
@@ -4781,15 +4966,18 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: an indirect library can be relocated",
         ADDON_LINKING,
-        "        if _is_indirect_library(library):\n"
-        '            raise ValueError(\n                "that library is indirect',
-        '        if False:\n            raise ValueError(\n                "that library is indirect',
+        (
+            "        if is_indirect_library(library):\n"
+            "            raise ValueError(\n"
+            '                "that library is indirect'
+        ),
+        ('        if False:\n            raise ValueError(\n                "that library is indirect'),
         (f"{LKT}::test_relocate_refuses_an_indirect_library",),
     ),
     Revert(
         "linking: create_override does not check use_scripts_auto_execute",
         ADDON_LINKING,
-        '        _refuse_scripts_auto_execute("create_override")\n',
+        '        refuse_scripts_auto_execute("create_override")\n',
         "",
         (
             f"{LKT}::test_create_override_refuses_while_scripts_auto_execute_is_on[on]",
@@ -4869,7 +5057,7 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "linking: the library summary stats Library.name",
-        ADDON_FILE_LIFECYCLE,
+        ADDON_BLEND_FILES,
         '        "name": client_safe_name_leaf(getattr(library, "name", "")),',
         '        "name": _reverted_statting_name(getattr(library, "name", "")),',
         (f"{LKT}::test_library_names_are_reduced_without_touching_the_filesystem",),
@@ -4911,8 +5099,8 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: get_session_info sends an extra param the addon command takes none of",
         SERVER_FILE_LIFECYCLE_TOOL,
-        '    return await _call("get_session_info", {})',
-        '    return await _call("get_session_info", {"extra": True})',
+        '    return await call_blender("get_session_info", {})',
+        '    return await call_blender("get_session_info", {"extra": True})',
         (f"{SFLT}::test_get_session_info_forwards_no_params",),
     ),
     Revert(
@@ -4960,8 +5148,8 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: reset_session does not forward confirm",
         SERVER_FILE_LIFECYCLE_TOOL,
-        '    return await _call("reset_session", {"confirm": confirm})',
-        '    return await _call("reset_session", {"confirm": False})',
+        '    return await call_blender("reset_session", {"confirm": confirm})',
+        '    return await call_blender("reset_session", {"confirm": False})',
         (f"{SFLT}::test_reset_session_forwards_confirm",),
     ),
     Revert(
@@ -4995,8 +5183,8 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: list_libraries forces offset to 0 before forwarding it",
         SERVER_FILE_LIFECYCLE_TOOL,
-        '    return await _call("list_libraries", {"limit": limit, "offset": offset, "detail": detail})',
-        '    return await _call("list_libraries", {"limit": limit, "offset": 0, "detail": detail})',
+        '    return await call_blender("list_libraries", {"limit": limit, "offset": offset, "detail": detail})',
+        '    return await call_blender("list_libraries", {"limit": limit, "offset": 0, "detail": detail})',
         (f"{SFLT}::test_list_libraries_forwards_pagination",),
     ),
     Revert(
@@ -5009,8 +5197,8 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: reload_library does not forward library_uid",
         SERVER_FILE_LIFECYCLE_TOOL,
-        '    return await _call("reload_library", {"library_uid": library_uid, "detail": detail})',
-        '    return await _call("reload_library", {"library_uid": 0, "detail": detail})',
+        '    return await call_blender("reload_library", {"library_uid": library_uid, "detail": detail})',
+        '    return await call_blender("reload_library", {"library_uid": 0, "detail": detail})',
         (f"{SFLT}::test_reload_library_forwards_uid",),
     ),
     Revert(
@@ -5056,13 +5244,18 @@ REVERTS: list[Revert] = [
         (f"{SFLT}::test_unlink_libraries_defaults",),
     ),
     Revert(
-        "server tools: _call swallows an addon failure instead of propagating it",
-        SERVER_FILE_LIFECYCLE_TOOL,
-        "    result = await asyncio.to_thread(get_blender_connection().send_command, command, params)",
-        "    try:\n"
-        "        result = await asyncio.to_thread(get_blender_connection().send_command, command, params)\n"
-        "    except Exception:\n"
-        "        result = {}",
+        "server tools: the shared dispatch swallows an addon failure instead of propagating it",
+        SERVER_DISPATCH,
+        (
+            "    except BlenderOperationError as exc:\n"
+            '        logger.error("Blender refused %s: %s", command, exc)\n'
+            "        raise ToolError(str(exc)) from exc\n"
+        ),
+        (
+            "    except BlenderOperationError as exc:\n"
+            '        logger.error("Blender refused %s: %s", command, exc)\n'
+            "        return {}\n"
+        ),
         tuple(
             f"{SFLT}::test_addon_failure_reaches_the_client_as_a_tool_error_unchanged[{name}]"
             for name in sorted(
@@ -5081,6 +5274,63 @@ REVERTS: list[Revert] = [
                 )
             )
         ),
+    ),
+    # The rest of `tests/server/tools/test_dispatch.py`. The row above already guards one half of
+    # the taxonomy through the file-lifecycle tools; these guard it from the dispatch's own side,
+    # plus the two properties nothing else in the suite can see: that the socket call leaves the
+    # event loop, and that the one function that sends is also the one that wraps.
+    Revert(
+        "server tools: the shared dispatch runs the socket call on the event loop again",
+        SERVER_DISPATCH,
+        "    return await asyncio.to_thread(send_command, command, params)",
+        "    return send_command(command, params)",
+        (f"{DISPT}::test_the_blocking_socket_call_never_runs_on_the_event_loop",),
+    ),
+    Revert(
+        "server tools: the shared dispatch hands back the raw reply instead of the envelope",
+        SERVER_DISPATCH,
+        (
+            "    reply = await send_blender_command(command, params)\n"
+            "    return envelope_for(\n"
+            "        reply,\n"
+            "        changed_objects=changed_objects or (),\n"
+            "        changed_resources=changed_resources or (),\n"
+            "        warnings=warnings or (),\n"
+            "    )\n"
+        ),
+        "    return await send_blender_command(command, params)\n",
+        (f"{DISPT}::test_the_reply_comes_back_as_the_shared_envelope",),
+    ),
+    Revert(
+        "server tools: an operation failure is prefixed with the command again",
+        SERVER_DISPATCH,
+        "        raise ToolError(str(exc)) from exc\n",
+        '        raise ToolError(f"Error running {command}: {exc}") from exc\n',
+        (f"{DISPT}::test_an_operation_failure_reaches_the_client_as_blenders_own_message",),
+    ),
+    Revert(
+        "server tools: a transport failure loses the reconnect advice",
+        SERVER_DISPATCH,
+        '        raise ToolError(f"{exc} {_RETRY_HINT}") from exc\n',
+        "        raise ToolError(str(exc)) from exc\n",
+        (f"{DISPT}::test_a_transport_failure_says_the_connection_was_dropped_and_is_worth_a_retry",),
+    ),
+    Revert(
+        "server tools: the shared dispatch relabels every other failure as its own again",
+        SERVER_DISPATCH,
+        (
+            "    except BlenderTransportError as exc:\n"
+            '        logger.error("Transport failure running %s: %s", command, exc)\n'
+            '        raise ToolError(f"{exc} {_RETRY_HINT}") from exc\n'
+        ),
+        (
+            "    except BlenderTransportError as exc:\n"
+            '        logger.error("Transport failure running %s: %s", command, exc)\n'
+            '        raise ToolError(f"{exc} {_RETRY_HINT}") from exc\n'
+            "    except Exception as exc:\n"
+            '        raise ToolError(f"Error running {command}: {exc}") from exc\n'
+        ),
+        (f"{DISPT}::test_a_failure_the_taxonomy_does_not_claim_is_left_alone",),
     ),
     Revert(
         "server tools: file_lifecycle removed from CORE_MODULES",
@@ -5188,6 +5438,13 @@ REVERTS: list[Revert] = [
         (f"{ANIMT}::test_a_driver_expression_still_refuses_undeclared_names_and_calls",),
     ),
     Revert(
+        "animation: a cycle prefix that matches no curve is a silent success again",
+        ADDON_ANIMATION,
+        "        if not selected:\n",
+        "        if False:\n",
+        (f"{ANIMT}::test_a_cycle_prefix_that_names_no_curve_is_refused",),
+    ),
+    Revert(
         "server tools: the five open-world tools are folded into _FILE_TOOLS instead of _BLEND_FILE_TOOLS",
         SERVER_DOCUMENTATION,
         '_FILE_TOOLS = {\n    "bake_retopology_maps",',
@@ -5239,22 +5496,29 @@ REVERTS: list[Revert] = [
     Revert(
         "reply budget: the pagination keys are written after the page was measured, not before",
         SERVER_ENVELOPE,
-        '        owner[names["next_offset"]] = start + total\n',
-        "",
+        "    widest = _pagination_updates(owner, key, len(records))\n",
+        "    widest = {}\n",
         (f"{ENVT}::test_the_keys_the_shortening_adds_are_inside_the_budget_it_measured",),
+    ),
+    Revert(
+        "reply budget: a shortened page's warning carries another page's numbers",
+        SERVER_ENVELOPE,
+        "else _NO_RESUME) for cut in cuts\n",
+        "else _NO_RESUME) for cut in reversed(cuts)\n",
+        (f"{ENVT}::test_each_shortened_pages_warning_names_that_page_and_no_other",),
     ),
     # --- save_shot.create_directories ---
     Revert(
         "create_directories: save_shot ignores create_directories and never makes the directory",
         ADDON_FILE_LIFECYCLE,
-        "        created_directory = create_save_directory(canonical)\n",
+        "        created_directory = create_save_directory(request.canonical)\n",
         "        created_directory = False\n",
         (f"{FLT}::test_save_shot_refuses_a_missing_directory_unless_asked_to_create_it",),
     ),
     Revert(
         "create_directories: save_shot does not validate create_directories as a bool",
         ADDON_FILE_LIFECYCLE,
-        '        create_directories = _require_bool("create_directories", create_directories)\n',
+        '        create_directories = require_bool("create_directories", create_directories)\n',
         "",
         (
             f"{FLT}::test_save_shot_creates_no_directory_outside_the_roots_or_on_a_refusal",
@@ -5264,8 +5528,13 @@ REVERTS: list[Revert] = [
     Revert(
         "create_directories: resolving a save target creates its directory before any refusal has run",
         ADDON_FILE_PATHS,
-        "        if create_directories:\n            return\n",
-        "        if create_directories:\n            os.makedirs(directory, exist_ok=True)\n            return\n",
+        ("    directory = os.path.dirname(path)\n    directory_exists = os.path.isdir(directory)\n"),
+        (
+            "    directory = os.path.dirname(path)\n"
+            "    if create_directories:\n"
+            "        os.makedirs(directory, exist_ok=True)\n"
+            "    directory_exists = os.path.isdir(directory)\n"
+        ),
         (f"{FPT}::test_a_missing_save_directory_is_accepted_and_created_only_on_opt_in",),
     ),
     Revert(
@@ -5538,8 +5807,13 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: the datablock counts by type go away, leaving only how many there are",
         ADDON_LINKING,
-        '    return {"datablocks": {"total": len(items), "by_type": summarize_type_counts(type_names), **page}}\n',
-        '    return {"datablocks": {"total": len(items), **page}}\n',
+        (
+            "    counted: dict[str, object] = {\n"
+            '        "total": len(items),\n'
+            '        "by_type": summarize_type_counts(str(getattr(item, "id_type", "")) for item in items),\n'
+            "    }\n"
+        ),
+        '    counted: dict[str, object] = {"total": len(items)}\n',
         (
             f"{LKT}::test_a_reload_reports_what_it_replaced_by_type_without_the_records[reload_library]",
             f"{LKT}::test_a_reload_reports_what_it_replaced_by_type_without_the_records[relocate_library]",
@@ -5566,8 +5840,8 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: the default datablock page carries the records, not the names",
         ADDON_LINKING,
-        '        else _record_page("names", items, _display_name, MAX_LISTED_NAMES)\n',
-        '        else _record_page("records", items, _linked_entry, MAX_LISTED_DATABLOCKS)\n',
+        '    return {**counted, **_record_page("names", items, _display_name, name_limit)}\n',
+        '    return {**counted, **_record_page("records", items, describe, limit)}\n',
         (
             f"{LKT}::test_a_reload_reports_what_it_replaced_by_type_without_the_records[reload_library]",
             f"{LKT}::test_a_reload_reports_what_it_replaced_by_type_without_the_records[relocate_library]",
@@ -5576,12 +5850,8 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: detail is ignored, so a library's datablock records are unreachable",
         ADDON_LINKING,
-        "    page = (\n"
-        '        _record_page("records", items, _linked_entry, MAX_LISTED_DATABLOCKS)\n'
-        "        if detail\n"
-        '        else _record_page("names", items, _display_name, MAX_LISTED_NAMES)\n'
-        "    )\n",
-        '    page = _record_page("names", items, _display_name, MAX_LISTED_NAMES)\n',
+        ('    if detail:\n        return {**counted, **_record_page("records", items, describe, limit)}\n'),
+        ('    if False:\n        return {**counted, **_record_page("records", items, describe, limit)}\n'),
         (f"{LKT}::test_list_libraries_lists_the_datablock_records_only_on_request",),
     ),
     Revert(
@@ -5594,9 +5864,8 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: create_override lists the override's objects as records, repeating changed_objects",
         ADDON_LINKING,
-        "    if detail:\n"
-        '        listed.update(_record_page("records", objects, _override_entry, MAX_LISTED_DATABLOCKS))\n',
-        '    listed.update(_record_page("records", objects, _override_entry, MAX_LISTED_DATABLOCKS))\n',
+        "    listed = _counted_page(objects, _override_entry, MAX_LISTED_DATABLOCKS, detail=detail, name_limit=None)",
+        "    listed = _counted_page(objects, _override_entry, MAX_LISTED_DATABLOCKS, detail=True, name_limit=None)",
         (f"{LKT}::test_create_override_counts_the_objects_it_made_and_leaves_their_names_to_changed_objects",),
     ),
     Revert(
@@ -5734,10 +6003,15 @@ REVERTS: list[Revert] = [
         (f"{CTRLT}::test_pose_record_names_the_channels_and_custom_properties_the_call_set",),
     ),
     Revert(
+        # `solve_bone_reach` reports `changed_bones` from the same records with the same
+        # spelling, so the anchor reaches up to `"space"`, which only `set_character_pose` sends.
         "pose: changed_bones is dropped, so a shortened page of records is all the agent gets",
         ADDON_POSING,
+        '            "space": space,\n'
+        "            # Complete, and cheap enough to stay complete: the per-bone records are what the\n"
+        "            # reply budget shortens, so this is what still names every bone the call posed.\n"
         '            "changed_bones": [record["bone"] for record in records],\n',
-        "",
+        '            "space": space,\n',
         (f"{CTRLT}::test_the_budget_shortens_pose_records_but_never_the_changed_bone_names",),
     ),
     Revert(
@@ -5779,12 +6053,28 @@ REVERTS: list[Revert] = [
     ),
     # --- the pose an agent authors reaches the file, and a child is solved against its parent ---
     Revert(
+        # The restore is conditional on the block having raised: a call that authored keys has
+        # to leave its own action assigned, or Blender drops it at save. Turning the `except`
+        # into a `finally` is exactly the unconditional hand-back that discards the work.
         "pose: the keyed action is unassigned again, so Blender drops it at save",
         ADDON_POSING,
-        "            if not keyed:\n"
-        "                # Nothing was authored, so hand the rig back exactly as it arrived.\n"
-        "                animation.action = previous_action\n",
-        "            if True:\n                animation.action = previous_action\n",
+        "    try:\n"
+        "        yield previous_action\n"
+        "    except BaseException:\n"
+        "        animation.action = previous_action\n"
+        "        if previous_action is not None and previous_slot is not None:\n"
+        "            # Assigning an action resets the slot, and a slot Blender no longer considers\n"
+        "            # suitable is its refusal to make, not this unwind's to force.\n"
+        "            with contextlib.suppress(Exception):\n"
+        "                animation.action_slot = previous_slot\n"
+        "        raise\n",
+        "    try:\n"
+        "        yield previous_action\n"
+        "    finally:\n"
+        "        animation.action = previous_action\n"
+        "        if previous_action is not None and previous_slot is not None:\n"
+        "            with contextlib.suppress(Exception):\n"
+        "                animation.action_slot = previous_slot\n",
         (
             f"{POSET}::test_keying_leaves_the_rig_driven_by_the_action_it_authored",
             f"{POSET}::test_keying_reports_the_action_it_displaced",
@@ -5885,11 +6175,12 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
+        # `restored_bone_pose` owns every hand-back now, so the failure path is the branch that
+        # runs `restore()` before re-raising; dropping it leaves the last solved pose on the rig.
         "pose: a failed keying call leaves the half-applied pose on the rig",
         ADDON_POSING,
-        "            for pose_bone, _spec, _matrix in prepared:\n"
-        "                pose_bone.matrix_basis = matrices[pose_bone.name]\n",
-        "",
+        "    try:\n        yield\n    except BaseException:\n        restore()\n        raise\n",
+        "    try:\n        yield\n    except BaseException:\n        raise\n",
         (f"{POSET}::test_a_failed_key_hands_the_rig_back_as_it_arrived",),
     ),
     Revert(
@@ -5903,8 +6194,8 @@ REVERTS: list[Revert] = [
     Revert(
         "pose: a bone reach reports itself converged whatever it achieved",
         ADDON_POSING,
-        '        "converged": measured["achieved_error_m"] <= tolerance_m,\n',
-        '        "converged": True,\n',
+        '        converged=measured["achieved_error_m"] <= tolerance_m,\n',
+        "        converged=True,\n",
         (
             f"{POSET}::test_a_tighter_tolerance_turns_the_same_solve_into_a_miss",
             f"{POSET}::test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig",
@@ -5915,8 +6206,8 @@ REVERTS: list[Revert] = [
     Revert(
         "pose: a bone reach cannot tell an unreachable target from a stalled solve",
         ADDON_POSING,
-        '        "out_of_reach": measured["target_distance_m"] > measured["chain_reach_m"],\n',
-        '        "out_of_reach": False,\n',
+        '        out_of_reach=measured["target_distance_m"] > measured["chain_reach_m"],\n',
+        "        out_of_reach=False,\n",
         (f"{POSET}::test_a_target_beyond_the_chains_reach_is_reported_as_unreachable",),
     ),
     Revert(
@@ -5932,7 +6223,7 @@ REVERTS: list[Revert] = [
         ADDON_POSING,
         '            "warnings": [\n'
         "                warning\n"
-        "                for warning in (_reach_convergence_warning(entry, tolerance_m) for entry in solver_info)\n"
+        "                for warning in (_reach_convergence_warning(solution, tolerance_m) for solution in solutions)\n"
         "                if warning is not None\n"
         "            ],\n",
         '            "warnings": [],\n',
@@ -5945,13 +6236,13 @@ REVERTS: list[Revert] = [
     Revert(
         "pose: a bone reach takes tolerance_m as given, so 0 or NaN reaches the solve",
         ADDON_POSING,
-        # `keyframe_bone_reach` validates tolerance_m the same way, so the anchor carries the
-        # line that follows it here and nowhere else.
-        '        tolerance_m = _finite(tolerance_m, "tolerance_m")\n'
-        "        if tolerance_m <= 0.0:\n"
-        '            raise ValueError(f"tolerance_m must be greater than 0 metres, not {tolerance_m}")\n'
-        "        armature = _armature_object(armature_object_name)\n",
-        "        tolerance_m = float(tolerance_m)\n        armature = _armature_object(armature_object_name)\n",
+        # Both reach tools read the tolerance through `_validated_tolerance`, so reverting the
+        # one helper is what lets 0 or NaN reach either solve.
+        '    tolerance_m = _finite(tolerance_m, "tolerance_m")\n'
+        "    if tolerance_m <= 0.0:\n"
+        '        raise ValueError(f"tolerance_m must be greater than 0 metres, not {tolerance_m}")\n'
+        "    return tolerance_m\n",
+        "    return float(tolerance_m)\n",
         tuple(
             f"{POSET}::test_a_tolerance_that_names_no_precision_is_refused_before_the_rig_is_touched[{case}]"
             for case in ("0.0", "-0.0001", "nan", "inf")
@@ -5970,23 +6261,241 @@ REVERTS: list[Revert] = [
     Revert(
         "pose: every missed bone reach is blamed on the target being out of reach",
         ADDON_POSING,
-        '    if entry["out_of_reach"]:\n',
+        "    if solution.out_of_reach:\n",
         "    if True:\n",
         (f"{POSET}::test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig",),
     ),
     Revert(
         "pose: a converged bone reach warns anyway, so every solve carries a notice",
         ADDON_POSING,
-        '    if entry["converged"]:\n        return None\n',
+        "    if solution.converged:\n        return None\n",
         "    if False:\n        return None\n",
         (f"{POSET}::test_a_reach_inside_its_tolerance_reports_converged_and_says_nothing_else",),
+    ),
+    # --- the chain, pole and target resolution both reach tools share ---
+    Revert(
+        # A chain that walks through a fork picks up a bone the IK solver will then drive
+        # sideways: the reach bends the other arm as well as the one it was asked about.
+        "pose: an auto-resolved chain walks straight through a fork",
+        ADDON_POSING,
+        "        if parent is None or len(parent.children) > 1:\n",
+        "        if parent is None:\n",
+        (
+            f"{POSET}::test_unbranched_ancestor_chain_stops_before_a_mid_chain_fork",
+            f"{POSET}::test_unbranched_ancestor_chain_stops_before_a_root_level_fork",
+        ),
+    ),
+    Revert(
+        "pose: an auto-resolved chain ignores the cap and runs to the root",
+        ADDON_POSING,
+        "    while len(chain) < max_length:\n",
+        "    while True:\n",
+        (f"{POSET}::test_unbranched_ancestor_chain_respects_max_length",),
+    ),
+    Revert(
+        # The deliberate opposite of the fork row: stopping one bone short of an unforked root
+        # is equally wrong, and a leg rooted at the hips loses the hip bone that carries it.
+        "pose control: an auto-resolved chain stops one short of an unforked root",
+        ADDON_POSING,
+        "        chain.append(parent)\n",
+        "        if parent.parent is None:\n            break\n        chain.append(parent)\n",
+        (f"{POSET}::test_unbranched_ancestor_chain_includes_an_unforked_root",),
+    ),
+    Revert(
+        # The tip seeds its own chain, so a root bone still resolves to a one-bone reach
+        # rather than to nothing the solver can drive.
+        "pose: a resolved chain leaves out the tip bone it was asked to solve",
+        ADDON_POSING,
+        "    chain = [tip]\n    bone = tip\n    while len(chain) < max_length:\n",
+        "    chain = []\n    bone = tip\n    while len(chain) < max_length:\n",
+        (f"{POSET}::test_unbranched_ancestor_chain_of_a_root_bone_is_just_that_bone",),
+    ),
+    Revert(
+        # An explicit chain_length is an assertion about the rig, and it is the only way past a
+        # fork the auto-resolve stops at; one bone short is a chain that cannot reach.
+        "pose: an explicit chain_length resolves one bone short",
+        ADDON_POSING,
+        "    for _step in range(length - 1):\n",
+        "    for _step in range(length - 2):\n",
+        (f"{POSET}::test_rest_ancestor_chain_returns_the_exact_requested_length",),
+    ),
+    Revert(
+        "pose: a chain_length past the root is silently shortened instead of refused",
+        ADDON_POSING,
+        "        if bone.parent is None:\n"
+        "            raise ValueError(f\"'{tip.name}' has only {len(chain)} ancestor(s); "
+        'chain_length={length} exceeds them")\n',
+        "        if bone.parent is None:\n            break\n",
+        (f"{POSET}::test_rest_ancestor_chain_refuses_a_length_past_the_root",),
+    ),
+    Revert(
+        # The round-2 draft this row pins: taking `chain[len(chain) // 2]` as the pole reference
+        # is the ROOT bone on a two-bone chain, so offset-from-root is zero and every elbow and
+        # knee is refused as "straight".
+        "pose: pole synthesis takes the chain's root as its bend reference",
+        ADDON_POSING,
+        "    joints = [tip_tail, *(bone.head_local for bone in chain)]\n    mid = joints[len(joints) // 2]\n",
+        "    mid = chain[len(chain) // 2].head_local\n",
+        (f"{POSET}::test_synthesize_pole_finds_the_bend_side_of_a_bent_two_bone_chain",),
+    ),
+    Revert(
+        # A straight rest chain names no bend direction, so a synthesized pole would be noise
+        # pointing wherever float error happened to land: refuse and say to supply one.
+        "pose: a straight rest chain has a pole guessed from float noise instead of refusing",
+        ADDON_POSING,
+        "    if projected.length <= _AIM_MIN_RESIDUAL:\n",
+        "    if False:\n",
+        (
+            f"{POSET}::test_synthesize_pole_refuses_a_straight_two_bone_rest_chain",
+            f"{POSET}::test_synthesize_pole_refuses_a_single_bone_chain",
+        ),
+    ),
+    Revert(
+        "pose: a chain whose root and tip coincide is normalised instead of refused",
+        ADDON_POSING,
+        "    if axis.length <= _AIM_MIN_LENGTH:\n",
+        "    if False:\n",
+        (f"{POSET}::test_synthesize_pole_refuses_a_chain_whose_root_and_tip_coincide",),
+    ),
+    Revert(
+        # Rest bones are armature-space; the pole is handed to an IK constraint as a world
+        # point, so a rig anywhere but the origin bends towards a point beside the character.
+        "pose: a synthesized pole is reported in armature space as if it were world space",
+        ADDON_POSING,
+        "    return armature.matrix_world @ pole_local\n",
+        "    return pole_local\n",
+        (f"{POSET}::test_synthesize_pole_converts_through_the_armatures_world_matrix",),
+    ),
+    Revert(
+        "pose: a reach on a bone the rig does not have is solved instead of refused",
+        ADDON_POSING,
+        '    if rest_tip is None:\n        raise ValueError(f"Pose bone not found: {tip_name}")\n',
+        '    if False:\n        raise ValueError(f"Pose bone not found: {tip_name}")\n',
+        (f"{POSET}::test_resolve_reach_chain_refuses_an_unknown_tip_bone",),
+    ),
+    Revert(
+        # chain_length_source is how a caller learns whether the chain it got was the one it
+        # asked for or one this handler inferred; swapping the two labels keeps both reports
+        # present and makes both of them lies.
+        "pose: a reach mislabels whether its chain length was inferred or given",
+        ADDON_POSING,
+        '        chain_length_source = "resolved"\n'
+        "    else:\n"
+        "        rest_chain = _rest_ancestor_chain(rest_tip, requested_length)\n"
+        '        chain_length_source = "explicit"\n',
+        '        chain_length_source = "explicit"\n'
+        "    else:\n"
+        "        rest_chain = _rest_ancestor_chain(rest_tip, requested_length)\n"
+        '        chain_length_source = "resolved"\n',
+        (
+            f"{POSET}::test_resolve_reach_chain_reports_resolved_when_chain_length_is_omitted",
+            f"{POSET}::test_resolve_reach_chain_reports_explicit_when_chain_length_is_given",
+        ),
+    ),
+    Revert(
+        # Two reaches solving one bone to two targets is ambiguous; without the refusal the
+        # later reach silently wins and the earlier one reports a pose it did not get.
+        "pose: two reaches may claim the same bone, and the later one silently wins",
+        ADDON_POSING,
+        '    if overlap:\n        raise ValueError(f"Bones claimed by more than one reach: {overlap}")\n',
+        '    if False:\n        raise ValueError(f"Bones claimed by more than one reach: {overlap}")\n',
+        (f"{POSET}::test_resolve_reach_chain_refuses_a_bone_already_claimed_by_an_earlier_reach",),
+    ),
+    Revert(
+        "pose: a reach target naming an object that is not there resolves to None",
+        ADDON_POSING,
+        '        if obj is None:\n            raise ValueError(f"{label} object not found: {object_name}")\n',
+        '        if False:\n            raise ValueError(f"{label} object not found: {object_name}")\n',
+        (f"{POSET}::test_resolved_reach_target_refuses_an_unknown_object_name",),
+    ),
+    Revert(
+        # The target's scratch Empty exists before the pole is resolved and before
+        # `_solve_one_reach`'s own try/finally starts, so an unresolvable pole strands it in
+        # the file under a `__solve_bone_reach__` name nobody will recognise.
+        "pose: a reach refused over its pole strands the target's scratch Empty in the file",
+        ADDON_POSING,
+        "        if target_is_temp:\n            bpy.data.objects.remove(target_obj, do_unlink=True)\n        raise\n",
+        "        raise\n",
+        (f"{POSET}::test_a_reach_whose_pole_cannot_be_resolved_removes_the_targets_scratch_empty",),
+    ),
+    Revert(
+        # `constraints.new` lands the constraint on the rig before any field is written, so a
+        # value Blender's RNA refuses would leave a live IK constraint on the tip bone.
+        "pose: a constraint value Blender refuses leaves the IK constraint live on the rig",
+        ADDON_POSING,
+        "    except Exception:\n"
+        "        # The constraint is on the rig from `new()` onwards, and the caller's own try/finally\n"
+        "        # only covers a constraint this function returned. A value Blender's RNA refuses must\n"
+        "        # not leave a live IK constraint behind - the same reason `add_pose_bone_constraint`\n"
+        "        # removes a constraint it created but could not configure.\n"
+        "        tip_pose_bone.constraints.remove(constraint)\n"
+        "        raise\n",
+        "    except Exception:\n        raise\n",
+        (f"{POSET}::test_a_constraint_value_blender_refuses_removes_the_constraint_it_already_added",),
+    ),
+    Revert(
+        # Neither form given is a reach with nowhere to go; both given is two answers to one
+        # question. The schema cannot express "exactly one", so the model has to.
+        "pose: a reach naming no target, or two, is accepted by the schema",
+        SERVER_POSING_TOOL,
+        "            BoneReach: This model, unchanged.\n"
+        "\n"
+        "        Raises:\n"
+        "            ValueError: If neither or both target forms are given.\n"
+        "\n"
+        '        """\n'
+        "        if (self.target is None) == (self.target_object is None):\n"
+        '            raise ValueError("Supply exactly one of target or target_object")\n',
+        "            BoneReach: This model, unchanged.\n"
+        "\n"
+        "        Raises:\n"
+        "            ValueError: If neither or both target forms are given.\n"
+        "\n"
+        '        """\n',
+        (f"{POSET}::test_bone_reach_requires_exactly_one_target_form",),
+    ),
+    Revert(
+        "pose: a reach naming two pole targets is accepted by the schema",
+        SERVER_POSING_TOOL,
+        "        if self.pole_target is not None and self.pole_target_object is not None:\n"
+        '            raise ValueError("Supply at most one of pole_target or pole_target_object")\n',
+        "",
+        (f"{POSET}::test_bone_reach_allows_at_most_one_pole_form",),
+    ),
+    Revert(
+        # An unset optional field sent as null is not the same request as one left out: the
+        # handler reads `reach.get("pole_target")` and an explicit None would stop pole
+        # synthesis from ever running.
+        "pose: a reach sends every optional field as null instead of omitting it",
+        SERVER_POSING_TOOL,
+        '            "reaches": [reach.model_dump(exclude_none=True) for reach in reaches],\n'
+        '            "tolerance_m": tolerance_m,\n'
+        '            "detail": detail,\n',
+        '            "reaches": [reach.model_dump() for reach in reaches],\n'
+        '            "tolerance_m": tolerance_m,\n'
+        '            "detail": detail,\n',
+        (f"{POSET}::test_solve_bone_reach_forwards_reaches_and_omits_unset_optional_fields",),
+    ),
+    # --- a reach that raises part way through hands the rig back the action it arrived on ---
+    Revert(
+        # The deliberate opposite of "the keyed action is unassigned again": that row proves
+        # restoring unconditionally is caught, this one proves never restoring is caught too.
+        # `object_state` does not snapshot `animation_data.action`, so nothing else in the
+        # transaction puts the displaced action back when the solve raises mid-range.
+        "pose: a reach that raises keeps the action it assigned, displacement and all",
+        ADDON_POSING,
+        "    except BaseException:\n"
+        "        animation.action = previous_action\n"
+        "        if previous_action is not None and previous_slot is not None:\n",
+        "    except BaseException:\n        if False:\n",
+        (f"{POSET}::test_a_reach_that_fails_part_way_through_hands_back_the_action_it_arrived_on",),
     ),
     # --- configure_render_settings answers with the paths it wrote, not the whole state ---
     Revert(
         "render settings: the reply carries the whole render state again instead of what it wrote",
         ADDON_RENDERING,
-        "        after = {path: getattr(owner, name) for path, (owner, name) in applied.items()}\n",
-        "        after = _render_info(scene)\n",
+        "    after = {path: getattr(owner, name) for path, (owner, name) in applied.items()}\n",
+        "    after = _render_info(scene)\n",
         (
             f"{RENDT}::test_configure_render_settings_returns_only_the_patched_values",
             f"{RENDT}::test_configure_render_settings_reports_a_patch_that_writes_nothing",
@@ -5995,15 +6504,19 @@ REVERTS: list[Revert] = [
     Revert(
         "render settings: changed names the patch's top-level keys, not the property paths written",
         ADDON_RENDERING,
-        '        changed = sorted([*applied, "frame_range_authored"] if authored_range else applied)\n',
-        '        changed = sorted([*patch, "frame_range_authored"] if authored_range else patch)\n',
+        '    changed = sorted([*applied, "frame_range_authored"] if authored_range else applied)\n',
+        # `_patch_reply` is handed `applied`, not the patch, so the coarse top-level keys are
+        # reconstructed from it: for a flat key the two are the same string, and for a nested
+        # one `applied` carries "<section>.<key>" where the patch carried "<section>".
+        '    changed = sorted({key.split(".")[0] for key in applied} | ({"frame_range_authored"} '
+        "if authored_range else set()))\n",
         (f"{RENDT}::test_configure_render_settings_returns_only_the_patched_values",),
     ),
     Revert(
         "render settings: detail is ignored, so the before/after state is unreachable",
         ADDON_RENDERING,
-        "        if detail:\n",
-        "        if False:\n",
+        "    if detail:\n",
+        "    if False:\n",
         (f"{RENDT}::test_configure_render_settings_detail_returns_both_full_state_blocks",),
     ),
     Revert(
@@ -6090,8 +6603,10 @@ REVERTS: list[Revert] = [
     Revert(
         "delivery: a path outside the shot is published whole instead of by leaf",
         ADDON_DELIVERY,
-        "    whole = safe_relative_link(text, _MAX_REPORTED_LINK_CHARS)\n"
-        "    return whole if whole is not None else client_safe_leaf(text, is_directory=is_directory)",
+        (
+            "    whole = safe_relative_link(text, MAX_REPORTED_LINK_CHARS)\n"
+            "    return whole if whole is not None else client_safe_leaf(text, is_directory=is_directory)"
+        ),
         "    return text",
         (
             f"{FLT}::test_inspect_delivery_reports_an_absolute_image_by_leaf_not_by_directory",
@@ -6144,13 +6659,14 @@ REVERTS: list[Revert] = [
     Revert(
         "delivery: hashing linked files needs no configured roots, making it a read oracle",
         ADDON_DELIVERY,
-        "        if hash_libraries and not roots:",
-        "        if False:",
+        '        roots = require_digest_roots("hash_libraries") if hash_libraries else []\n',
+        "        roots = configured_file_roots()\n",
         (f"{FLT}::test_inspect_delivery_refuses_to_hash_libraries_without_configured_file_roots",),
+        ("\n\nfrom ..output_roots import configured_file_roots\n"),
     ),
     Revert(
         "delivery: a library outside the roots is hashed anyway",
-        ADDON_DELIVERY,
+        ADDON_LIBRARY_DIGEST,
         "            enforce_roots(resolved, roots)",
         "            pass",
         (f"{FLT}::test_inspect_delivery_skips_hashing_a_library_outside_the_configured_roots",),
@@ -6173,8 +6689,11 @@ REVERTS: list[Revert] = [
     Revert(
         "provenance: the save writes no authorship block at all",
         ADDON_FILE_LIFECYCLE,
-        "        if write_provenance:\n            backup, ingredients = _stamp_provenance(provenance_checksums)",
-        "        if False:\n            backup, ingredients = _stamp_provenance(provenance_checksums)",
+        (
+            "        if request.write_provenance:\n"
+            "            backup, ingredients = stamp_provenance(request.digest_roots)\n"
+        ),
+        ("        if False:\n            backup, ingredients = stamp_provenance(request.digest_roots)\n"),
         (
             f"{FLT}::test_save_shot_writes_a_json_provenance_block_into_every_local_scene",
             f"{FLT}::test_save_shot_names_the_datablocks_this_session_authored",
@@ -6183,74 +6702,121 @@ REVERTS: list[Revert] = [
     Revert(
         "provenance: write_provenance=false writes a block anyway",
         ADDON_FILE_LIFECYCLE,
-        "        if write_provenance:\n            backup, ingredients = _stamp_provenance(provenance_checksums)",
-        "        if True:\n            backup, ingredients = _stamp_provenance(provenance_checksums)",
+        (
+            "        if request.write_provenance:\n"
+            "            backup, ingredients = stamp_provenance(request.digest_roots)\n"
+        ),
+        ("        if True:\n            backup, ingredients = stamp_provenance(request.digest_roots)\n"),
         (f"{FLT}::test_save_shot_writes_nothing_when_provenance_is_declined",),
     ),
     Revert(
         "provenance: a linked scene is stamped with this file's authorship",
-        ADDON_FILE_LIFECYCLE,
-        "        if scene.library is not None:\n            continue",
-        "        if False:\n            continue",
+        ADDON_PROVENANCE,
+        ("        if scene.library is not None:\n            continue"),
+        ("        if False:\n            continue"),
         (f"{FLT}::test_save_shot_writes_a_json_provenance_block_into_every_local_scene",),
     ),
     Revert(
         "provenance: a save Blender refused leaves its claim on the scenes",
         ADDON_FILE_LIFECYCLE,
-        "    except RuntimeError as exc:\n        _restore_provenance(backup)\n        raise RuntimeError(",
-        "    except RuntimeError as exc:\n        raise RuntimeError(",
+        ("    except RuntimeError as exc:\n        restore_provenance(backup)\n"),
+        "    except RuntimeError as exc:\n",
         (f"{FLT}::test_a_failed_save_leaves_no_scene_claiming_provenance",),
     ),
     Revert(
         "provenance: checksums are taken with no roots to confine them",
-        ADDON_FILE_LIFECYCLE,
-        "    roots = configured_file_roots()\n    if not roots:",
-        "    roots = configured_file_roots()\n    if False:",
+        ADDON_LIBRARY_DIGEST,
+        ("    roots = configured_file_roots()\n    if not roots:\n        raise ValueError(\n"),
+        (
+            "    roots = configured_file_roots()\n"
+            "    if not roots:\n"
+            '        return ["/"]\n'
+            "    if not roots:\n"
+            "        raise ValueError(\n"
+        ),
         (f"{FLT}::test_save_shot_refuses_checksums_without_configured_file_roots",),
     ),
     Revert(
+        "provenance: a library is hashed to the call's whole budget, not to the per-file bound",
+        ADDON_PROVENANCE,
+        "        library_digests(libraries, digest_roots, max_file_bytes=MAX_DIGEST_FILE_BYTES)\n",
+        "        library_digests(libraries, digest_roots, max_file_bytes=MAX_DIGEST_TOTAL_BYTES)\n",
+        (f"{FLT}::test_save_shot_bounds_each_library_hash_by_the_per_file_limit",),
+        also="\nfrom ..file_digest import MAX_DIGEST_TOTAL_BYTES\n",
+    ),
+    Revert(
         "provenance: the block records no datablocks, so the file claims nothing was authored",
-        ADDON_FILE_LIFECYCLE,
-        "                \"datablocks\": [f\"{entry['collection']}:{entry['name']}\" "
-        "for entry in authored.snapshot()],",
+        ADDON_PROVENANCE,
+        (
+            "                \"datablocks\": [f\"{entry['collection']}:{entry['name']}\" "
+            "for entry in authored.snapshot()],"
+        ),
         '                "datablocks": [],',
         (f"{FLT}::test_save_shot_names_the_datablocks_this_session_authored",),
     ),
     Revert(
         "provenance: an oversized block is read back whole into the agent's context",
-        ADDON_DELIVERY,
+        ADDON_PROVENANCE,
         "    if not isinstance(raw, str) or len(raw) > MAX_PROVENANCE_CHARS:",
         "    if not isinstance(raw, str):",
         (f"{FLT}::test_inspect_delivery_reports_a_hostile_provenance_block_as_invalid[oversized]",),
     ),
     Revert(
         "provenance: unparseable text is reported as a valid block",
-        ADDON_DELIVERY,
-        "    except (TypeError, ValueError):\n"
-        '        return {"present": True, "valid": False, "reason": "unparseable"}',
-        '    except (TypeError, ValueError):\n        return {"present": True, "valid": True, "reason": "unparseable"}',
+        ADDON_PROVENANCE,
+        (
+            "    except (TypeError, ValueError):\n"
+            '        return {"present": True, "valid": False, "reason": "unparseable"}'
+        ),
+        (
+            "    except (TypeError, ValueError):\n"
+            '        return {"present": True, "valid": True, "reason": "unparseable"}'
+        ),
         (f"{FLT}::test_inspect_delivery_reports_a_hostile_provenance_block_as_invalid[not json at all]",),
     ),
     Revert(
         "provenance: a JSON array is reported as a valid block",
-        ADDON_DELIVERY,
-        "    if not isinstance(block, dict):\n"
-        '        return {"present": True, "valid": False, "reason": "unparseable"}',
-        '    if not isinstance(block, dict):\n        return {"present": True, "valid": True, "reason": "unparseable"}',
+        ADDON_PROVENANCE,
+        (
+            "    if not isinstance(block, dict):\n"
+            '        return {"present": True, "valid": False, "reason": "unparseable"}'
+        ),
+        (
+            "    if not isinstance(block, dict):\n"
+            '        return {"present": True, "valid": True, "reason": "unparseable"}'
+        ),
         (f"{FLT}::test_inspect_delivery_reports_a_hostile_provenance_block_as_invalid[[1, 2, 3]]",),
     ),
     Revert(
         "provenance: an ingredient list of any length is read back whole",
-        ADDON_DELIVERY,
-        "        for entry in (ingredients if isinstance(ingredients, list) else [])[:MAX_PROVENANCE_ENTRIES]",
-        "        for entry in (ingredients if isinstance(ingredients, list) else [])",
+        ADDON_PROVENANCE,
+        '        for entry in _bounded_dicts(block.get("ingredients"))\n',
+        '        for entry in _unbounded_dicts(block.get("ingredients"))\n',
         (f"{FLT}::test_inspect_delivery_bounds_a_valid_provenance_block",),
+        (
+            "\n"
+            "\n"
+            "def _unbounded_dicts(value: object) -> list[dict]:\n"
+            '    """\n'
+            "    Reverted: `_bounded_dicts` without its `MAX_PROVENANCE_ENTRIES` cap.\n"
+            "\n"
+            "    Args:\n"
+            "        value: The parsed value, of any shape.\n"
+            "\n"
+            "    Returns:\n"
+            "        list[dict]: Every usable entry, however many the file carried.\n"
+            "\n"
+            '    """\n'
+            "    if not isinstance(value, list):\n"
+            "        return []\n"
+            "    return [entry for entry in value if isinstance(entry, dict)]\n"
+        ),
     ),
     Revert(
         "provenance: a file with no block is reported as carrying an invalid one",
-        ADDON_DELIVERY,
-        "    if raw is None:\n        return None",
-        '    if raw is None:\n        return {"present": True, "valid": False, "reason": "unparseable"}',
+        ADDON_PROVENANCE,
+        ("    if raw is None:\n        return None"),
+        ('    if raw is None:\n        return {"present": True, "valid": False, "reason": "unparseable"}'),
         (f"{FLT}::test_inspect_delivery_reports_no_provenance_for_a_file_without_one",),
     ),
     Revert(
@@ -6363,23 +6929,154 @@ REVERTS: list[Revert] = [
     Revert(
         "rendering: a directory is accepted as the scene's stored output template",
         ADDON_RENDERING,
-        '                _refuse_container_output(scene, pending["output"]["filepath"])',
-        "                pass",
+        '        _refuse_container_output(scene, pending["output"]["filepath"])',
+        "        pass",
         (f"{RENDT}::test_configure_render_settings_refuses_a_directory_as_the_stored_template",),
     ),
     Revert(
         "rendering: the default reply carries every frame's bookkeeping again",
         ADDON_RENDERING,
-        "        if not detail:",
-        "        if False:",
+        "    if not detail:",
+        "    if False:",
         (f"{RENDT}::test_render_scene_reply_summarises_and_detail_restores_the_per_frame_arrays",),
     ),
     Revert(
         "dispatch: a render that stores its output template still bypasses the transaction",
         ADDON_SERVER_CORE,
-        "            or (skips_undo is not None and skips_undo(params))",
+        "            or (spec.non_undo_when is not None and spec.non_undo_when(params))",
         '            or cmd_type in {"render_scene"}',
         (f"{DRT}::test_a_render_that_persists_its_output_template_is_transacted",),
+    ),
+    # --- the one command registry: a row's name, its gate, and its classification ---
+    Revert(
+        "registry: a registered command names a handler this class does not have, so it dispatches to nothing",
+        ADDON_SERVER_CORE,
+        '        "sync_data_name": CommandSpec(),',
+        '        "sync_data_name_typo": CommandSpec(),',
+        (f"{REGT}::test_every_registered_command_resolves_to_a_handler",),
+    ),
+    Revert(
+        "registry: an enabled provider's rows are dropped from the built table, so they classify nothing",
+        ADDON_SERVER_CORE,
+        "itertools.chain(_UNGATED_COMMAND_NAMES, *enabled_names)",
+        "_UNGATED_COMMAND_NAMES",
+        (f"{REGT}::test_the_whole_dispatch_table_comes_from_the_registry",),
+    ),
+    Revert(
+        "registry: the provider gate stops gating, so a disabled integration's commands are advertised anyway",
+        ADDON_SERVER_CORE,
+        "zip(_PROVIDER_SCENE_FLAGS, gate, strict=True) if on",
+        "zip(_PROVIDER_SCENE_FLAGS, gate, strict=True) if True",
+        (f"{REGT}::test_a_disabled_provider_withholds_exactly_its_own_commands",),
+    ),
+    Revert(
+        "registry: a second, name-keyed classification table comes back beside the registry",
+        ADDON_SERVER_CORE,
+        "_UNCLASSIFIED = CommandSpec()",
+        "_UNCLASSIFIED = CommandSpec()\n_READ_ONLY_COMMANDS = frozenset()",
+        (f"{REGT}::test_no_classification_set_survives_outside_the_registry",),
+    ),
+    Revert(
+        "registry: an unregistered command name is answered read-only, so a client's typo skips the transaction",
+        ADDON_SERVER_CORE,
+        "        return COMMANDS.get(cmd_type, _UNCLASSIFIED) if isinstance(cmd_type, str) else _UNCLASSIFIED",
+        "        return COMMANDS.get(cmd_type, CommandSpec(read_only=True)) if isinstance(cmd_type, str) "
+        "else _UNCLASSIFIED",
+        (f"{REGT}::test_an_unregistered_command_is_classified_as_an_ordinary_mutation",),
+    ),
+    Revert(
+        "registry: ping is classified as a mutation, so a liveness check opens a transaction",
+        ADDON_SERVER_CORE,
+        '        "ping": CommandSpec(read_only=True),',
+        '        "ping": CommandSpec(),',
+        (f"{REGT}::test_ping_answers_read_only_without_a_live_blender",),
+    ),
+    # --- rollback protection is decided by parameter naming, and `target_names` is that decision ---
+    Revert(
+        "registry: the scalar object-name params are not read, so a named target gets no state captured",
+        ADDON_SERVER_CORE,
+        "    for key in _TARGET_NAME_PARAMS:",
+        "    for key in ():",
+        (
+            f"{REGT}::test_target_names_reads_the_naming_convention[scalar-key]",
+            f"{REGT}::test_target_names_reads_the_naming_convention[duplicates-collapse]",
+            f"{REGT}::test_target_names_reads_the_naming_convention[order-follows-the-table-not-the-params]",
+        ),
+    ),
+    Revert(
+        "registry: the list-valued object-name params are not read, so a multi-target edit rolls back nothing",
+        ADDON_SERVER_CORE,
+        "    for key in _TARGET_NAMES_PARAMS:",
+        "    for key in ():",
+        (
+            f"{REGT}::test_target_names_reads_the_naming_convention[list-key]",
+            f"{REGT}::test_target_names_reads_the_naming_convention[non-strings-in-a-list-are-skipped]",
+        ),
+    ),
+    Revert(
+        "registry: the nested record params are not walked, so a per-record target is unprotected",
+        ADDON_SERVER_CORE,
+        "    for container_key, name_keys in _TARGET_RECORD_PARAMS:",
+        "    for container_key, name_keys in ():",
+        (
+            f"{REGT}::test_target_names_reads_the_naming_convention[records-in-a-list]",
+            f"{REGT}::test_target_names_reads_the_naming_convention[two-name-keys-in-one-record]",
+            f"{REGT}::test_target_names_reads_the_naming_convention[a-lone-record]",
+            f"{REGT}::test_target_names_reads_the_naming_convention[rigid-body-record-keys]",
+        ),
+    ),
+    Revert(
+        "registry: target names stop being deduplicated, so one object is snapshotted and restored twice",
+        ADDON_SERVER_CORE,
+        "    return list(dict.fromkeys(names))",
+        "    return names",
+        (f"{REGT}::test_target_names_reads_the_naming_convention[duplicates-collapse]",),
+    ),
+    Revert(
+        "registry: `name` joins the target params, so create_primitive captures the object it is about to make",
+        ADDON_SERVER_CORE,
+        '_TARGET_NAME_PARAMS: tuple[str, ...] = (\n    "object_name",',
+        '_TARGET_NAME_PARAMS: tuple[str, ...] = (\n    "name",\n    "object_name",',
+        (f"{REGT}::test_target_names_reads_the_naming_convention[name-is-a-new-object-not-a-target]",),
+    ),
+    Revert(
+        "registry: a list's elements are taken untyped, so a malformed params dict reaches find_object",
+        ADDON_SERVER_CORE,
+        "names.extend(name for name in value if isinstance(name, str))",
+        "names.extend(value)",
+        (f"{REGT}::test_target_names_reads_the_naming_convention[non-strings-in-a-list-are-skipped]",),
+    ),
+    Revert(
+        "registry: a scalar param is taken untyped, so a number where a name belongs is treated as a target",
+        ADDON_SERVER_CORE,
+        "        value = params.get(key)\n        if isinstance(value, str):\n            names.append(value)",
+        "        value = params.get(key)\n        if value is not None:\n            names.append(value)",
+        (f"{REGT}::test_target_names_reads_the_naming_convention[a-non-string-scalar-is-not-a-name]",),
+    ),
+    # --- the provenance ledger a saved .blend carries ---
+    Revert(
+        "authored: the ledger reports newest first, so the saved file's provenance order is a lie",
+        ADDON_AUTHORED,
+        'return [{"collection": collection, "name": name} for collection, name in _LEDGER.entries]',
+        'return [{"collection": collection, "name": name} for collection, name in reversed(_LEDGER.entries)]',
+        (f"{AUTHT}::test_records_arrive_oldest_first_and_a_repeat_is_one_datablock",),
+    ),
+    Revert(
+        "authored: the ledger stops evicting, so a long session grows unbounded and its freed names stay suppressed",
+        ADDON_AUTHORED,
+        "        if len(_LEDGER.entries) >= MAX_TRACKED_AUTHORED:",
+        "        if False:",
+        (
+            f"{AUTHT}::test_overflow_drops_the_oldest_and_stops_claiming_a_complete_history",
+            f"{AUTHT}::test_a_name_that_was_evicted_can_be_recorded_again",
+        ),
+    ),
+    Revert(
+        "authored: clear() forgets the entries but keeps the truncation claim, describing a database that is gone",
+        ADDON_AUTHORED,
+        "    _LEDGER.truncated = False",
+        "    pass  # truncation claim left standing",
+        (f"{AUTHT}::test_clearing_forgets_the_entries_and_the_truncation_claim",),
     ),
     # --- artefact truth: which render properties the schemas reach ---
     Revert(
@@ -6551,8 +7248,8 @@ REVERTS: list[Revert] = [
         # surface moved and the number did not - has to be re-pointed at the new pair.
         "addon surface: the dispatch table moved while the protocol number stayed where it was",
         ADDON_MANAGER,
+        "EXPECTED_ADDON_PROTOCOL_VERSION = 34",
         "EXPECTED_ADDON_PROTOCOL_VERSION = 33",
-        "EXPECTED_ADDON_PROTOCOL_VERSION = 32",
         (
             f"{SURFT}::test_snapshot_records_the_protocol_version_the_server_expects",
             f"{SURFT}::test_both_protocol_constants_agree",
@@ -6581,8 +7278,8 @@ REVERTS: list[Revert] = [
     Revert(
         "key style: handle types are written under every interpolation, not only BEZIER",
         ADDON_KEY_STYLE,
-        '    if interpolation == "BEZIER":\n        point.handle_left_type = handle_left\n',
-        "    if True:\n        point.handle_left_type = handle_left\n",
+        '    if style.interpolation == "BEZIER":\n        point.handle_left_type = style.handle_left\n',
+        "    if True:\n        point.handle_left_type = style.handle_left\n",
         (f"{KEYSTYLET}::test_bezier_is_the_only_interpolation_that_records_handle_types",),
     ),
     Revert(
@@ -6590,18 +7287,18 @@ REVERTS: list[Revert] = [
         # silently, a call asking for EASE_IN_OUT gets linear-feeling motion and no error.
         "key style: an easing request is accepted and then dropped",
         ADDON_KEY_STYLE,
-        "    if easing is not None:\n        point.easing = easing\n",
-        "    if False:\n        point.easing = easing\n",
+        "    if style.easing is not None:\n        point.easing = style.easing\n",
+        "    if False:\n        point.easing = style.easing\n",
         (f"{KEYSTYLET}::test_easing_is_written_on_any_interpolation_and_omitted_when_unset",),
     ),
     Revert(
-        # Four style arguments arrive together, so "Unsupported key style" leaves the caller to
-        # guess which of them it meant.
+        # The four style values arrive together in one `KeyStyle`, so "Unsupported key style"
+        # leaves the caller to guess which of them it meant.
         "key style: a refusal no longer names the argument that was wrong",
         ADDON_KEY_STYLE,
-        "        if value not in HANDLE_TYPES:\n"
-        '            raise ValueError(f"Unsupported {label}: {value}; expected one of {sorted(HANDLE_TYPES)}")\n',
-        '        if value not in HANDLE_TYPES:\n            raise ValueError("Unsupported key style")\n',
+        "            if value not in HANDLE_TYPES:\n"
+        '                raise ValueError(f"Unsupported {label}: {value}; expected one of {sorted(HANDLE_TYPES)}")\n',
+        '            if value not in HANDLE_TYPES:\n                raise ValueError("Unsupported key style")\n',
         (
             f"{KEYSTYLET}::test_an_unsupported_style_is_refused_by_the_argument_that_is_wrong[style1-handle_left]",
             f"{KEYSTYLET}::test_an_unsupported_style_is_refused_by_the_argument_that_is_wrong[style2-handle_right]",
@@ -6624,16 +7321,17 @@ REVERTS: list[Revert] = [
     Revert(
         "key style: the interpolation refusal no longer names interpolation",
         ADDON_KEY_STYLE,
-        '        raise ValueError(f"Unsupported interpolation: {interpolation}; expected one of '
-        '{sorted(INTERPOLATIONS)}")\n',
-        '        raise ValueError("Unsupported key style")\n',
+        "            raise ValueError(\n"
+        '                f"Unsupported interpolation: {self.interpolation}; expected one of {sorted(INTERPOLATIONS)}"\n'
+        "            )\n",
+        '            raise ValueError("Unsupported key style")\n',
         (f"{KEYSTYLET}::test_an_unsupported_style_is_refused_by_the_argument_that_is_wrong[style0-interpolation]",),
     ),
     Revert(
         "key style: the easing refusal no longer names easing",
         ADDON_KEY_STYLE,
-        '        raise ValueError(f"Unsupported easing: {easing}; expected one of {sorted(EASINGS)}")\n',
-        '        raise ValueError("Unsupported key style")\n',
+        '            raise ValueError(f"Unsupported easing: {self.easing}; expected one of {sorted(EASINGS)}")\n',
+        '            raise ValueError("Unsupported key style")\n',
         (f"{KEYSTYLET}::test_an_unsupported_style_is_refused_by_the_argument_that_is_wrong[style3-easing]",),
     ),
     # --- an ID holds one action, so assigning one is always also unassigning another ---

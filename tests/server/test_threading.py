@@ -16,7 +16,9 @@ from __future__ import annotations
 import ast
 import dataclasses
 import functools
+import itertools
 import json
+import logging
 import socket
 import sys
 import threading
@@ -25,6 +27,9 @@ import types
 
 from collections.abc import Callable, Mapping
 from contextlib import suppress
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Literal
 
 import pytest
 
@@ -127,7 +132,7 @@ def _load_server_core():
 
     Everything except the imports is lifted, not just `BlenderMCPServer`: the
     class calls module-level helpers (`extract_frames`, `parse_command_frame`)
-    and reads module-level tables (`_READ_ONLY_WHEN`), which would be missing
+    and reads the module-level `COMMANDS` registry, which would be missing
     names at call time if only the ClassDef were executed.
 
     `session.py` is the exception: the real module runs against the same `bpy`
@@ -233,6 +238,11 @@ def _load_server_core():
         # Evaluated while the module body executes: two lru_cache decorators and
         # the annotations on the pure helpers and their tables.
         "functools": functools,
+        "itertools": itertools,
+        "logging": logging,
+        "dataclass": dataclass,
+        "MappingProxyType": MappingProxyType,
+        "Literal": Literal,
         "Callable": Callable,
         "Mapping": Mapping,
         "socket": socket,
@@ -240,7 +250,6 @@ def _load_server_core():
         "json": json,
         "time": time,
         "queue": __import__("queue"),
-        "traceback": __import__("traceback"),
         "os": __import__("os"),
         "suppress": suppress,
         "get_blendermcp_addon_preferences": lambda context=None: None,
@@ -264,6 +273,9 @@ BlenderMCPServer = _core["BlenderMCPServer"]
 # them directly (tests/server/test_socket_unicode.py) need no second loader.
 extract_frames = _core["extract_frames"]
 parse_command_frame = _core["parse_command_frame"]
+# The one command registry, re-exported so a classification assertion reads the
+# same table the dispatcher does.
+COMMANDS = _core["COMMANDS"]
 
 
 def _free_port():
@@ -2322,7 +2334,7 @@ def test_the_commands_that_report_or_repair_an_indeterminate_session_still_run()
 
     assert executed == ["open_shot"], f"the repair path was refused too: {executed}"
     assert _session.session_snapshot()["session_indeterminate"] is False, "a completed load did not clear the latch"
-    assert set(server._INDETERMINATE_SAFE_COMMANDS) == {
+    assert {name for name, spec in COMMANDS.items() if spec.indeterminate_safe} == {
         "get_addon_info",
         "get_session_info",
         "open_shot",

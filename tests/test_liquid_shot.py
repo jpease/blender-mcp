@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import liquid
+from blender_mcp.server.tools import _dispatch, liquid
 
 
 def _run(function, **kwargs):
@@ -658,9 +658,9 @@ def test_shot_source_payload_flattens_enabled_seconds_to_a_list() -> None:
 def test_setup_liquid_shot_tool_forwards_resolved_quality_profile_and_changed_objects(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        liquid,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
 
     result = _run(
@@ -673,11 +673,11 @@ def test_setup_liquid_shot_tool_forwards_resolved_quality_profile_and_changed_ob
         quality="FINAL",
     )
 
-    assert result == {"ok": True}
+    assert result["ok"] is True
     assert len(calls) == 1
-    command, params, changed_objects = calls[0]
+    assert result["changed_objects"] == ["Domain", "Glass", "Pour"]
+    command, params = calls[0]
     assert command == "setup_liquid_shot"
-    assert changed_objects == ["Domain", "Glass", "Pour"]
     assert params["containers"] == [{"object_name": "Glass", "collision_proxy": "HOLLOW_CONTAINER"}]
     assert params["sources"] == [{"object_name": "Pour", "enabled_seconds": [1.0, 2.0]}]
     solver_patch, mesh_patch = liquid.profile_patches("FINAL")
@@ -689,12 +689,12 @@ def test_setup_liquid_shot_tool_forwards_resolved_quality_profile_and_changed_ob
 def test_setup_liquid_shot_tool_dry_run_sends_no_changed_objects(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        liquid,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
 
-    _run(
+    result = _run(
         liquid.setup_liquid_shot,
         scene_name="Scene",
         cache_directory="/tmp/cache",
@@ -703,8 +703,8 @@ def test_setup_liquid_shot_tool_dry_run_sends_no_changed_objects(monkeypatch) ->
         dry_run=True,
     )
 
-    _command, _params, changed_objects = calls[0]
-    assert changed_objects is None
+    assert len(calls) == 1
+    assert result["changed_objects"] == []
 
 
 def test_all_liquid_shot_names_are_registered() -> None:

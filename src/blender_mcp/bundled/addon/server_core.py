@@ -1,16 +1,19 @@
 import functools
 import itertools
 import json
+import logging
 import os
 import queue
 import socket
 import tempfile
 import threading
 import time
-import traceback
 
 from collections.abc import Callable, Mapping
 from contextlib import suppress
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Literal
 
 import bpy
 import mathutils
@@ -45,6 +48,15 @@ from .output_roots import configured_file_roots, configured_roots, writable_root
 from .session import load_in_flight, mark_session_indeterminate, session_is_indeterminate, session_snapshot
 from .text_hygiene import client_safe_name_leaf
 from .transaction import mutation_transaction, unreferenced_warning
+
+# The add-on's own logger. Blender installs no handler for it, so by default these
+# records reach the console through the root logger exactly as the `print` calls they
+# replaced did - but a level now separates one dispatched command from a dropped
+# connection, and an operator can silence or raise either without editing the add-on.
+logger = logging.getLogger(__name__)
+
+# The optional integrations whose commands are gated on a per-.blend scene flag.
+Provider = Literal["polyhaven", "sketchfab", "nd"]
 
 
 @functools.lru_cache(maxsize=1)
@@ -245,25 +257,567 @@ _PROCEDURAL_INSTANCE_MUTATION_PARAMS = (
     "realize_instances",
 )
 
-# Commands that are read-only for some parameters and mutating for others, so
-# `BlenderMCPServer._READ_ONLY_COMMANDS` cannot express them: one predicate per
-# command, answering "is *this* call read-only?" from its params alone.
-_READ_ONLY_WHEN: dict[str, Callable[[Mapping[str, object]], bool]] = {
-    "manage_retopology_checkpoint": lambda params: _action(params, "") in {"LIST", "COMPARE"},
-    "analyze_surface_conformity": lambda params: not params.get("create_heat_map", False),
-    "configure_cloth_sewing": lambda params: bool(params.get("dry_run", True)),
-    "manage_cloth_cache": lambda params: _action(params, "INSPECT") == "INSPECT",
-    "manage_liquid_cache": lambda params: _action(params, "STATUS") == "STATUS",
-    "analyze_liquid_performance": lambda params: not params.get("measure_replay_evaluation", False),
-    "create_camera_markers": lambda params: _action(params, "") == "LIST",
-    "manage_rigid_body_cache": lambda params: _action(params, "INSPECT") == "INSPECT",
-    "analyze_rigid_body_performance": lambda params: not params.get("sample_frames"),
-    "manage_named_attributes": lambda params: _action(params, "LIST") == "LIST",
-    "manage_geometry_nodes_bake": lambda params: _action(params, "INSPECT") == "INSPECT",
-    "manage_procedural_instances": lambda params: (
-        not any(params.get(key) is not None for key in _PROCEDURAL_INSTANCE_MUTATION_PARAMS)
-    ),
-}
+
+# One command, one row: how it dispatches and every routing decision made about it.
+# Before this table each of those decisions lived in its own name-keyed set, nothing
+# coupled them to the dispatch keys, and a name left out of one of them - the geometry
+# set especially - silently turned that protection off.
+@dataclass(frozen=True, slots=True)
+class CommandSpec:
+    """
+    How one command is classified, for every decision the dispatcher makes about it.
+
+    Attributes:
+        read_only: Never mutates `bpy.data`, whatever its params, so it skips
+            `mutation_transaction` entirely - a snapshot, a diff and an undo
+            checkpoint would all buy nothing.
+        read_only_when: Read-only for *some* params only: an `INSPECT` cache
+            call, a dry-run sewing preview, a conformity analysis asked for no
+            heat map. Answers "is *this* call read-only?" from its params alone.
+        non_undo: Mutates, but nothing worth an undo checkpoint - viewport and
+            capture toggles, and the playhead. Transacting them would only add
+            undo-stack noise.
+        non_undo_when: The same, decided per call. A render writes a file rather
+            than scene state - unless `persist_output` stores its output template
+            on the scene, which is scene state a rollback must restore.
+        geometry: Edits an existing object's mesh, so the transaction backs the
+            mesh datablock up (a full copy) and swaps it back on failure.
+            Transform-only commands skip that cost.
+        session_swap: Replaces Blender's whole database. The drain loop discards
+            the queue behind it and ends its tick, and it never enters a
+            transaction: after a load every id looks new and a rollback would
+            remove the whole file. `save_shot` is not one - a save replaces no
+            datablock, so the commands queued behind it are still valid.
+        datablock_replacing: Replaces or frees linked datablocks in place. A
+            reload gives them new session_uids, so a transaction would treat them
+            as created by the request and delete them on rollback. Not a swap.
+        tick_ending: The drain loop ends its tick after this command, leaving the
+            queue for the next one. Blender clears `is_dirty` for a save only
+            after the tick returns, so an edit later in the same tick would lose
+            its dirty flag and `open_shot`'s unsaved-work guard would let the
+            work be thrown away.
+        indeterminate_safe: Still runs while the session is indeterminate,
+            because it either repairs that condition or publishes
+            `session_indeterminate`, the reason for every other refusal.
+        provider: The optional integration whose scene flag gates this command,
+            or None for one that is always dispatchable.
+
+    """
+
+    read_only: bool = False
+    read_only_when: Callable[[Mapping[str, object]], bool] | None = None
+    non_undo: bool = False
+    non_undo_when: Callable[[Mapping[str, object]], bool] | None = None
+    geometry: bool = False
+    session_swap: bool = False
+    datablock_replacing: bool = False
+    tick_ending: bool = False
+    indeterminate_safe: bool = False
+    provider: Provider | None = None
+
+
+# What an unregistered command name resolves to: dispatch refuses it by name, and
+# every classification below defaults to the safe answer - mutating, transacted.
+_UNCLASSIFIED = CommandSpec()
+
+COMMANDS: Mapping[str, CommandSpec] = MappingProxyType(
+    {
+        "ping": CommandSpec(read_only=True),
+        "list_scene_objects": CommandSpec(read_only=True),
+        "get_addon_info": CommandSpec(read_only=True, indeterminate_safe=True),
+        "get_session_info": CommandSpec(read_only=True, indeterminate_safe=True),
+        "open_shot": CommandSpec(session_swap=True, indeterminate_safe=True),
+        "save_shot": CommandSpec(tick_ending=True),
+        "reset_session": CommandSpec(session_swap=True, indeterminate_safe=True),
+        "link_canon_library": CommandSpec(),
+        "create_override": CommandSpec(),
+        "list_libraries": CommandSpec(read_only=True),
+        "inspect_delivery": CommandSpec(read_only=True),
+        "reload_library": CommandSpec(datablock_replacing=True),
+        "relocate_library": CommandSpec(datablock_replacing=True),
+        "unlink_libraries": CommandSpec(datablock_replacing=True),
+        "get_object_info": CommandSpec(read_only=True),
+        "get_mesh_data": CommandSpec(read_only=True),
+        "inspect_animation": CommandSpec(read_only=True),
+        "manage_animation_action": CommandSpec(),
+        "edit_keyframes": CommandSpec(),
+        "set_action_cycle": CommandSpec(),
+        "bake_evaluated_animation": CommandSpec(),
+        "manage_nla_tracks": CommandSpec(),
+        "manage_animation_driver": CommandSpec(),
+        "list_procedural_systems": CommandSpec(read_only=True),
+        "get_geometry_node_graph": CommandSpec(read_only=True),
+        "get_geometry_node_type_info": CommandSpec(read_only=True),
+        "create_geometry_node_group": CommandSpec(),
+        "attach_geometry_nodes_modifier": CommandSpec(),
+        "edit_node_group_interface": CommandSpec(),
+        "patch_geometry_node_graph": CommandSpec(),
+        "set_geometry_nodes_inputs": CommandSpec(),
+        "manage_geometry_nodes_modifier": CommandSpec(),
+        "copy_geometry_node_group": CommandSpec(),
+        "evaluate_procedural_geometry": CommandSpec(read_only=True),
+        "validate_geometry_node_graph": CommandSpec(read_only=True),
+        "create_procedural_scatter": CommandSpec(),
+        "create_curve_generator": CommandSpec(),
+        "create_procedural_array": CommandSpec(),
+        "create_surface_paneling": CommandSpec(),
+        "create_procedural_boolean": CommandSpec(),
+        "create_procedural_deformer": CommandSpec(),
+        "create_volume_generator": CommandSpec(),
+        "manage_named_attributes": CommandSpec(
+            geometry=True, read_only_when=lambda params: _action(params, "LIST") == "LIST"
+        ),
+        "manage_procedural_instances": CommandSpec(
+            read_only_when=lambda params: (
+                not any(params.get(key) is not None for key in _PROCEDURAL_INSTANCE_MUTATION_PARAMS)
+            )
+        ),
+        "run_geometry_nodes_tool": CommandSpec(geometry=True),
+        "publish_procedural_asset": CommandSpec(),
+        "create_repeat_zone": CommandSpec(),
+        "create_simulation_zone": CommandSpec(),
+        "manage_geometry_nodes_bake": CommandSpec(
+            read_only_when=lambda params: _action(params, "INSPECT") == "INSPECT"
+        ),
+        "realize_procedural_output": CommandSpec(),
+        "analyze_procedural_performance": CommandSpec(read_only=True),
+        "get_viewport_screenshot": CommandSpec(read_only=True),
+        "create_geometry_object": CommandSpec(),
+        "set_object_transform": CommandSpec(),
+        "set_scene_frame": CommandSpec(non_undo=True),
+        "duplicate_or_instance_objects": CommandSpec(),
+        "manage_scene_collections": CommandSpec(),
+        "manage_object_hierarchy": CommandSpec(),
+        "manage_object_constraints": CommandSpec(),
+        "manage_modifiers": CommandSpec(),
+        "remove_scene_objects": CommandSpec(),
+        "reset_scene": CommandSpec(),
+        "validate_scene": CommandSpec(read_only=True),
+        "inspect_render_setup": CommandSpec(read_only=True),
+        "configure_render_settings": CommandSpec(),
+        "get_scene_physics_info": CommandSpec(read_only=True),
+        "configure_scene_physics": CommandSpec(),
+        "keyframe_object_transform": CommandSpec(),
+        "manage_view_layers": CommandSpec(),
+        "plan_render_animation": CommandSpec(read_only=True),
+        "render_scene": CommandSpec(non_undo_when=lambda params: not params.get("persist_output", False)),
+        "inspect_render_output": CommandSpec(read_only=True),
+        "get_polyhaven_status": CommandSpec(read_only=True),
+        "get_nd_status": CommandSpec(read_only=True),
+        "get_sketchfab_status": CommandSpec(read_only=True),
+        "create_primitive": CommandSpec(),
+        "mesh_extrude": CommandSpec(geometry=True),
+        "mesh_inset": CommandSpec(geometry=True),
+        "mesh_bevel": CommandSpec(geometry=True),
+        "mesh_bridge": CommandSpec(geometry=True),
+        "mesh_boolean": CommandSpec(geometry=True),
+        "mesh_subdivide": CommandSpec(geometry=True),
+        "mesh_remesh": CommandSpec(geometry=True),
+        "mesh_solidify": CommandSpec(geometry=True),
+        "mesh_symmetrize": CommandSpec(geometry=True),
+        "create_retopology_target": CommandSpec(),
+        "inspect_retopology": CommandSpec(read_only=True),
+        "analyze_surface_conformity": CommandSpec(
+            geometry=True, read_only_when=lambda params: not params.get("create_heat_map", False)
+        ),
+        "manage_retopology_checkpoint": CommandSpec(
+            geometry=True, read_only_when=lambda params: _action(params, "") in {"LIST", "COMPARE"}
+        ),
+        "configure_surface_projection": CommandSpec(geometry=True),
+        "project_mesh_elements": CommandSpec(geometry=True),
+        "build_quad_patch": CommandSpec(geometry=True),
+        "extend_boundary": CommandSpec(geometry=True),
+        "fill_boundary_quads": CommandSpec(geometry=True),
+        "reroute_topology": CommandSpec(geometry=True),
+        "relax_topology": CommandSpec(geometry=True),
+        "redistribute_edge_loop": CommandSpec(geometry=True),
+        "configure_retopology_symmetry": CommandSpec(),
+        "validate_retopology": CommandSpec(read_only=True),
+        "create_retopology_guides": CommandSpec(),
+        "create_surface_section": CommandSpec(),
+        "set_retopology_features": CommandSpec(geometry=True),
+        "add_support_loops": CommandSpec(geometry=True),
+        "transfer_mesh_attributes": CommandSpec(geometry=True),
+        "unwrap_retopology_uvs": CommandSpec(geometry=True),
+        "create_bake_cage": CommandSpec(),
+        "bake_retopology_maps": CommandSpec(),
+        "test_deformation": CommandSpec(read_only=True),
+        "generate_quadriflow_draft": CommandSpec(),
+        "fit_surface_primitive": CommandSpec(),
+        "bind_surface_deformation": CommandSpec(),
+        "generate_retopology_lods": CommandSpec(),
+        "copy_object_transform": CommandSpec(),
+        "add_radial_array_modifier": CommandSpec(),
+        "set_viewport_overlay": CommandSpec(non_undo=True),
+        "clear_materials": CommandSpec(),
+        "clear_vertex_groups": CommandSpec(),
+        "clear_edge_marks": CommandSpec(),
+        "sync_data_name": CommandSpec(),
+        "get_character_rig_info": CommandSpec(read_only=True),
+        "get_skinning_info": CommandSpec(read_only=True),
+        "create_armature": CommandSpec(),
+        "patch_armature_bones": CommandSpec(),
+        "mirror_armature_bones": CommandSpec(),
+        "manage_bone_collections": CommandSpec(),
+        "configure_armature_bones": CommandSpec(),
+        "bind_mesh_to_armature": CommandSpec(),
+        "set_skin_weights": CommandSpec(),
+        "clean_skin_weights": CommandSpec(),
+        "add_pose_bone_constraint": CommandSpec(),
+        "validate_character_rig": CommandSpec(read_only=True),
+        "transfer_skin_weights": CommandSpec(),
+        "create_ik_chain": CommandSpec(),
+        "create_ik_fk_limb": CommandSpec(),
+        "create_spline_ik_rig": CommandSpec(),
+        "configure_bendy_bones": CommandSpec(),
+        "create_rig_property_driver": CommandSpec(),
+        "assign_bone_custom_shapes": CommandSpec(),
+        "list_character_bones": CommandSpec(read_only=True),
+        "set_character_pose": CommandSpec(),
+        "keyframe_character_pose": CommandSpec(),
+        "solve_bone_reach": CommandSpec(),
+        "keyframe_bone_reach": CommandSpec(),
+        "create_shape_key_controls": CommandSpec(),
+        "get_rigid_body_scene_info": CommandSpec(read_only=True),
+        "get_rigid_body_object_info": CommandSpec(read_only=True),
+        "get_rigid_body_constraint_info": CommandSpec(read_only=True),
+        "configure_rigid_body_world": CommandSpec(),
+        "add_rigid_bodies": CommandSpec(),
+        "configure_rigid_bodies": CommandSpec(),
+        "set_rigid_body_mass": CommandSpec(),
+        "set_rigid_body_collision_layers": CommandSpec(),
+        "create_rigid_body_collision_proxy": CommandSpec(),
+        "create_rigid_body_constraint": CommandSpec(),
+        "configure_rigid_body_constraint": CommandSpec(),
+        "validate_rigid_body_setup": CommandSpec(read_only=True),
+        "remove_rigid_body_components": CommandSpec(),
+        "animate_rigid_body_release": CommandSpec(),
+        "create_compound_rigid_body": CommandSpec(),
+        "create_rigid_body_constraint_network": CommandSpec(),
+        "prepare_fracture_rigid_bodies": CommandSpec(),
+        "create_rigid_body_chain": CommandSpec(),
+        "setup_animated_passive_collider": CommandSpec(),
+        "configure_rigid_body_force_fields": CommandSpec(),
+        "sample_rigid_body_simulation": CommandSpec(),
+        "manage_rigid_body_cache": CommandSpec(read_only_when=lambda params: _action(params, "INSPECT") == "INSPECT"),
+        "bake_rigid_bodies_to_keyframes": CommandSpec(),
+        "create_rigid_body_debris_field": CommandSpec(),
+        "create_rigid_body_proxy_rig": CommandSpec(),
+        "create_ragdoll_rig": CommandSpec(),
+        "bake_ragdoll_to_armature": CommandSpec(),
+        "export_rigid_body_animation": CommandSpec(),
+        "analyze_rigid_body_performance": CommandSpec(read_only_when=lambda params: not params.get("sample_frames")),
+        "get_cloth_simulation_info": CommandSpec(read_only=True),
+        "get_cloth_object_info": CommandSpec(read_only=True),
+        "get_liquid_simulation_info": CommandSpec(read_only=True),
+        "get_fluid_object_info": CommandSpec(read_only=True),
+        "inspect_fluid_simulation": CommandSpec(read_only=True),
+        "create_fluid_domain": CommandSpec(),
+        "configure_fluid_solver": CommandSpec(),
+        "add_fluid_flow": CommandSpec(),
+        "add_fluid_effector": CommandSpec(),
+        "manage_fluid_cache": CommandSpec(),
+        "get_camera_rig_info": CommandSpec(read_only=True),
+        "create_camera": CommandSpec(),
+        "configure_camera": CommandSpec(),
+        "set_scene_camera": CommandSpec(),
+        "point_camera_at": CommandSpec(),
+        "create_camera_target": CommandSpec(),
+        "frame_camera_on_objects": CommandSpec(),
+        "create_orbit_camera_rig": CommandSpec(),
+        "create_dolly_camera_rig": CommandSpec(),
+        "create_crane_camera_rig": CommandSpec(),
+        "create_camera_path_rig": CommandSpec(),
+        "configure_camera_dof": CommandSpec(),
+        "keyframe_camera_rig": CommandSpec(),
+        "set_camera_interpolation": CommandSpec(),
+        "create_focus_pull": CommandSpec(),
+        "create_dolly_zoom": CommandSpec(),
+        "add_camera_shake": CommandSpec(),
+        "create_camera_markers": CommandSpec(read_only_when=lambda params: _action(params, "") == "LIST"),
+        "match_camera_transform": CommandSpec(),
+        "duplicate_camera_rig": CommandSpec(),
+        "add_camera_constraint": CommandSpec(),
+        "configure_camera_render_gate": CommandSpec(),
+        "validate_camera_rig": CommandSpec(read_only=True),
+        "list_lights": CommandSpec(read_only=True),
+        "inspect_light": CommandSpec(read_only=True),
+        "inspect_lighting_setup": CommandSpec(read_only=True),
+        "validate_lighting_setup": CommandSpec(read_only=True),
+        "create_light": CommandSpec(),
+        "configure_light": CommandSpec(),
+        "aim_light": CommandSpec(),
+        "configure_light_linking": CommandSpec(),
+        "create_studio_lighting": CommandSpec(),
+        "configure_world_background": CommandSpec(),
+        "configure_hdri_environment": CommandSpec(),
+        "configure_procedural_sky": CommandSpec(),
+        "configure_lighting_quality": CommandSpec(),
+        "configure_color_management": CommandSpec(),
+        "render_lighting_preview": CommandSpec(),
+        "list_materials": CommandSpec(read_only=True),
+        "inspect_material": CommandSpec(read_only=True),
+        "get_shader_node_type_info": CommandSpec(read_only=True),
+        "patch_shader_graph": CommandSpec(),
+        "create_pbr_material": CommandSpec(),
+        "configure_pbr_material": CommandSpec(),
+        "assign_material": CommandSpec(),
+        "configure_texture_mapping": CommandSpec(),
+        "list_texture_images": CommandSpec(read_only=True),
+        "load_texture_image": CommandSpec(),
+        "configure_texture_image": CommandSpec(),
+        "apply_pbr_texture_set": CommandSpec(),
+        "save_texture_image": CommandSpec(),
+        "render_pbr_material_preview": CommandSpec(),
+        "manage_uv_maps": CommandSpec(),
+        "set_uv_seams": CommandSpec(),
+        "unwrap_uvs": CommandSpec(),
+        "optimize_uv_layout": CommandSpec(),
+        "inspect_uv_layout": CommandSpec(read_only=True),
+        "bake_texture_map": CommandSpec(),
+        "validate_pbr_asset": CommandSpec(read_only=True),
+        "add_cloth_simulation": CommandSpec(),
+        "configure_cloth_material": CommandSpec(),
+        "configure_cloth_solver": CommandSpec(),
+        "set_cloth_vertex_weights": CommandSpec(),
+        "configure_cloth_pinning": CommandSpec(),
+        "configure_cloth_collisions": CommandSpec(),
+        "add_cloth_collider": CommandSpec(),
+        "configure_cloth_collider": CommandSpec(),
+        "estimate_cloth_resources": CommandSpec(read_only=True),
+        "validate_cloth_setup": CommandSpec(read_only=True),
+        "configure_cloth_sewing": CommandSpec(
+            geometry=True, read_only_when=lambda params: bool(params.get("dry_run", True))
+        ),
+        "configure_cloth_pressure": CommandSpec(),
+        "configure_cloth_internal_springs": CommandSpec(),
+        "configure_cloth_rest_shape": CommandSpec(),
+        "configure_cloth_field_weights": CommandSpec(),
+        "animate_cloth_parameters": CommandSpec(),
+        "create_cloth_attachment": CommandSpec(),
+        "create_character_cloth_setup": CommandSpec(),
+        "sample_cloth_simulation": CommandSpec(),
+        "manage_cloth_cache": CommandSpec(read_only_when=lambda params: _action(params, "INSPECT") == "INSPECT"),
+        "remove_cloth_components": CommandSpec(),
+        "create_cloth_proxy_rig": CommandSpec(),
+        "duplicate_cloth_setup_variant": CommandSpec(),
+        "prepare_cloth_render_surface": CommandSpec(),
+        "export_cloth_simulation": CommandSpec(),
+        "analyze_cloth_performance": CommandSpec(),
+        "create_liquid_domain": CommandSpec(),
+        "fit_liquid_domain": CommandSpec(geometry=True),
+        "configure_liquid_solver": CommandSpec(),
+        "add_liquid_flow": CommandSpec(),
+        "configure_liquid_flow": CommandSpec(),
+        "add_liquid_effector": CommandSpec(),
+        "configure_liquid_effector": CommandSpec(),
+        "configure_liquid_scope_and_boundaries": CommandSpec(),
+        "estimate_liquid_resources": CommandSpec(read_only=True),
+        "validate_liquid_setup": CommandSpec(read_only=True),
+        "configure_liquid_mesh": CommandSpec(),
+        "apply_liquid_quality_profile": CommandSpec(),
+        "configure_liquid_secondary_particles": CommandSpec(),
+        "configure_liquid_diffusion": CommandSpec(),
+        "animate_liquid_flow": CommandSpec(),
+        "create_liquid_guide": CommandSpec(),
+        "configure_liquid_force_fields": CommandSpec(),
+        "create_liquid_material": CommandSpec(),
+        "create_secondary_particle_render_setup": CommandSpec(),
+        "sample_liquid_simulation": CommandSpec(),
+        "manage_liquid_cache": CommandSpec(read_only_when=lambda params: _action(params, "STATUS") == "STATUS"),
+        "remove_fluid_components": CommandSpec(),
+        "create_liquid_proxy_rig": CommandSpec(),
+        "duplicate_liquid_setup_variant": CommandSpec(),
+        "prepare_liquid_render_mesh": CommandSpec(),
+        "export_liquid_simulation": CommandSpec(),
+        "analyze_liquid_performance": CommandSpec(
+            read_only_when=lambda params: not params.get("measure_replay_evaluation", False)
+        ),
+        "setup_liquid_shot": CommandSpec(),
+        "validate_liquid_result": CommandSpec(),
+        "get_polyhaven_categories": CommandSpec(read_only=True, provider="polyhaven"),
+        "list_polyhaven_assets": CommandSpec(read_only=True, provider="polyhaven"),
+        "import_polyhaven_asset": CommandSpec(provider="polyhaven"),
+        "apply_polyhaven_texture": CommandSpec(provider="polyhaven"),
+        "search_sketchfab_models": CommandSpec(read_only=True, provider="sketchfab"),
+        "get_sketchfab_model_preview": CommandSpec(read_only=True, provider="sketchfab"),
+        "import_sketchfab_model": CommandSpec(provider="sketchfab"),
+        "nd_boolean": CommandSpec(provider="nd"),
+        "nd_mark_as_util": CommandSpec(provider="nd"),
+        "nd_clean_utils": CommandSpec(provider="nd"),
+        "nd_create_id_material": CommandSpec(provider="nd"),
+        "nd_bulk_create_id_materials": CommandSpec(provider="nd"),
+        "nd_set_lod_suffix": CommandSpec(provider="nd"),
+        "nd_single_vertex": CommandSpec(provider="nd"),
+        "nd_apply_modifiers": CommandSpec(provider="nd"),
+        "nd_pulse_viewport_toggle": CommandSpec(non_undo=True, provider="nd"),
+        "nd_capture_utils": CommandSpec(non_undo=True, provider="nd"),
+    }
+)
+
+# Which scene flag turns each provider's commands on. Read per call, because the
+# flags belong to the open .blend and change when another file is loaded.
+_PROVIDER_SCENE_FLAGS: Mapping[Provider, str] = MappingProxyType(
+    {
+        "polyhaven": "blendermcp_use_polyhaven",
+        "sketchfab": "blendermcp_use_sketchfab",
+        "nd": "blendermcp_use_nd",
+    }
+)
+
+# The dispatch table's two halves, partitioned once at import rather than per command.
+_UNGATED_COMMAND_NAMES: tuple[str, ...] = tuple(name for name, spec in COMMANDS.items() if spec.provider is None)
+_GATED_COMMAND_NAMES: Mapping[Provider, tuple[str, ...]] = MappingProxyType(
+    {
+        provider: tuple(name for name, spec in COMMANDS.items() if spec.provider == provider)
+        for provider in _PROVIDER_SCENE_FLAGS
+    }
+)
+
+
+# Params that name an *existing* object a mutating command touches, so the transaction
+# can capture that object's state and restore it on failure. "name" is excluded: in
+# create_primitive it names a new object, not one to protect.
+_TARGET_NAME_PARAMS: tuple[str, ...] = (
+    "object_name",
+    "camera_name",
+    "light_name",
+    "curve_object_name",
+    "cutter_object_name",
+    "reference_object_name",
+    "target_object_name",
+    "cloth_object_name",
+    "garment_object_name",
+    "armature_object_name",
+    "mesh_object_name",
+    "source_mesh_name",
+    "target_mesh_name",
+    "constraint_object_name",
+    "object1_name",
+    "object2_name",
+    "low_resolution_source_name",
+    "render_object_name",
+    "proxy_object_name",
+    "source_object_name",
+    "destination_name",
+    "movement_object_name",
+    "owner_name",
+    "source_root_name",
+    "root_object_name",
+    "domain_object_name",
+    "guide_object_name",
+    "guide_parent_domain_object_name",
+    "instance_object_name",
+)
+_TARGET_NAMES_PARAMS: tuple[str, ...] = (
+    "object_names",
+    "camera_names",
+    "body_collider_object_names",
+    "source_object_names",
+    "collider_object_names",
+    "mesh_object_names",
+    "armature_object_names",
+    "body_names",
+    "child_object_names",
+    "piece_object_names",
+)
+
+# The object-name keys the record params above nest one level down.
+_RECORD_OBJECT_NAME_KEYS = (
+    "object_name",
+    "render_object_name",
+    "proxy_object_name",
+    "low_resolution_source_name",
+    "convex_source_object_name",
+)
+
+# Params holding records that name objects: the container key, and the keys inside
+# one record that name an object. Order matters - it is the order targets are
+# captured and therefore restored in.
+_TARGET_RECORD_PARAMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("targets", ("object_name",)),
+    ("fields", ("object_name",)),
+    ("keyframes", ("object_name",)),
+    ("assignments", ("child_object_name", "parent_object_name")),
+    ("constraint", ("target_object_name",)),
+    ("sources", _RECORD_OBJECT_NAME_KEYS),
+    ("mappings", _RECORD_OBJECT_NAME_KEYS),
+    ("bodies", _RECORD_OBJECT_NAME_KEYS),
+)
+
+
+def _records(value: object) -> tuple[Mapping[str, object], ...]:
+    """
+    Read a record param as the records it holds, whether it is one or a list.
+
+    `constraint` is a single record while `sources` is a list of them; both are
+    otherwise walked identically, so normalizing here is what lets one table
+    describe every nested walk.
+
+    Args:
+        value: The param's value, as the client sent it.
+
+    Returns:
+        tuple[Mapping[str, object], ...]: The records, or empty for any other shape.
+
+    """
+    if isinstance(value, Mapping):
+        return (value,)
+    if isinstance(value, (list, tuple)):
+        return tuple(record for record in value if isinstance(record, Mapping))
+    return ()
+
+
+def target_names(params: Mapping[str, object]) -> list[str]:
+    """
+    Read the names of existing objects a mutating request says it will touch.
+
+    Rollback protection is decided by parameter-naming convention, which is what
+    this function is: the three tables above are the whole convention, and a
+    mutating command that spells an object parameter some other way gets no
+    rollback. Pure, and free of `bpy`, so the convention can be tested without a
+    database; `BlenderMCPServer._resolve_targets` turns these names into objects.
+
+    Args:
+        params: The command's params, as the client sent them.
+
+    Returns:
+        list[str]: The named objects, duplicates collapsed, first mention first.
+
+    """
+    names: list[str] = []
+    for key in _TARGET_NAME_PARAMS:
+        value = params.get(key)
+        if isinstance(value, str):
+            names.append(value)
+    for key in _TARGET_NAMES_PARAMS:
+        value = params.get(key)
+        if isinstance(value, (list, tuple)):
+            names.extend(name for name in value if isinstance(name, str))
+    for container_key, name_keys in _TARGET_RECORD_PARAMS:
+        for record in _records(params.get(container_key)):
+            names.extend(record[key] for key in name_keys if isinstance(record.get(key), str))
+    return list(dict.fromkeys(names))
+
+
+@dataclass(slots=True)
+class AnswerReceipt:
+    """
+    Who owes one command's client its single response frame.
+
+    `_execute_and_answer` and `_answer` are the only writers and `_run_session_swap`
+    the only reader, but the question outlives the call that answers it: on an abort
+    the swap has to know whether anything already began writing, because a second
+    frame desyncs a client that matches responses by order and no frame at all costs
+    it a timeout.
+
+    Attributes:
+        answered: True once `_answer` began writing, whether or not the write
+            finished.
+
+    """
+
+    answered: bool = False
 
 
 class BlenderMCPServer(
@@ -311,6 +865,10 @@ class BlenderMCPServer(
         self._drain_timer = None
         # When the last command was taken off the queue, for _poll_interval below.
         self._last_command_at = 0.0
+        # Bound handler maps, one per distinct provider-flag combination; see
+        # `_build_command_handlers`. Per instance, because the values are this
+        # server's bound methods.
+        self._handlers_by_gate: dict[tuple[bool, ...], Mapping[str, Callable[..., object]]] = {}
 
     def _get_config_value(self, scene_attr, pref_attr=None, env_var=None):
         """
@@ -350,14 +908,14 @@ class BlenderMCPServer(
 
     def start(self) -> None:
         if bpy.app.background:
-            print(
-                "BlenderMCP: cannot start server in background mode (blender -b) - commands would never execute\n"
-                "BlenderMCP: run Blender with a GUI, or use a virtual display: xvfb-run -a blender"
+            logger.error(
+                "Cannot start the server in background mode (blender -b) - commands would never execute. "
+                "Run Blender with a GUI, or use a virtual display: xvfb-run -a blender"
             )
             return
 
         if self.running:
-            print("Server is already running")
+            logger.warning("Server is already running")
             return
 
         self.running = True
@@ -381,9 +939,9 @@ class BlenderMCPServer(
             # this is the only safe place to touch bpy.app.timers.
             self._register_drain_timer()
 
-            print(f"BlenderMCP server started on {self.host}:{self.port}")
-        except Exception as e:
-            print(f"Failed to start server: {e!s}")
+            logger.info("Server started on %s:%s", self.host, self.port)
+        except Exception:
+            logger.exception("Failed to start the server on %s:%s", self.host, self.port)
             self.stop()
 
     def _register_drain_timer(self) -> None:
@@ -457,11 +1015,11 @@ class BlenderMCPServer(
                 pass
             self.server_thread = None
 
-        print("BlenderMCP server stopped")
+        logger.info("Server stopped")
 
     def _server_loop(self) -> None:
         """Main server loop in a separate thread."""
-        print("Server thread started")
+        logger.info("Server thread started")
         self.socket.settimeout(1.0)  # Timeout to allow for stopping
 
         while self.running:
@@ -469,7 +1027,7 @@ class BlenderMCPServer(
                 # Accept new connection
                 try:
                     client, address = self.socket.accept()
-                    print(f"Connected to client: {address}")
+                    logger.info("Connected to client: %s", address)
 
                     # Handle client in a separate thread
                     client_thread = threading.Thread(target=self.handle_client, args=(client,))
@@ -478,16 +1036,16 @@ class BlenderMCPServer(
                 except TimeoutError:
                     # Just check running condition
                     continue
-                except Exception as e:
-                    print(f"Error accepting connection: {e!s}")
+                except Exception:
+                    logger.exception("Could not accept a connection; retrying")
                     time.sleep(0.5)
-            except Exception as e:
-                print(f"Error in server loop: {e!s}")
+            except Exception:
+                logger.exception("Server loop error")
                 if not self.running:
                     break
                 time.sleep(0.5)
 
-        print("Server thread stopped")
+        logger.info("Server thread stopped")
 
     def drain_command_queue(self) -> float | None:
         """
@@ -562,19 +1120,11 @@ class BlenderMCPServer(
             except queue.Empty:
                 break
 
-            # Popped so handlers never see it. A missing stamp is rejected: the
-            # only enqueue path always stamps, so only a bug gets here.
+            # Popped so handlers never see it.
             stamp = command.pop(self._SESSION_STAMP_KEY, None)
-            if stamp != self._session_marker():
-                self._discard_superseded([(command, client)], self._reject_reason(stamp))
-                processed += 1
-                continue
-
-            # After the stamp check, so a stale command is still reported as
-            # stale; before dispatch, so nothing runs on a database that may mix
-            # two files.
-            if session_is_indeterminate() and command.get("type") not in self._INDETERMINATE_SAFE_COMMANDS:
-                self._discard_superseded([(command, client)], self._INDETERMINATE_REASON)
+            refusal = self._refusal_reason(command, stamp)
+            if refusal is not None:
+                self._discard_superseded([(command, client)], refusal)
                 processed += 1
                 continue
 
@@ -583,12 +1133,11 @@ class BlenderMCPServer(
             # is answered "Unknown command type". The command is already off the
             # queue, so a failure to classify it must be answered here.
             try:
-                is_swap = command.get("type") in self._SESSION_SWAP_COMMANDS and self._is_dispatchable(
+                is_swap = self.command_spec(command.get("type")).session_swap and self._is_dispatchable(
                     command.get("type")
                 )
-            except Exception as e:
-                print(f"Could not classify a dequeued command: {e!s}")
-                traceback.print_exc()
+            except Exception:
+                logger.exception("Could not classify a dequeued command; answering its client instead")
                 self._answer(command, client, {"status": "error", "message": "Command could not be dispatched"})
                 processed += 1
                 continue
@@ -599,7 +1148,7 @@ class BlenderMCPServer(
 
             self._execute_and_answer(command, client)
             processed += 1
-            if command.get("type") in self._TICK_ENDING_COMMANDS:
+            if self.command_spec(command.get("type")).tick_ending:
                 break
         if processed:
             self._last_command_at = time.monotonic()
@@ -615,7 +1164,7 @@ class BlenderMCPServer(
 
         The dying timer is unregistered explicitly, so exactly one drain timer
         remains even where raising callbacks are not dropped, as in the test
-        stub. A failed handoff is printed, because clients would otherwise time
+        stub. A failed handoff is logged, because clients would otherwise time
         out with nothing in the console to say why.
         """
         if not self.running:
@@ -627,15 +1176,14 @@ class BlenderMCPServer(
                 bpy.app.timers.unregister(dying)
         try:
             self._register_drain_timer()
-        except Exception as e:
-            print(f"BlenderMCP: could not hand the drain loop to a fresh timer ({e!s}) - restart the MCP server")
-            traceback.print_exc()
+        except Exception:
+            logger.exception("Could not hand the drain loop to a fresh timer - restart the MCP server")
 
     def _is_dispatchable(self, cmd_type: object) -> bool:
         """
         Report whether a command name has a handler behind it right now.
 
-        Builds the whole handler map, so callers ask only about swap commands.
+        Resolves the whole handler map, which is memoized, so this is a dict lookup.
 
         Args:
             cmd_type: The command name from the frame.
@@ -685,7 +1233,7 @@ class BlenderMCPServer(
         command: dict,
         client: object,
         *,
-        receipt: "dict | None" = None,
+        receipt: "AnswerReceipt | None" = None,
     ) -> None:
         """
         Run one command and write exactly one response frame back to its client.
@@ -698,20 +1246,19 @@ class BlenderMCPServer(
         Args:
             command: The decoded command to run.
             client: The socket its response belongs on.
-            receipt: Optional dict that `_answer` marks `"answered"` as it starts,
-                so `_run_session_swap` can tell whether it still owes the client
-                an answer.
+            receipt: Optional receipt `_answer` marks as it starts, so
+                `_run_session_swap` can tell whether it still owes the client an
+                answer.
 
         """
         response: dict
         try:
             response = self.execute_command(command)
         except Exception as e:
-            print(f"Error executing command: {e!s}")
-            traceback.print_exc()
+            logger.exception("Command %s failed before it produced a response", command.get("type"))
             response = {"status": "error", "message": str(e)}
         except BaseException as e:
-            print(f"Command aborted by {type(e).__name__}: answering the client before re-raising")
+            logger.error("Command aborted by %s: answering the client before re-raising", type(e).__name__)
             self._answer(
                 command,
                 client,
@@ -728,7 +1275,7 @@ class BlenderMCPServer(
 
         self._answer(command, client, response, receipt=receipt)
 
-    def _answer(self, command: dict, client: object, response: dict, *, receipt: "dict | None" = None) -> None:
+    def _answer(self, command: dict, client: object, response: dict, *, receipt: "AnswerReceipt | None" = None) -> None:
         """
         Write one response frame, whatever the handler did or did not produce.
 
@@ -745,11 +1292,11 @@ class BlenderMCPServer(
             command: The command being answered, for its echoed id.
             client: The socket the frame belongs on.
             response: The response body.
-            receipt: Optional dict to record the answer in; see above.
+            receipt: Optional receipt to record the answer in; see above.
 
         """
         if receipt is not None:
-            receipt["answered"] = True
+            receipt.answered = True
 
         # Echo the id so the client can match responses without relying on order.
         response["id"] = command.get("id")
@@ -760,7 +1307,7 @@ class BlenderMCPServer(
         try:
             self._send_frame(client, payload)
         except Exception:
-            print("Failed to send response - client disconnected")
+            logger.warning("Failed to send a response frame - the client disconnected")
 
     def _drain_queue_into(self, superseded: list[tuple[dict, object]]) -> None:
         """
@@ -806,7 +1353,7 @@ class BlenderMCPServer(
 
         """
         superseded: list[tuple[dict, object]] = []
-        receipt = {"answered": False}
+        receipt = AnswerReceipt()
 
         try:
             self._drain_queue_into(superseded)
@@ -817,7 +1364,7 @@ class BlenderMCPServer(
             mid_load = load_in_flight()
             if mid_load:
                 mark_session_indeterminate()
-            if not receipt["answered"]:
+            if not receipt.answered:
                 self._answer(command, client, {"status": "error", "message": self._abort_message(mid_load)})
             raise
         finally:
@@ -855,9 +1402,6 @@ class BlenderMCPServer(
         "so the open database may be part of two files; poll get_session_info and "
         "open a known shot before resending anything"
     )
-    # Allowed while the session is indeterminate: the swaps repair it, and the
-    # two reports publish `session_indeterminate`, the reason for every refusal.
-    _INDETERMINATE_SAFE_COMMANDS = frozenset({"get_addon_info", "get_session_info", "open_shot", "reset_session"})
 
     def _abort_message(self, mid_load: bool) -> str:
         """
@@ -872,19 +1416,33 @@ class BlenderMCPServer(
         """
         return self._ABORTED_MID_LOAD if mid_load else self._ABORTED_BEFORE_HANDOFF
 
-    def _reject_reason(self, stamp: object) -> str:
+    def _refusal_reason(self, command: Mapping[str, object], stamp: object) -> str | None:
         """
-        Say why a dequeued command is being answered instead of run.
+        Say why a dequeued command must be answered instead of run, or that it may run.
+
+        The stamp is checked first, so a command queued before a failed swap is
+        reported as stale rather than tripping the indeterminate barrier again. A
+        missing stamp is its own refusal: the only enqueue path always stamps, so
+        only a bug gets here. The indeterminate check comes after, so a stale
+        command is still reported as stale, and before dispatch, so nothing runs
+        on a database that may mix two files.
+
+        Mutates nothing: it reads the command, the stamp and the session module.
 
         Args:
-            stamp: The session marker popped off the command, or None when the
-                command carried none at all.
+            command: The dequeued command, its stamp already popped off.
+            stamp: The session marker popped off it, or None when it carried none.
 
         Returns:
-            str: The clause `_discard_superseded` folds into its message.
+            str | None: The clause `_discard_superseded` folds into its message,
+            or None when the command may run.
 
         """
-        return self._UNSTAMPED_REASON if stamp is None else self._SUPERSEDED_REASON
+        if stamp != self._session_marker():
+            return self._UNSTAMPED_REASON if stamp is None else self._SUPERSEDED_REASON
+        if session_is_indeterminate() and not self.command_spec(command.get("type")).indeterminate_safe:
+            return self._INDETERMINATE_REASON
+        return None
 
     def _discard_superseded(self, superseded: list[tuple[dict, object]], reason: str | None = None) -> None:
         """
@@ -1000,7 +1558,9 @@ class BlenderMCPServer(
         try:
             settimeout(self._CLIENT_SOCKET_TIMEOUT_SECONDS)
         except Exception:
-            print("Could not restore a client socket's own timeout - closing it rather than leaving it spinning")
+            logger.warning(
+                "Could not restore a client socket's own timeout - closing it rather than leaving it spinning"
+            )
             return False
         return True
 
@@ -1081,7 +1641,7 @@ class BlenderMCPServer(
         A response that cannot be serialized, such as one holding a
         `mathutils.Vector`, would otherwise send nothing and leave the client
         waiting out its timeout. The client gets a generic error and the
-        traceback goes to Blender's console, since scene data, paths and
+        traceback goes to Blender's log, since scene data, paths and
         tracebacks must not reach a client.
 
         Args:
@@ -1097,8 +1657,7 @@ class BlenderMCPServer(
         try:
             payload = self._encode_frame(response)
         except (TypeError, ValueError):
-            print("Failed to serialize response - sending an error frame instead")
-            traceback.print_exc()
+            logger.exception("A response could not be serialized to JSON - sending an error frame instead")
             return self._error_frame(request_id, "Response could not be serialized to JSON")
 
         if len(payload) > self._MAX_MESSAGE_BYTES:
@@ -1191,9 +1750,9 @@ class BlenderMCPServer(
         """
         command, request_id, error = parse_command_frame(line)
         if command is None:
-            # The console gets the length the client-safe message cannot carry;
-            # the payload itself stays out of Blender's log.
-            print(f"Discarding a {len(line)}-byte frame: {error}")
+            # The log gets the length the client-safe message cannot carry; the
+            # payload itself stays out of it.
+            logger.warning("Discarding a %d-byte frame: %s", len(line), error)
             self._send_protocol_error(client, request_id, error)
             return
 
@@ -1203,7 +1762,7 @@ class BlenderMCPServer(
         #
         # Stamp at enqueue, the last point where the command's database is known.
         self._stamp_session(command)
-        print(f"Queued command: {command.get('type')}")
+        logger.debug("Queued command: %s", command.get("type"))
         try:
             self.command_queue.put_nowait((command, client))
         except queue.Full:
@@ -1217,7 +1776,7 @@ class BlenderMCPServer(
             client: Value for client.
 
         """
-        print("Client handler started")
+        logger.debug("Client handler started")
         # A finite timeout keeps this loop responsive to self.running instead
         # of parking in recv() forever.
         client.settimeout(self._CLIENT_SOCKET_TIMEOUT_SECONDS)
@@ -1232,7 +1791,7 @@ class BlenderMCPServer(
                 try:
                     data = client.recv(8192)
                     if not data:
-                        print("Client disconnected")
+                        logger.info("Client disconnected")
                         break
 
                     frames, buffer, must_drop = extract_frames(buffer + data, self._MAX_MESSAGE_BYTES)
@@ -1242,9 +1801,9 @@ class BlenderMCPServer(
                         # Either a single frame or an unterminated remainder
                         # went past the cap; both are protocol violations, and
                         # the frames above arrived intact and are still queued.
-                        print(
-                            f"Client sent a frame, or an unterminated message, over the "
-                            f"{self._MAX_MESSAGE_BYTES}-byte limit - disconnecting"
+                        logger.warning(
+                            "Client sent a frame, or an unterminated message, over the %d-byte limit - disconnecting",
+                            self._MAX_MESSAGE_BYTES,
                         )
                         break
                 except TimeoutError:
@@ -1256,17 +1815,17 @@ class BlenderMCPServer(
                     # `_PAST_BUDGET_SEND_TIMEOUT_SECONDS`); this branch keeps
                     # it from being fatal if something else does.
                     continue
-                except Exception as e:
-                    print(f"Error receiving data: {e!s}")
+                except Exception:
+                    logger.exception("Could not receive from a client - dropping the connection")
                     break
-        except Exception as e:
-            print(f"Error in client handler: {e!s}")
+        except Exception:
+            logger.exception("Client handler failed - dropping the connection")
         finally:
             with self._clients_lock:
                 self._clients.pop(client, None)
             with suppress(Exception):
                 client.close()
-            print("Client handler stopped")
+            logger.debug("Client handler stopped")
 
     def execute_command(self, command):
         """
@@ -1282,458 +1841,66 @@ class BlenderMCPServer(
         try:
             return self.execute_command_internal(command)
         except Exception as e:
-            print(f"Error executing command: {e!s}")
-            traceback.print_exc()
+            logger.exception("Command %s failed outside its handler", command.get("type"))
             return {"status": "error", "message": str(e)}
 
-    def _build_command_handlers(self):
+    def _provider_gates(self) -> tuple[bool, ...]:
         """
-        Build the cmd_type -> handler map, including conditionally-enabled providers.
-
-        Shared by execute_command_internal (dispatch) and get_addon_info
-        (advertised capabilities), so the two can never drift apart.
+        Read the open .blend's provider flags, in `_PROVIDER_SCENE_FLAGS` order.
 
         Returns:
-            Result produced by the operation.
+            tuple[bool, ...]: One flag per provider; also the key the handler map
+            is memoized under, since it is the only thing the map varies with.
 
         """
-        # Base handlers that are always available
-        handlers = {
-            "list_scene_objects": self.list_scene_objects,
-            "get_addon_info": self.get_addon_info,
-            "get_session_info": self.get_session_info,
-            "open_shot": self.open_shot,
-            "save_shot": self.save_shot,
-            "reset_session": self.reset_session,
-            "link_canon_library": self.link_canon_library,
-            "create_override": self.create_override,
-            "list_libraries": self.list_libraries,
-            "inspect_delivery": self.inspect_delivery,
-            "reload_library": self.reload_library,
-            "relocate_library": self.relocate_library,
-            "unlink_libraries": self.unlink_libraries,
-            "get_object_info": self.get_object_info,
-            "get_mesh_data": self.get_mesh_data,
-            "inspect_animation": self.inspect_animation,
-            "manage_animation_action": self.manage_animation_action,
-            "edit_keyframes": self.edit_keyframes,
-            "set_action_cycle": self.set_action_cycle,
-            "bake_evaluated_animation": self.bake_evaluated_animation,
-            "manage_nla_tracks": self.manage_nla_tracks,
-            "manage_animation_driver": self.manage_animation_driver,
-            "list_procedural_systems": self.list_procedural_systems,
-            "get_geometry_node_graph": self.get_geometry_node_graph,
-            "get_geometry_node_type_info": self.get_geometry_node_type_info,
-            "create_geometry_node_group": self.create_geometry_node_group,
-            "attach_geometry_nodes_modifier": self.attach_geometry_nodes_modifier,
-            "edit_node_group_interface": self.edit_node_group_interface,
-            "patch_geometry_node_graph": self.patch_geometry_node_graph,
-            "set_geometry_nodes_inputs": self.set_geometry_nodes_inputs,
-            "manage_geometry_nodes_modifier": self.manage_geometry_nodes_modifier,
-            "copy_geometry_node_group": self.copy_geometry_node_group,
-            "evaluate_procedural_geometry": self.evaluate_procedural_geometry,
-            "validate_geometry_node_graph": self.validate_geometry_node_graph,
-            "create_procedural_scatter": self.create_procedural_scatter,
-            "create_curve_generator": self.create_curve_generator,
-            "create_procedural_array": self.create_procedural_array,
-            "create_surface_paneling": self.create_surface_paneling,
-            "create_procedural_boolean": self.create_procedural_boolean,
-            "create_procedural_deformer": self.create_procedural_deformer,
-            "create_volume_generator": self.create_volume_generator,
-            "manage_named_attributes": self.manage_named_attributes,
-            "manage_procedural_instances": self.manage_procedural_instances,
-            "run_geometry_nodes_tool": self.run_geometry_nodes_tool,
-            "publish_procedural_asset": self.publish_procedural_asset,
-            "create_repeat_zone": self.create_repeat_zone,
-            "create_simulation_zone": self.create_simulation_zone,
-            "manage_geometry_nodes_bake": self.manage_geometry_nodes_bake,
-            "realize_procedural_output": self.realize_procedural_output,
-            "analyze_procedural_performance": self.analyze_procedural_performance,
-            "get_viewport_screenshot": self.get_viewport_screenshot,
-            "create_geometry_object": self.create_geometry_object,
-            "set_object_transform": self.set_object_transform,
-            "set_scene_frame": self.set_scene_frame,
-            "duplicate_or_instance_objects": self.duplicate_or_instance_objects,
-            "manage_scene_collections": self.manage_scene_collections,
-            "manage_object_hierarchy": self.manage_object_hierarchy,
-            "manage_object_constraints": self.manage_object_constraints,
-            "manage_modifiers": self.manage_modifiers,
-            "remove_scene_objects": self.remove_scene_objects,
-            "reset_scene": self.reset_scene,
-            "validate_scene": self.validate_scene,
-            "inspect_render_setup": self.inspect_render_setup,
-            "configure_render_settings": self.configure_render_settings,
-            "get_scene_physics_info": self.get_scene_physics_info,
-            "configure_scene_physics": self.configure_scene_physics,
-            "keyframe_object_transform": self.keyframe_object_transform,
-            "manage_view_layers": self.manage_view_layers,
-            "plan_render_animation": self.plan_render_animation,
-            "render_scene": self.render_scene,
-            "inspect_render_output": self.inspect_render_output,
-            "get_polyhaven_status": self.get_polyhaven_status,
-            "get_sketchfab_status": self.get_sketchfab_status,
-            "create_primitive": self.create_primitive,
-            "mesh_extrude": self.mesh_extrude,
-            "mesh_inset": self.mesh_inset,
-            "mesh_bevel": self.mesh_bevel,
-            "mesh_bridge": self.mesh_bridge,
-            "mesh_boolean": self.mesh_boolean,
-            "mesh_subdivide": self.mesh_subdivide,
-            "mesh_remesh": self.mesh_remesh,
-            "mesh_solidify": self.mesh_solidify,
-            "mesh_symmetrize": self.mesh_symmetrize,
-            "create_retopology_target": self.create_retopology_target,
-            "inspect_retopology": self.inspect_retopology,
-            "analyze_surface_conformity": self.analyze_surface_conformity,
-            "manage_retopology_checkpoint": self.manage_retopology_checkpoint,
-            "configure_surface_projection": self.configure_surface_projection,
-            "project_mesh_elements": self.project_mesh_elements,
-            "build_quad_patch": self.build_quad_patch,
-            "extend_boundary": self.extend_boundary,
-            "fill_boundary_quads": self.fill_boundary_quads,
-            "reroute_topology": self.reroute_topology,
-            "relax_topology": self.relax_topology,
-            "redistribute_edge_loop": self.redistribute_edge_loop,
-            "configure_retopology_symmetry": self.configure_retopology_symmetry,
-            "validate_retopology": self.validate_retopology,
-            "create_retopology_guides": self.create_retopology_guides,
-            "create_surface_section": self.create_surface_section,
-            "set_retopology_features": self.set_retopology_features,
-            "add_support_loops": self.add_support_loops,
-            "transfer_mesh_attributes": self.transfer_mesh_attributes,
-            "unwrap_retopology_uvs": self.unwrap_retopology_uvs,
-            "create_bake_cage": self.create_bake_cage,
-            "bake_retopology_maps": self.bake_retopology_maps,
-            "test_deformation": self.test_deformation,
-            "generate_quadriflow_draft": self.generate_quadriflow_draft,
-            "fit_surface_primitive": self.fit_surface_primitive,
-            "bind_surface_deformation": self.bind_surface_deformation,
-            "generate_retopology_lods": self.generate_retopology_lods,
-            "copy_object_transform": self.copy_object_transform,
-            "add_radial_array_modifier": self.add_radial_array_modifier,
-            "set_viewport_overlay": self.set_viewport_overlay,
-            "clear_materials": self.clear_materials,
-            "clear_vertex_groups": self.clear_vertex_groups,
-            "clear_edge_marks": self.clear_edge_marks,
-            "sync_data_name": self.sync_data_name,
-            "get_character_rig_info": self.get_character_rig_info,
-            "get_skinning_info": self.get_skinning_info,
-            "create_armature": self.create_armature,
-            "patch_armature_bones": self.patch_armature_bones,
-            "mirror_armature_bones": self.mirror_armature_bones,
-            "manage_bone_collections": self.manage_bone_collections,
-            "configure_armature_bones": self.configure_armature_bones,
-            "bind_mesh_to_armature": self.bind_mesh_to_armature,
-            "set_skin_weights": self.set_skin_weights,
-            "clean_skin_weights": self.clean_skin_weights,
-            "add_pose_bone_constraint": self.add_pose_bone_constraint,
-            "validate_character_rig": self.validate_character_rig,
-            "transfer_skin_weights": self.transfer_skin_weights,
-            "create_ik_chain": self.create_ik_chain,
-            "create_ik_fk_limb": self.create_ik_fk_limb,
-            "create_spline_ik_rig": self.create_spline_ik_rig,
-            "configure_bendy_bones": self.configure_bendy_bones,
-            "create_rig_property_driver": self.create_rig_property_driver,
-            "assign_bone_custom_shapes": self.assign_bone_custom_shapes,
-            "list_character_bones": self.list_character_bones,
-            "set_character_pose": self.set_character_pose,
-            "keyframe_character_pose": self.keyframe_character_pose,
-            "solve_bone_reach": self.solve_bone_reach,
-            "keyframe_bone_reach": self.keyframe_bone_reach,
-            "create_shape_key_controls": self.create_shape_key_controls,
-            "get_rigid_body_scene_info": self.get_rigid_body_scene_info,
-            "get_rigid_body_object_info": self.get_rigid_body_object_info,
-            "get_rigid_body_constraint_info": self.get_rigid_body_constraint_info,
-            "configure_rigid_body_world": self.configure_rigid_body_world,
-            "add_rigid_bodies": self.add_rigid_bodies,
-            "configure_rigid_bodies": self.configure_rigid_bodies,
-            "set_rigid_body_mass": self.set_rigid_body_mass,
-            "set_rigid_body_collision_layers": self.set_rigid_body_collision_layers,
-            "create_rigid_body_collision_proxy": self.create_rigid_body_collision_proxy,
-            "create_rigid_body_constraint": self.create_rigid_body_constraint,
-            "configure_rigid_body_constraint": self.configure_rigid_body_constraint,
-            "validate_rigid_body_setup": self.validate_rigid_body_setup,
-            "remove_rigid_body_components": self.remove_rigid_body_components,
-            "animate_rigid_body_release": self.animate_rigid_body_release,
-            "create_compound_rigid_body": self.create_compound_rigid_body,
-            "create_rigid_body_constraint_network": self.create_rigid_body_constraint_network,
-            "prepare_fracture_rigid_bodies": self.prepare_fracture_rigid_bodies,
-            "create_rigid_body_chain": self.create_rigid_body_chain,
-            "setup_animated_passive_collider": self.setup_animated_passive_collider,
-            "configure_rigid_body_force_fields": self.configure_rigid_body_force_fields,
-            "sample_rigid_body_simulation": self.sample_rigid_body_simulation,
-            "manage_rigid_body_cache": self.manage_rigid_body_cache,
-            "bake_rigid_bodies_to_keyframes": self.bake_rigid_bodies_to_keyframes,
-            "create_rigid_body_debris_field": self.create_rigid_body_debris_field,
-            "create_rigid_body_proxy_rig": self.create_rigid_body_proxy_rig,
-            "create_ragdoll_rig": self.create_ragdoll_rig,
-            "bake_ragdoll_to_armature": self.bake_ragdoll_to_armature,
-            "export_rigid_body_animation": self.export_rigid_body_animation,
-            "analyze_rigid_body_performance": self.analyze_rigid_body_performance,
-            "get_cloth_simulation_info": self.get_cloth_simulation_info,
-            "get_cloth_object_info": self.get_cloth_object_info,
-            "get_liquid_simulation_info": self.get_liquid_simulation_info,
-            "get_fluid_object_info": self.get_fluid_object_info,
-            "inspect_fluid_simulation": self.inspect_fluid_simulation,
-            "create_fluid_domain": self.create_fluid_domain,
-            "configure_fluid_solver": self.configure_fluid_solver,
-            "add_fluid_flow": self.add_fluid_flow,
-            "add_fluid_effector": self.add_fluid_effector,
-            "manage_fluid_cache": self.manage_fluid_cache,
-            "get_camera_rig_info": self.get_camera_rig_info,
-            "create_camera": self.create_camera,
-            "configure_camera": self.configure_camera,
-            "set_scene_camera": self.set_scene_camera,
-            "point_camera_at": self.point_camera_at,
-            "create_camera_target": self.create_camera_target,
-            "frame_camera_on_objects": self.frame_camera_on_objects,
-            "create_orbit_camera_rig": self.create_orbit_camera_rig,
-            "create_dolly_camera_rig": self.create_dolly_camera_rig,
-            "create_crane_camera_rig": self.create_crane_camera_rig,
-            "create_camera_path_rig": self.create_camera_path_rig,
-            "configure_camera_dof": self.configure_camera_dof,
-            "keyframe_camera_rig": self.keyframe_camera_rig,
-            "set_camera_interpolation": self.set_camera_interpolation,
-            "create_focus_pull": self.create_focus_pull,
-            "create_dolly_zoom": self.create_dolly_zoom,
-            "add_camera_shake": self.add_camera_shake,
-            "create_camera_markers": self.create_camera_markers,
-            "match_camera_transform": self.match_camera_transform,
-            "duplicate_camera_rig": self.duplicate_camera_rig,
-            "add_camera_constraint": self.add_camera_constraint,
-            "configure_camera_render_gate": self.configure_camera_render_gate,
-            "validate_camera_rig": self.validate_camera_rig,
-            "list_lights": self.list_lights,
-            "inspect_light": self.inspect_light,
-            "inspect_lighting_setup": self.inspect_lighting_setup,
-            "validate_lighting_setup": self.validate_lighting_setup,
-            "create_light": self.create_light,
-            "configure_light": self.configure_light,
-            "aim_light": self.aim_light,
-            "configure_light_linking": self.configure_light_linking,
-            "create_studio_lighting": self.create_studio_lighting,
-            "configure_world_background": self.configure_world_background,
-            "configure_hdri_environment": self.configure_hdri_environment,
-            "configure_procedural_sky": self.configure_procedural_sky,
-            "configure_lighting_quality": self.configure_lighting_quality,
-            "configure_color_management": self.configure_color_management,
-            "render_lighting_preview": self.render_lighting_preview,
-            "list_materials": self.list_materials,
-            "inspect_material": self.inspect_material,
-            "get_shader_node_type_info": self.get_shader_node_type_info,
-            "patch_shader_graph": self.patch_shader_graph,
-            "create_pbr_material": self.create_pbr_material,
-            "configure_pbr_material": self.configure_pbr_material,
-            "assign_material": self.assign_material,
-            "configure_texture_mapping": self.configure_texture_mapping,
-            "list_texture_images": self.list_texture_images,
-            "load_texture_image": self.load_texture_image,
-            "configure_texture_image": self.configure_texture_image,
-            "apply_pbr_texture_set": self.apply_pbr_texture_set,
-            "save_texture_image": self.save_texture_image,
-            "render_pbr_material_preview": self.render_pbr_material_preview,
-            "manage_uv_maps": self.manage_uv_maps,
-            "set_uv_seams": self.set_uv_seams,
-            "unwrap_uvs": self.unwrap_uvs,
-            "optimize_uv_layout": self.optimize_uv_layout,
-            "inspect_uv_layout": self.inspect_uv_layout,
-            "bake_texture_map": self.bake_texture_map,
-            "validate_pbr_asset": self.validate_pbr_asset,
-            "add_cloth_simulation": self.add_cloth_simulation,
-            "configure_cloth_material": self.configure_cloth_material,
-            "configure_cloth_solver": self.configure_cloth_solver,
-            "set_cloth_vertex_weights": self.set_cloth_vertex_weights,
-            "configure_cloth_pinning": self.configure_cloth_pinning,
-            "configure_cloth_collisions": self.configure_cloth_collisions,
-            "add_cloth_collider": self.add_cloth_collider,
-            "configure_cloth_collider": self.configure_cloth_collider,
-            "estimate_cloth_resources": self.estimate_cloth_resources,
-            "validate_cloth_setup": self.validate_cloth_setup,
-            "configure_cloth_sewing": self.configure_cloth_sewing,
-            "configure_cloth_pressure": self.configure_cloth_pressure,
-            "configure_cloth_internal_springs": self.configure_cloth_internal_springs,
-            "configure_cloth_rest_shape": self.configure_cloth_rest_shape,
-            "configure_cloth_field_weights": self.configure_cloth_field_weights,
-            "animate_cloth_parameters": self.animate_cloth_parameters,
-            "create_cloth_attachment": self.create_cloth_attachment,
-            "create_character_cloth_setup": self.create_character_cloth_setup,
-            "sample_cloth_simulation": self.sample_cloth_simulation,
-            "manage_cloth_cache": self.manage_cloth_cache,
-            "remove_cloth_components": self.remove_cloth_components,
-            "create_cloth_proxy_rig": self.create_cloth_proxy_rig,
-            "duplicate_cloth_setup_variant": self.duplicate_cloth_setup_variant,
-            "prepare_cloth_render_surface": self.prepare_cloth_render_surface,
-            "export_cloth_simulation": self.export_cloth_simulation,
-            "analyze_cloth_performance": self.analyze_cloth_performance,
-            "create_liquid_domain": self.create_liquid_domain,
-            "fit_liquid_domain": self.fit_liquid_domain,
-            "configure_liquid_solver": self.configure_liquid_solver,
-            "add_liquid_flow": self.add_liquid_flow,
-            "configure_liquid_flow": self.configure_liquid_flow,
-            "add_liquid_effector": self.add_liquid_effector,
-            "configure_liquid_effector": self.configure_liquid_effector,
-            "configure_liquid_scope_and_boundaries": self.configure_liquid_scope_and_boundaries,
-            "estimate_liquid_resources": self.estimate_liquid_resources,
-            "validate_liquid_setup": self.validate_liquid_setup,
-            "configure_liquid_mesh": self.configure_liquid_mesh,
-            "apply_liquid_quality_profile": self.apply_liquid_quality_profile,
-            "configure_liquid_secondary_particles": self.configure_liquid_secondary_particles,
-            "configure_liquid_diffusion": self.configure_liquid_diffusion,
-            "animate_liquid_flow": self.animate_liquid_flow,
-            "create_liquid_guide": self.create_liquid_guide,
-            "configure_liquid_force_fields": self.configure_liquid_force_fields,
-            "create_liquid_material": self.create_liquid_material,
-            "create_secondary_particle_render_setup": self.create_secondary_particle_render_setup,
-            "sample_liquid_simulation": self.sample_liquid_simulation,
-            "manage_liquid_cache": self.manage_liquid_cache,
-            "remove_fluid_components": self.remove_fluid_components,
-            "create_liquid_proxy_rig": self.create_liquid_proxy_rig,
-            "duplicate_liquid_setup_variant": self.duplicate_liquid_setup_variant,
-            "prepare_liquid_render_mesh": self.prepare_liquid_render_mesh,
-            "export_liquid_simulation": self.export_liquid_simulation,
-            "analyze_liquid_performance": self.analyze_liquid_performance,
-            "setup_liquid_shot": self.setup_liquid_shot,
-            "validate_liquid_result": self.validate_liquid_result,
-        }
+        scene = bpy.context.scene
+        return tuple(bool(getattr(scene, flag, False)) for flag in _PROVIDER_SCENE_FLAGS.values())
 
-        # Add Polyhaven handlers only if enabled
-        if bpy.context.scene.blendermcp_use_polyhaven:
-            polyhaven_handlers = {
-                "get_polyhaven_categories": self.get_polyhaven_categories,
-                "list_polyhaven_assets": self.list_polyhaven_assets,
-                "import_polyhaven_asset": self.import_polyhaven_asset,
-                "apply_polyhaven_texture": self.apply_polyhaven_texture,
-            }
-            handlers.update(polyhaven_handlers)
+    def _build_command_handlers(self) -> Mapping[str, Callable[..., object]]:
+        """
+        Map every dispatchable command name to this server's bound handler.
 
-        # Add Sketchfab handlers only if enabled
-        if bpy.context.scene.blendermcp_use_sketchfab:
-            sketchfab_handlers = {
-                "search_sketchfab_models": self.search_sketchfab_models,
-                "get_sketchfab_model_preview": self.get_sketchfab_model_preview,
-                "import_sketchfab_model": self.import_sketchfab_model,
-            }
-            handlers.update(sketchfab_handlers)
+        Shared by execute_command_internal (dispatch) and get_addon_info
+        (advertised capabilities), so the two can never drift apart. A name is
+        also its handler's attribute name, so `COMMANDS` cannot list a command
+        this class does not implement without `getattr` saying so at once.
 
-        # Add ND (HugeMenace) handlers only if enabled
-        if bpy.context.scene.blendermcp_use_nd:
-            nd_handlers = {
-                "nd_boolean": self.nd_boolean,
-                "nd_mark_as_util": self.nd_mark_as_util,
-                "nd_clean_utils": self.nd_clean_utils,
-                "nd_create_id_material": self.nd_create_id_material,
-                "nd_bulk_create_id_materials": self.nd_bulk_create_id_materials,
-                "nd_set_lod_suffix": self.nd_set_lod_suffix,
-                "nd_single_vertex": self.nd_single_vertex,
-                "nd_apply_modifiers": self.nd_apply_modifiers,
-                "nd_pulse_viewport_toggle": self.nd_pulse_viewport_toggle,
-                "nd_capture_utils": self.nd_capture_utils,
-            }
-            handlers.update(nd_handlers)
+        Memoized per provider-flag combination, because that combination is the
+        only thing the map varies with. Rebuilding ~300 bound methods used to be
+        paid twice per command - once to dispatch it and once for the swap
+        barrier's `_is_dispatchable` - on Blender's main thread, which is the
+        latency `_poll_interval` exists to cut.
 
+        Returns:
+            Mapping[str, Callable[..., object]]: Command name to bound handler,
+            shared and memoized, so a caller must not mutate it.
+
+        """
+        gate = self._provider_gates()
+        handlers = self._handlers_by_gate.get(gate)
+        if handlers is None:
+            enabled_names = (
+                _GATED_COMMAND_NAMES[provider] for provider, on in zip(_PROVIDER_SCENE_FLAGS, gate, strict=True) if on
+            )
+            handlers = {name: getattr(self, name) for name in itertools.chain(_UNGATED_COMMAND_NAMES, *enabled_names)}
+            self._handlers_by_gate[gate] = handlers
         return handlers
 
-    # Commands that never mutate bpy.data, whatever their params. Everything
-    # else gets wrapped in mutation_transaction() - snapshotting/diffing/rolling
-    # back these would just be pointless overhead and undo-stack noise. The
-    # commands that are read-only only for *some* params are in module-level
-    # `_READ_ONLY_WHEN`; `is_read_only_command` reads both.
-    _READ_ONLY_COMMANDS = frozenset(
-        {
-            "list_scene_objects",
-            "get_addon_info",
-            "get_session_info",
-            "list_libraries",
-            "get_object_info",
-            "get_mesh_data",
-            "inspect_animation",
-            "list_procedural_systems",
-            "get_geometry_node_graph",
-            "get_geometry_node_type_info",
-            "evaluate_procedural_geometry",
-            "validate_geometry_node_graph",
-            "analyze_procedural_performance",
-            "get_viewport_screenshot",
-            "get_polyhaven_status",
-            "get_sketchfab_status",
-            "get_nd_status",
-            "get_polyhaven_categories",
-            "list_polyhaven_assets",
-            "search_sketchfab_models",
-            "get_sketchfab_model_preview",
-            "get_cloth_simulation_info",
-            "get_cloth_object_info",
-            "get_camera_rig_info",
-            "get_character_rig_info",
-            "get_skinning_info",
-            "validate_character_rig",
-            "list_character_bones",
-            "get_rigid_body_scene_info",
-            "get_rigid_body_object_info",
-            "get_rigid_body_constraint_info",
-            "validate_rigid_body_setup",
-            "validate_camera_rig",
-            "list_lights",
-            "inspect_light",
-            "inspect_lighting_setup",
-            "validate_lighting_setup",
-            "list_materials",
-            "inspect_material",
-            "get_shader_node_type_info",
-            "list_texture_images",
-            "inspect_uv_layout",
-            "validate_pbr_asset",
-            "estimate_cloth_resources",
-            "validate_cloth_setup",
-            "get_liquid_simulation_info",
-            "get_fluid_object_info",
-            "inspect_fluid_simulation",
-            "estimate_liquid_resources",
-            "validate_liquid_setup",
-            "inspect_retopology",
-            "validate_retopology",
-            "test_deformation",
-            "inspect_render_setup",
-            "plan_render_animation",
-            "inspect_render_output",
-            "get_scene_physics_info",
-            "validate_scene",
-            "inspect_delivery",
-        }
-    )
+    @staticmethod
+    def ping() -> dict[str, bool]:
+        """
+        Answer a liveness check without reading anything out of Blender.
 
-    # Commands that replace Blender's whole database. The drain loop discards
-    # the queue behind them and ends its tick, and `_run_handler` keeps them out
-    # of `mutation_transaction`. `save_shot` is not one: a save replaces no
-    # datablock, so the commands queued behind it are still valid.
-    _SESSION_SWAP_COMMANDS = frozenset({"open_shot", "reset_session"})
+        Deliberately free of `bpy`, and a staticmethod so it stays that way: a
+        successful ping beside a failing command tells the client the transport
+        and the command queue are healthy and the fault is in the data access,
+        which is the only reason this command exists.
 
-    # Commands that replace or free linked datablocks in place. A reload gives
-    # them new session_uids, so a transaction would treat them as created by the
-    # request and delete them on rollback. They skip the transaction but are not
-    # session swaps. `link_canon_library` stays transacted: a failed link must
-    # remove what it added.
-    _DATABLOCK_REPLACING_COMMANDS = frozenset({"reload_library", "relocate_library", "unlink_libraries"})
+        Returns:
+            dict[str, bool]: `{"pong": True}`.
 
-    # Commands after which the drain loop ends its tick, leaving the queue for
-    # the next one. Blender clears `is_dirty` for a save only after the tick
-    # returns, so an edit later in the same tick would lose its dirty flag and
-    # `open_shot`'s unsaved-work guard would let it be thrown away.
-    _TICK_ENDING_COMMANDS = frozenset({"save_shot"})
-
-    # Commands that mutate nothing worth an undo checkpoint: viewport and
-    # capture toggles. Not read-only, so they are not in `_READ_ONLY_COMMANDS`,
-    # but a transaction around them would only add undo-stack noise.
-    _NON_UNDO_COMMANDS = frozenset(
-        {"set_viewport_overlay", "nd_pulse_viewport_toggle", "nd_capture_utils", "set_scene_frame"}
-    )
-
-    # The same, for commands that are only non-undo with some params. A render
-    # writes a file rather than scene state - unless `persist_output` stores its
-    # output template on the scene, which is scene state a rollback must restore.
-    _NON_UNDO_WHEN: Mapping[str, Callable[[Mapping[str, object]], bool]] = {
-        "render_scene": lambda params: not params.get("persist_output", False)
-    }
+        """
+        return {"pong": True}
 
     def execute_command_internal(self, command):
         """
@@ -1749,183 +1916,36 @@ class BlenderMCPServer(
         cmd_type = command.get("type")
         params = command.get("params", {})
 
-        # Trivial liveness check. Touches no bpy data, so a successful ping
-        # alongside a failing command isolates data access from transport.
-        if cmd_type == "ping":
-            return {"status": "success", "result": {"pong": True}}
-
-        # Add a handler for checking PolyHaven status
-        if cmd_type == "get_polyhaven_status":
-            return {"status": "success", "result": self.get_polyhaven_status()}
-
-        # Add a handler for checking ND status
-        if cmd_type == "get_nd_status":
-            return {"status": "success", "result": self.get_nd_status()}
-
-        handlers = self._build_command_handlers()
-
-        handler = handlers.get(cmd_type)
-        if handler:
-            try:
-                print(f"Executing handler for {cmd_type}")
-                result = self._run_handler(cmd_type, handler, params)
-                print("Handler execution complete")
-                return {"status": "success", "result": result}
-            except Exception as e:
-                print(f"Error in handler: {e!s}")
-                traceback.print_exc()
-                return {"status": "error", "message": str(e)}
-        else:
+        handler = self._build_command_handlers().get(cmd_type)
+        if handler is None:
             return {"status": "error", "message": f"Unknown command type: {cmd_type}"}
+        try:
+            logger.debug("Dispatching %s", cmd_type)
+            return {"status": "success", "result": self._run_handler(cmd_type, handler, params)}
+        except Exception as error:
+            logger.exception("Command %s failed in its handler", cmd_type)
+            return {"status": "error", "message": str(error)}
 
-    # Params that name an *existing* object a mutating command touches, so the
-    # transaction can capture that object's state and restore it on failure.
-    # "name" is excluded: in create_primitive it names a new object, not one to
-    # protect.
-    _TARGET_NAME_PARAMS = (
-        "object_name",
-        "camera_name",
-        "light_name",
-        "curve_object_name",
-        "cutter_object_name",
-        "reference_object_name",
-        "target_object_name",
-        "cloth_object_name",
-        "garment_object_name",
-        "armature_object_name",
-        "mesh_object_name",
-        "source_mesh_name",
-        "target_mesh_name",
-        "constraint_object_name",
-        "object1_name",
-        "object2_name",
-        "low_resolution_source_name",
-        "render_object_name",
-        "proxy_object_name",
-        "source_object_name",
-        "destination_name",
-        "movement_object_name",
-        "owner_name",
-        "source_root_name",
-        "root_object_name",
-        "domain_object_name",
-        "guide_object_name",
-        "guide_parent_domain_object_name",
-        "instance_object_name",
-    )
-    _TARGET_NAMES_PARAMS = (
-        "object_names",
-        "camera_names",
-        "body_collider_object_names",
-        "source_object_names",
-        "collider_object_names",
-        "mesh_object_names",
-        "armature_object_names",
-        "body_names",
-        "child_object_names",
-        "piece_object_names",
-    )
-
-    # Commands that edit an existing object's mesh geometry. Only these back up
-    # the mesh datablock (a full copy) so a failed edit can be swapped back;
-    # transform-only commands (e.g. copy_object_transform) skip that cost.
-    _GEOMETRY_MUTATING_COMMANDS = frozenset(
-        {
-            "mesh_extrude",
-            "mesh_inset",
-            "mesh_bevel",
-            "mesh_bridge",
-            "mesh_boolean",
-            "mesh_subdivide",
-            "mesh_remesh",
-            "mesh_solidify",
-            "mesh_symmetrize",
-            "manage_named_attributes",
-            "run_geometry_nodes_tool",
-            "analyze_surface_conformity",
-            "manage_retopology_checkpoint",
-            "configure_surface_projection",
-            "project_mesh_elements",
-            "build_quad_patch",
-            "extend_boundary",
-            "fill_boundary_quads",
-            "reroute_topology",
-            "relax_topology",
-            "redistribute_edge_loop",
-            "set_retopology_features",
-            "add_support_loops",
-            "transfer_mesh_attributes",
-            "unwrap_retopology_uvs",
-            "configure_cloth_sewing",
-            "fit_liquid_domain",
-        }
-    )
-
-    def _resolve_targets(self, params):
+    @staticmethod
+    def _resolve_targets(params):
         """
         Resolve the existing objects a mutating request will touch, from its params.
 
-        Missing objects are skipped (the handler will raise its own clear error);
-        duplicates are collapsed while preserving order.
-
-        Names resolve through `find_object`, as in the handlers, so a rollback
-        restores the objects the handler actually changed. An ambiguous name is
-        skipped like a missing one; the handler's own lookup refuses it.
+        `target_names` decides *which* names a request claims; this decides which
+        of them exist. Missing objects are skipped (the handler will raise its own
+        clear error). Names resolve through `find_object`, as in the handlers, so a
+        rollback restores the objects the handler actually changed. An ambiguous
+        name is skipped like a missing one; the handler's own lookup refuses it.
 
         Args:
             params: The command's params dict.
 
         Returns:
-            list: Existing bpy objects named by the target params.
+            list: Existing bpy objects named by the target params, first mention first.
 
         """
-        names = []
-        for key in self._TARGET_NAME_PARAMS:
-            value = params.get(key)
-            if isinstance(value, str):
-                names.append(value)
-        for key in self._TARGET_NAMES_PARAMS:
-            value = params.get(key)
-            if isinstance(value, (list, tuple)):
-                names.extend(name for name in value if isinstance(name, str))
-        for record in params.get("targets", ()):
-            if isinstance(record, dict) and isinstance(record.get("object_name"), str):
-                names.append(record["object_name"])
-        for record in params.get("fields", ()):
-            if isinstance(record, dict) and isinstance(record.get("object_name"), str):
-                names.append(record["object_name"])
-        for record in params.get("keyframes", ()):
-            if isinstance(record, dict) and isinstance(record.get("object_name"), str):
-                names.append(record["object_name"])
-        for record in params.get("assignments", ()):
-            if not isinstance(record, dict):
-                continue
-            for name_key in ("child_object_name", "parent_object_name"):
-                if isinstance(record.get(name_key), str):
-                    names.append(record[name_key])
-        constraint = params.get("constraint")
-        if isinstance(constraint, dict) and isinstance(constraint.get("target_object_name"), str):
-            names.append(constraint["target_object_name"])
-        for record_key in ("sources", "mappings", "bodies"):
-            for record in params.get(record_key, ()):
-                if not isinstance(record, dict):
-                    continue
-                for name_key in (
-                    "object_name",
-                    "render_object_name",
-                    "proxy_object_name",
-                    "low_resolution_source_name",
-                    "convex_source_object_name",
-                ):
-                    if isinstance(record.get(name_key), str):
-                        names.append(record[name_key])
-
         objects = []
-        seen = set()
-        for name in names:
-            if name in seen:
-                continue
-            seen.add(name)
+        for name in target_names(params):
             try:
                 obj = find_object(bpy.data.objects, name)
             except ValueError:
@@ -1934,14 +1954,33 @@ class BlenderMCPServer(
                 objects.append(obj)
         return objects
 
+    @staticmethod
+    def command_spec(cmd_type: object) -> CommandSpec:
+        """
+        Read one command's row out of the registry.
+
+        An unregistered name gets `_UNCLASSIFIED`, whose every answer is the safe
+        one, so a classification question about a command this add-on cannot
+        dispatch can never be answered "skip the transaction".
+
+        Args:
+            cmd_type: The command name from the frame; any type, since it arrives
+                from a client.
+
+        Returns:
+            CommandSpec: That command's classification.
+
+        """
+        return COMMANDS.get(cmd_type, _UNCLASSIFIED) if isinstance(cmd_type, str) else _UNCLASSIFIED
+
     def is_read_only_command(self, cmd_type: str, params: Mapping[str, object]) -> bool:
         """
         Report whether this call reads bpy.data without changing it.
 
-        Two tables answer it: `_READ_ONLY_COMMANDS`, for commands that never
-        mutate, and `_READ_ONLY_WHEN`, for the ones whose params decide (an
-        `INSPECT` cache call, a dry-run sewing preview, a conformity analysis
-        asked for no heat map). Pure: it reads frozen tables and the params.
+        Two fields of the command's spec answer it: `read_only`, for commands that
+        never mutate, and `read_only_when`, for the ones whose params decide (an
+        `INSPECT` cache call, a dry-run sewing preview, a conformity analysis asked
+        for no heat map). Pure: it reads the registry and the params.
 
         Args:
             cmd_type: The MCP command type.
@@ -1951,10 +1990,8 @@ class BlenderMCPServer(
             bool: True when the call mutates nothing.
 
         """
-        if cmd_type in self._READ_ONLY_COMMANDS:
-            return True
-        reads_only_with = _READ_ONLY_WHEN.get(cmd_type)
-        return reads_only_with is not None and reads_only_with(params)
+        spec = self.command_spec(cmd_type)
+        return spec.read_only or (spec.read_only_when is not None and spec.read_only_when(params))
 
     def bypasses_transaction(self, cmd_type: str, params: Mapping[str, object]) -> bool:
         """
@@ -1975,23 +2012,18 @@ class BlenderMCPServer(
             bool: True when the handler runs unwrapped.
 
         """
-        skips_undo = self._NON_UNDO_WHEN.get(cmd_type)
+        spec = self.command_spec(cmd_type)
         return (
             self.is_read_only_command(cmd_type, params)
-            or cmd_type in self._NON_UNDO_COMMANDS
-            or (skips_undo is not None and skips_undo(params))
-            or cmd_type in self._SESSION_SWAP_COMMANDS
-            or cmd_type in self._DATABLOCK_REPLACING_COMMANDS
+            or spec.non_undo
+            or (spec.non_undo_when is not None and spec.non_undo_when(params))
+            or spec.session_swap
+            or spec.datablock_replacing
         )
 
     def _run_handler(self, cmd_type, handler, params):
         """
         Call a resolved handler, wrapping mutating commands in mutation_transaction.
-
-        A handler that reports failure by returning a failure shape (rather than
-        raising) is converted to a HandlerReportedError inside the transaction,
-        so its partial mutation rolls back instead of being committed. On
-        success, any undo-unavailability warning is merged into the result.
 
         Args:
             cmd_type: The MCP command type, used to pick read-only vs. mutating dispatch.
@@ -2006,21 +2038,44 @@ class BlenderMCPServer(
             return handler(**params)
 
         targets = self._resolve_targets(params)
-        capture_geometry = cmd_type in self._GEOMETRY_MUTATING_COMMANDS
-        with mutation_transaction(cmd_type, targets, capture_geometry) as txn:
-            result = handler(**params)
-            if isinstance(result, dict) and result.get("cancelled"):
-                txn.finish_without_checkpoint()
-                return result
-            failure = _handler_failure_message(result)
-            if failure is not None:
-                raise HandlerReportedError(failure)
-            unreferenced = unreferenced_warning(txn.unreferenced_created())
-            authored.record(txn.created_datablocks())
-            notices = [note for note in (txn.commit(), unreferenced) if note]
-            if notices and isinstance(result, dict):
-                result = {**result, "warnings": [*result.get("warnings", []), *notices]}
+        with mutation_transaction(cmd_type, targets, self.command_spec(cmd_type).geometry) as txn:
+            return self._finish_transaction(txn, handler(**params))
+
+    @staticmethod
+    def _finish_transaction(txn, result):
+        """
+        Settle a transaction the handler has already run inside, by what it returned.
+
+        A handler that reports failure by *returning* a failure shape rather than
+        raising is converted to a HandlerReportedError here, still inside the
+        transaction, so its partial mutation rolls back instead of being committed
+        and pushing an undo checkpoint. A cancelled outcome is neither: nothing
+        happened, so nothing is checkpointed.
+
+        Args:
+            txn: The open transaction wrapping this command.
+            result: What the handler returned.
+
+        Returns:
+            The handler's result, with any undo-unavailability and unreferenced-
+            datablock warnings merged in.
+
+        Raises:
+            HandlerReportedError: When `result` is a failure shape.
+
+        """
+        if isinstance(result, dict) and result.get("cancelled"):
+            txn.finish_without_checkpoint()
             return result
+        failure = _handler_failure_message(result)
+        if failure is not None:
+            raise HandlerReportedError(failure)
+        unreferenced = unreferenced_warning(txn.unreferenced_created())
+        authored.record(txn.created_datablocks())
+        notices = [note for note in (txn.commit(), unreferenced) if note]
+        if notices and isinstance(result, dict):
+            return {**result, "warnings": [*result.get("warnings", []), *notices]}
+        return result
 
     def get_addon_info(self):
         """
@@ -2043,7 +2098,7 @@ class BlenderMCPServer(
             "name": bl_info.get("name", "Blender MCP"),
             "addon_version": list(bl_info.get("version", (0, 0))),
             "protocol_version": ADDON_PROTOCOL_VERSION,
-            "capabilities": sorted({"ping", "get_polyhaven_status", "get_nd_status", *handlers}),
+            "capabilities": sorted(handlers),
             "capability_params": capability_params(handlers),
             "blender_version": bpy.app.version_string,
             "writable_output_roots": self._writable_output_roots(),
@@ -2116,7 +2171,6 @@ class BlenderMCPServer(
 
         """
         try:
-            print("Getting scene info...")
             scene_objects = sorted(bpy.context.scene.objects, key=lambda item: item.name.casefold())
             total = len(scene_objects)
             start, end, truncated, next_offset = paginate(total, offset, limit, self._SCENE_INFO_MAX_LIMIT)
@@ -2164,11 +2218,10 @@ class BlenderMCPServer(
                 "next_offset": next_offset,
             }
 
-            print(f"Scene info collected: {len(objects)} of {total} objects")
+            logger.debug("Scene info collected: %d of %d objects", len(objects), total)
             return scene_info
         except Exception as e:
-            print(f"Error in list_scene_objects: {e!s}")
-            traceback.print_exc()
+            logger.exception("list_scene_objects failed")
             return {"error": str(e)}
 
     @staticmethod

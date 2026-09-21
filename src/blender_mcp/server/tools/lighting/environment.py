@@ -1,7 +1,5 @@
 """Typed MCP tools for world background, HDRI, and procedural-sky lighting."""
 
-import asyncio
-
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -10,7 +8,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field, model_validator
 
 from ...app import mcp
-from ._shared import StrictLightingInput, TargetEngine, call_blender, dump_input
+from .._dispatch import call_blender
+from ._shared import StrictLightingInput, TargetEngine, dump_input
 
 
 class ProceduralSkySettings(StrictLightingInput):
@@ -65,8 +64,7 @@ async def configure_world_background(
         raise ToolError("color channels must be in [0, 1]")
     if create_world and not world_name:
         raise ToolError("world_name is required when create_world is true")
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "configure_world_background",
         {
             "scene_name": scene_name,
@@ -108,8 +106,7 @@ async def configure_hdri_environment(
         raise ToolError("image_path must use .hdr or .exr")
     if create_world and not world_name:
         raise ToolError("world_name is required when create_world is true")
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "configure_hdri_environment",
         {
             "scene_name": scene_name,
@@ -150,8 +147,7 @@ async def configure_procedural_sky(
         raise ToolError("sun_name is required when sync_sun is true")
     if create_world and not world_name:
         raise ToolError("world_name is required when create_world is true")
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "configure_procedural_sky",
         {
             "scene_name": scene_name,

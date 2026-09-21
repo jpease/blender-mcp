@@ -1,7 +1,5 @@
 """Material inventory, authoring, assignment, mapping, and texture-set tools."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
@@ -9,8 +7,9 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field, model_validator
 
 from ...app import mcp
+from .._dispatch import call_blender
 from .._node_graph import NodeGraphEdit
-from ._shared import StrictTextureInput, TargetEngine, absolute_path, call_blender, explicit_fields
+from ._shared import StrictTextureInput, TargetEngine, absolute_path, explicit_fields
 
 MaterialPreset = Literal["WATER", "GLASS", "OIL", "TINTED"]
 
@@ -135,7 +134,7 @@ async def list_materials(
     is true. This intentionally summarizes graphs; use `inspect_material` for nodes and links.
     """
     params = {k: v for k, v in locals().items() if k != "ctx"}
-    return await asyncio.to_thread(call_blender, "list_materials", params)
+    return await call_blender("list_materials", params)
 
 
 @mcp.tool()
@@ -154,7 +153,7 @@ async def inspect_material(
     names. Pagination for nodes and links is independent. This tool never evaluates or edits pixels.
     """
     params = {k: v for k, v in locals().items() if k != "ctx"}
-    return await asyncio.to_thread(call_blender, "inspect_material", params)
+    return await call_blender("inspect_material", params)
 
 
 @mcp.tool()
@@ -173,8 +172,7 @@ async def get_shader_node_type_info(
     in a disposable Material, World, or Light graph so dynamic sockets and target compatibility are
     measured rather than inferred from another Blender version.
     """
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "get_shader_node_type_info",
         {
             "target_type": target_type,
@@ -204,8 +202,7 @@ async def patch_shader_graph(
     Set ``enable_nodes=True`` only when the target does not already use nodes. The resulting graph
     must retain the target's appropriate Material, World, or Light output node.
     """
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "patch_shader_graph",
         {
             "target": target.model_dump(),
@@ -239,7 +236,7 @@ async def create_pbr_material(
         "settings": explicit_fields(settings),
         "reuse_existing": reuse_existing,
     }
-    return await asyncio.to_thread(call_blender, "create_pbr_material", params)
+    return await call_blender("create_pbr_material", params)
 
 
 @mcp.tool()
@@ -255,10 +252,8 @@ async def configure_pbr_material(
     values = explicit_fields(patch)
     if not values:
         raise ToolError("Provide at least one material setting")
-    return await asyncio.to_thread(
-        call_blender,
-        "configure_pbr_material",
-        {"material_name": material_name, "patch": values, "target_engine": target_engine},
+    return await call_blender(
+        "configure_pbr_material", {"material_name": material_name, "patch": values, "target_engine": target_engine}
     )
 
 
@@ -284,7 +279,7 @@ async def assign_material(
     if mode == "ASSIGN_FACES" and face_indices is None:
         raise ToolError("face_indices is required for ASSIGN_FACES")
     params = {k: v for k, v in locals().items() if k != "ctx"}
-    return await asyncio.to_thread(call_blender, "assign_material", params, object_names)
+    return await call_blender("assign_material", params, changed_objects=object_names)
 
 
 @mcp.tool()
@@ -299,8 +294,7 @@ async def configure_texture_mapping(
     """
     if not texture_node_names:
         raise ToolError("texture_node_names must not be empty")
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "configure_texture_mapping",
         {
             "material_name": material_name,
@@ -340,4 +334,4 @@ async def apply_pbr_texture_set(
         "ao_display_strength": ao_display_strength,
         "reuse_existing_images": reuse_existing_images,
     }
-    return await asyncio.to_thread(call_blender, "apply_pbr_texture_set", params)
+    return await call_blender("apply_pbr_texture_set", params)

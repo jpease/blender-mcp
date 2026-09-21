@@ -1,14 +1,12 @@
 """Agent-facing discovery, graph inspection, evaluation, and validation tools."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import call_geometry_nodes
+from .._dispatch import call_blender
 
 
 @mcp.tool()
@@ -25,10 +23,8 @@ async def list_procedural_systems(
     asset/library state, execution-role flags, interface summaries, and MCP ownership tags.
     Continue with ``next_offset`` while ``truncated`` is true.
     """
-    return await asyncio.to_thread(
-        call_geometry_nodes,
-        "list_procedural_systems",
-        {"limit": limit, "offset": offset, "include_orphans": include_orphans},
+    return await call_blender(
+        "list_procedural_systems", {"limit": limit, "offset": offset, "include_orphans": include_orphans}
     )
 
 
@@ -46,8 +42,7 @@ async def get_geometry_node_graph(
     Request only the sections needed for the next edit. Node and socket display names are
     descriptive only; use returned identifiers and indices when preparing a graph patch.
     """
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "get_geometry_node_graph",
         {"node_group_name": node_group_name, "sections": sections, "limit": limit, "offset": offset},
     )
@@ -71,8 +66,7 @@ async def get_geometry_node_type_info(
     """
     if bl_idname is None and search is None and category is None:
         search = ""
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "get_geometry_node_type_info",
         {
             "bl_idname": bl_idname,
@@ -97,10 +91,8 @@ async def evaluate_procedural_geometry(
     Returns world-space bounds, mesh counts, materials, named attributes, component limits,
     and a bounded dependency-graph instance summary at the requested frame.
     """
-    return await asyncio.to_thread(
-        call_geometry_nodes,
-        "evaluate_procedural_geometry",
-        {"object_name": object_name, "frame": frame, "instance_limit": instance_limit},
+    return await call_blender(
+        "evaluate_procedural_geometry", {"object_name": object_name, "frame": frame, "instance_limit": instance_limit}
     )
 
 
@@ -118,8 +110,7 @@ async def validate_geometry_node_graph(
     socket, modifier, or object plus a concrete remediation. A clean evaluation is not claimed
     as artistic correctness.
     """
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "validate_geometry_node_graph",
         {
             "node_group_name": node_group_name,

@@ -1,14 +1,13 @@
 """Deterministic rigid-body debris generation tools."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .inspection_and_setup import RigidBodySettingsPatch, Vector3, _call, mcp
+from .._dispatch import call_blender
+from .inspection_and_setup import RigidBodySettingsPatch, Vector3, mcp
 
 
 class DebrisSourceSpec(BaseModel):
@@ -117,8 +116,7 @@ async def create_rigid_body_debris_field(
     if settings is not None and settings.type not in {None, "ACTIVE"}:
         raise ToolError("Debris settings.type must be ACTIVE when supplied")
     payload = settings.model_dump(exclude_none=True, exclude_unset=True) if settings else {}
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_rigid_body_debris_field",
         {
             "scene_name": scene_name,
@@ -136,5 +134,5 @@ async def create_rigid_body_debris_field(
             "settings": payload,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
-        source_names,
+        changed_objects=source_names,
     )

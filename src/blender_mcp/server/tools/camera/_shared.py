@@ -1,16 +1,8 @@
-"""Shared plumbing and cross-file types for the camera tool package."""
-
-import logging
+"""Shared validation models and cross-file types for the camera tool package."""
 
 from typing import Literal
 
-from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict
-
-from ...connection import get_blender_connection
-from ..envelope import envelope_for
-
-logger = logging.getLogger("BlenderMCPServer")
 
 TrackAxis = Literal[
     "TRACK_X",
@@ -44,12 +36,3 @@ def _dump(model: BaseModel | None) -> dict | None:
 def _tool_params(values: dict) -> dict:
     """Remove FastMCP's context-only argument from a local tool payload."""
     return {key: value for key, value in values.items() if key != "ctx"}
-
-
-def _call(command: str, params: dict, changed_objects: list[str] | None = None) -> dict:
-    try:
-        result = get_blender_connection().send_command(command, params)
-    except Exception as exc:
-        logger.error("Error running %s: %s", command, exc)
-        raise ToolError(f"Error running {command}: {exc}") from exc
-    return envelope_for(result, changed_objects=changed_objects or ())

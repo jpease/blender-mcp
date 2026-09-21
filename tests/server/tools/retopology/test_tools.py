@@ -6,9 +6,9 @@ import pytest
 
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import mesh
+from blender_mcp.server.tools import _dispatch, mesh
 from blender_mcp.server.tools.envelope import STALE_INDEX_WARNING
-from blender_mcp.server.tools.retopology import _shared, advanced, construction, editing, production, quality, target
+from blender_mcp.server.tools.retopology import advanced, construction, editing, production, quality, target
 
 RETOPOLOGY_TOOL_NAMES = {
     "create_retopology_target",
@@ -86,7 +86,7 @@ def test_all_retopology_tools_are_registered() -> None:
 )
 def test_retopology_tools_forward_without_context(monkeypatch, tool, command, kwargs) -> None:
     connection = StubConnection()
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = asyncio.run(tool(ctx=None, **kwargs))
 
@@ -97,7 +97,7 @@ def test_retopology_tools_forward_without_context(monkeypatch, tool, command, kw
 
 def test_configure_projection_forwards_exact_modifier_controls(monkeypatch) -> None:
     connection = StubConnection()
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = asyncio.run(
         editing.configure_surface_projection(
@@ -119,7 +119,7 @@ def test_configure_projection_forwards_exact_modifier_controls(monkeypatch) -> N
 
 def test_topology_builders_warn_that_indices_are_stale(monkeypatch) -> None:
     connection = StubConnection()
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = asyncio.run(
         construction.build_quad_patch(
@@ -136,7 +136,7 @@ def test_topology_builders_warn_that_indices_are_stale(monkeypatch) -> None:
 
 def test_mesh_bridge_sends_separate_loop_and_revision_inputs(monkeypatch) -> None:
     connection = StubConnection()
-    monkeypatch.setattr(mesh, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = asyncio.run(
         mesh.mesh_bridge(
@@ -162,7 +162,7 @@ def test_mesh_bridge_sends_separate_loop_and_revision_inputs(monkeypatch) -> Non
 
 def test_checkpoint_create_reports_hidden_backup_as_changed_object(monkeypatch) -> None:
     connection = StubConnection({"name": "Low", "backup_object": "Low__checkpoint__before"})
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = asyncio.run(
         target.manage_retopology_checkpoint(
@@ -203,7 +203,7 @@ def test_checkpoint_create_reports_hidden_backup_as_changed_object(monkeypatch) 
 )
 def test_phase_one_tools_forward_agent_inputs(monkeypatch, tool, command, kwargs) -> None:
     connection = StubConnection()
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = asyncio.run(tool(ctx=None, **kwargs))
 
@@ -217,7 +217,7 @@ def test_create_guides_reports_actual_collision_safe_names(monkeypatch) -> None:
     connection = StubConnection(
         {"created_guide_objects": ["EyeGuide", "EyeGuide.001"], "guides": [], "coordinate_space": "WORLD"}
     )
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = asyncio.run(
         construction.create_retopology_guides(
@@ -232,7 +232,7 @@ def test_create_guides_reports_actual_collision_safe_names(monkeypatch) -> None:
 
 def test_support_loops_warn_that_topology_indices_are_stale(monkeypatch) -> None:
     connection = StubConnection()
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = asyncio.run(
         construction.add_support_loops(
@@ -250,7 +250,7 @@ def test_support_loops_warn_that_topology_indices_are_stale(monkeypatch) -> None
 
 def test_bake_reports_image_as_changed_resource(monkeypatch) -> None:
     connection = StubConnection({"image": "Low_NORMAL", "output_path": "/tmp/normal.exr"})
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = asyncio.run(
         production.bake_retopology_maps(
@@ -299,7 +299,7 @@ def test_phase_two_creation_tools_forward_and_report_created_objects(
     monkeypatch, tool, command, kwargs, result
 ) -> None:
     connection = StubConnection(result)
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     response = asyncio.run(tool(ctx=None, **kwargs))
 
@@ -311,7 +311,7 @@ def test_phase_two_creation_tools_forward_and_report_created_objects(
 
 def test_surface_deform_idempotent_unbind_reports_no_change(monkeypatch) -> None:
     connection = StubConnection({"name": "Render", "bound": False, "changed": False})
-    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = asyncio.run(advanced.bind_surface_deformation(ctx=None, object_name="Render", action="UNBIND"))
 
@@ -331,12 +331,13 @@ def test_addon_dispatch_advertises_all_phase_two_commands(monkeypatch) -> None:
         "bind_surface_deformation",
         "generate_retopology_lods",
     } <= set(commands)
-    assert (
-        not {
+    assert not {
+        name
+        for name in (
             "generate_quadriflow_draft",
             "fit_surface_primitive",
             "bind_surface_deformation",
             "generate_retopology_lods",
-        }
-        & server._READ_ONLY_COMMANDS
-    )
+        )
+        if server.command_spec(name).read_only
+    }

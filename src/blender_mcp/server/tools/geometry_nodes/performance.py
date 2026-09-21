@@ -1,15 +1,13 @@
 # ruff: file-ignore[multi-line-summary-second-line]
 """Bounded procedural-system performance analysis tool."""
 
-import asyncio
-
 from typing import Annotated
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import call_geometry_nodes
+from .._dispatch import call_blender
 
 MAX_SAMPLE_FRAMES = 8
 
@@ -34,8 +32,7 @@ async def analyze_procedural_performance(
     """
     if not frames or len(frames) > MAX_SAMPLE_FRAMES or len(set(frames)) != len(frames):
         raise ValueError(f"frames must contain 1-{MAX_SAMPLE_FRAMES} unique frame numbers")
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "analyze_procedural_performance",
         {
             "object_name": object_name,

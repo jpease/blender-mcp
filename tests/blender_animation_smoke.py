@@ -24,6 +24,57 @@ spec.loader.exec_module(addon)
 from blender_mcp_animation_smoke.handlers.animation import AnimationHandlersMixin
 
 
+def _check_rig_control_properties(handler) -> None:
+    """
+    Key a rig's custom properties through a bone name that contains a dot.
+
+    Only real Blender can confirm the two assumptions the resolver makes: that a
+    pose bone's custom properties live in `id_properties_ensure()`, and that an
+    F-Curve on `pose.bones["hand_ik.L"]["IK_FK"]` actually drives the property.
+    """
+    bpy.ops.object.armature_add(enter_editmode=False, location=(0.0, 0.0, 0.0))
+    rig = bpy.context.object
+    rig.name = "ControlRig"
+    rig.data.bones[0].name = "hand_ik.L"
+    bone = rig.pose.bones["hand_ik.L"]
+    bone["IK_FK"] = 1.0
+    bone["limits"] = [0.0, 1.0]
+
+    keyed = handler.edit_keyframes(
+        {"type": "OBJECT", "name": rig.name},
+        [
+            {"data_path": 'pose.bones["hand_ik.L"]["IK_FK"]', "frame": 1, "value": 1.0},
+            {"data_path": 'pose.bones["hand_ik.L"]["IK_FK"]', "frame": 10, "value": 0.0},
+            {"data_path": 'pose.bones["hand_ik.L"]["limits"]', "frame": 1, "value": [0.25, 0.75]},
+        ],
+        action_name="Rig Controls",
+    )
+    # Two scalar keys plus one array edit expanded into its two components.
+    assert len(keyed["changed_keyframes"]) == 4
+
+    bpy.context.scene.frame_set(10)
+    evaluated_bone = rig.evaluated_get(bpy.context.evaluated_depsgraph_get()).pose.bones["hand_ik.L"]
+    assert abs(evaluated_bone["IK_FK"]) < 1e-5
+    assert abs(evaluated_bone["limits"][0] - 0.25) < 1e-5
+    assert abs(evaluated_bone["limits"][1] - 0.75) < 1e-5
+
+    for path, expected in (
+        ("location[0]", "array_index"),
+        ('pose.bones["hand_ik.L"]', "custom property holder"),
+        ('pose.bones["hand_ik.L"]["missing"]', "Custom property not found"),
+    ):
+        try:
+            handler.edit_keyframes(
+                {"type": "OBJECT", "name": rig.name},
+                [{"data_path": path, "frame": 1, "value": 0.0}],
+                action_name="Rig Controls",
+            )
+        except ValueError as exc:
+            assert expected in str(exc), f"{path}: {exc}"
+        else:
+            raise AssertionError(f"{path} was accepted")
+
+
 def main() -> None:
     """Exercise Action creation, vector/scalar key edits, removal, and pagination."""
     handler = AnimationHandlersMixin()
@@ -140,6 +191,8 @@ def main() -> None:
     bpy.context.scene.frame_set(8)
     evaluated = driver_host.evaluated_get(bpy.context.evaluated_depsgraph_get())
     assert abs(evaluated.location.z - (8 * 0.25 + cube.matrix_world.translation.z)) < 1e-5
+
+    _check_rig_control_properties(handler)
 
     print("ANIMATION_SMOKE_OK")
 

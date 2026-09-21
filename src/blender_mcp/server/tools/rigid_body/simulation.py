@@ -1,14 +1,13 @@
 """Rigid-body simulation sampling and cache lifecycle tools."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .inspection_and_setup import Vector3, _call, mcp
+from .._dispatch import call_blender
+from .inspection_and_setup import Vector3, mcp
 
 
 class SimulationFrameSelection(BaseModel):
@@ -82,8 +81,7 @@ async def sample_rigid_body_simulation(
     """
     if (escape_bounds_min is None) != (escape_bounds_max is None):
         raise ToolError("escape_bounds_min and escape_bounds_max must be supplied together")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "sample_rigid_body_simulation",
         {
             "scene_name": scene_name,
@@ -95,7 +93,7 @@ async def sample_rigid_body_simulation(
             "escape_bounds_max": escape_bounds_max,
             "timeout_seconds": timeout_seconds,
         },
-        object_names,
+        changed_objects=object_names,
     )
 
 
@@ -131,8 +129,7 @@ async def manage_rigid_body_cache(
         raise ToolError(f"{action} does not accept settings")
     if (action == "CALCULATE_TO_FRAME") != (calculate_frame is not None):
         raise ToolError("calculate_frame is required only for CALCULATE_TO_FRAME")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "manage_rigid_body_cache",
         {
             "scene_name": scene_name,

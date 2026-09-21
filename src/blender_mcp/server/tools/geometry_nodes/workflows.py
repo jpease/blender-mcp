@@ -1,23 +1,15 @@
 """Task-level builders for common reusable procedural systems."""
 
-import asyncio
-
 from typing import Any, Literal
 
 from mcp.server.fastmcp import Context
 
 from ...app import mcp
-from ._shared import call_geometry_nodes
+from .._dispatch import call_blender
 
 
 async def _build(command: str, params: dict[str, Any], object_name: str, group_name: str) -> dict:
-    return await asyncio.to_thread(
-        call_geometry_nodes,
-        command,
-        params,
-        changed_objects=[object_name],
-        changed_resources=[group_name],
-    )
+    return await call_blender(command, params, changed_objects=[object_name], changed_resources=[group_name])
 
 
 def _without_context(values: dict[str, Any]) -> dict[str, Any]:

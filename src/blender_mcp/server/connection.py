@@ -45,9 +45,21 @@ class BlenderOperationError(Exception):
     """
     Raised when Blender reports the requested operation failed.
 
-    Kept distinct from the generic `except Exception` in
-    `send_command_locked` so a clean failure message isn't relabeled as a
-    communication error and doesn't drop a perfectly good socket.
+    Kept distinct from `BlenderTransportError` so a clean failure message isn't
+    relabeled as a communication error and doesn't drop a perfectly good socket.
+    The addon has already said what is wrong with the request, so the tool layer
+    reports this message verbatim.
+    """
+
+
+class BlenderTransportError(Exception):
+    """
+    Raised when the command never completed a round trip.
+
+    Timeout, lost connection, undecodable response, a frame answering another
+    request, or any other socket fault. Every path that raises it has already
+    dropped the socket, so the next command reconnects; the tool layer says so
+    instead of blaming a request Blender may never have seen.
     """
 
 
@@ -94,7 +106,8 @@ def decode_response(frame: dict[str, Any], expected_id: str) -> dict[str, Any]:
     which the shell could only recover by re-running the same checks.
 
     A frame that is not a JSON object raises `AttributeError` here, which the
-    shell maps to the same communication error as before this was extracted.
+    shell's catch-all turns into a `BlenderTransportError` like every other
+    unreadable response.
 
     Args:
         frame: The decoded response frame, as `json.loads` returned it.
@@ -104,8 +117,8 @@ def decode_response(frame: dict[str, Any], expected_id: str) -> dict[str, Any]:
         dict[str, Any]: The frame's `result`, unwrapped.
 
     Raises:
-        Exception: If the frame answers a different request, which means the
-            response stream has desynced.
+        BlenderTransportError: If the frame answers a different request, which means
+            the response stream has desynced.
         BlenderOperationError: If Blender reported the operation failed, either
             through the `{"status": "error"}` envelope or through an ad-hoc
             failure shape inside `result`.
@@ -116,7 +129,7 @@ def decode_response(frame: dict[str, Any], expected_id: str) -> dict[str, Any]:
         # connection, so this should be unreachable - but if the stream ever
         # desyncs, fail loudly instead of silently returning another command's
         # response.
-        raise Exception(
+        raise BlenderTransportError(
             f"Response id {frame.get('id')!r} does not match request id {expected_id!r} - "
             "the connection to Blender is desynced"
         )
@@ -246,7 +259,11 @@ class BlenderConnection:
             dict[str, Any]: Result produced by the operation.
 
         Raises:
-            Exception: If the operation cannot be completed.
+            BlenderOperationError: If Blender answered that the operation failed.
+            BlenderTransportError: If the round trip never completed - timeout, lost
+                connection, unreadable or desynced response.
+            Exception: If the installed addon does not support this command, or does
+                not accept one of the parameters sent with it.
 
         """
         # Capabilities follow the open .blend, so re-read them after a swap. Done before
@@ -314,26 +331,32 @@ class BlenderConnection:
             # Don't try to reconnect here - let the get_blender_connection handle reconnection
             # Just invalidate the current socket so it will be recreated next time
             self.sock = None
-            raise Exception(
+            raise BlenderTransportError(
                 "Timeout waiting for Blender response - try simplifying your request. If Blender is running headless (blender -b), commands never execute; run Blender with a GUI or via 'xvfb-run -a blender' instead"
             ) from exc
         except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
             logger.error(f"Socket connection error: {e!s}")
             self.sock = None
-            raise Exception(f"Connection to Blender lost: {e!s}") from e
+            raise BlenderTransportError(f"Connection to Blender lost: {e!s}") from e
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON response from Blender: {e!s}")
             # Try to log what was received
             if "response_data" in locals() and response_data:
                 logger.error(f"Raw response (first 200 bytes): {response_data[:200]}")
-            raise Exception(f"Invalid response from Blender: {e!s}") from e
+            raise BlenderTransportError(f"Invalid response from Blender: {e!s}") from e
         except BlenderOperationError:
+            raise
+        except BlenderTransportError:
+            # A desynced stream cannot be read past this frame, so the socket goes
+            # the way of every other transport fault - but its message already says
+            # what happened and must not be relabeled.
+            self.sock = None
             raise
         except Exception as e:
             logger.error(f"Error communicating with Blender: {e!s}")
             # Don't try to reconnect here - let the get_blender_connection handle reconnection
             self.sock = None
-            raise Exception(f"Communication error with Blender: {e!s}") from e
+            raise BlenderTransportError(f"Communication error with Blender: {e!s}") from e
 
 
 # Global connection for resources (since resources can't access context)

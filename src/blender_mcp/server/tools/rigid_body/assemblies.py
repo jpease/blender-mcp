@@ -1,14 +1,13 @@
 """Compound bodies, constraint assemblies, fracture preparation, and animated colliders."""
 
-import asyncio
-
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .inspection_and_setup import Vector3, _call, mcp, rigid_body_constraint_adapter
+from .._dispatch import call_blender
+from .inspection_and_setup import Vector3, mcp, rigid_body_constraint_adapter
 
 
 class ConstraintEdge(BaseModel):
@@ -49,8 +48,7 @@ async def create_compound_rigid_body(
     """
     if root_object_name in child_object_names or len(set(child_object_names)) != len(child_object_names):
         raise ToolError("root and child_object_names must be unique")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_compound_rigid_body",
         {
             "scene_name": scene_name,
@@ -61,7 +59,7 @@ async def create_compound_rigid_body(
             "child_collision_shape": child_collision_shape,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
-        [root_object_name, *child_object_names, *([render_object_name] if render_object_name else [])],
+        changed_objects=[root_object_name, *child_object_names, *([render_object_name] if render_object_name else [])],
     )
 
 
@@ -102,8 +100,7 @@ async def create_rigid_body_constraint_network(
     if pairing == "RADIUS" and radius is None:
         raise ToolError("RADIUS pairing requires radius")
     validated_configuration = rigid_body_constraint_adapter.validate_python(configuration)
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_rigid_body_constraint_network",
         {
             "scene_name": scene_name,
@@ -117,7 +114,7 @@ async def create_rigid_body_constraint_network(
             "collection_name": collection_name,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
-        body_names,
+        changed_objects=body_names,
     )
 
 
@@ -140,8 +137,7 @@ async def prepare_fracture_rigid_bodies(
         raise ToolError("piece_object_names must be unique")
     if (bond_distance is None) != (breaking_threshold is None):
         raise ToolError("bond_distance and breaking_threshold must be supplied together")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "prepare_fracture_rigid_bodies",
         {
             "scene_name": scene_name,
@@ -155,7 +151,7 @@ async def prepare_fracture_rigid_bodies(
             "constraint_collection_name": constraint_collection_name,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
-        piece_object_names,
+        changed_objects=piece_object_names,
     )
 
 
@@ -189,8 +185,7 @@ async def create_rigid_body_chain(
     if sum(value * value for value in axis) <= 1e-16:
         raise ToolError("axis must be non-zero")
     validated_configuration = rigid_body_constraint_adapter.validate_python(configuration)
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_rigid_body_chain",
         {
             "scene_name": scene_name,
@@ -203,7 +198,7 @@ async def create_rigid_body_chain(
             "collection_name": collection_name,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
-        names,
+        changed_objects=names,
     )
 
 
@@ -222,8 +217,7 @@ async def setup_animated_passive_collider(
     """Configure and inspect an animated passive collider without altering its animation or modifiers."""
     if use_deform and collision_shape != "MESH":
         raise ToolError("use_deform=True requires collision_shape='MESH'")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "setup_animated_passive_collider",
         {
             "scene_name": scene_name,
@@ -235,5 +229,5 @@ async def setup_animated_passive_collider(
             "maximum_evaluated_faces": maximum_evaluated_faces,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
-        [object_name],
+        changed_objects=[object_name],
     )

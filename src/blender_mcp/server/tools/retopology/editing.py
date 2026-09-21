@@ -1,15 +1,13 @@
 """Agent-facing tools for editing existing retopology geometry: projection, edge flow, symmetry."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ..envelope import STALE_INDEX_WARNING, ok
-from ._shared import _call
+from .._dispatch import call_blender
+from ..envelope import STALE_INDEX_WARNING
 
 ProjectionMethod = Literal["NEAREST", "RAYCAST"]
 RerouteAction = Literal["CONNECT", "ROTATE_DIAGONAL", "COLLAPSE", "DISSOLVE", "SPLIT"]
@@ -48,9 +46,8 @@ async def configure_surface_projection(
     evaluated result into the base mesh and invalidates prior indices.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    result = await asyncio.to_thread(_call, "configure_surface_projection", params)
     warnings = [STALE_INDEX_WARNING] if apply else []
-    return ok(result, changed_objects=[object_name], warnings=warnings)
+    return await call_blender("configure_surface_projection", params, changed_objects=[object_name], warnings=warnings)
 
 
 @mcp.tool()
@@ -85,7 +82,7 @@ async def project_mesh_elements(
     symmetry-plane vertices can be retained. Failed vertex IDs are reported.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    return ok(await asyncio.to_thread(_call, "project_mesh_elements", params), changed_objects=[object_name])
+    return await call_blender("project_mesh_elements", params, changed_objects=[object_name])
 
 
 @mcp.tool()
@@ -109,11 +106,7 @@ async def reroute_topology(
     Returns created/removed element IDs where stable plus a new revision.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    return ok(
-        await asyncio.to_thread(_call, "reroute_topology", params),
-        changed_objects=[object_name],
-        warnings=[STALE_INDEX_WARNING],
-    )
+    return await call_blender("reroute_topology", params, changed_objects=[object_name], warnings=[STALE_INDEX_WARNING])
 
 
 @mcp.tool()
@@ -140,7 +133,7 @@ async def relax_topology(
     topology, so indices remain valid when the revision matches.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    return ok(await asyncio.to_thread(_call, "relax_topology", params), changed_objects=[object_name])
+    return await call_blender("relax_topology", params, changed_objects=[object_name])
 
 
 @mcp.tool()
@@ -165,7 +158,7 @@ async def redistribute_edge_loop(
     This changes positions only, not topology.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    return ok(await asyncio.to_thread(_call, "redistribute_edge_loop", params), changed_objects=[object_name])
+    return await call_blender("redistribute_edge_loop", params, changed_objects=[object_name])
 
 
 @mcp.tool()
@@ -195,4 +188,4 @@ async def configure_retopology_symmetry(
     damage before continuing. The exact modifier order is returned.
     """
     params = {key: value for key, value in locals().items() if key != "ctx"}
-    return ok(await asyncio.to_thread(_call, "configure_retopology_symmetry", params), changed_objects=[object_name])
+    return await call_blender("configure_retopology_symmetry", params, changed_objects=[object_name])

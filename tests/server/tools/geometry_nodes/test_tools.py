@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import geometry_nodes
+from blender_mcp.server.tools import _dispatch, geometry_nodes
 
 FOUNDATION_COMMANDS = {
     "list_procedural_systems",
@@ -73,8 +73,8 @@ def test_geometry_nodes_dispatch_and_read_only_contract(monkeypatch) -> None:
     }
 
     assert set(server._build_command_handlers()) >= names
-    assert read_only <= server._READ_ONLY_COMMANDS
-    assert not (names - read_only) & server._READ_ONLY_COMMANDS
+    assert all(server.command_spec(name).read_only for name in read_only)
+    assert not {name for name in names - read_only if server.command_spec(name).read_only}
 
 
 def test_bake_inspection_uses_read_only_dispatch(monkeypatch) -> None:
@@ -131,12 +131,11 @@ def test_advanced_geometry_nodes_models_enforce_complexity_and_safety() -> None:
 
 
 def test_repeat_zone_serializes_state_schema_without_context(monkeypatch) -> None:
-    zones = sys.modules["blender_mcp.server.tools.geometry_nodes.zones"]
     calls = []
     monkeypatch.setattr(
-        zones,
-        "call_geometry_nodes",
-        lambda command, params, **kwargs: calls.append((command, params, kwargs)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {},
     )
 
     result = _run(
@@ -149,20 +148,19 @@ def test_repeat_zone_serializes_state_schema_without_context(monkeypatch) -> Non
         iterations=12,
     )
 
-    assert result == {"ok": True}
+    assert result["ok"] is True
     assert calls[0][0] == "create_repeat_zone"
     assert calls[0][1]["state_items"][1] == {"name": "Offset", "socket_type": "VECTOR"}
     assert calls[0][1]["iterations"] == 12
-    assert calls[0][2]["changed_resources"] == ["Growth"]
+    assert result["changed_resources"] == ["Growth"]
 
 
 def test_scatter_and_volume_extensions_serialize_explicit_output_contracts(monkeypatch) -> None:
-    workflows = sys.modules["blender_mcp.server.tools.geometry_nodes.workflows"]
     calls = []
     monkeypatch.setattr(
-        workflows,
-        "call_geometry_nodes",
-        lambda command, params, **kwargs: calls.append((command, params, kwargs)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {},
     )
 
     _run(
@@ -240,12 +238,11 @@ def test_interface_and_graph_models_reject_unsafe_shapes() -> None:
 
 
 def test_create_group_serializes_explicit_interface(monkeypatch) -> None:
-    authoring = sys.modules["blender_mcp.server.tools.geometry_nodes.authoring"]
     calls = []
     monkeypatch.setattr(
-        authoring,
-        "call_geometry_nodes",
-        lambda command, params, **kwargs: calls.append((command, params, kwargs)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {},
     )
 
     result = _run(
@@ -262,10 +259,10 @@ def test_create_group_serializes_explicit_interface(monkeypatch) -> None:
         ],
     )
 
-    assert result == {"ok": True}
+    assert result["ok"] is True
     assert calls[0][0] == "create_geometry_node_group"
     assert calls[0][1]["sockets"][0]["socket_type"] == "NodeSocketFloat"
-    assert calls[0][2]["changed_resources"] == ["Scatter Controls"]
+    assert result["changed_resources"] == ["Scatter Controls"]
 
 
 def test_destructive_geometry_nodes_actions_require_confirmation() -> None:
@@ -329,12 +326,11 @@ def test_workflow_request_does_not_leak_mcp_context(monkeypatch) -> None:
 
 
 def test_copy_group_serializes_object_duplication_policy(monkeypatch) -> None:
-    modifiers = sys.modules["blender_mcp.server.tools.geometry_nodes.modifiers"]
     calls = []
     monkeypatch.setattr(
-        modifiers,
-        "call_geometry_nodes",
-        lambda command, params, **kwargs: calls.append((command, params, kwargs)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {},
     )
 
     result = _run(
@@ -349,7 +345,7 @@ def test_copy_group_serializes_object_duplication_policy(monkeypatch) -> None:
         collision_policy="UNIQUE",
     )
 
-    assert result == {"ok": True}
+    assert result["ok"] is True
     assert calls[0][0] == "copy_geometry_node_group"
     assert calls[0][1] == {
         "node_group_name": "Shared Scatter",
@@ -362,4 +358,4 @@ def test_copy_group_serializes_object_duplication_policy(monkeypatch) -> None:
         "reassign_duplicate_modifiers": False,
         "collision_policy": "UNIQUE",
     }
-    assert calls[0][2]["changed_objects"] == ["Forest Variant"]
+    assert result["changed_objects"] == ["Forest Variant"]

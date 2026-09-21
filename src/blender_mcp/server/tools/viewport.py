@@ -2,8 +2,6 @@
 
 import asyncio
 import logging
-import os
-import tempfile
 
 from typing import Annotated, Literal
 
@@ -12,8 +10,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..app import mcp
-from ..connection import get_blender_connection
-from .envelope import ok
+from ._dispatch import call_blender, send_command
+from .image_capture import capture_png
 
 logger = logging.getLogger("BlenderMCPServer")
 
@@ -45,9 +43,7 @@ async def list_scene_objects(
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(blender.send_command, "list_scene_objects", {"limit": limit, "offset": offset})
-        return ok(result)
+        return await call_blender("list_scene_objects", {"limit": limit, "offset": offset})
     except Exception as e:
         logger.error(f"Error getting scene info from Blender: {e}")
         raise ToolError(f"Error getting scene info: {e}") from e
@@ -77,11 +73,7 @@ async def set_viewport_overlay(ctx: Context, toggle: ViewportOverlay, enabled: b
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(
-            blender.send_command, "set_viewport_overlay", {"toggle": toggle, "enabled": enabled}
-        )
-        return ok(result)
+        return await call_blender("set_viewport_overlay", {"toggle": toggle, "enabled": enabled})
     except Exception as e:
         logger.error(f"Error toggling viewport overlay: {e}")
         raise ToolError(f"Error toggling viewport overlay: {e}") from e
@@ -134,13 +126,9 @@ async def get_object_info(
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(
-            blender.send_command,
-            "get_object_info",
-            {"name": object_name, "sections": sections, "limit": limit, "offset": offset},
+        return await call_blender(
+            "get_object_info", {"name": object_name, "sections": sections, "limit": limit, "offset": offset}
         )
-        return ok(result)
     except Exception as e:
         logger.error(f"Error getting object info from Blender: {e}")
         raise ToolError(f"Error getting object info: {e}") from e
@@ -194,9 +182,7 @@ async def get_mesh_data(
 
     """
     try:
-        blender = await asyncio.to_thread(get_blender_connection)
-        result = await asyncio.to_thread(
-            blender.send_command,
+        return await call_blender(
             "get_mesh_data",
             {
                 "object_name": object_name,
@@ -206,7 +192,6 @@ async def get_mesh_data(
                 "selected_only": selected_only,
             },
         )
-        return ok(result)
     except Exception as e:
         logger.error(f"Error getting mesh data from Blender: {e}")
         raise ToolError(f"Error getting mesh data: {e}") from e
@@ -235,13 +220,16 @@ class ViewSpec(_StrictModel):
     scene, using that camera's own lens) or eye with exactly one of target/target_object (a
     one-off look-at built from a world point and a camera position, never added to the
     scene).
+
+    The look-at is world-Z-up, as `_look_quaternion` (the production aim used by
+    create_camera's look_at_point) builds it. There is no `up` field: a roll this model
+    accepted but that math ignores would be a lie in the schema.
     """
 
     camera_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
     eye: tuple[float, float, float] | None = None
     target: tuple[float, float, float] | None = None
     target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
-    up: tuple[float, float, float] = (0.0, 0.0, 1.0)
     lens_mm: Annotated[float, Field(gt=0.0)] = _DEFAULT_LENS_MM
 
     @model_validator(mode="after")
@@ -260,8 +248,6 @@ class ViewSpec(_StrictModel):
                     raise ValueError("eye and target cannot occupy the same point")
         if self.camera_object is not None and self.lens_mm != _DEFAULT_LENS_MM:
             raise ValueError("lens_mm has no effect when camera_object is given - it uses that camera's own lens")
-        if self.up != (0.0, 0.0, 1.0):
-            raise ValueError("up currently only supports the default world-Z-up (0.0, 0.0, 1.0)")
         return self
 
 
@@ -323,43 +309,17 @@ async def get_viewport_screenshot(
         Exception: If the operation cannot be completed.
 
     """
-    temp_path = None
-    try:
-        blender = await asyncio.to_thread(get_blender_connection)
-
-        descriptor, temp_path = tempfile.mkstemp(prefix="blender_mcp_viewport_", suffix=".png")
-        os.close(descriptor)
-
-        result = await asyncio.to_thread(
-            blender.send_command,
-            "get_viewport_screenshot",
-            {
-                "max_size": max_size,
-                "filepath": temp_path,
-                "format": "png",
-                "view": view.model_dump() if view is not None else None,
-                "shading_override": shading_override,
-            },
-        )
-
-        if "error" in result:
-            raise Exception(result["error"])
-
-        if not os.path.exists(temp_path):
-            raise Exception("Screenshot file was not created")
-
-        # Read the file
-        with open(temp_path, "rb") as f:
-            image_bytes = f.read()
-
-        return [Image(data=image_bytes, format="png"), ok(_screenshot_metadata(result))]
-
-    except Exception as e:
-        logger.error(f"Error capturing screenshot: {e!s}")
-        raise Exception(f"Screenshot failed: {e!s}") from e
-    finally:
-        if temp_path:
-            try:
-                os.remove(temp_path)
-            except FileNotFoundError:
-                pass
+    return await asyncio.to_thread(
+        capture_png,
+        send_command,
+        "get_viewport_screenshot",
+        {
+            "max_size": max_size,
+            "view": view.model_dump() if view is not None else None,
+            "shading_override": shading_override,
+        },
+        prefix="blender_mcp_viewport_",
+        metadata=_screenshot_metadata,
+        failure="Screenshot failed",
+        missing_file="Screenshot file was not created",
+    )

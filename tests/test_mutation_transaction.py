@@ -674,7 +674,7 @@ def test_regression_guard_a_transaction_unaware_of_a_library_reload_removes_the_
 
     Only datablocks linked from the reloaded library get fresh session_uids, so a
     rollback removes exactly those and the local mesh survives. In the addon,
-    `_DATABLOCK_REPLACING_COMMANDS` and the replace-in-progress flag keep a real
+    `CommandSpec.datablock_replacing` and the replace-in-progress flag keep a real
     reload out of this shape.
 
     Raises:

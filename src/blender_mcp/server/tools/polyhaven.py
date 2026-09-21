@@ -1,6 +1,5 @@
 """PolyHaven asset-library integration tools."""
 
-import asyncio
 import logging
 
 from typing import Annotated, Literal
@@ -10,7 +9,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from ..app import mcp
-from ..connection import get_blender_connection
+from ._dispatch import send_blender_command
 from .envelope import ok
 
 logger = logging.getLogger("BlenderMCPServer")
@@ -60,13 +59,12 @@ async def get_polyhaven_categories(ctx: Context, asset_type: AssetType = "hdris"
 
     """
     try:
-        blender = get_blender_connection()
-        status = await asyncio.to_thread(blender.send_command, "get_polyhaven_status")
+        status = await send_blender_command("get_polyhaven_status")
         if not status.get("enabled", False):
             raise ToolError(
                 "PolyHaven integration is disabled. Select it in the sidebar in BlenderMCP, then run it again."
             )
-        result = await asyncio.to_thread(blender.send_command, "get_polyhaven_categories", {"asset_type": asset_type})
+        result = await send_blender_command("get_polyhaven_categories", {"asset_type": asset_type})
         if "error" in result:
             raise ToolError(result["error"])
         return ok({"asset_type": asset_type, "categories": result["categories"]})
@@ -107,9 +105,7 @@ async def list_polyhaven_assets(
 
     """
     try:
-        blender = get_blender_connection()
-        result = await asyncio.to_thread(
-            blender.send_command,
+        result = await send_blender_command(
             "list_polyhaven_assets",
             {"asset_type": asset_type, "categories": categories, "limit": limit, "offset": offset},
         )
@@ -168,9 +164,7 @@ async def import_polyhaven_asset(
 
     """
     try:
-        blender = get_blender_connection()
-        result = await asyncio.to_thread(
-            blender.send_command,
+        result = await send_blender_command(
             "import_polyhaven_asset",
             {
                 "asset_id": asset_id,
@@ -228,9 +222,8 @@ async def apply_polyhaven_texture(
             raise ToolError("confirm_replace_all=True is required for REPLACE_ALL")
         if replacement_policy == "REPLACE_SLOT" and material_slot_index is None:
             raise ToolError("material_slot_index is required for REPLACE_SLOT")
-        blender = get_blender_connection()
-        result = await asyncio.to_thread(
-            blender.send_command,
+
+        result = await send_blender_command(
             "apply_polyhaven_texture",
             {
                 "object_name": object_name,

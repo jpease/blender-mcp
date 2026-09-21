@@ -931,7 +931,7 @@ def test_the_file_commands_are_dispatchable_and_advertised_beside_get_session_in
     for name in (*FILE_COMMANDS, "get_session_info"):
         assert name in capabilities
         assert name in server._build_command_handlers()  # type: ignore[attr-defined]
-        assert name not in server._READ_ONLY_COMMANDS or name == "get_session_info"  # type: ignore[attr-defined]
+        assert not server.command_spec(name).read_only or name == "get_session_info"  # type: ignore[attr-defined]
 
 
 class _RecordingClient:
@@ -1597,6 +1597,86 @@ def test_save_shot_refuses_checksums_without_configured_file_roots(
     assert response["status"] == "error"
     assert "BLENDERMCP_FILE_ROOTS" in response["message"]
     assert _PROVENANCE not in bpy.data.scenes["Scene"]
+
+
+def _addon_module(server: object, name: str) -> types.ModuleType:
+    """
+    Reach one module inside the add-on package this server was loaded from.
+
+    Args:
+        server: The server built by `_server`.
+        name: The module's dotted name below the package, such as `handlers.provenance`.
+
+    Returns:
+        types.ModuleType: The live module.
+
+    """
+    return sys.modules[f"{type(server).__module__.rsplit('.', 1)[0]}.{name}"]
+
+
+def _counted_reads(monkeypatch: pytest.MonkeyPatch, module: types.ModuleType) -> list[int]:
+    """
+    Record every byte the digest module reads, by shadowing the builtin `open` in its globals.
+
+    Args:
+        monkeypatch: The test's monkeypatch.
+        module: The add-on's `file_digest` module.
+
+    Returns:
+        list[int]: Grows by one entry per chunk read; empty when nothing was opened.
+
+    """
+    counts: list[int] = []
+    real_open = open
+
+    class _Counting:
+        def __init__(self, handle: object) -> None:
+            self._handle = handle
+
+        def read(self, size: int = -1) -> bytes:
+            chunk = self._handle.read(size)  # type: ignore[attr-defined]
+            counts.append(len(chunk))
+            return chunk
+
+        def __enter__(self) -> _Counting:
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            self._handle.close()  # type: ignore[attr-defined]
+            return False
+
+    monkeypatch.setattr(module, "open", lambda path, mode="rb": _Counting(real_open(path, mode)), raising=False)
+    return counts
+
+
+def test_save_shot_bounds_each_library_hash_by_the_per_file_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """
+    The per-file bound is per file, not the call's whole byte budget.
+
+    Handed the aggregate budget as its per-file bound, this path would read one library for as
+    long as the entire request was allowed to, on the thread that runs every queued command.
+    """
+    canon = tmp_path / "canon"
+    canon.mkdir()
+    library_file = canon / "canon.blend"
+    library_file.write_bytes(b"BLENDER-canon" + b"x" * 4096)
+    server, bpy, _wm = _server(monkeypatch)
+    bpy.data.libraries = [
+        types.SimpleNamespace(name="canon.blend", filepath=str(library_file), is_missing=False, parent=None)
+    ]
+    monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(canon))
+    monkeypatch.setattr(_addon_module(server, "handlers.provenance"), "MAX_DIGEST_FILE_BYTES", 64)
+    read = _counted_reads(monkeypatch, _addon_module(server, "file_digest"))
+
+    response = _run(server, "save_shot", filepath=str(canon / "shot.blend"), provenance_checksums=True)
+
+    assert response["status"] == "success", response
+    (ingredient,) = json.loads(bpy.data.scenes["Scene"][_PROVENANCE])["ingredients"]
+    assert not ingredient["sha256"]
+    assert ingredient["skipped"] == "larger than max_hash_bytes"
+    assert sum(read) <= 64, "the library was read past the per-file bound"
 
 
 @pytest.mark.parametrize(

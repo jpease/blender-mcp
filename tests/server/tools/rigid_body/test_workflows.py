@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import rigid_body
+from blender_mcp.server.tools import _dispatch, rigid_body
 
 WORKFLOW_COMMANDS = {
     "remove_rigid_body_components",
@@ -39,7 +39,7 @@ def test_blender_dispatch_exposes_every_workflow_command(monkeypatch) -> None:
     server = addon.BlenderMCPServer()
 
     assert set(server._build_command_handlers()) >= WORKFLOW_COMMANDS
-    assert "sample_rigid_body_simulation" not in server._READ_ONLY_COMMANDS
+    assert not server.command_spec("sample_rigid_body_simulation").read_only
     assert server._run_handler.__self__ is server
 
 
@@ -70,15 +70,15 @@ def test_destructive_removal_requires_confirmation() -> None:
 def test_constraint_network_payload_is_typed(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        rigid_body,
-        "_call",
-        lambda command, params, changed_objects=None: calls.append((command, params, changed_objects)) or {"ok": True},
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
     configuration = rigid_body.HingeConstraint(
         type="HINGE",
         angular_z=rigid_body.LimitAxis(use_limit=True, lower=-0.5, upper=0.5),
     )
-    _run(
+    result = _run(
         rigid_body.create_rigid_body_constraint_network,
         scene_name="Scene",
         network_name="Bridge",
@@ -87,11 +87,11 @@ def test_constraint_network_payload_is_typed(monkeypatch) -> None:
         edges=[rigid_body.ConstraintEdge(object1_name="A", object2_name="B")],
     )
 
-    command, params, changed = calls[0]
+    command, params = calls[0]
     assert command == "create_rigid_body_constraint_network"
     assert params["configuration"]["type"] == "HINGE"
     assert params["edges"] == [{"object1_name": "A", "object2_name": "B"}]
-    assert changed == ["A", "B"]
+    assert result["changed_objects"] == ["A", "B"]
 
 
 def test_cache_action_boundaries_are_explicit() -> None:

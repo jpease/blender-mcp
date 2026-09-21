@@ -1,6 +1,5 @@
 """Deterministic isolated material preview rendering."""
 
-import asyncio
 import os
 import tempfile
 
@@ -11,7 +10,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import TargetEngine, absolute_path, call_blender
+from .._dispatch import call_blender
+from ._shared import TargetEngine, absolute_path
 
 
 @mcp.tool(structured_output=False)
@@ -57,8 +57,7 @@ async def render_pbr_material_preview(
             output_paths[engine] = path
             temporary.add(path)
     try:
-        result = await asyncio.to_thread(
-            call_blender,
+        result = await call_blender(
             "render_pbr_material_preview",
             {
                 "material_name": material_name,

@@ -1,15 +1,13 @@
 # ruff: file-ignore[multi-line-summary-second-line]
 """Geometry Nodes bake and simulation-cache lifecycle tool."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import call_geometry_nodes
+from .._dispatch import call_blender
 
 BakeAction = Literal["INSPECT", "BAKE", "PACK", "UNPACK", "DELETE"]
 
@@ -65,8 +63,7 @@ async def manage_geometry_nodes_bake(
         raise ValueError("UNPACK requires an explicit existing directory")
     if action == "DELETE" and not confirm_delete:
         raise ValueError("confirm_delete=True is required for DELETE")
-    return await asyncio.to_thread(
-        call_geometry_nodes,
+    return await call_blender(
         "manage_geometry_nodes_bake",
         {
             "object_name": object_name,

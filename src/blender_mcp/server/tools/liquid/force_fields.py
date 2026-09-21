@@ -1,14 +1,13 @@
 """Typed tools for scoping force fields to a liquid domain."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ...app import mcp
-from ._shared import _call, _dump, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _dump, _StrictModel
 
 FieldType = Literal["FORCE", "WIND", "VORTEX", "TURBULENCE", "DRAG"]
 FieldShape = Literal["POINT", "LINE", "PLANE", "SURFACE", "POINTS"]
@@ -68,8 +67,7 @@ async def configure_liquid_force_fields(
     weights: EffectorWeightsPatch | None = None,
 ) -> dict:
     """Create or configure bounded force fields and scope their influence to one liquid domain."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "configure_liquid_force_fields",
         {
             "scene_name": scene_name,
@@ -80,5 +78,5 @@ async def configure_liquid_force_fields(
             "create_collection": create_collection,
             "weights": _dump(weights),
         },
-        [domain_object_name, *[item.object_name for item in fields]],
+        changed_objects=[domain_object_name, *[item.object_name for item in fields]],
     )

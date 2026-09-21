@@ -2,15 +2,13 @@
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
 """Typed tool for attaching a cloth's pin group to a target deformer."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import _call
+from .._dispatch import call_blender
 from .inspection_and_setup import ExistingPolicy
 
 AttachmentType = Literal["HOOK", "ARMATURE", "MESH_DEFORM", "SURFACE_DEFORM"]
@@ -37,8 +35,7 @@ async def create_cloth_attachment(
     MESH_DEFORM, and SURFACE_DEFORM retain live targets; the deform variants bind only when
     ``bind`` is true. The pin group must already exist and is never modified.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_cloth_attachment",
         {
             "cloth_object_name": cloth_object_name,
@@ -52,5 +49,5 @@ async def create_cloth_attachment(
             "existing_policy": existing_policy,
             "bind": bind,
         },
-        [cloth_object_name, target_object_name],
+        changed_objects=[cloth_object_name, target_object_name],
     )

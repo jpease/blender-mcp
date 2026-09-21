@@ -5,19 +5,23 @@ Two rules shape this module. A bone's target is resolved inside the depth-sorted
 not before it, because a pose-, world- or rest-space target for a child is only meaningful
 against a parent this same call has already written. And a call that authors animation leaves
 the action it authored assigned to the rig: an action nobody references carries zero users and
-Blender drops it at save, so restoring a previous assignment would throw the work away.
+Blender drops it at save, so restoring a previous assignment would throw the work away - which
+is why the restore is conditional on the call having raised, and why it is stated once, in the
+`restored_*` context managers below, rather than in a `finally` block per entry point.
 """
 
 import contextlib
 import math
 import uuid
 
+from typing import NamedTuple
+
 import bpy
 import mathutils
 
 from ...helpers import paginate, sync_from_editmode
 from ..action_assignment import action_fcurve_collections, assign_named_action
-from ..key_style import style_point, validate_key_style
+from ..key_style import KeyStyle, style_point
 from .foundation import (
     _MAX_BONE_PAGE,
     _armature_object,
@@ -283,6 +287,29 @@ def _aim_basis_with_up(direction, aim, world_to_pose, bone_name):
 def _reject_singular(pose_bone, matrix):
     if abs(matrix.determinant()) <= _SINGULAR_TOLERANCE:
         raise ValueError(f"Pose matrix for '{pose_bone.name}' is singular")
+
+
+def _posable_armature(armature_object_name, purpose):
+    """
+    Resolve the named armature, refusing one that is showing its rest pose.
+
+    Args:
+        armature_object_name: The object to resolve.
+        purpose: What the caller is about to do, for the refusal to name.
+
+    Returns:
+        bpy.types.Object: The armature object.
+
+    Raises:
+        ValueError: If the object is not an armature, or `pose_position` is not 'POSE' - a
+            rig on REST ignores every channel the call is about to write, so it would report
+            a pose nobody can see.
+
+    """
+    armature = _armature_object(armature_object_name)
+    if armature.data.pose_position != "POSE":
+        raise ValueError(f"Armature must use pose_position='POSE' to {purpose}")
+    return armature
 
 
 def _validate_pose_specs(armature, poses, space):
@@ -581,7 +608,7 @@ def _match_previous_rotation(action, pose_bone, path, frame):
     return False
 
 
-def _style_written_keys(action, changed_keys, interpolation, handle_left, handle_right, easing):
+def _style_written_keys(action, changed_keys, style):
     """
     Style only the points this call wrote, named by (bone, data_path, frame).
 
@@ -593,10 +620,7 @@ def _style_written_keys(action, changed_keys, interpolation, handle_left, handle
     Args:
         action: The action just keyed.
         changed_keys: `_write_pose_keys`' records: bone, data_path and frame.
-        interpolation: The interpolation to apply.
-        handle_left: The left Bézier handle type.
-        handle_right: The right Bézier handle type.
-        easing: The easing direction, or None to leave Blender's.
+        style: The `KeyStyle` every point this call wrote is shaped with.
 
     Returns:
         int: How many keyframe points were styled.
@@ -617,7 +641,7 @@ def _style_written_keys(action, changed_keys, interpolation, handle_left, handle
                 continue
             for point in curve.keyframe_points:
                 if any(math.isclose(float(point.co[0]), frame, abs_tol=_FRAME_TOLERANCE) for frame in frames):
-                    style_point(point, interpolation, handle_left=handle_left, handle_right=handle_right, easing=easing)
+                    style_point(point, style)
                     changed += 1
     return changed
 
@@ -632,7 +656,7 @@ def _refuse_unkeyable_request(keying_policy, style, action_policy, action_name, 
 
     Args:
         keying_policy: INSERT, REPLACE or REMOVE.
-        style: The requested `(interpolation, handle_left, handle_right, easing)`.
+        style: The requested `KeyStyle`.
         action_policy: ENSURE, CREATE or REUSE.
         action_name: The action the caller asked to key, checked for existence when removing.
         prepared: `_validate_pose_specs` output, read for its bone names and specs.
@@ -655,7 +679,7 @@ def _refuse_unkeyable_request(keying_policy, style, action_policy, action_name, 
             )
         if bpy.data.actions.get(action_name) is None:
             raise ValueError(f"Removing keys requires an action that already exists: {action_name}")
-    validate_key_style(*style)
+    style.validate()
     for pose_bone, spec, _matrix in prepared:
         if "aim_at" in spec and spec["aim_at"]["up"] is None:
             raise ValueError(
@@ -699,34 +723,28 @@ def _write_pose_keys(action, prepared, frame, keying_policy):
     return changed_keys
 
 
-def _keyframe_reply(
-    armature,
-    animation,
-    action,
-    previous_action,
-    *,
-    keying_policy,
-    prepared,
-    changed_keys,
-    interpolation_count,
-    pose_records,
+def _action_reply(
+    armature, animation, action, previous_action, keying_policy, changed_bones, changed_keys, interpolation_updates
 ):
     """
-    Describe what one keying call left behind, assignment included.
+    Describe the assignment and the keys any keying call left behind.
+
+    Both keying tools end on the same eleven fields and the same rule for naming a displaced
+    action; stating that rule twice is how the two replies drift into disagreeing about what
+    `assigned_action` means.
 
     Args:
-        armature: The posed armature object.
+        armature: The keyed armature object.
         animation: Its `animation_data`, read for the assignment this call ended on.
         action: The action that was authored.
         previous_action: The action that drove the rig before, or None.
         keying_policy: The policy the caller asked for.
-        prepared: `_validate_pose_specs` output, read for the posed bone names.
+        changed_bones: Every bone the call posed, complete.
         changed_keys: One record per channel keyed.
-        interpolation_count: How many keys had their interpolation set.
-        pose_records: Per-bone matrices for a `detail` request, or None to omit them.
+        interpolation_updates: How many keyframe points this call styled.
 
     Returns:
-        dict: The handler reply.
+        dict: The shared reply; each tool adds only its own extras on top.
 
     """
     assigned_name = getattr(getattr(animation, "action", None), "name", None)
@@ -741,9 +759,9 @@ def _keyframe_reply(
         "keying_policy": keying_policy,
         # The keys are the deliverable, but the page of them is what the reply budget shortens,
         # so name every posed bone separately.
-        "changed_bones": [pose_bone.name for pose_bone, _spec, _matrix in prepared],
+        "changed_bones": changed_bones,
         "changed_keys": changed_keys,
-        "interpolation_updates": interpolation_count,
+        "interpolation_updates": interpolation_updates,
         "changed_objects": [armature.name],
         "changed_resources": [{"type": "ACTION", "name": action.name}],
     }
@@ -751,6 +769,49 @@ def _keyframe_reply(
     if previous_name is not None and previous_name != assigned_name:
         # The rig was driven by something else; say what this call displaced.
         reply["unassigned_action"] = previous_name
+    return reply
+
+
+def _keyframe_reply(
+    armature,
+    animation,
+    action,
+    previous_action,
+    *,
+    keying_policy,
+    prepared,
+    changed_keys,
+    interpolation_count,
+    pose_records,
+):
+    """
+    Describe what one single-frame keying call left behind.
+
+    Args:
+        armature: The posed armature object.
+        animation: Its `animation_data`, read for the assignment this call ended on.
+        action: The action that was authored.
+        previous_action: The action that drove the rig before, or None.
+        keying_policy: The policy the caller asked for.
+        prepared: `_validate_pose_specs` output, read for the posed bone names.
+        changed_keys: One record per channel keyed.
+        interpolation_count: How many keys had their style set.
+        pose_records: Per-bone matrices for a `detail` request, or None to omit them.
+
+    Returns:
+        dict: The handler reply.
+
+    """
+    reply = _action_reply(
+        armature,
+        animation,
+        action,
+        previous_action,
+        keying_policy,
+        [pose_bone.name for pose_bone, _spec, _matrix in prepared],
+        changed_keys,
+        interpolation_count,
+    )
     if pose_records is not None:
         # The pose is restored before this returns, so these matrices describe what was keyed at
         # the requested frame, not what the rig is holding now.
@@ -774,6 +835,104 @@ def _place_playhead(scene, frame):
     scene.frame_set(whole, subframe=frame - whole)
 
 
+# --- What a posing call borrows, and the order it hands it back ----------------------------
+#
+# A call that poses or keys borrows three things from the file: the bones' own channel values,
+# the playhead, and the rig's action assignment. Each has a context manager below that
+# snapshots on entry, so every call states what it is borrowing instead of re-spelling a
+# `finally` block - and the ordering argument is made once, here, rather than in a comment per
+# call site. Nest them playhead-outermost, then the action, then the pose: they unwind
+# inside-out, so the bones are back on their own values before the playhead moves, and from
+# that instant the assigned action drives them. Restore them the other way round and the rig
+# is left holding whatever pose the last solved frame happened to produce.
+
+
+@contextlib.contextmanager
+def restored_bone_pose(armature, bone_names, custom_properties=None, *, only_on_error=False):
+    """
+    Hand the named bones back the channel values, and custom properties, they arrived with.
+
+    Args:
+        armature: The armature whose pose bones are borrowed.
+        bone_names: The bones to snapshot, by name.
+        custom_properties: `{bone_name: property names}` to snapshot alongside the pose, or
+            None when the call writes none.
+        only_on_error: Restore only if the block raises. `set_character_pose`'s pose is the
+            deliverable, so a call that succeeds keeps it; a keying call's pose is scaffolding
+            for the keys it wrote and is handed back either way.
+
+    """
+    pose_bones = [armature.pose.bones[name] for name in bone_names]
+    matrices = {bone.name: bone.matrix_basis.copy() for bone in pose_bones}
+    properties = {
+        bone.name: {name: bone[name] for name in (custom_properties or {}).get(bone.name, ())} for bone in pose_bones
+    }
+
+    def restore():
+        for bone in pose_bones:
+            bone.matrix_basis = matrices[bone.name]
+            for name, value in properties[bone.name].items():
+                bone[name] = value
+
+    try:
+        yield
+    except BaseException:
+        restore()
+        raise
+    else:
+        if not only_on_error:
+            restore()
+
+
+@contextlib.contextmanager
+def restored_playhead(scene):
+    """
+    Put the playhead back where the call found it, and re-evaluate the scene on the way out.
+
+    Args:
+        scene: The scene whose `frame_current` is borrowed.
+
+    """
+    previous_frame = scene.frame_current
+    try:
+        yield
+    finally:
+        scene.frame_set(previous_frame)
+        bpy.context.view_layer.update()
+
+
+@contextlib.contextmanager
+def restored_action_assignment(animation):
+    """
+    Give the rig its action and slot back if the block raises, and leave them if it does not.
+
+    A call that authored keys leaves its own action assigned on purpose: an action nothing
+    references carries zero users and Blender drops it at save. A call that raised authored
+    nothing, so the action it displaced has to come back - `object_state` does not snapshot
+    `animation_data.action`, so nothing else in the transaction would put it back, and the
+    only symptom is a shot whose character has quietly stopped moving.
+
+    Args:
+        animation: The rig's `animation_data`.
+
+    Yields:
+        bpy.types.Action | None: The action the rig arrived on, for the reply to name.
+
+    """
+    previous_action = animation.action
+    previous_slot = getattr(animation, "action_slot", None)
+    try:
+        yield previous_action
+    except BaseException:
+        animation.action = previous_action
+        if previous_action is not None and previous_slot is not None:
+            # Assigning an action resets the slot, and a slot Blender no longer considers
+            # suitable is its refusal to make, not this unwind's to force.
+            with contextlib.suppress(Exception):
+                animation.action_slot = previous_slot
+        raise
+
+
 # Longest chain solve_bone_reach will auto-resolve or accept explicitly - matches
 # BoneReach.chain_length's Field(le=32) on the server side.
 _MAX_REACH_CHAIN = 32
@@ -787,6 +946,27 @@ _REACH_HELPER_PREFIX = "__solve_bone_reach__"
 # leaves on a bent chain, so it separates "solved" from "the solver stopped short" without
 # calling ordinary solver residue a failure. A shot needing more or less says so per call.
 _DEFAULT_REACH_TOLERANCE_M = 1e-4
+
+
+def _validated_tolerance(tolerance_m):
+    """
+    Read a reach's convergence tolerance, refusing one that names no precision.
+
+    Args:
+        tolerance_m: The caller's tolerance, in metres.
+
+    Returns:
+        float: The tolerance every reach in the call is judged against.
+
+    Raises:
+        ValueError: If it is not finite, or not greater than zero - `converged` would then be
+            a claim about nothing.
+
+    """
+    tolerance_m = _finite(tolerance_m, "tolerance_m")
+    if tolerance_m <= 0.0:
+        raise ValueError(f"tolerance_m must be greater than 0 metres, not {tolerance_m}")
+    return tolerance_m
 
 
 def _rest_ancestor_chain(tip, length):
@@ -1004,12 +1184,12 @@ def _world_chain_reach(armature, rest_chain):
     return sum((matrix @ bone.tail_local - matrix @ bone.head_local).length for bone in rest_chain)
 
 
-def _reach_convergence_warning(entry, tolerance_m):
+def _reach_convergence_warning(solution, tolerance_m):
     """
     Say why one reach missed its tolerance, separating an unreachable target from a stall.
 
     Args:
-        entry: One `_solve_one_reach` result.
+        solution: One `ReachSolution`.
         tolerance_m: The convergence tolerance this call asked for, in metres.
 
     Returns:
@@ -1017,21 +1197,22 @@ def _reach_convergence_warning(entry, tolerance_m):
         cause, or None when the reach converged and there is nothing to act on.
 
     """
-    if entry["converged"]:
+    if solution.converged:
         return None
+    measured = solution.measurements
     missed = (
-        f"Reach '{entry['tip_bone']}' did not converge: achieved_error_m "
-        f"{entry['achieved_error_m']:.6g} exceeds tolerance_m {tolerance_m:.6g}"
+        f"Reach '{solution.chain[0].name}' did not converge: achieved_error_m "
+        f"{measured['achieved_error_m']:.6g} exceeds tolerance_m {tolerance_m:.6g}"
     )
-    if entry["out_of_reach"]:
+    if solution.out_of_reach:
         return (
             f"{missed}. The target is out of reach: target_distance_m "
-            f"{entry['target_distance_m']:.6g} is beyond chain_reach_m {entry['chain_reach_m']:.6g}. "
+            f"{measured['target_distance_m']:.6g} is beyond chain_reach_m {measured['chain_reach_m']:.6g}. "
             "Move the target closer, lengthen the chain with chain_length, or move the armature."
         )
     return (
         f"{missed}. The target is within the chain's range (target_distance_m "
-        f"{entry['target_distance_m']:.6g} of chain_reach_m {entry['chain_reach_m']:.6g}), so the "
+        f"{measured['target_distance_m']:.6g} of chain_reach_m {measured['chain_reach_m']:.6g}), so the "
         "solve stalled short of it: raise iterations, supply a pole_target, or loosen tolerance_m."
     )
 
@@ -1105,32 +1286,24 @@ def _validated_reach_hinge(reach, rest_chain):
     return bone_name, axis, math.radians(minimum), math.radians(maximum)
 
 
-def _applied_reach_hinge(armature, reach, rest_chain):
+@contextlib.contextmanager
+def _reach_hinge(armature, hinge):
     """
     Constrain one chain bone to a single rotation axis for the duration of the solve.
 
     A knee has one axis and one sign; an unconstrained IK solver will invert it to save the
     solve an iteration, which is how a walk cycle ends up with a backwards leg. The limit is
-    temporary: the caller's `finally` puts every value back.
+    temporary: every value it overwrote is back before the block ends.
 
     Args:
         armature: The armature being solved.
-        reach: The reach entry, read for its optional `hinge`.
-        rest_chain: The reach's resolved rest bones, tip first.
-
-    Returns:
-        tuple | None: The pose bone and the property values to restore, or None when the
-        reach asked for no hinge.
-
-    Raises:
-        ValueError: If the hinge names a bone that is not in this reach's chain - limiting a
-            bone the solve does not drive would silently do nothing.
+        hinge: `_validated_reach_hinge` output, or None when the reach asked for no hinge.
 
     """
-    validated = _validated_reach_hinge(reach, rest_chain)
-    if validated is None:
-        return None
-    bone_name, axis, minimum, maximum = validated
+    if hinge is None:
+        yield None
+        return
+    bone_name, axis, minimum, maximum = hinge
     pose_bone = armature.pose.bones[bone_name]
     lowered = axis.lower()
     fields = {
@@ -1145,70 +1318,128 @@ def _applied_reach_hinge(armature, reach, rest_chain):
     restore = {field: getattr(pose_bone, field) for field in fields}
     for field, value in fields.items():
         setattr(pose_bone, field, value)
-    return pose_bone, restore
+    try:
+        yield pose_bone
+    finally:
+        for field, value in restore.items():
+            setattr(pose_bone, field, value)
 
 
-def _solve_one_reach(armature, reach, captured, tolerance_m):
+@contextlib.contextmanager
+def _reach_constraint(tip_pose_bone, reach, target_obj, pole_obj, chain_count):
     """
-    Resolve, temporarily IK-solve, and capture one reach's chain into captured.
+    Drive one chain from a temporary IK constraint, and never leave it live on the rig.
+
+    Args:
+        tip_pose_bone: The chain's tip pose bone, which carries the constraint.
+        reach: The reach entry, read for pole angle, stretch and iteration count.
+        target_obj: The object the tip's tail solves towards.
+        pole_obj: The object the chain bends towards.
+        chain_count: How many bones up the chain the solve drives.
+
+    """
+    constraint = _configured_reach_constraint(tip_pose_bone, reach, target_obj, pole_obj, chain_count)
+    try:
+        yield constraint
+    finally:
+        tip_pose_bone.constraints.remove(constraint)
+
+
+class ReachSolution(NamedTuple):
+    """
+    Everything one solved reach knows, before any tool decides what to report of it.
+
+    `solve_bone_reach` and `keyframe_bone_reach` report overlapping but different subsets of
+    this. Returning a wire-shaped dict made the reply format the solver's business, and both
+    tools re-projections of a dict neither of them owned: one grafted an extra key onto it,
+    one narrowed it back down, and a third reached into `solved[0][1]["pole_source"]`.
+    """
+
+    chain: tuple
+    chain_length_source: str
+    pole_source: str
+    measurements: dict
+    converged: bool
+    out_of_reach: bool
+    captured: dict
+
+
+def _solve_one_reach(armature, reach, rest_chain, chain_length_source, hinge, tolerance_m):
+    """
+    Temporarily IK-solve one reach and capture the pose its chain was left holding.
 
     Args:
         armature: The armature object being posed.
-        reach: One validated BoneReach entry, as a dict.
-        captured: `{pose_bone_name: pose_space_matrix}`, shared across every reach in this
-            call and extended in place with this reach's chain bones.
+        reach: One validated reach entry, as a dict, read for its target, pole and solver
+            settings.
+        rest_chain: The reach's resolved rest bones, tip first.
+        chain_length_source: "explicit" or "resolved", for the reply to repeat.
+        hinge: `_validated_reach_hinge` output, or None.
         tolerance_m: How close tip_bone's tail must land to the target to count as converged.
 
     Returns:
-        dict: This reach's solver metadata - tip_bone, chain_bones, chain_length,
-        chain_length_source, pole_source, target_world, head_world, tail_world,
-        achieved_error_m, converged, chain_reach_m, target_distance_m and out_of_reach.
-        Does not include "bones"; the caller adds that once every reach's captured matrices
-        have been applied together.
+        ReachSolution: the chain, where the pole came from, the world measurements, whether
+        the solve landed, and each chain bone's evaluated pose-space matrix.
 
     Raises:
-        ValueError: If tip_bone is unknown, chain_length is explicit but exceeds tip_bone's
-            ancestors, this reach's chain overlaps an earlier reach's, an explicit target or
-            pole names an object that does not exist, or an omitted pole cannot be
-            synthesized from a straight or degenerate rest chain.
+        ValueError: If an explicit target or pole names an object that does not exist, or an
+            omitted pole cannot be synthesized from a straight or degenerate rest chain.
 
     """
-    rest_chain, chain_length_source = _resolve_reach_chain(armature, reach, captured)
     target_obj, target_is_temp, pole_obj, pole_is_temp, pole_source = _resolve_reach_geometry(
         armature, reach, rest_chain
     )
     tip_pose_bone = armature.pose.bones[rest_chain[0].name]
-    constraint = None
-    hinge_restore = None
     try:
-        hinge_restore = _applied_reach_hinge(armature, reach, rest_chain)
-        constraint = _configured_reach_constraint(tip_pose_bone, reach, target_obj, pole_obj, len(rest_chain))
-        bpy.context.view_layer.update()
-        for rest_bone in rest_chain:
-            captured[rest_bone.name] = _matrix_list(armature.pose.bones[rest_bone.name].matrix)
-        measured = _reach_measurements(armature, rest_chain, tip_pose_bone, target_obj)
+        with (
+            _reach_hinge(armature, hinge),
+            _reach_constraint(tip_pose_bone, reach, target_obj, pole_obj, len(rest_chain)),
+        ):
+            bpy.context.view_layer.update()
+            captured = {bone.name: armature.pose.bones[bone.name].matrix.copy() for bone in rest_chain}
+            measured = _reach_measurements(armature, rest_chain, tip_pose_bone, target_obj)
     finally:
-        if constraint is not None:
-            tip_pose_bone.constraints.remove(constraint)
-        if hinge_restore is not None:
-            hinge_bone, values = hinge_restore
-            for field, value in values.items():
-                setattr(hinge_bone, field, value)
         if target_is_temp:
             bpy.data.objects.remove(target_obj, do_unlink=True)
         if pole_is_temp:
             bpy.data.objects.remove(pole_obj, do_unlink=True)
         bpy.context.view_layer.update()
-    return {
-        "tip_bone": rest_chain[0].name,
-        "chain_bones": [bone.name for bone in rest_chain],
-        "chain_length": len(rest_chain),
-        "chain_length_source": chain_length_source,
-        "pole_source": pole_source,
-        **measured,
-        "converged": measured["achieved_error_m"] <= tolerance_m,
-        "out_of_reach": measured["target_distance_m"] > measured["chain_reach_m"],
-    }
+    return ReachSolution(
+        chain=tuple(rest_chain),
+        chain_length_source=chain_length_source,
+        pole_source=pole_source,
+        measurements=measured,
+        converged=measured["achieved_error_m"] <= tolerance_m,
+        out_of_reach=measured["target_distance_m"] > measured["chain_reach_m"],
+        captured=captured,
+    )
+
+
+def _apply_captured_matrices(armature, captured, detail=False):
+    """
+    Apply pose matrices this call evaluated itself, without re-checking Blender's own output.
+
+    The reach paths used to flatten every captured matrix to sixteen floats, rebuild a
+    client-shaped pose entry from them and call `set_character_pose`, which re-resolved the
+    armature by name, re-checked its pose position and ran a finiteness test over all sixteen
+    - per bone, per frame. None of that was validating client input: the matrices came out of
+    the depsgraph moments earlier. `set_character_pose` keeps that validation for callers who
+    really do hand it numbers.
+
+    Args:
+        armature: The armature being posed.
+        captured: `{bone_name: pose-space matrix}`, as the solve evaluated them.
+        detail: Report each bone's pre-call matrix too, and neither matrix rounded.
+
+    Returns:
+        tuple: the `(pose_bone, spec, matrix)` triples the key writer takes, and one record
+        per posed bone.
+
+    """
+    prepared = [
+        (armature.pose.bones[name], {"bone_name": name, "matrix": matrix}, matrix) for name, matrix in captured.items()
+    ]
+    return prepared, _apply_pose_specs(armature, prepared, "POSE", detail=detail)
 
 
 def _prepared_keyed_reaches(armature, reaches):
@@ -1225,8 +1456,8 @@ def _prepared_keyed_reaches(armature, reaches):
 
     Returns:
         list[dict]: Per reach: `spec` (the reach's solver fields, without its keys),
-        `rest_chain`, `chain_length_source`, and `keys`, mapping frame to that frame's
-        target fields.
+        `rest_chain`, `chain_length_source`, `hinge` (validated once here, not once per
+        frame), and `keys`, mapping frame to that frame's target fields.
 
     Raises:
         ValueError: If a reach names no keys, two reaches claim the same bone, a chain or
@@ -1241,7 +1472,7 @@ def _prepared_keyed_reaches(armature, reaches):
         rest_chain, chain_length_source = _resolve_reach_chain(armature, reach, claimed)
         for bone in rest_chain:
             claimed[bone.name] = index
-        _validated_reach_hinge(reach, rest_chain)
+        hinge = _validated_reach_hinge(reach, rest_chain)
         keys = reach.get("keys") or []
         if not keys:
             raise ValueError(f"reaches[{index}] ('{rest_chain[0].name}') must supply at least one key")
@@ -1263,6 +1494,7 @@ def _prepared_keyed_reaches(armature, reaches):
                 "spec": spec,
                 "rest_chain": rest_chain,
                 "chain_length_source": chain_length_source,
+                "hinge": hinge,
                 "keys": frames,
             }
         )
@@ -1285,7 +1517,7 @@ def _solved_reach_frame(armature, prepared, frame, tolerance_m):
 
     Returns:
         tuple: `captured` (pose-space matrices per bone) and a list of
-        `(reach_index, solver_result)` for the reaches keyed at this frame.
+        `(reach_index, ReachSolution)` for the reaches keyed at this frame.
 
     """
     _place_playhead(bpy.context.scene, frame)
@@ -1298,16 +1530,25 @@ def _solved_reach_frame(armature, prepared, frame, tolerance_m):
         key = entry["keys"].get(frame)
         if key is None:
             continue
-        solved.append((index, _solve_one_reach(armature, {**entry["spec"], **key}, captured, tolerance_m)))
+        solution = _solve_one_reach(
+            armature,
+            {**entry["spec"], **key},
+            entry["rest_chain"],
+            entry["chain_length_source"],
+            entry["hinge"],
+            tolerance_m,
+        )
+        captured.update(solution.captured)
+        solved.append((index, solution))
     return captured, solved
 
 
-def _reach_frame_record(result, frame):
+def _reach_frame_record(solution, frame):
     """
-    Narrow one frame's solver result to what the reply reports per frame.
+    Narrow one frame's solve to what the reply reports per frame.
 
     Args:
-        result: One `_solve_one_reach` result.
+        solution: One `ReachSolution`.
         frame: The frame it was solved at.
 
     Returns:
@@ -1315,24 +1556,25 @@ def _reach_frame_record(result, frame):
         target_distance_m and out_of_reach.
 
     """
+    measured = solution.measurements
     return {
         "frame": frame,
-        "target_world": result["target_world"],
-        "tail_world": result["tail_world"],
-        "achieved_error_m": result["achieved_error_m"],
-        "converged": result["converged"],
-        "chain_reach_m": result["chain_reach_m"],
-        "target_distance_m": result["target_distance_m"],
-        "out_of_reach": result["out_of_reach"],
+        "target_world": measured["target_world"],
+        "tail_world": measured["tail_world"],
+        "achieved_error_m": measured["achieved_error_m"],
+        "converged": solution.converged,
+        "chain_reach_m": measured["chain_reach_m"],
+        "target_distance_m": measured["target_distance_m"],
+        "out_of_reach": solution.out_of_reach,
     }
 
 
-def _keyed_reach_warning(result, frame, tolerance_m):
+def _keyed_reach_warning(solution, frame, tolerance_m):
     """
     Name the frame a reach missed its tolerance on.
 
     Args:
-        result: One `_solve_one_reach` result.
+        solution: One `ReachSolution`.
         frame: The frame it was solved at.
         tolerance_m: The tolerance it was judged against.
 
@@ -1340,17 +1582,43 @@ def _keyed_reach_warning(result, frame, tolerance_m):
         str | None: The frame-prefixed notice, or None when that frame converged.
 
     """
-    warning = _reach_convergence_warning(result, tolerance_m)
+    warning = _reach_convergence_warning(solution, tolerance_m)
     return None if warning is None else f"Frame {frame:g}: {warning}"
+
+
+def _solved_reach_record(solution, by_bone):
+    """
+    Report one immediately-applied reach: what it achieved, and the bones it left posed.
+
+    Args:
+        solution: One `ReachSolution`.
+        by_bone: `_apply_captured_matrices`' records, keyed by bone name.
+
+    Returns:
+        dict: tip_bone, chain_bones, chain_length, chain_length_source, pole_source, the
+        world measurements, converged, out_of_reach and this chain's per-bone records.
+
+    """
+    return {
+        "tip_bone": solution.chain[0].name,
+        "chain_bones": [bone.name for bone in solution.chain],
+        "chain_length": len(solution.chain),
+        "chain_length_source": solution.chain_length_source,
+        "pole_source": solution.pole_source,
+        **solution.measurements,
+        "converged": solution.converged,
+        "out_of_reach": solution.out_of_reach,
+        "bones": [by_bone[bone.name] for bone in solution.chain],
+    }
 
 
 def _keyed_reach_record(entry, solved):
     """
-    Report one reach: its resolved chain, and what each of its frames achieved.
+    Report one keyed reach: its resolved chain, and what each of its frames achieved.
 
     Args:
         entry: The `_prepared_keyed_reaches` record for this reach.
-        solved: `(frame, solver_result)` for every frame this reach was solved at.
+        solved: `(frame, ReachSolution)` for every frame this reach was solved at.
 
     Returns:
         dict: tip_bone, chain_bones, chain_length, chain_length_source, pole_source and
@@ -1365,8 +1633,8 @@ def _keyed_reach_record(entry, solved):
         "chain_length_source": entry["chain_length_source"],
         # Every frame resolves the pole the same way, so the first frame's answer is the
         # reach's answer; a reach with no frames cannot happen (the preparation refuses it).
-        "pole_source": solved[0][1]["pole_source"] if solved else None,
-        "keys": [_reach_frame_record(result, frame) for frame, result in solved],
+        "pole_source": solved[0][1].pole_source if solved else None,
+        "keys": [_reach_frame_record(solution, frame) for frame, solution in solved],
     }
 
 
@@ -1379,7 +1647,7 @@ def _key_reach_frames(armature, action, prepared, keying_policy, style, toleranc
         action: The action every key lands in, already assigned to the rig.
         prepared: `_prepared_keyed_reaches` output.
         keying_policy: INSERT or REPLACE, passed through to `_write_pose_keys`.
-        style: `(interpolation, handle_left, handle_right, easing)` for every key written.
+        style: The `KeyStyle` every key this call writes is shaped with.
         tolerance_m: The convergence tolerance, in metres.
         detail: Whether to capture per-bone matrices at Blender's own precision.
 
@@ -1396,16 +1664,13 @@ def _key_reach_frames(armature, action, prepared, keying_policy, style, toleranc
     solved_by_reach = {index: [] for index in range(len(prepared))}
     for frame in frames:
         captured, solved = _solved_reach_frame(armature, prepared, frame, tolerance_m)
-        specs = _validate_pose_specs(
-            armature, [{"bone_name": name, "matrix": matrix} for name, matrix in captured.items()], "POSE"
-        )
-        _apply_pose_specs(armature, specs, "POSE", detail=detail)
+        specs, _records = _apply_captured_matrices(armature, captured, detail)
         written = _write_pose_keys(action, specs, frame, keying_policy)
-        styled += _style_written_keys(action, written, *style)
+        styled += _style_written_keys(action, written, style)
         changed_keys.extend(written)
         changed_bones.extend(name for name in captured if name not in changed_bones)
-        for index, result in solved:
-            solved_by_reach[index].append((frame, result))
+        for index, solution in solved:
+            solved_by_reach[index].append((frame, solution))
     return {
         "frames": frames,
         "changed_keys": changed_keys,
@@ -1417,8 +1682,8 @@ def _key_reach_frames(armature, action, prepared, keying_policy, style, toleranc
         "warnings": [
             warning
             for results in solved_by_reach.values()
-            for frame, result in results
-            for warning in [_keyed_reach_warning(result, frame, tolerance_m)]
+            for frame, solution in results
+            for warning in [_keyed_reach_warning(solution, frame, tolerance_m)]
             if warning is not None
         ],
     }
@@ -1441,26 +1706,20 @@ def _keyed_reach_reply(armature, animation, action, previous_action, keyed, tole
         dict: The handler reply, with one warning per frame that did not converge.
 
     """
-    assigned_name = getattr(getattr(animation, "action", None), "name", None)
-    previous_name = getattr(previous_action, "name", None)
-    reply = {
-        "armature_object": armature.name,
-        "action": action.name,
-        "action_slot": getattr(getattr(animation, "action_slot", None), "identifier", None),
-        "assigned_action": assigned_name,
-        "tolerance_m": tolerance_m,
-        "keying_policy": keying_policy,
-        "changed_bones": keyed["changed_bones"],
-        "keyed_frames": keyed["frames"],
-        "changed_keys": keyed["changed_keys"],
-        "interpolation_updates": keyed["styled"],
-        "reaches": keyed["reaches"],
-        "changed_objects": [armature.name],
-        "changed_resources": [{"type": "ACTION", "name": action.name}],
-        "warnings": keyed["warnings"],
-    }
-    if previous_name is not None and previous_name != assigned_name:
-        reply["unassigned_action"] = previous_name
+    reply = _action_reply(
+        armature,
+        animation,
+        action,
+        previous_action,
+        keying_policy,
+        keyed["changed_bones"],
+        keyed["changed_keys"],
+        keyed["styled"],
+    )
+    reply["tolerance_m"] = tolerance_m
+    reply["keyed_frames"] = keyed["frames"]
+    reply["reaches"] = keyed["reaches"]
+    reply["warnings"] = keyed["warnings"]
     return reply
 
 
@@ -1507,30 +1766,23 @@ class PoseAnimationHandlersMixin:
         confirm_reset_unspecified=False,
         detail=False,
     ):
-        armature = _armature_object(armature_object_name)
-        if armature.data.pose_position != "POSE":
-            raise ValueError("Armature must use pose_position='POSE' to set a character pose")
+        armature = _posable_armature(armature_object_name, "set a character pose")
         if reset_unspecified and not confirm_reset_unspecified:
             raise ValueError("confirm_reset_unspecified=True is required")
         prepared = _validate_pose_specs(armature, list(poses or ()), space)
-        affected = list(armature.pose.bones) if reset_unspecified else [item[0] for item in prepared]
-        matrices = {bone.name: bone.matrix_basis.copy() for bone in affected}
-        properties = {}
-        for bone in affected:
-            properties[bone.name] = {
-                name: bone[name]
-                for prepared_bone, spec, _matrix in prepared
-                if prepared_bone == bone
-                for name in spec.get("custom_properties", {})
-            }
-        try:
+        # A reset touches every bone, so every bone is what has to be handed back if the call
+        # refuses part way through.
+        affected = (
+            [bone.name for bone in armature.pose.bones]
+            if reset_unspecified
+            else [pose_bone.name for pose_bone, _spec, _matrix in prepared]
+        )
+        custom_properties = {
+            pose_bone.name: tuple(spec.get("custom_properties", {})) for pose_bone, spec, _matrix in prepared
+        }
+        # The pose is this tool's deliverable, so a call that succeeds keeps it.
+        with restored_bone_pose(armature, affected, custom_properties, only_on_error=True):
             records = _apply_pose_specs(armature, prepared, space, reset_unspecified, detail)
-        except Exception:
-            for bone in affected:
-                bone.matrix_basis = matrices[bone.name]
-                for name, value in properties[bone.name].items():
-                    bone[name] = value
-            raise
         return {
             "armature_object": armature.name,
             "space": space,
@@ -1543,32 +1795,33 @@ class PoseAnimationHandlersMixin:
 
     def solve_bone_reach(self, armature_object_name, reaches, tolerance_m=_DEFAULT_REACH_TOLERANCE_M, detail=False):
         """Bend one or more unbranched chains so each tip_bone's tail reaches a point."""
-        tolerance_m = _finite(tolerance_m, "tolerance_m")
-        if tolerance_m <= 0.0:
-            raise ValueError(f"tolerance_m must be greater than 0 metres, not {tolerance_m}")
-        armature = _armature_object(armature_object_name)
-        if armature.data.pose_position != "POSE":
-            raise ValueError("Armature must use pose_position='POSE' to solve a bone reach")
+        tolerance_m = _validated_tolerance(tolerance_m)
+        armature = _posable_armature(armature_object_name, "solve a bone reach")
         if not reaches:
             raise ValueError("At least one reach entry is required")
         captured = {}
-        solver_info = [_solve_one_reach(armature, reach, captured, tolerance_m) for reach in reaches]
-        poses = [{"bone_name": name, "matrix": matrix} for name, matrix in captured.items()]
-        pose_reply = self.set_character_pose(armature_object_name, poses, space="POSE", detail=detail)
-        by_bone = {record["bone"]: record for record in pose_reply["bones"]}
-        for entry in solver_info:
-            entry["bones"] = [by_bone[name] for name in entry["chain_bones"]]
+        solutions = []
+        for reach in reaches:
+            # `captured` doubles as the claim register: a chain overlapping an earlier reach's
+            # is refused here rather than letting the later solve silently win.
+            rest_chain, chain_length_source = _resolve_reach_chain(armature, reach, captured)
+            hinge = _validated_reach_hinge(reach, rest_chain)
+            solution = _solve_one_reach(armature, reach, rest_chain, chain_length_source, hinge, tolerance_m)
+            captured.update(solution.captured)
+            solutions.append(solution)
+        _specs, records = _apply_captured_matrices(armature, captured, detail)
+        by_bone = {record["bone"]: record for record in records}
         return {
             "armature_object": armature.name,
             "tolerance_m": tolerance_m,
-            "changed_bones": pose_reply["changed_bones"],
-            "reaches": solver_info,
+            "changed_bones": [record["bone"] for record in records],
+            "reaches": [_solved_reach_record(solution, by_bone) for solution in solutions],
             "changed_objects": [armature.name],
             # A reach that missed says so here as well as in its own `converged` flag: the
             # envelope lifts these, so a caller reading only the warnings still sees it.
             "warnings": [
                 warning
-                for warning in (_reach_convergence_warning(entry, tolerance_m) for entry in solver_info)
+                for warning in (_reach_convergence_warning(solution, tolerance_m) for solution in solutions)
                 if warning is not None
             ],
         }
@@ -1593,43 +1846,28 @@ class PoseAnimationHandlersMixin:
         armature = _armature_object(armature_object_name)
         frame = _finite(frame, "frame")
         prepared = _validate_pose_specs(armature, list(poses or ()), space)
-        style = (interpolation, handle_left, handle_right, easing)
+        style = KeyStyle(interpolation, handle_left, handle_right, easing)
         _refuse_unkeyable_request(keying_policy, style, action_policy, action_name, prepared)
         scene = bpy.context.scene
         animation = armature.animation_data_create()
-        previous_action = animation.action
-        previous_slot = getattr(animation, "action_slot", None)
-        previous_frame = scene.frame_current
-        matrices = {bone.name: bone.matrix_basis.copy() for bone, _spec, _matrix in prepared}
-        action = assign_named_action(
-            armature,
-            action_name,
-            action_policy,
-            action_slot_identifier,
-            confirm_displace=confirm_displace_action,
-        )
-        keyed = False
-        try:
+        with (
+            restored_playhead(scene),
+            restored_action_assignment(animation) as previous_action,
+            restored_bone_pose(armature, [pose_bone.name for pose_bone, _spec, _matrix in prepared]),
+        ):
+            action = assign_named_action(
+                armature,
+                action_name,
+                action_policy,
+                action_slot_identifier,
+                confirm_displace=confirm_displace_action,
+            )
             _place_playhead(scene, frame)
             pose_records = []
             if keying_policy != "REMOVE":
                 pose_records = _apply_pose_specs(armature, prepared, space, detail=detail)
             changed_keys = _write_pose_keys(action, prepared, frame, keying_policy)
-            interpolation_count = 0 if keying_policy == "REMOVE" else _style_written_keys(action, changed_keys, *style)
-            keyed = True
-        finally:
-            for pose_bone, _spec, _matrix in prepared:
-                pose_bone.matrix_basis = matrices[pose_bone.name]
-            if not keyed:
-                # Nothing was authored, so hand the rig back exactly as it arrived.
-                animation.action = previous_action
-                if previous_action is not None and previous_slot is not None:
-                    with contextlib.suppress(Exception):
-                        animation.action_slot = previous_slot
-            # Restoring the pose happens before the playhead moves back, so an assigned action
-            # drives the bones from here: the rig holds animation, not a stranded pose.
-            scene.frame_set(previous_frame)
-            bpy.context.view_layer.update()
+            interpolation_count = 0 if keying_policy == "REMOVE" else _style_written_keys(action, changed_keys, style)
         return _keyframe_reply(
             armature,
             animation,
@@ -1659,38 +1897,26 @@ class PoseAnimationHandlersMixin:
         detail=False,
     ):
         """Solve each reach at each of its frames against the evaluated body pose, and key it."""
-        armature = _armature_object(armature_object_name)
-        if armature.data.pose_position != "POSE":
-            raise ValueError("Armature must use pose_position='POSE' to key a bone reach")
-        tolerance_m = _finite(tolerance_m, "tolerance_m")
-        if tolerance_m <= 0.0:
-            raise ValueError(f"tolerance_m must be greater than 0 metres, not {tolerance_m}")
+        armature = _posable_armature(armature_object_name, "key a bone reach")
+        tolerance_m = _validated_tolerance(tolerance_m)
         if keying_policy not in {"INSERT", "REPLACE"}:
             raise ValueError("keying_policy must be INSERT or REPLACE; use keyframe_character_pose to remove keys")
-        style = (interpolation, handle_left, handle_right, easing)
-        validate_key_style(*style)
+        style = KeyStyle(interpolation, handle_left, handle_right, easing)
+        style.validate()
         prepared = _prepared_keyed_reaches(armature, list(reaches or ()))
         scene = bpy.context.scene
         animation = armature.animation_data_create()
-        previous_action = animation.action
-        previous_frame = scene.frame_current
-        chain_names = [bone.name for entry in prepared for bone in entry["rest_chain"]]
-        matrices = {name: armature.pose.bones[name].matrix_basis.copy() for name in chain_names}
-        action = assign_named_action(
-            armature,
-            action_name,
-            action_policy,
-            action_slot_identifier,
-            confirm_displace=confirm_displace_action,
-        )
-        try:
+        with (
+            restored_playhead(scene),
+            restored_action_assignment(animation) as previous_action,
+            restored_bone_pose(armature, [bone.name for entry in prepared for bone in entry["rest_chain"]]),
+        ):
+            action = assign_named_action(
+                armature,
+                action_name,
+                action_policy,
+                action_slot_identifier,
+                confirm_displace=confirm_displace_action,
+            )
             keyed = _key_reach_frames(armature, action, prepared, keying_policy, style, tolerance_m, detail)
-        finally:
-            # The pose is handed back exactly as it arrived, then the playhead: from here the
-            # assigned action drives the bones, so the rig shows its animation rather than
-            # the last frame this call happened to solve.
-            for name in chain_names:
-                armature.pose.bones[name].matrix_basis = matrices[name]
-            scene.frame_set(previous_frame)
-            bpy.context.view_layer.update()
         return _keyed_reach_reply(armature, animation, action, previous_action, keyed, tolerance_m, keying_policy)

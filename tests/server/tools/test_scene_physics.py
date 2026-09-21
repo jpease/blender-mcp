@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import scene_physics
+from blender_mcp.server.tools import _dispatch, scene_physics
 
 SCENE_PHYSICS_COMMANDS = {
     "get_scene_physics_info",
@@ -31,8 +31,8 @@ def test_scene_physics_tools_are_registered_and_dispatched(monkeypatch) -> None:
 
     assert SCENE_PHYSICS_COMMANDS <= set(scene_physics.mcp._tool_manager._tools)
     assert SCENE_PHYSICS_COMMANDS <= set(server._build_command_handlers())
-    assert "get_scene_physics_info" in server._READ_ONLY_COMMANDS
-    assert "configure_scene_physics" not in server._READ_ONLY_COMMANDS
+    assert server.command_spec("get_scene_physics_info").read_only
+    assert not server.command_spec("configure_scene_physics").read_only
 
 
 def test_scene_physics_patch_is_strict_and_bounded() -> None:
@@ -55,7 +55,7 @@ def test_scene_physics_patch_is_strict_and_bounded() -> None:
 
 def test_configure_scene_physics_serializes_patch(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(scene_physics, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     result = asyncio.run(
         scene_physics.configure_scene_physics(
@@ -82,7 +82,7 @@ def test_configure_scene_physics_serializes_patch(monkeypatch) -> None:
 
 def test_get_scene_physics_info_forwards_convert_seconds(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(scene_physics, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(scene_physics.get_scene_physics_info(ctx=None, scene_name="Scene", convert_seconds=[0.0, 5.0]))
 

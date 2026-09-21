@@ -2,15 +2,13 @@
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
 """Typed tool for duplicating a cloth setup with explicit sharing policies."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import _call
+from .._dispatch import call_blender
 
 VariantDataPolicy = Literal["COPY", "SHARE"]
 VariantDependencyPolicy = Literal["DUPLICATE", "SHARE"]
@@ -39,8 +37,7 @@ async def duplicate_cloth_setup_variant(
     actions follow their own policies. Collision/effector dependencies and render surfaces are
     discovered from the source setup, then either shared or duplicated as explicitly requested.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "duplicate_cloth_setup_variant",
         {
             "source_object_name": source_object_name,
@@ -55,5 +52,5 @@ async def duplicate_cloth_setup_variant(
             "render_surface_policy": render_surface_policy,
             "cache_directory": cache_directory,
         },
-        [source_object_name],
+        changed_objects=[source_object_name],
     )

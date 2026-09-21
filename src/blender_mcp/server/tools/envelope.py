@@ -47,13 +47,24 @@ with a warning, and a reply still over the budget with every page down to its la
 so instead of offering an offset. Tools return what changed plus the identifiers to find the
 rest; full state is a `detail=True` request, not the default.
 
-No tool module shapes this dict itself: `envelope_for` lifts `changed_objects` and
-`changed_resources` out of an addon reply, bounds the object list at `CHANGED_OBJECTS_LIMIT`, and
-calls `ok()`, which leaves each module's own `_call` holding nothing but its transport and error
-handling.
+`envelope_for` is the shared path: it lifts `changed_objects` and `changed_resources` out of an
+addon reply, bounds the object list at `CHANGED_OBJECTS_LIMIT`, and calls `ok()`. A tool reaches it
+by awaiting `tools/_dispatch.call_blender`, which is the only function in the server that both
+sends a command and shapes its reply; a tool that must read the reply before it knows what changed
+- a created object's generated name - awaits `_dispatch.send_blender_command` and hands that reply
+to `envelope_for` itself.
+
+`ok()` is called directly only by a tool whose payload is not one addon reply: it returns images
+(`get_viewport_screenshot`, `get_sketchfab_model_preview`, the two preview renders), it composes one
+payload out of several round trips (`cloth.configure`, `core`, `rendering`'s orchestrated animation,
+`polyhaven`'s status-then-query pairs), or it must report `ok=False` for a cancelled operator, which
+`envelope_for` has no flag for (`nd`). A straight `ok(reply, changed_objects=...)` over a single
+command's reply is not one of those cases and belongs on `call_blender` instead - it silently skips
+the `CHANGED_OBJECTS_LIMIT` bound and the lift of the addon's own change keys.
 """
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic_core import to_json
@@ -160,6 +171,10 @@ def _pagination_names(owner: dict, key: str) -> dict[str, str] | None:
 # budget too, and so would the one after it, so an offset is not a way out of this reply.
 _NO_RESUME = "the reply is over the budget even with every page cut to one record - request a narrower scope"
 
+# What an unpaginated page's warning says instead: it carries no offset to resume from, so the
+# only way to the records it dropped is a request that asks for fewer of them.
+_NARROW_SCOPE = "rerun with a narrower scope to see the rest"
+
 
 def _page_bytes(page: tuple[dict, str]) -> int:
     """
@@ -176,67 +191,217 @@ def _page_bytes(page: tuple[dict, str]) -> int:
     return len(to_json(owner[key], fallback=str))
 
 
-def _shorten_page(reply: dict, owner: dict, key: str, current_bytes: int) -> tuple[int, str, int, int] | None:
+@dataclass(frozen=True)
+class PageCut:
     """
-    Cut one page to the most records that leave `reply` inside the budget, never below one.
+    One page of records shortened to fit the budget.
 
-    The warning and the pagination keys are part of the reply, so both are in place, at their
-    widest, while the page is measured. Writing them afterwards would push a reply that just
-    fitted back over the budget - `next_offset` is a key some payloads do not carry at all.
+    Attributes:
+        key: The key whose list was cut.
+        kept: Records left on the wire.
+        total: Records the page held before the cut.
+        resume: How to read the rest, in the page's own terms.
 
-    The page's own `offset` is what `next_offset` counts from, so a resumed page continues
-    where this one stopped rather than restarting.
+    """
+
+    key: str
+    kept: int
+    total: int
+    resume: str
+
+
+def _page_offset(owner: dict, names: dict[str, str] | None) -> int:
+    """
+    Read the offset the page itself started at, which is what a resume point counts from.
 
     Args:
-        reply: The envelope, modified in place.
+        owner: The dict holding the page.
+        names: The page's pagination key names, or None when it carries none.
+
+    Returns:
+        The page's own starting offset; 0 for a page that does not report one.
+
+    """
+    return int(owner.get(names["offset"]) or 0) if names else 0
+
+
+def _pagination_updates(owner: dict, key: str, kept: int) -> dict[str, object]:
+    """
+    Build the pagination keys a page cut to `kept` records has to carry.
+
+    Args:
+        owner: The dict holding the page.
+        key: The key whose value is the list of records.
+        kept: How many records the page keeps.
+
+    Returns:
+        The values to write on `owner`, empty for a page that carries no pagination.
+
+    """
+    names = _pagination_names(owner, key)
+    if names is None:
+        return {}
+    updates: dict[str, object] = {
+        names["truncated"]: True,
+        names["next_offset"]: _page_offset(owner, names) + kept,
+    }
+    if names["returned_count"] in owner:
+        updates[names["returned_count"]] = kept
+    return updates
+
+
+def _resume_hint(owner: dict, key: str, kept: int) -> str:
+    """
+    How the records a cut to `kept` drops can still be read.
+
+    Args:
+        owner: The dict holding the page.
+        key: The key whose value is the list of records.
+        kept: How many records the page keeps.
+
+    Returns:
+        The offset to continue from, or the advice to narrow the scope when the page cannot page.
+
+    """
+    names = _pagination_names(owner, key)
+    if names is None:
+        return _NARROW_SCOPE
+    return f"continue with offset={_page_offset(owner, names) + kept}"
+
+
+def _staged(reply: dict, cuts: Sequence[PageCut], pending: str | None = None) -> dict:
+    """
+    Copy the reply's top level with the warnings `cuts` will add, plus the one still being sized.
+
+    Shallow on purpose, and the reason nothing has to be written before it is known: `data` stays
+    shared, so slicing a page is visible in the copy, while `warnings` is a fresh list the real
+    reply never sees.
+
+    Args:
+        reply: The envelope being fitted.
+        cuts: The shortenings decided so far, in the order they were decided.
+        pending: The widest text the shortening now being sized could take, if one is being sized.
+
+    Returns:
+        A copy of the envelope's top level carrying those warnings.
+
+    """
+    warnings = [*reply["warnings"]]
+    warnings.extend(_shortening_warning(cut.key, cut.kept, cut.total, cut.resume) for cut in cuts)
+    if pending is not None:
+        warnings.append(pending)
+    return {**reply, "warnings": warnings}
+
+
+def _widest_warning(owner: dict, key: str) -> str:
+    """
+    Render the longest warning this page's shortening could produce, every record kept.
+
+    A cut is sized against this rather than against the warning it ends up writing, because that
+    text is only known once the count is, and a warning appended after the measurement would push a
+    reply that just fitted back over the budget.
+
+    Args:
+        owner: The dict holding the page.
+        key: The key whose value is the list of records.
+
+    Returns:
+        The warning text at its widest.
+
+    """
+    total = len(owner[key])
+    return _shortening_warning(key, total, total, _resume_hint(owner, key, total))
+
+
+def _shortening_helps(reply: dict, owner: dict, key: str, current_bytes: int) -> bool:
+    """
+    Whether cutting this page takes any bytes off the reply at all.
+
+    `_record_pages` walks the payload before anything is cut, so a page nested inside a record that
+    a larger page has since dropped is no longer on the wire: cutting it buys no bytes and its
+    warning would name records this reply never carried.
+
+    Args:
+        reply: The envelope to measure, staged with the warnings decided so far.
         owner: The dict holding the page.
         key: The key whose value is the list of records.
         current_bytes: What `reply` encodes to right now, already measured by the caller.
 
     Returns:
-        The (warning index, key, kept, total) of the shortening, or None when the page costs the
-        reply nothing at all.
+        True when the page is still on the wire.
 
     """
     records = owner[key]
-    # `_record_pages` walks the payload before anything is cut, so a page nested inside a record
-    # that a larger page has since dropped is no longer on the wire: cutting it buys no bytes and
-    # its warning would name records this reply never carried.
     owner[key] = records[:1]
-    reachable = _wire_bytes(reply) < current_bytes
-    owner[key] = records
-    if not reachable:
-        return None
-    total = len(records)
-    names = _pagination_names(owner, key)
-    start = int(owner.get(names["offset"]) or 0) if names else 0
-    resume = f"continue with offset={start + total}" if names else "rerun with a narrower scope to see the rest"
-    if names:
-        owner[names["truncated"]] = True
-        owner[names["next_offset"]] = start + total
-        if names["returned_count"] in owner:
-            owner[names["returned_count"]] = total
-    index = len(reply["warnings"])
-    reply["warnings"].append(_shortening_warning(key, total, total, resume))
-    # Bytes grow with the record count, so the largest page that fits is a bisection, not a walk:
-    # a 500-bone pose would otherwise re-encode the whole reply 500 times.
-    low, high = 1, total
-    while low < high:
-        middle = (low + high + 1) // 2
-        owner[key] = records[:middle]
-        if _wire_bytes(reply) <= REPLY_BYTE_BUDGET:
-            low = middle
-        else:
-            high = middle - 1
-    kept = low
-    owner[key] = records[:kept]
-    if names:
-        owner[names["next_offset"]] = start + kept
-        if names["returned_count"] in owner:
-            owner[names["returned_count"]] = kept
-        resume = f"continue with offset={owner[names['next_offset']]}"
-    reply["warnings"][index] = _shortening_warning(key, kept, total, resume)
-    return index, key, kept, total
+    try:
+        return _wire_bytes(reply) < current_bytes
+    finally:
+        owner[key] = records
+
+
+def _largest_fitting_prefix(reply: dict, owner: dict, key: str) -> int:
+    """
+    Measure the most records `owner[key]` can keep with `reply` inside the budget, never below one.
+
+    Sizes the page against the reply as it will be sent: `reply` already carries the warning this
+    shortening will add (see `_staged`), and the page's pagination keys are held at their widest for
+    the duration of the measurement, because `next_offset` is a key some payloads do not carry at
+    all and adding it afterwards would push a reply that just fitted back over the budget.
+
+    Bytes grow with the record count, so the largest prefix that fits is a bisection, not a walk: a
+    500-bone pose would otherwise re-encode the whole reply 500 times.
+
+    Nothing is left behind - `owner` is restored exactly as it was found, down to the keys this did
+    not find there, so the caller is the one that writes the real values once it has this count.
+
+    Args:
+        reply: The envelope to measure, staged with the warnings this shortening implies.
+        owner: The dict holding the page.
+        key: The key whose value is the list of records.
+
+    Returns:
+        How many of the page's leading records fit.
+
+    """
+    records = owner[key]
+    widest = _pagination_updates(owner, key, len(records))
+    restore = {name: owner[name] for name in widest if name in owner}
+    added = [name for name in widest if name not in owner]
+    owner.update(widest)
+    try:
+        low, high = 1, len(records)
+        while low < high:
+            middle = (low + high + 1) // 2
+            owner[key] = records[:middle]
+            if _wire_bytes(reply) <= REPLY_BYTE_BUDGET:
+                low = middle
+            else:
+                high = middle - 1
+        return low
+    finally:
+        owner[key] = records
+        owner.update(restore)
+        for name in added:
+            del owner[name]
+
+
+def _cut_page(owner: dict, key: str, kept: int) -> PageCut:
+    """
+    Keep the page's first `kept` records and write the pagination keys that now describe it.
+
+    Args:
+        owner: The dict holding the page.
+        key: The key whose value is the list of records.
+        kept: How many records to keep, as `_largest_fitting_prefix` measured it.
+
+    Returns:
+        What this cut did, for the warning the caller renders once every page has been sized.
+
+    """
+    cut = PageCut(key=key, kept=kept, total=len(owner[key]), resume=_resume_hint(owner, key, kept))
+    owner.update(_pagination_updates(owner, key, kept))
+    owner[key] = owner[key][:kept]
+    return cut
 
 
 def _fit_budget(reply: dict) -> None:
@@ -247,6 +412,9 @@ def _fit_budget(reply: dict) -> None:
     `progress` side by side; cutting only the longer of the two left a 250-frame reply at 29,164
     bytes - 3.6x the budget - holding a single usable file path, because the untouched sibling
     was most of the weight. Shortening therefore walks on into the next-largest page.
+
+    Each page is sized against a staged copy of the reply and reported only afterwards, so no count
+    and no resume point is ever written before the cut that decides it has been made.
 
     Args:
         reply: The envelope, modified in place.
@@ -261,25 +429,25 @@ def _fit_budget(reply: dict) -> None:
             "no page of records to shorten; request a narrower scope."
         )
         return
+    cuts: list[PageCut] = []
     # Sorting once is enough: draining a page down to its last record only makes it smaller, so no
     # page can overtake one this ordering already placed ahead of it.
-    shortened: list[tuple[int, str, int, int]] = []
     for owner, key in sorted(pages, key=_page_bytes, reverse=True):
-        measured = _wire_bytes(reply)
+        staged = _staged(reply, cuts)
+        measured = _wire_bytes(staged)
         if measured <= REPLY_BYTE_BUDGET:
-            return
-        cut = _shorten_page(reply, owner, key, measured)
-        if cut is not None:
-            shortened.append(cut)
-    # The loop returns as soon as a shortening is enough, so reaching here means every page has
-    # been visited and only the last one's result is still unmeasured.
-    if _wire_bytes(reply) <= REPLY_BYTE_BUDGET:
-        return
-    # Every page is down to its last record and the reply is still too big. Each warning already
-    # names what it kept; what it must not also do is hand back an offset, which would send the
-    # agent round a loop of replies every one of which is over the budget.
-    for index, key, kept, total in shortened:
-        reply["warnings"][index] = _shortening_warning(key, kept, total, _NO_RESUME)
+            break
+        if not _shortening_helps(staged, owner, key, measured):
+            continue
+        sized = _staged(reply, cuts, _widest_warning(owner, key))
+        cuts.append(_cut_page(owner, key, _largest_fitting_prefix(sized, owner, key)))
+    # Every page has been sized. Each warning still names what its page kept; what none of them may
+    # do, once even that is over the budget, is hand back an offset, which would send the agent
+    # round a loop of replies every one of which is over the budget.
+    resumable = _wire_bytes(_staged(reply, cuts)) <= REPLY_BYTE_BUDGET
+    reply["warnings"].extend(
+        _shortening_warning(cut.key, cut.kept, cut.total, cut.resume if resumable else _NO_RESUME) for cut in cuts
+    )
 
 
 def ok(

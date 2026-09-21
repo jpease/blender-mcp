@@ -415,7 +415,7 @@ def _check_eye_target_view(rig: Rig) -> None:
     above, _above_result = _capture(
         rig,
         "eye_above",
-        {"view": {"eye": (0.0, 0.0, _CAMERA_DISTANCE), "target": (0.0, 0.0, 0.0), "up": (0.0, 1.0, 0.0)}},
+        {"view": {"eye": (0.0, 0.0, _CAMERA_DISTANCE), "target": (0.0, 0.0, 0.0)}},
     )
 
     for result in (side_result, side_away_result):

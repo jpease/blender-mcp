@@ -1,14 +1,13 @@
 """Bounded rigid-body stability and performance analysis tools."""
 
-import asyncio
-
 from typing import Annotated
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from .inspection_and_setup import _call, mcp
+from .._dispatch import call_blender
+from .inspection_and_setup import mcp
 
 
 @mcp.tool()
@@ -36,8 +35,7 @@ async def analyze_rigid_body_performance(
         raise ToolError("object_names must be unique")
     if frames != sorted(set(frames)):
         raise ToolError("sample_frames must be unique and ordered")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "analyze_rigid_body_performance",
         {
             "scene_name": scene_name,
@@ -47,5 +45,5 @@ async def analyze_rigid_body_performance(
             "triangle_warning_threshold": triangle_warning_threshold,
             "timeout_seconds": timeout_seconds,
         },
-        object_names,
+        changed_objects=object_names,
     )

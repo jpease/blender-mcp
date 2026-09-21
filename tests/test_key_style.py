@@ -45,10 +45,10 @@ def test_the_advertised_vocabulary_is_the_one_the_addon_accepts(advertised: obje
 def test_bezier_is_the_only_interpolation_that_records_handle_types() -> None:
     """A handle type shapes a Bézier segment; under any other mode it records state nothing shows."""
     bezier = _Point()
-    key_style.style_point(bezier, "BEZIER", handle_left="VECTOR", handle_right="AUTO")
+    key_style.style_point(bezier, key_style.KeyStyle("BEZIER", "VECTOR", "AUTO"))
 
     linear = _Point()
-    key_style.style_point(linear, "LINEAR", handle_left="VECTOR", handle_right="AUTO")
+    key_style.style_point(linear, key_style.KeyStyle("LINEAR", "VECTOR", "AUTO"))
 
     assert (bezier.handle_left_type, bezier.handle_right_type) == ("VECTOR", "AUTO")
     assert (linear.handle_left_type, linear.handle_right_type) == (None, None)
@@ -58,10 +58,10 @@ def test_bezier_is_the_only_interpolation_that_records_handle_types() -> None:
 def test_easing_is_written_on_any_interpolation_and_omitted_when_unset() -> None:
     """Blender accepts easing on every key, so an easing request is never silently dropped."""
     eased = _Point()
-    key_style.style_point(eased, "SINE", handle_left="AUTO", handle_right="AUTO", easing="EASE_IN_OUT")
+    key_style.style_point(eased, key_style.KeyStyle("SINE", "AUTO", "AUTO", "EASE_IN_OUT"))
 
     untouched = _Point()
-    key_style.style_point(untouched, "SINE", handle_left="AUTO", handle_right="AUTO")
+    key_style.style_point(untouched, key_style.KeyStyle("SINE", "AUTO", "AUTO"))
 
     assert eased.easing == "EASE_IN_OUT"
     assert untouched.easing is None
@@ -81,4 +81,4 @@ def test_an_unsupported_style_is_refused_by_the_argument_that_is_wrong(
 ) -> None:
     """The refusal has to name the argument: four style arguments make "unsupported" unactionable."""
     with pytest.raises(ValueError, match=offender):
-        key_style.validate_key_style(*style)
+        key_style.KeyStyle(*style).validate()

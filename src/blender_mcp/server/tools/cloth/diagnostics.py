@@ -2,15 +2,13 @@
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
 """Typed tools for cloth resource estimation, validation, sampling, and performance analysis."""
 
-import asyncio
-
 from typing import Annotated
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import _call
+from .._dispatch import call_blender
 
 
 @mcp.tool()
@@ -28,8 +26,7 @@ async def estimate_cloth_resources(
     Indices are deterministic heuristics for comparing setups and choosing preview/final settings;
     they are not byte counts or bake-duration promises. Runtime PointCache facts are reported apart.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "estimate_cloth_resources",
         {
             "scene_name": scene_name,
@@ -58,8 +55,7 @@ async def validate_cloth_setup(
     with narrower scopes when ``truncated`` or the collision-pair limit is reported. Passing this
     check does not replace representative evaluated-frame review in Blender.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "validate_cloth_setup",
         {
             "scene_name": scene_name,
@@ -89,8 +85,7 @@ async def sample_cloth_simulation(
     The original frame is restored in ``finally``. Returned penetration evidence is heuristic and
     representative-frame review remains necessary.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "sample_cloth_simulation",
         {
             "object_name": object_name,
@@ -100,7 +95,7 @@ async def sample_cloth_simulation(
             "collider_sample_limit": collider_sample_limit,
             "timeout_seconds": timeout_seconds,
         },
-        [object_name],
+        changed_objects=[object_name],
     )
 
 
@@ -124,8 +119,7 @@ async def analyze_cloth_performance(
     confirmation. Source caches are never freed or overwritten. Timings are measurements for this
     run only and are returned separately from structural cost evidence.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "analyze_cloth_performance",
         {
             "object_name": object_name,
@@ -138,5 +132,5 @@ async def analyze_cloth_performance(
             "short_bake_frame_start": short_bake_frame_start,
             "short_bake_frame_end": short_bake_frame_end,
         },
-        [object_name],
+        changed_objects=[object_name],
     )

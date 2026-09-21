@@ -2,9 +2,10 @@
 """
 Regression coverage for the eleven file-lifecycle and linking tools.
 
-Tests patch the tool module's own `get_blender_connection` with a `_Connection` stand-in and
-call each tool coroutine directly. The `stub_blender_connection` fixture does not apply,
-because it patches only `_scene_shared`.
+Tests patch `_dispatch.get_blender_connection` - the one seam every tool dispatches through -
+with a `_Connection` stand-in and call each tool coroutine directly. The
+`stub_blender_connection` fixture patches the same name; these tests want a per-test reply
+rather than its recorded echo.
 """
 
 import asyncio
@@ -17,7 +18,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import TypeAdapter, ValidationError
 from test_mutation_transaction import _load_addon
 
-from blender_mcp.server.tools import _documentation, file_lifecycle
+from blender_mcp.server.tools import _dispatch, _documentation, file_lifecycle
 from blender_mcp.server.tools.envelope import CHANGED_OBJECTS_LIMIT
 
 FILE_LIFECYCLE_COMMANDS = {
@@ -60,13 +61,13 @@ def test_file_lifecycle_tools_are_registered_and_dispatched(monkeypatch) -> None
     assert FILE_LIFECYCLE_COMMANDS <= set(file_lifecycle.mcp._tool_manager._tools)
     assert FILE_LIFECYCLE_COMMANDS <= set(server._build_command_handlers())
     read_only = {"get_session_info", "list_libraries", "inspect_delivery"}
-    assert read_only <= server._READ_ONLY_COMMANDS
-    assert not FILE_LIFECYCLE_COMMANDS - read_only & server._READ_ONLY_COMMANDS
+    assert all(server.command_spec(name).read_only for name in read_only)
+    assert not {name for name in FILE_LIFECYCLE_COMMANDS - read_only if server.command_spec(name).read_only}
 
 
 def test_get_session_info_forwards_no_params(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.get_session_info(ctx=None))
 
@@ -78,7 +79,7 @@ def test_get_session_info_forwards_no_params(monkeypatch) -> None:
 def test_open_shot_defaults(monkeypatch) -> None:
     """The unsaved-work guard's safe default is False -- an unpinned default here loses work silently."""
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.open_shot(ctx=None, filepath="/canon/shot.blend"))
 
@@ -88,7 +89,7 @@ def test_open_shot_defaults(monkeypatch) -> None:
 
 def test_open_shot_forwards_every_parameter(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.open_shot(ctx=None, filepath="/canon/shot.blend", load_ui=True, discard_unsaved=True))
 
@@ -99,7 +100,7 @@ def test_open_shot_forwards_every_parameter(monkeypatch) -> None:
 
 def test_save_shot_forwards_every_parameter(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(
         file_lifecycle.save_shot(
@@ -129,7 +130,7 @@ def test_save_shot_forwards_every_parameter(monkeypatch) -> None:
 
 def test_save_shot_default_filepath_is_none(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.save_shot(ctx=None))
 
@@ -149,7 +150,7 @@ def test_save_shot_default_filepath_is_none(monkeypatch) -> None:
 def test_reset_session_defaults(monkeypatch) -> None:
     """The whole-database discard's safe default is False -- an unpinned default here discards work silently."""
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.reset_session(ctx=None))
 
@@ -159,7 +160,7 @@ def test_reset_session_defaults(monkeypatch) -> None:
 
 def test_reset_session_forwards_confirm(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.reset_session(ctx=None, confirm=True))
 
@@ -170,7 +171,7 @@ def test_reset_session_forwards_confirm(monkeypatch) -> None:
 
 def test_link_canon_library_forwards_every_parameter(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(
         file_lifecycle.link_canon_library(
@@ -198,7 +199,7 @@ def test_link_canon_library_forwards_every_parameter(monkeypatch) -> None:
 
 def test_link_canon_library_defaults(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.link_canon_library(ctx=None, filepath="/canon/hero.blend"))
 
@@ -215,7 +216,7 @@ def test_link_canon_library_defaults(monkeypatch) -> None:
 
 def test_changed_objects_move_from_the_addon_result_into_the_envelope(monkeypatch) -> None:
     connection = _Connection({"overrides": [], "changed_objects": ["HeroBody"]})
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     envelope = asyncio.run(file_lifecycle.link_canon_library(ctx=None, filepath="/canon/hero.blend"))
 
@@ -227,7 +228,7 @@ def test_changed_objects_are_bounded_and_the_total_is_reported(monkeypatch) -> N
     """Linking a whole set must not put every object name into the agent's context."""
     names = [f"Part{index:03d}_geo" for index in range(480)]
     connection = _Connection({"overrides": [], "changed_objects": names})
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     envelope = asyncio.run(file_lifecycle.link_canon_library(ctx=None, filepath="/canon/house.blend"))
 
@@ -237,7 +238,7 @@ def test_changed_objects_are_bounded_and_the_total_is_reported(monkeypatch) -> N
 
 def test_create_override_defaults(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.create_override(ctx=None, collection_uid=42))
 
@@ -247,7 +248,7 @@ def test_create_override_defaults(monkeypatch) -> None:
 
 def test_create_override_forwards_every_parameter(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.create_override(ctx=None, collection_uid=42, scene_uid=7, detail=True))
 
@@ -258,7 +259,7 @@ def test_create_override_forwards_every_parameter(monkeypatch) -> None:
 
 def test_list_libraries_defaults(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.list_libraries(ctx=None))
 
@@ -268,7 +269,7 @@ def test_list_libraries_defaults(monkeypatch) -> None:
 
 def test_list_libraries_forwards_pagination(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.list_libraries(ctx=None, limit=10, offset=20, detail=True))
 
@@ -279,7 +280,7 @@ def test_list_libraries_forwards_pagination(monkeypatch) -> None:
 
 def test_reload_library_forwards_uid(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.reload_library(ctx=None, library_uid=99))
 
@@ -290,7 +291,7 @@ def test_reload_library_forwards_uid(monkeypatch) -> None:
 
 def test_relocate_library_forwards_uid_and_filepath(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.relocate_library(ctx=None, library_uid=99, filepath="/canon/new.blend", detail=True))
 
@@ -301,7 +302,7 @@ def test_relocate_library_forwards_uid_and_filepath(monkeypatch) -> None:
 
 def test_unlink_libraries_forwards_every_parameter(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.unlink_libraries(ctx=None, library_uids=[1, 2], confirm=True, purge_orphans=True))
 
@@ -312,7 +313,7 @@ def test_unlink_libraries_forwards_every_parameter(monkeypatch) -> None:
 
 def test_unlink_libraries_defaults(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.unlink_libraries(ctx=None, library_uids=[1]))
 
@@ -322,7 +323,7 @@ def test_unlink_libraries_defaults(monkeypatch) -> None:
 
 def test_inspect_delivery_forwards_every_parameter(monkeypatch) -> None:
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(
         file_lifecycle.inspect_delivery(
@@ -344,7 +345,7 @@ def test_inspect_delivery_forwards_every_parameter(monkeypatch) -> None:
 def test_inspect_delivery_defaults_do_not_read_linked_files(monkeypatch) -> None:
     """Hashing reads linked .blend files on Blender's main thread, so it must stay opt-in."""
     connection = _Connection()
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     asyncio.run(file_lifecycle.inspect_delivery(ctx=None, scene_name="Scene"))
 
@@ -383,14 +384,15 @@ def test_save_shot_destructive_hint_is_explicit_not_schema_derived() -> None:
 @pytest.mark.parametrize("tool_name", sorted(FILE_LIFECYCLE_COMMANDS))
 def test_addon_failure_reaches_the_client_as_a_tool_error_unchanged(monkeypatch, tool_name) -> None:
     """
-    An addon-raised failure propagates through `_call` unmodified and reaches the client as `ToolError`.
+    An addon-raised failure reaches the client as `ToolError`, unmodified.
 
-    The addon has already removed paths from the message, so `_call` must add nothing. The
-    test runs FastMCP's own `Tool.run` conversion.
+    It propagates through the shared dispatch untouched: the addon has already removed paths
+    from the message, so nothing on the way out may add to it. The test runs FastMCP's own
+    `Tool.run` conversion.
     """
     message = f"{tool_name} failed: a sanitized reason with no filesystem path"
     connection = _FailingConnection(ValueError(message))
-    monkeypatch.setattr(file_lifecycle, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     tool = file_lifecycle.mcp._tool_manager._tools[tool_name]
     arguments = {

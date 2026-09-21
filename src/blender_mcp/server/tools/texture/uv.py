@@ -1,7 +1,5 @@
 """UV map lifecycle, seams, unwrap, optimization, and audit tools."""
 
-import asyncio
-
 from typing import Literal
 
 from mcp.server.fastmcp import Context
@@ -9,7 +7,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import call_blender
+from .._dispatch import call_blender
 
 
 @mcp.tool()
@@ -31,7 +29,7 @@ async def manage_uv_maps(
     if action != "LIST" and uv_map_name is None and action not in {"CREATE", "DUPLICATE"}:
         raise ToolError("uv_map_name is required for this action")
     params = {k: v for k, v in locals().items() if k != "ctx"}
-    return await asyncio.to_thread(call_blender, "manage_uv_maps", params, [object_name] if action != "LIST" else [])
+    return await call_blender("manage_uv_maps", params, changed_objects=[object_name] if action != "LIST" else [])
 
 
 @mcp.tool()
@@ -54,7 +52,7 @@ async def set_uv_seams(
     if rule == "ANGLE" and angle_threshold is None:
         raise ToolError("angle_threshold is required for ANGLE")
     params = {k: v for k, v in locals().items() if k != "ctx"}
-    return await asyncio.to_thread(call_blender, "set_uv_seams", params, [object_name])
+    return await call_blender("set_uv_seams", params, changed_objects=[object_name])
 
 
 @mcp.tool()
@@ -74,7 +72,7 @@ async def unwrap_uvs(
     only; call `optimize_uv_layout` for density normalization, relaxation, and packing.
     """
     params = {k: v for k, v in locals().items() if k != "ctx"}
-    return await asyncio.to_thread(call_blender, "unwrap_uvs", params, [object_name])
+    return await call_blender("unwrap_uvs", params, changed_objects=[object_name])
 
 
 @mcp.tool()
@@ -99,7 +97,7 @@ async def optimize_uv_layout(
     the result reports executed stages and updated layout measurements.
     """
     params = {k: v for k, v in locals().items() if k != "ctx"}
-    return await asyncio.to_thread(call_blender, "optimize_uv_layout", params, [object_name])
+    return await call_blender("optimize_uv_layout", params, changed_objects=[object_name])
 
 
 @mcp.tool()
@@ -116,4 +114,4 @@ async def inspect_uv_layout(
     check `overlap_truncated` before treating the reported pair list as exhaustive.
     """
     params = {k: v for k, v in locals().items() if k != "ctx"}
-    return await asyncio.to_thread(call_blender, "inspect_uv_layout", params)
+    return await call_blender("inspect_uv_layout", params)

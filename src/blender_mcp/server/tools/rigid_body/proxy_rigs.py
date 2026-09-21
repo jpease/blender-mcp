@@ -1,14 +1,13 @@
 """Low-resolution rigid-body proxy rig tools."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .inspection_and_setup import RigidBodySettingsPatch, _call, mcp
+from .._dispatch import call_blender
+from .inspection_and_setup import RigidBodySettingsPatch, mcp
 
 
 class RigidBodyProxyMapping(BaseModel):
@@ -76,8 +75,7 @@ async def create_rigid_body_proxy_rig(
         *explicit_proxy_names,
         *[mapping.low_resolution_source_name for mapping in mappings if mapping.low_resolution_source_name],
     ]
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_rigid_body_proxy_rig",
         {
             "scene_name": scene_name,
@@ -91,5 +89,5 @@ async def create_rigid_body_proxy_rig(
             "transform_tolerance": transform_tolerance,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
-        changed,
+        changed_objects=changed,
     )

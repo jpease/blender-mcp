@@ -13,15 +13,14 @@ Kept apart from `scene.py`, in the `scene-authoring` bundle, so shot work does n
 large geometry schema or offer destructive scene operations.
 """
 
-import asyncio
-
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ..app import mcp
-from ._scene_shared import _call, _StrictModel
+from ._dispatch import call_blender
+from ._scene_shared import _StrictModel
 
 
 def _require_one_value_per(name: str, values: list | None, expected: int, domain: str) -> None:
@@ -317,8 +316,7 @@ async def create_geometry_object(
     non-zero. name must not already be in use. A named collection_name is created if it does
     not exist; omit it to use the active collection.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_geometry_object",
         {
             "name": name,
@@ -343,15 +341,14 @@ async def remove_scene_objects(
         raise ValueError("confirm_remove=True is required")
     if (object_names is None) == (managed_rig is None):
         raise ValueError("Provide exactly one of object_names or managed_rig")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "remove_scene_objects",
         {
             "object_names": object_names,
             "managed_rig": managed_rig.model_dump() if managed_rig else None,
             "confirm_remove": confirm_remove,
         },
-        object_names or [],
+        changed_objects=object_names or [],
     )
 
 
@@ -371,8 +368,7 @@ async def reset_scene(
     """
     if not confirm_reset:
         raise ValueError("confirm_reset=True is required")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "reset_scene",
         {
             "confirm_reset": confirm_reset,

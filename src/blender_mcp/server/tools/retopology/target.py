@@ -1,15 +1,13 @@
 """Agent-facing retopology target creation, inspection, and checkpoints."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ..envelope import ok
-from ._shared import _call
+from .._dispatch import call_blender, send_blender_command
+from ..envelope import envelope_for
 
 InitialGeometry = Literal["EMPTY", "SINGLE_VERTEX", "PLANE", "GRID", "DUPLICATED_EVALUATED_SURFACE"]
 CheckpointAction = Literal["CREATE", "LIST", "COMPARE", "RESTORE", "DELETE"]
@@ -55,8 +53,7 @@ async def create_retopology_target(
         Target name, source links, collection, base counts, modifier order, and topology revision.
 
     """
-    result = await asyncio.to_thread(
-        _call,
+    reply = await send_blender_command(
         "create_retopology_target",
         {
             "source_object_names": source_object_names,
@@ -70,7 +67,7 @@ async def create_retopology_target(
             "subdivision_levels": subdivision_levels,
         },
     )
-    return ok(result, changed_objects=[result["name"]])
+    return envelope_for(reply, changed_objects=[reply["name"]])
 
 
 @mcp.tool()
@@ -97,18 +94,15 @@ async def inspect_retopology(
     `expected_revision` in mutating tools so stale indices are rejected.
     Coordinates and lengths are base-mesh local space unless explicitly named world space.
     """
-    return ok(
-        await asyncio.to_thread(
-            _call,
-            "inspect_retopology",
-            {
-                "object_name": object_name,
-                "selected_vertex_indices": selected_vertex_indices,
-                "adjacency_depth": adjacency_depth,
-                "limit": limit,
-                "offset": offset,
-            },
-        )
+    return await call_blender(
+        "inspect_retopology",
+        {
+            "object_name": object_name,
+            "selected_vertex_indices": selected_vertex_indices,
+            "adjacency_depth": adjacency_depth,
+            "limit": limit,
+            "offset": offset,
+        },
     )
 
 
@@ -130,16 +124,15 @@ async def manage_retopology_checkpoint(
     mesh and relevant object state while keeping the checkpoint available.
     Provide `checkpoint_name` for every action except LIST.
     """
-    result = await asyncio.to_thread(
-        _call,
+    reply = await send_blender_command(
         "manage_retopology_checkpoint",
         {"action": action, "object_name": object_name, "checkpoint_name": checkpoint_name, "confirm": confirm},
     )
     normalized_action = action.upper()
     if normalized_action == "RESTORE":
         changed = [object_name]
-    elif normalized_action in {"CREATE", "DELETE"} and result.get("backup_object"):
-        changed = [result["backup_object"]]
+    elif normalized_action in {"CREATE", "DELETE"} and reply.get("backup_object"):
+        changed = [reply["backup_object"]]
     else:
         changed = []
-    return ok(result, changed_objects=changed)
+    return envelope_for(reply, changed_objects=changed)

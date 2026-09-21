@@ -1,15 +1,14 @@
 # ruff: file-ignore[multi-line-summary-second-line]
 """Typed tools for removing fluid modifier components."""
 
-import asyncio
-
 from typing import Annotated
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import _call, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _StrictModel
 
 
 class FluidComponentTarget(_StrictModel):
@@ -28,12 +27,11 @@ async def remove_fluid_components(
 
     Preflight rejects removal if it would orphan an existing on-disk bake, unless accept_orphaned_cache=True.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "remove_fluid_components",
         {
             "targets": [item.model_dump() for item in targets],
             "accept_orphaned_cache": accept_orphaned_cache,
         },
-        [item.object_name for item in targets],
+        changed_objects=[item.object_name for item in targets],
     )

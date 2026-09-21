@@ -1,7 +1,5 @@
 """Typed tools for armature foundations, skinning, constraints, and rig validation."""
 
-import asyncio
-
 from collections.abc import Sequence
 from typing import Annotated, Any, Literal
 
@@ -10,7 +8,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, Field, TypeAdapter, model_validator
 
 from ...app import mcp
-from ._shared import _call, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _StrictModel
 
 Vector3 = tuple[float, float, float]
 Quaternion = tuple[float, float, float, float]
@@ -515,8 +514,7 @@ async def get_character_rig_info(
     reason: naming three bones off a 187-bone rig otherwise costs several paginated calls, and
     this tool's per-bone payload is heavier than list_character_bones's.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "get_character_rig_info",
         {
             "armature_object_name": armature_object_name,
@@ -542,8 +540,7 @@ async def get_skinning_info(
     membership_offset: Annotated[int, Field(ge=0, le=9_999_999)] = 0,
 ) -> dict:
     """Inspect base-mesh vertex groups and weight quality without evaluating or changing pose/frame state."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "get_skinning_info",
         {
             "armature_object_name": armature_object_name,
@@ -572,8 +569,7 @@ async def create_armature(
     collection_name is looked up by name and reused if it already exists in the scene, or
     created if it does not - it is never required to pre-exist.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_armature",
         {
             "name": name,
@@ -582,7 +578,7 @@ async def create_armature(
             "world_transform": (world_transform or RigWorldTransform()).model_dump(),
             "display": (display or ArmatureDisplaySettings()).model_dump(),
         },
-        [name],
+        changed_objects=[name],
     )
 
 
@@ -594,15 +590,14 @@ async def patch_armature_bones(
     confirm_animated_rest_changes: bool = False,
 ) -> dict:
     """Atomically patch rest bones after validating the complete resulting hierarchy and dependency policy."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "patch_armature_bones",
         {
             "armature_object_name": armature_object_name,
             "operations": _models(operations),
             "confirm_animated_rest_changes": confirm_animated_rest_changes,
         },
-        [armature_object_name],
+        changed_objects=[armature_object_name],
     )
 
 
@@ -617,8 +612,7 @@ async def mirror_armature_bones(
     mirror_constraints: bool = False,
 ) -> dict:
     """Mirror explicit rest bones in armature space with deterministic name and hierarchy remapping."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "mirror_armature_bones",
         {
             "armature_object_name": armature_object_name,
@@ -628,7 +622,7 @@ async def mirror_armature_bones(
             "target_token": target_token,
             "mirror_constraints": mirror_constraints,
         },
-        [armature_object_name],
+        changed_objects=[armature_object_name],
     )
 
 
@@ -639,11 +633,10 @@ async def manage_bone_collections(
     operations: Annotated[list[CollectionOperation], Field(min_length=1, max_length=500)],
 ) -> dict:
     """Batch-manage Blender 5.1 bone collections while preserving multi-collection membership by default."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "manage_bone_collections",
         {"armature_object_name": armature_object_name, "operations": _models(operations)},
-        [armature_object_name],
+        changed_objects=[armature_object_name],
     )
 
 
@@ -657,15 +650,14 @@ async def configure_armature_bones(
     """Patch allowlisted non-geometric Bone and PoseBone settings after complete preflight validation."""
     if not bone_patches and not pose_bone_patches:
         raise ToolError("At least one bone or pose-bone patch is required")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "configure_armature_bones",
         {
             "armature_object_name": armature_object_name,
             "bone_patches": _models(bone_patches or []),
             "pose_bone_patches": _models(pose_bone_patches or []),
         },
-        [armature_object_name],
+        changed_objects=[armature_object_name],
     )
 
 
@@ -690,8 +682,7 @@ async def bind_mesh_to_armature(
     """
     if replacement_policy == "REPLACE" and not confirm_replace_weights:
         raise ToolError("confirm_replace_weights=True is required when replacement_policy='REPLACE'")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "bind_mesh_to_armature",
         {
             "armature_object_name": armature_object_name,
@@ -705,7 +696,7 @@ async def bind_mesh_to_armature(
             "replacement_policy": replacement_policy,
             "confirm_replace_weights": confirm_replace_weights,
         },
-        [armature_object_name, *mesh_object_names],
+        changed_objects=[armature_object_name, *mesh_object_names],
     )
 
 
@@ -719,11 +710,10 @@ async def set_skin_weights(
     if not assignments and not normalized_vertices:
         raise ToolError("At least one assignment or normalized vertex payload is required")
     changed = sorted({item.mesh_object_name for item in [*(assignments or []), *(normalized_vertices or [])]})
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "set_skin_weights",
         {"assignments": _models(assignments or []), "normalized_vertices": _models(normalized_vertices or [])},
-        changed,
+        changed_objects=changed,
     )
 
 
@@ -743,8 +733,7 @@ async def clean_skin_weights(
     """Precompute and apply stable weight cleanup while preserving locked and protected groups."""
     if remove_orphan_groups and not confirm_remove_orphan_groups:
         raise ToolError("confirm_remove_orphan_groups=True is required to remove orphan groups")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "clean_skin_weights",
         {
             "mesh_object_name": mesh_object_name,
@@ -757,7 +746,7 @@ async def clean_skin_weights(
             "remove_orphan_groups": remove_orphan_groups,
             "confirm_remove_orphan_groups": confirm_remove_orphan_groups,
         },
-        [mesh_object_name],
+        changed_objects=[mesh_object_name],
     )
 
 
@@ -778,15 +767,14 @@ async def add_pose_bone_constraint(
     fields, validated against Blender's real constraint schema before this call reaches Blender.
     """
     validated = _pose_constraint_adapter.validate_python(constraint)
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "add_pose_bone_constraint",
         {
             "armature_object_name": armature_object_name,
             "bone_name": bone_name,
             "constraint": validated.model_dump(exclude_none=True),
         },
-        [armature_object_name],
+        changed_objects=[armature_object_name],
     )
 
 
@@ -802,8 +790,7 @@ async def validate_character_rig(
     issue_offset: Annotated[int, Field(ge=0, le=99_999)] = 0,
 ) -> dict:
     """Run a bounded, non-mutating structural preflight; this does not certify artistic deformation quality."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "validate_character_rig",
         {
             "armature_object_names": armature_object_names,

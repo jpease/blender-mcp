@@ -7,7 +7,7 @@ import uuid
 import bpy
 import mathutils
 
-from ..key_style import style_point, validate_key_style
+from ..key_style import KeyStyle, style_point
 from ._shared import (
     _camera,
     _ensure_collection,
@@ -137,19 +137,19 @@ def _key_at(curve, frame):
     return next((point for point in curve.keyframe_points if abs(point.co[0] - frame) <= 1e-5), None)
 
 
-def _set_key_style(id_owner, data_path, frame, array_indices, interpolation, handle_left, handle_right, easing=None):
+def _set_key_style(id_owner, data_path, frame, array_indices, style):
     changed = []
     for index in array_indices:
         curve = _find_fcurve(id_owner, data_path, index)
         point = _key_at(curve, frame)
         if point is None:
             continue
-        style_point(point, interpolation, handle_left=handle_left, handle_right=handle_right, easing=easing)
+        style_point(point, style)
         changed.append({"data_path": data_path, "array_index": index, "frame": frame})
     return changed
 
 
-def _assign_and_key(record, resolved, interpolation, handle_left, handle_right):
+def _assign_and_key(record, resolved, style):
     obj, owner, expected, fcurve_path, constraint = resolved
     data_path = record["data_path"]
     array_index = record.get("array_index")
@@ -172,8 +172,7 @@ def _assign_and_key(record, resolved, interpolation, handle_left, handle_right):
         raise RuntimeError(f"Blender refused keyframe insertion for {obj.name}:{fcurve_path} at {frame}")
     id_owner = obj if constraint is not None else (obj.data if record["owner"] in {"CAMERA_DATA", "DOF"} else obj)
     indices = [array_index] if array_index is not None else list(range(expected))
-    styled = _set_key_style(id_owner, fcurve_path, frame, indices, interpolation, handle_left, handle_right)
-    return styled
+    return _set_key_style(id_owner, fcurve_path, frame, indices, style)
 
 
 def _subject_point(scene, object_name, point):
@@ -189,9 +188,7 @@ def _focus_depth(camera, point):
     return -float(local.z)
 
 
-def _set_interpolation_on_keys(
-    id_owner, data_path, frames, interpolation, handle_left="AUTO_CLAMPED", handle_right="AUTO_CLAMPED", easing=None
-):
+def _set_interpolation_on_keys(id_owner, data_path, frames, style):
     action, curves = _action_fcurves(id_owner)
     if action is None:
         return []
@@ -201,7 +198,7 @@ def _set_interpolation_on_keys(
             continue
         for point in curve.keyframe_points:
             if any(abs(point.co[0] - frame) <= 1e-5 for frame in frames):
-                style_point(point, interpolation, handle_left=handle_left, handle_right=handle_right, easing=easing)
+                style_point(point, style)
                 changed.append({"data_path": data_path, "array_index": curve.array_index, "frame": point.co[0]})
     return changed
 
@@ -434,14 +431,14 @@ def _focus_pull_samples(scene, camera, ends):
     return samples
 
 
-def _key_focus_distance(camera, samples, interpolation):
+def _key_focus_distance(camera, samples, style):
     """
     Focus the camera by keying `dof.focus_distance` itself, with no helper object.
 
     Args:
         camera: The camera whose depth-of-field is keyed.
         samples: `(frame, camera_space_depth)` for each end of the pull.
-        interpolation: The interpolation to apply to the keys written here.
+        style: The `KeyStyle` the keys written here are shaped with.
 
     Returns:
         list[dict]: The styled keys, as `_set_interpolation_on_keys` reports them.
@@ -460,10 +457,10 @@ def _key_focus_distance(camera, samples, interpolation):
         camera.data.dof.focus_distance = max(abs(depth), _MIN_FOCUS_DISTANCE_M)
         if not camera.data.dof.keyframe_insert(data_path="focus_distance", frame=frame_value):
             raise RuntimeError(f"Blender refused the focus-distance key at frame {frame_value}")
-    return _set_interpolation_on_keys(camera.data, path, tuple(frame for frame, _depth in samples), interpolation)
+    return _set_interpolation_on_keys(camera.data, path, tuple(frame for frame, _depth in samples), style)
 
 
-def _key_focus_control(camera, collection, control_name, samples, interpolation):
+def _key_focus_control(camera, collection, control_name, samples, style):
     """
     Focus the camera by animating a tagged Empty it tracks, which an artist can then re-aim.
 
@@ -472,7 +469,7 @@ def _key_focus_control(camera, collection, control_name, samples, interpolation)
         collection: The collection the control is linked into.
         control_name: The Empty's name.
         samples: `(frame, world_point)` for each end of the pull.
-        interpolation: The interpolation to apply to the keys written here.
+        style: The `KeyStyle` the keys written here are shaped with.
 
     Returns:
         tuple: The created focus-control object and its styled keys.
@@ -486,7 +483,7 @@ def _key_focus_control(camera, collection, control_name, samples, interpolation)
         focus_control.location = world_point
         focus_control.keyframe_insert(data_path="location", frame=frame_value)
     changed_keys = _set_interpolation_on_keys(
-        focus_control, "location", tuple(frame for frame, _point in samples), interpolation
+        focus_control, "location", tuple(frame for frame, _point in samples), style
     )
     camera.data.dof.use_dof = True
     camera.data.dof.focus_object = focus_control
@@ -508,7 +505,8 @@ class _AnimationMixin:
             raise ValueError("keyframes must contain between 1 and 500 records")
         if policy not in {"REPLACE", "INSERT_ONLY"}:
             raise ValueError("policy must be REPLACE or INSERT_ONLY")
-        validate_key_style(interpolation, handle_left, handle_right)
+        style = KeyStyle(interpolation, handle_left, handle_right)
+        style.validate()
         prepared = []
         seen = set()
         scene_cache = {}
@@ -549,7 +547,7 @@ class _AnimationMixin:
 
         changed_keys = []
         for record, resolved in prepared:
-            changed_keys.extend(_assign_and_key(record, resolved, interpolation, handle_left, handle_right))
+            changed_keys.extend(_assign_and_key(record, resolved, style))
         changed_objects = list(dict.fromkeys(record["object_name"] for record, _resolved in prepared))
         actions = sorted(
             {
@@ -582,7 +580,8 @@ class _AnimationMixin:
         handle_right="AUTO_CLAMPED",
         easing=None,
     ):
-        validate_key_style(interpolation, handle_left, handle_right, easing)
+        style = KeyStyle(interpolation, handle_left, handle_right, easing)
+        style.validate()
         start = _frame(frame_start, "frame_start")
         end = _frame(frame_end, "frame_end")
         if start > end:
@@ -609,7 +608,7 @@ class _AnimationMixin:
             matched_curves.append({"data_path": curve.data_path, "array_index": curve.array_index})
             for point in curve.keyframe_points:
                 if start <= point.co[0] <= end:
-                    style_point(point, interpolation, handle_left=handle_left, handle_right=handle_right, easing=easing)
+                    style_point(point, style)
                     changed.append({"array_index": curve.array_index, "frame": float(point.co[0])})
         if not matched_curves:
             raise ValueError("No matching animation curves were found")
@@ -648,7 +647,8 @@ class _AnimationMixin:
             raise ValueError("start must be less than end")
         if mode not in {"DISTANCE", "FOCUS_CONTROL"}:
             raise ValueError("mode must be DISTANCE or FOCUS_CONTROL")
-        validate_key_style(interpolation, "AUTO_CLAMPED", "AUTO_CLAMPED")
+        style = KeyStyle(interpolation)
+        style.validate()
         _validated_focus_targets(
             scene,
             (("start", start_subject_name, start_point), ("end", end_subject_name, end_point)),
@@ -669,9 +669,7 @@ class _AnimationMixin:
             )
             warnings = _focus_depth_warnings(camera, [(item["label"], item["depth"]) for item in samples])
             if mode == "DISTANCE":
-                changed_keys = _key_focus_distance(
-                    camera, [(item["frame"], item["depth"]) for item in samples], interpolation
-                )
+                changed_keys = _key_focus_distance(camera, [(item["frame"], item["depth"]) for item in samples], style)
                 focus_control = None
             else:
                 focus_control, changed_keys = _key_focus_control(
@@ -679,7 +677,7 @@ class _AnimationMixin:
                     collection,
                     focus_control_name,
                     [(item["frame"], item["world"]) for item in samples],
-                    interpolation,
+                    style,
                 )
         finally:
             scene.frame_set(original_frame, subframe=original_subframe)
@@ -740,8 +738,8 @@ class _AnimationMixin:
         start_distance, end_distance, subject_reference_size, lens_start, lens_end = _validated_dolly_optics(
             camera, start_distance, end_distance, subject_reference_size, start_lens
         )
-        validate_key_style(interpolation, "AUTO_CLAMPED", "AUTO_CLAMPED")
-        projected_fraction = _projected_fraction(camera, framing_axis, subject_reference_size)
+        style = KeyStyle(interpolation)
+        style.validate()
         original_frame = scene.frame_current
         original_subframe = scene.frame_subframe
         try:
@@ -751,11 +749,11 @@ class _AnimationMixin:
                 mover,
                 ((start, start_distance, lens_start), (end, end_distance, lens_end)),
                 (subject_object_name, subject_point, subject_reference_size),
-                projected_fraction,
+                _projected_fraction(camera, framing_axis, subject_reference_size),
             )
             changed_keys = [
-                *_set_interpolation_on_keys(mover, "location", (start, end), interpolation),
-                *_set_interpolation_on_keys(camera.data, "lens", (start, end), interpolation),
+                *_set_interpolation_on_keys(mover, "location", (start, end), style),
+                *_set_interpolation_on_keys(camera.data, "lens", (start, end), style),
             ]
         finally:
             scene.frame_set(original_frame, subframe=original_subframe)

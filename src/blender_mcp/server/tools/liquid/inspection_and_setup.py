@@ -5,15 +5,14 @@
 # ruff: file-ignore[multi-line-summary-second-line, undocumented-public-method]
 """Typed tools for liquid domain inspection, setup, flows, effectors, and validation."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ...app import mcp
-from ._shared import _call, _dump, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _dump, _StrictModel
 
 CacheType = Literal["REPLAY", "MODULAR", "ALL"]
 ExistingPolicy = Literal["ERROR", "REUSE"]
@@ -192,8 +191,7 @@ async def get_liquid_simulation_info(
     "owned_objects" (the cache-side manifest's UUID -> {name, role} registry, null when the manifest
     is absent or unreadable).
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "get_liquid_simulation_info",
         {
             "scene_name": scene_name,
@@ -215,7 +213,7 @@ async def get_fluid_object_info(ctx: Context, object_name: str) -> dict:
     (unaffected by any bake); domains[]["evaluated_liquid_bounds"] is the generated liquid surface
     and is null until data or mesh caching exists. Flow/effector bounds are evaluated geometry.
     """
-    return await asyncio.to_thread(_call, "get_fluid_object_info", {"object_name": object_name})
+    return await call_blender("get_fluid_object_info", {"object_name": object_name})
 
 
 @mcp.tool()
@@ -250,8 +248,7 @@ async def create_liquid_domain(
     cache_frame_end and timesteps_min must be <= timesteps_max. When object_name is given, that mesh
     must already have vertices/faces, non-zero finite scale, and no existing fluid domain modifier.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_liquid_domain",
         {
             "scene_name": scene_name,
@@ -275,7 +272,7 @@ async def create_liquid_domain(
             "timesteps_max": timesteps_max,
             "cfl_condition": cfl_condition,
         },
-        [object_name] if object_name else None,
+        changed_objects=[object_name] if object_name else None,
     )
 
 
@@ -307,8 +304,7 @@ async def fit_liquid_domain(
     non-negative values; existing object transforms are kept. Refitting an existing domain requires
     its mesh datablock to be single-user (not shared with another object).
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "fit_liquid_domain",
         {
             "scene_name": scene_name,
@@ -327,7 +323,9 @@ async def fit_liquid_domain(
             "sample_frame_step": sample_frame_step,
             "open_boundaries": open_boundaries or [],
         },
-        [name for name in [domain_object_name, *source_object_names, *(collider_object_names or [])] if name],
+        changed_objects=[
+            name for name in [domain_object_name, *source_object_names, *(collider_object_names or [])] if name
+        ],
     )
 
 
@@ -343,11 +341,10 @@ async def configure_liquid_solver(
     ignores the assigned value and toggles the FLIP particle system, so this tool writes it only when
     the current state differs and reports it in "changes" only when it actually changed.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "configure_liquid_solver",
         {"domain_object_name": domain_object_name, "modifier_name": modifier_name, "patch": _dump(patch)},
-        [domain_object_name],
+        changed_objects=[domain_object_name],
     )
 
 
@@ -368,8 +365,7 @@ async def add_liquid_flow(
     must differ - a domain cannot also be its own flow. existing_policy="REUSE" requires object_name
     to already carry a LIQUID flow modifier; existing_policy="ERROR" fails if modifier_name is taken.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "add_liquid_flow",
         {
             "object_name": object_name,
@@ -379,7 +375,7 @@ async def add_liquid_flow(
             "behavior": behavior,
             "settings": _dump(settings),
         },
-        [object_name, domain_object_name],
+        changed_objects=[object_name, domain_object_name],
     )
 
 
@@ -397,8 +393,7 @@ async def configure_liquid_flow(
     OUTFLOW behavior and is rejected for GEOMETRY behavior, which it does not affect.
     patch.density_vertex_group, if set, must name an existing vertex group on object_name.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "configure_liquid_flow",
         {
             "object_name": object_name,
@@ -406,7 +401,7 @@ async def configure_liquid_flow(
             "domain_object_name": domain_object_name,
             "patch": _dump(patch),
         },
-        [object_name, domain_object_name],
+        changed_objects=[object_name, domain_object_name],
     )
 
 
@@ -426,8 +421,7 @@ async def add_liquid_effector(
     existing_policy="REUSE" requires object_name to already carry a LIQUID effector modifier;
     existing_policy="ERROR" fails if modifier_name is taken.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "add_liquid_effector",
         {
             "object_name": object_name,
@@ -437,7 +431,7 @@ async def add_liquid_effector(
             "effector_type": effector_type,
             "settings": _dump(settings),
         },
-        [object_name, domain_object_name],
+        changed_objects=[object_name, domain_object_name],
     )
 
 
@@ -453,8 +447,7 @@ async def configure_liquid_effector(
 
     patch must set at least one field.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "configure_liquid_effector",
         {
             "object_name": object_name,
@@ -462,7 +455,7 @@ async def configure_liquid_effector(
             "domain_object_name": domain_object_name,
             "patch": _dump(patch),
         },
-        [object_name, domain_object_name],
+        changed_objects=[object_name, domain_object_name],
     )
 
 
@@ -488,8 +481,7 @@ async def configure_liquid_scope_and_boundaries(
     is rejected. For each of flow/effector/force, setting the matching *_collection_name and clear_*
     flag together in the same call is also rejected.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "configure_liquid_scope_and_boundaries",
         {
             "domain_object_name": domain_object_name,
@@ -503,17 +495,15 @@ async def configure_liquid_scope_and_boundaries(
             "create_missing_collections": create_missing_collections,
             "boundaries": _dump(boundaries),
         },
-        [domain_object_name],
+        changed_objects=[domain_object_name],
     )
 
 
 @mcp.tool()
 async def estimate_liquid_resources(ctx: Context, domain_object_name: str, modifier_name: str) -> dict:
     """Estimate grid dimensions and conservative relative cache cost without changing the domain."""
-    return await asyncio.to_thread(
-        _call,
-        "estimate_liquid_resources",
-        {"domain_object_name": domain_object_name, "modifier_name": modifier_name},
+    return await call_blender(
+        "estimate_liquid_resources", {"domain_object_name": domain_object_name, "modifier_name": modifier_name}
     )
 
 
@@ -530,8 +520,7 @@ async def validate_liquid_setup(
     scene. The result's "truncated" flag indicates more findings existed than max_findings allowed
     through.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "validate_liquid_setup",
         {
             "scene_name": scene_name,
@@ -551,8 +540,7 @@ async def inspect_fluid_simulation(
     offset: Annotated[int, Field(ge=0)] = 0,
 ) -> dict:
     """Inspect bounded liquid or gas domain state through the canonical fluid surface."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "inspect_fluid_simulation",
         {
             "domain_type": domain_type,
@@ -586,11 +574,10 @@ async def create_fluid_domain(
     """Create a live LIQUID or GAS Mantaflow domain with isolated collections and cache path."""
     if cache_frame_end < cache_frame_start:
         raise ValueError("cache_frame_end must be >= cache_frame_start")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "create_fluid_domain",
         {key: value for key, value in locals().items() if key != "ctx"},
-        [object_name] if object_name else None,
+        changed_objects=[object_name] if object_name else None,
     )
 
 
@@ -607,8 +594,7 @@ async def add_fluid_flow(
     settings: FluidFlowPatch | None = None,
 ) -> dict:
     """Add a liquid or gas mesh flow and register it with one explicit domain."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "add_fluid_flow",
         {
             "domain_type": domain_type,
@@ -620,7 +606,7 @@ async def add_fluid_flow(
             "gas_flow_type": gas_flow_type,
             "settings": _dump(settings),
         },
-        [object_name, domain_object_name],
+        changed_objects=[object_name, domain_object_name],
     )
 
 
@@ -636,8 +622,7 @@ async def add_fluid_effector(
     settings: LiquidEffectorPatch | None = None,
 ) -> dict:
     """Add a shared collision/guide effector to a LIQUID or GAS domain."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "add_fluid_effector",
         {
             "domain_type": domain_type,
@@ -648,5 +633,5 @@ async def add_fluid_effector(
             "effector_type": effector_type,
             "settings": _dump(settings),
         },
-        [object_name, domain_object_name],
+        changed_objects=[object_name, domain_object_name],
     )

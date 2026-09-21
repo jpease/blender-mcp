@@ -8,7 +8,6 @@ Registers the seven core-surface scene tools, including the cross-domain
 dispatch helper live in `_scene_shared.py`.
 """
 
-import asyncio
 import functools
 import operator
 
@@ -18,7 +17,8 @@ from mcp.server.fastmcp import Context
 from pydantic import Field, TypeAdapter, create_model, model_validator
 
 from ..app import mcp
-from ._scene_shared import _call, _StrictModel
+from ._dispatch import call_blender
+from ._scene_shared import _StrictModel
 from .envelope import STALE_INDEX_WARNING
 
 
@@ -311,11 +311,10 @@ async def set_object_transform(
     space: Literal["LOCAL", "WORLD"] = "WORLD",
 ) -> dict:
     """Set selected transform channels or one complete matrix in explicit local or world space."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "set_object_transform",
         {"object_name": object_name, "patch": patch.model_dump(exclude_none=True), "space": space},
-        [object_name],
+        changed_objects=[object_name],
     )
 
 
@@ -345,11 +344,7 @@ async def set_scene_frame(
         also says whether the requested frame is inside the shot.
 
     """
-    return await asyncio.to_thread(
-        _call,
-        "set_scene_frame",
-        {"frame": frame, "subframe": subframe, "scene_name": scene_name},
-    )
+    return await call_blender("set_scene_frame", {"frame": frame, "subframe": subframe, "scene_name": scene_name})
 
 
 @mcp.tool()
@@ -364,8 +359,7 @@ async def duplicate_or_instance_objects(
     """Create bounded object copies, linked-data copies, or collection instances from one explicit source."""
     if transforms is not None and len(transforms) != len(names):
         raise ValueError("transforms must contain one record per requested name")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "duplicate_or_instance_objects",
         {
             "source_object_name": source_object_name,
@@ -389,11 +383,10 @@ async def manage_scene_collections(
     confirm_remove: bool = False,
 ) -> dict:
     """Manage explicit scene collections without relying on selection or active context."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "manage_scene_collections",
         {key: value for key, value in locals().items() if key != "ctx"},
-        object_names,
+        changed_objects=object_names,
     )
 
 
@@ -405,14 +398,13 @@ async def manage_object_hierarchy(
 ) -> dict:
     """Parent or unparent an explicit batch while optionally preserving each child's world transform."""
     names = [assignment.child_object_name for assignment in assignments]
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "manage_object_hierarchy",
         {
             "assignments": [item.model_dump() for item in assignments],
             "preserve_world_transform": preserve_world_transform,
         },
-        names,
+        changed_objects=names,
     )
 
 
@@ -425,11 +417,10 @@ async def manage_object_constraints(
     position: int | None = Field(default=None, ge=0),
 ) -> dict:
     """Add, patch, move, or remove one typed object constraint using a bounded property allowlist."""
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "manage_object_constraints",
         {"object_name": object_name, "action": action, "constraint": constraint.model_dump(), "position": position},
-        [object_name],
+        changed_objects=[object_name],
     )
 
 
@@ -457,8 +448,7 @@ async def manage_modifiers(
     validated_modifier = modifier_spec_adapter.validate_python(modifier)
     # The warning travels with the call: appending it to the returned envelope would land after
     # `ok()` had already measured the reply against the byte budget.
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "manage_modifiers",
         {
             "object_name": object_name,
@@ -467,7 +457,7 @@ async def manage_modifiers(
             "position": position,
             "confirm_destructive": confirm_destructive,
         },
-        [object_name],
+        changed_objects=[object_name],
         warnings=[STALE_INDEX_WARNING] if action == "APPLY" else None,
     )
 
@@ -502,8 +492,6 @@ async def validate_scene(
     The persistence domain is file-wide: it reports local datablocks with no user, which the save
     discards, and actions kept alive only by a fake user.
     """
-    return await asyncio.to_thread(
-        _call,
-        "validate_scene",
-        {"scene_name": scene_name, "scope": scope, "max_findings": max_findings},
+    return await call_blender(
+        "validate_scene", {"scene_name": scene_name, "scope": scope, "max_findings": max_findings}
     )

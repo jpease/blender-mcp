@@ -1,6 +1,5 @@
 """Production Mantaflow liquid MCP tools grouped by workflow responsibility."""
 
-from ._shared import _call as _call
 from .animation import *  # ruff: ignore[undefined-local-with-import-star]
 from .delivery import *  # ruff: ignore[undefined-local-with-import-star]
 from .force_fields import *  # ruff: ignore[undefined-local-with-import-star]

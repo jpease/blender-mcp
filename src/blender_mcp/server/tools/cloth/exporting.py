@@ -2,15 +2,13 @@
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
 """Typed tool for exporting cloth objects to Alembic or USD."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import _call
+from .._dispatch import call_blender
 
 ClothExportFormat = Literal["ALEMBIC", "USD"]
 ClothExportSpace = Literal["WORLD", "LOCAL"]
@@ -50,8 +48,7 @@ async def export_cloth_simulation(
     are explicit. REQUIRE_BAKED rejects unbaked Cloth modifiers; EVALUATE may populate in-memory
     caches. Alembic supports only unit frame steps and Blender's fixed -Z/Y export orientation.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "export_cloth_simulation",
         {
             "scene_name": scene_name,
@@ -74,5 +71,5 @@ async def export_cloth_simulation(
             "overwrite": overwrite,
             "max_frames": max_frames,
         },
-        object_names,
+        changed_objects=object_names,
     )

@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 from server.tools.liquid.test_tools import _load_liquid_handler
 
-from blender_mcp.server.tools import liquid
+from blender_mcp.server.tools import _dispatch, liquid
 
 
 def _run(function, **kwargs):
@@ -18,11 +18,9 @@ def _run(function, **kwargs):
 def _record_calls(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        liquid,
-        "_call",
-        lambda command, params, changed_objects=None: (
-            calls.append((command, params, changed_objects)) or {"changes": {}}
-        ),
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"changes": {}},
     )
     return calls
 
@@ -237,16 +235,16 @@ def test_unknown_quality_profile_names_are_rejected() -> None:
 def test_quality_profile_tool_forwards_both_resolved_patches(monkeypatch) -> None:
     calls = _record_calls(monkeypatch)
 
-    _run(
+    result = _run(
         liquid.apply_liquid_quality_profile,
         domain_object_name="Domain",
         modifier_name="Liquid Domain",
         profile="FINAL",
     )
 
-    command, params, changed = calls[0]
+    assert result["changed_objects"] == ["Domain"]
+    command, params = calls[0]
     assert command == "apply_liquid_quality_profile"
-    assert changed == ["Domain"]
     assert params["profile"] == "FINAL"
     assert params["solver_patch"]["resolution_max"] == 192
     assert params["mesh_patch"]["use_speed_vectors"] is True
@@ -283,7 +281,7 @@ def test_quality_profile_command_is_registered_as_a_mutating_command(monkeypatch
     server = addon.BlenderMCPServer()
 
     assert "apply_liquid_quality_profile" in server._build_command_handlers()
-    assert "apply_liquid_quality_profile" not in server._READ_ONLY_COMMANDS
+    assert not server.command_spec("apply_liquid_quality_profile").read_only
 
 
 def test_quality_profile_handler_merges_both_sub_results(monkeypatch) -> None:

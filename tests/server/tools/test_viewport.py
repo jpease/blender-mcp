@@ -54,11 +54,6 @@ def test_view_spec_rejects_lens_mm_override_with_camera_object() -> None:
         ViewSpec(camera_object="Hero", lens_mm=35.0)
 
 
-def test_view_spec_rejects_non_default_up() -> None:
-    with pytest.raises(ValidationError, match=r"up currently only supports the default world-Z-up"):
-        ViewSpec(eye=(1.0, 2.0, 3.0), target=(4.0, 5.0, 6.0), up=(0.0, 1.0, 0.0))
-
-
 class _FakeMatrix:
     def __init__(self, tag: str) -> None:
         self.tag = tag

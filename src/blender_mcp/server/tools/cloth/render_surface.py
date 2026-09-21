@@ -2,15 +2,14 @@
 # agents receive precise JSON schemas instead of opaque catch-all dictionaries.
 """Typed tool for adding a reversible render-only modifier stack after Cloth."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import _call, _dump, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _dump, _StrictModel
 from .inspection_and_setup import ExistingPolicy
 
 
@@ -93,8 +92,7 @@ async def prepare_cloth_render_surface(
     Nothing is applied, source geometry/materials/UVs are retained, and evaluated cost evidence is
     returned. Existing modifiers are reused only when explicitly requested.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "prepare_cloth_render_surface",
         {
             "object_name": object_name,
@@ -110,5 +108,5 @@ async def prepare_cloth_render_surface(
             "existing_policy": existing_policy,
             "rest_frame": rest_frame,
         },
-        [object_name],
+        changed_objects=[object_name],
     )

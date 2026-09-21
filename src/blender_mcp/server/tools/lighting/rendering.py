@@ -1,6 +1,5 @@
 """Engine quality, color-management, and bounded lighting-preview MCP tools."""
 
-import asyncio
 import os
 import tempfile
 
@@ -12,7 +11,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from ...app import mcp
-from ._shared import StrictLightingInput, call_blender, dump_input
+from .._dispatch import call_blender
+from ._shared import StrictLightingInput, dump_input
 
 
 class CyclesLightingQuality(StrictLightingInput):
@@ -92,8 +92,7 @@ async def configure_lighting_quality(
         raise ToolError("Cycles settings do not apply to target_engine='EEVEE'")
     if target_engine == "BOTH" and preset is None and (not cycles_payload or not eevee_payload):
         raise ToolError("target_engine='BOTH' requires both cycles and eevee patches, or a preset")
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "configure_lighting_quality",
         {
             "scene_name": scene_name,
@@ -124,8 +123,7 @@ async def configure_color_management(
     """
     if view_transform is None and look is None and exposure is None and gamma is None:
         raise ToolError("Provide at least one color-management setting")
-    return await asyncio.to_thread(
-        call_blender,
+    return await call_blender(
         "configure_color_management",
         {
             "scene_name": scene_name,
@@ -198,8 +196,7 @@ async def render_lighting_preview(
         raise ToolError("Cycles previews above 64 samples require confirm_long_render=true")
     paths, temporary = _preview_paths(target_engine, output_path, cycles_output_path, eevee_output_path)
     try:
-        result = await asyncio.to_thread(
-            call_blender,
+        result = await call_blender(
             "render_lighting_preview",
             {
                 "scene_name": scene_name,

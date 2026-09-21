@@ -103,7 +103,7 @@ def _refusal(module: ModuleType, raw: object, *, must_exist: bool, match: str, t
 
     """
     with pytest.raises(ValueError, match=match) as caught:
-        module.resolve_blend_path(raw, must_exist=must_exist)
+        module.resolve_blend_path(raw, roots=[], must_exist=must_exist)
     _assert_no_absolute_path(str(caught.value), str(tmp_path), os.path.realpath(tmp_path))
 
 
@@ -205,7 +205,7 @@ def test_a_trailing_space_after_the_blend_suffix_is_refused(tmp_path: Path) -> N
 
 def test_the_blend_suffix_is_matched_case_insensitively(tmp_path: Path) -> None:
     """`SHOT.BLEND` is a real file on a case-insensitive volume and a legitimate name everywhere."""
-    resolved = _file_paths().resolve_blend_path(str(tmp_path / "SHOT.BLEND"), must_exist=False)
+    resolved = _file_paths().resolve_blend_path(str(tmp_path / "SHOT.BLEND"), roots=[], must_exist=False)
 
     assert resolved == os.path.join(os.path.realpath(tmp_path), "SHOT.BLEND")
 
@@ -219,7 +219,7 @@ def test_a_bare_relative_path_comes_out_absolute(tmp_path: Path, monkeypatch: py
     """`bpy.path.abspath` passes a bare relative path through unchanged, so this function must absolutize it."""
     monkeypatch.chdir(tmp_path)
 
-    resolved = _file_paths().resolve_blend_path("relative.blend", must_exist=False)
+    resolved = _file_paths().resolve_blend_path("relative.blend", roots=[], must_exist=False)
 
     assert os.path.isabs(resolved)
     assert resolved == os.path.join(os.path.realpath(tmp_path), "relative.blend")
@@ -232,7 +232,7 @@ def test_tilde_expands_to_the_home_directory(tmp_path: Path, monkeypatch: pytest
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(tmp_path)
 
-    resolved = _file_paths().resolve_blend_path("~/shot.blend", must_exist=False)
+    resolved = _file_paths().resolve_blend_path("~/shot.blend", roots=[], must_exist=False)
 
     assert resolved == os.path.join(os.path.realpath(home), "shot.blend")
 
@@ -248,7 +248,7 @@ def test_blenders_relative_form_resolves_inside_the_blend_directory(tmp_path: Pa
     (tmp_path / "linked_shots").symlink_to(tmp_path / "shots", target_is_directory=True)
     expanded = f"{tmp_path}/linked_shots/fx/sub/shot.blend"
 
-    resolved = _file_paths().resolve_blend_path(expanded, must_exist=False)
+    resolved = _file_paths().resolve_blend_path(expanded, roots=[], must_exist=False)
 
     assert resolved == os.path.join(os.path.realpath(tmp_path / "shots"), "fx", "sub", "shot.blend")
 
@@ -258,12 +258,13 @@ def test_a_relative_form_climbing_out_of_the_blend_directory_is_normalised(tmp_p
     module = _file_paths()
     blend_dir = tmp_path / "fx"
     blend_dir.mkdir()
+    climbing = f"{blend_dir}/../escape.blend"
 
-    resolved = module.resolve_blend_path(f"{blend_dir}/../escape.blend", must_exist=False)
+    resolved = module.resolve_blend_path(climbing, roots=[], must_exist=False)
 
     assert resolved == os.path.join(os.path.realpath(tmp_path), "escape.blend")
     with pytest.raises(ValueError, match="outside"):
-        module.enforce_roots(resolved, [str(blend_dir)])
+        module.resolve_blend_path(climbing, roots=[str(blend_dir)], must_exist=False)
 
 
 def test_dotdot_traversal_is_normalised_before_the_containment_check(tmp_path: Path) -> None:
@@ -271,12 +272,13 @@ def test_dotdot_traversal_is_normalised_before_the_containment_check(tmp_path: P
     module = _file_paths()
     root = tmp_path / "output"
     (root / "sub").mkdir(parents=True)
+    escaping = f"{root}/sub/../../outside.blend"
 
-    resolved = module.resolve_blend_path(f"{root}/sub/../../outside.blend", must_exist=False)
+    resolved = module.resolve_blend_path(escaping, roots=[], must_exist=False)
 
     assert ".." not in resolved
     with pytest.raises(ValueError, match="outside") as caught:
-        module.enforce_roots(resolved, [str(root)])
+        module.resolve_blend_path(escaping, roots=[str(root)], must_exist=False)
     _assert_no_absolute_path(str(caught.value), str(tmp_path))
 
 
@@ -289,11 +291,11 @@ def test_a_symlink_inside_a_root_pointing_outside_it_is_refused(tmp_path: Path) 
     link = root / "innocent.blend"
     link.symlink_to(target)
 
-    resolved = module.resolve_blend_path(str(link), must_exist=True)
+    resolved = module.resolve_blend_path(str(link), roots=[], must_exist=True)
 
     assert resolved == os.path.realpath(target)
     with pytest.raises(ValueError, match="outside") as caught:
-        module.enforce_roots(str(link), [str(root)])
+        module.resolve_blend_path(str(link), roots=[str(root)], must_exist=True)
     _assert_no_absolute_path(str(caught.value), str(tmp_path))
 
 
@@ -305,11 +307,11 @@ def test_a_symlinked_parent_directory_is_refused(tmp_path: Path) -> None:
     (tmp_path / "elsewhere").mkdir()
     (root / "shots").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
 
-    resolved = module.resolve_blend_path(str(root / "shots" / "new.blend"), must_exist=False)
+    resolved = module.resolve_blend_path(str(root / "shots" / "new.blend"), roots=[], must_exist=False)
 
     assert resolved == os.path.join(os.path.realpath(tmp_path / "elsewhere"), "new.blend")
     with pytest.raises(ValueError, match="outside"):
-        module.enforce_roots(str(root / "shots" / "new.blend"), [str(root)])
+        module.resolve_blend_path(str(root / "shots" / "new.blend"), roots=[str(root)], must_exist=False)
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +373,7 @@ def test_a_missing_save_directory_is_accepted_and_created_only_on_opt_in(tmp_pat
     module = _file_paths()
     target = tmp_path / "canon" / "shots" / "sh010.blend"
 
-    resolved = module.resolve_blend_path(str(target), must_exist=False, create_directories=True)
+    resolved = module.resolve_blend_path(str(target), roots=[], must_exist=False, create_directories=True)
 
     assert not target.parent.exists(), "resolving must not create anything"
     assert module.create_save_directory(resolved) is True
@@ -413,7 +415,7 @@ def test_an_uncompressed_blend_is_accepted(tmp_path: Path) -> None:
     path = _write(tmp_path / "plain.blend", _uncompressed_blend_bytes())
     assert path.read_bytes().startswith(b"BLENDER17-01v050")
 
-    assert _file_paths().resolve_blend_path(str(path), must_exist=True) == os.path.realpath(path)
+    assert _file_paths().resolve_blend_path(str(path), roots=[], must_exist=True) == os.path.realpath(path)
 
 
 def test_a_zstd_compressed_blend_is_accepted() -> None:
@@ -421,7 +423,7 @@ def test_a_zstd_compressed_blend_is_accepted() -> None:
     path = FIXTURES / "empty_zstd.blend"
     assert path.read_bytes().startswith(b"\x28\xb5\x2f\xfd")
 
-    assert _file_paths().resolve_blend_path(str(path), must_exist=True) == os.path.realpath(path)
+    assert _file_paths().resolve_blend_path(str(path), roots=[], must_exist=True) == os.path.realpath(path)
 
 
 def test_a_gzip_blend_written_without_an_fname_is_accepted() -> None:
@@ -429,7 +431,7 @@ def test_a_gzip_blend_written_without_an_fname_is_accepted() -> None:
     path = FIXTURES / "empty_gzip.blend"
     assert path.read_bytes()[:4] == b"\x1f\x8b\x08\x00"
 
-    assert _file_paths().resolve_blend_path(str(path), must_exist=True) == os.path.realpath(path)
+    assert _file_paths().resolve_blend_path(str(path), roots=[], must_exist=True) == os.path.realpath(path)
 
 
 def test_a_pre_5x_blend_header_is_accepted(tmp_path: Path) -> None:
@@ -437,7 +439,7 @@ def test_a_pre_5x_blend_header_is_accepted(tmp_path: Path) -> None:
     body = _uncompressed_blend_bytes()
     path = _write(tmp_path / "legacy.blend", b"BLENDER-v293" + body[17:])
 
-    assert _file_paths().resolve_blend_path(str(path), must_exist=True) == os.path.realpath(path)
+    assert _file_paths().resolve_blend_path(str(path), roots=[], must_exist=True) == os.path.realpath(path)
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +501,91 @@ def test_a_root_on_another_windows_drive_contains_nothing() -> None:
 def test_paths_that_cannot_be_compared_are_reported_as_not_contained() -> None:
     """`commonpath` raises on an absolute and a relative path; that must not escape as the refusal."""
     assert _file_paths().contains("/output", "relative/x.blend") is False
+
+
+# ---------------------------------------------------------------------------
+# The verdicts, decided from facts alone: no filesystem, no Blender
+# ---------------------------------------------------------------------------
+
+
+def test_a_path_is_authorized_by_any_one_root_and_by_no_roots_at_all() -> None:
+    """Unset roots are the local-artist default; configured ones are checked as a set, not in order."""
+    module = _file_paths()
+
+    assert module.inside_roots("/anywhere/x.blend", []) is True
+    assert module.inside_roots("/output/x.blend", ["/canon", "/output"]) is True
+    assert module.inside_roots("/output-evil/x.blend", ["/canon", "/output"]) is False
+
+
+@pytest.mark.parametrize(
+    ("facts", "expected"),
+    [
+        pytest.param(
+            {"is_directory": True, "exists": False, "readable": True, "header": b""},
+            "path is a directory, not a .blend file",
+            id="a directory named x.blend is not a file",
+        ),
+        pytest.param(
+            {"is_directory": False, "exists": False, "readable": True, "header": b""},
+            "file does not exist",
+            id="missing",
+        ),
+        pytest.param(
+            {"is_directory": False, "exists": True, "readable": False, "header": b""},
+            "file could not be read",
+            id="unreadable is refused, not treated as a bad header",
+        ),
+        pytest.param(
+            {"is_directory": False, "exists": True, "readable": True, "header": b"PK\x03\x04"},
+            "file is not a .blend file (unrecognised header)",
+            id="a zip renamed .blend",
+        ),
+        pytest.param(
+            {"is_directory": False, "exists": True, "readable": True, "header": b"BLENDER17-01"},
+            None,
+            id="a real .blend",
+        ),
+    ],
+)
+def test_the_open_verdict_is_decided_from_facts_alone(facts: dict, expected: str | None) -> None:
+    """Each refusal names the first thing that is wrong, so an unreadable file never reads as the wrong format."""
+    assert _file_paths().blend_file_refusal(**facts) == expected
+
+
+@pytest.mark.parametrize(
+    ("facts", "expected"),
+    [
+        pytest.param(
+            {"is_directory": True, "directory_exists": True, "directory_writable": True},
+            "path is a directory, not a .blend file",
+            id="saving over a directory",
+        ),
+        pytest.param(
+            {"is_directory": False, "directory_exists": False, "directory_writable": False},
+            None,
+            id="a missing directory the caller opted into creating",
+        ),
+        pytest.param(
+            {"is_directory": False, "directory_exists": True, "directory_writable": False},
+            "target directory is not writable",
+            id="create_directories does not excuse an unwritable existing directory",
+        ),
+    ],
+)
+def test_the_save_verdict_holds_when_the_caller_opted_into_creating_directories(
+    facts: dict, expected: str | None
+) -> None:
+    """`create_directories` waives exactly one refusal, and the waiver must not spread to the others."""
+    assert _file_paths().save_target_refusal(**facts, create_directories=True) == expected
+
+
+def test_a_missing_save_directory_is_refused_without_the_opt_in() -> None:
+    """The same facts, the other way round: without the flag a missing directory is the refusal."""
+    refusal = _file_paths().save_target_refusal(
+        is_directory=False, directory_exists=False, directory_writable=False, create_directories=False
+    )
+
+    assert refusal == "target directory does not exist; pass create_directories=true to create it"
 
 
 # ---------------------------------------------------------------------------

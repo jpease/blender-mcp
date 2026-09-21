@@ -1,14 +1,13 @@
 """Typed tools for weight transfer and B-Bone deformation controls."""
 
-import asyncio
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ...app import mcp
-from ._shared import _call, _StrictModel
+from .._dispatch import call_blender
+from ._shared import _StrictModel
 
 VertexMapping = Literal[
     "TOPOLOGY",
@@ -89,8 +88,7 @@ async def transfer_skin_weights(
         raise ValueError("source_mesh_name and target_mesh_name must differ")
     if commit and not confirm_commit:
         raise ValueError("confirm_commit=True is required to apply transferred weights")
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "transfer_skin_weights",
         {
             "source_mesh_name": source_mesh_name,
@@ -107,7 +105,7 @@ async def transfer_skin_weights(
             "confirm_commit": confirm_commit,
             "normalize": normalize,
         },
-        [target_mesh_name],
+        changed_objects=[target_mesh_name],
     )
 
 
@@ -125,12 +123,11 @@ async def configure_bendy_bones(
     to None) leave that setting untouched rather than clearing it. custom_handle_start/end, when
     given, must name an existing bone and require a non-AUTO handle_type_start/end.
     """
-    return await asyncio.to_thread(
-        _call,
+    return await call_blender(
         "configure_bendy_bones",
         {
             "armature_object_name": armature_object_name,
             "patches": [patch.model_dump(exclude_none=True, exclude_unset=True) for patch in patches],
         },
-        [armature_object_name],
+        changed_objects=[armature_object_name],
     )
