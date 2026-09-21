@@ -371,6 +371,10 @@ cleaned = handler.clean_skin_weights(body.name, "HeroRig", normalize="DEFORM")
 assert cleaned["residual_unweighted_vertices"] == []
 inspection = handler.get_character_rig_info("HeroRig")
 assert inspection["bones"]["total"] == 8
+named_inspection = handler.get_character_rig_info("HeroRig", bone_names=["finger_tip.L", "upper_arm.L"])
+assert named_inspection["bones"]["total"] == 2
+assert {item["name"] for item in named_inspection["bones"]["items"]} == {"finger_tip.L", "upper_arm.L"}
+assert {record["name"] for record in named_inspection["pose_bones"]} == {"finger_tip.L", "upper_arm.L"}
 validation = handler.validate_character_rig(["HeroRig"], [body.name], frames=[1])
 assert validation["summary"]["errors"] == 0
 assert bpy.context.scene.frame_current == 1
@@ -388,6 +392,7 @@ json.dumps(
         child_first,
         cleaned,
         inspection,
+        named_inspection,
         validation,
     ]
 )

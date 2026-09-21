@@ -41,6 +41,11 @@ AIM_TOLERANCE_DEGREES = 1e-6
 # position that has been through a matrix inverse and back.
 POSITION_TOLERANCE = 1e-6
 AXIS_ROUNDING = 5e-4
+# Blender's IK stops at its own convergence threshold rather than at float precision, so a
+# solved reach lands micrometres from its target where a matrix round-trip lands nanometres
+# from it. Measured at 3.3e-5 m for the head/neck/spine chain below, Blender 5.2.2, 500
+# iterations; POSITION_TOLERANCE is what the exact-arithmetic checks use and stays at 1e-6.
+REACH_TOLERANCE = 1e-4
 
 
 class CharacterPosingSmokeHarness(CharacterRiggingHandlersMixin):
@@ -460,6 +465,77 @@ drift = max(
 assert drift < POSITION_TOLERANCE, f"the reopened rig evaluates {drift} away from what was saved"
 reopened_error = aim_error_degrees(reopened_rig, "head", "Z", (-3.0, 1.0, 0.9))
 assert reopened_error < AIM_TOLERANCE_DEGREES, f"the reopened rig aims {reopened_error} degrees off"
+
+
+# --- 8. solve_bone_reach bends a chain so its tip's tail reaches a world point -----------------
+
+reopened_rig.animation_data.action = None
+rest_pose(reopened_rig)
+root_world = reopened_rig.matrix_world @ reopened_rig.pose.bones["spine"].head
+# spine (0.4 m) + neck (0.15 m) + head (0.03 m) of reach, and the target sits 0.39 m out:
+# comfortably inside it, and off the rig's straight +Z rest axis. tip_bone is "head", not
+# "neck": spine and neck are colinear (see build_rig), and Blender's IK cannot bend a chain
+# whose rest pose is dead straight - given the same target it only straightens and aims that
+# chain, missing by 0.159 m however many iterations it is given (measured, Blender 5.2.2).
+# The head bone turns 90 degrees at neck's tail, which is the rest bend the solver needs.
+target_point = root_world + reopened_rig.matrix_world.to_3x3() @ Vector((0.25, 0.0, 0.3))
+reach_target = tuple(target_point)
+reach_pole = tuple(root_world + reopened_rig.matrix_world.to_3x3() @ Vector((0.5, 0.0, 0.0)))
+reach = handler.solve_bone_reach(
+    reopened_rig.name, [{"tip_bone": "head", "target": reach_target, "pole_target": reach_pole}]
+)
+reach_error = reach["reaches"][0]["achieved_error_m"]
+assert reach_error < REACH_TOLERANCE, f"solve_bone_reach missed its target by {reach_error} m"
+assert reach["reaches"][0]["chain_length_source"] == "resolved"
+assert reach["reaches"][0]["chain_bones"] == ["head", "neck", "spine"]
+assert reach["reaches"][0]["pole_source"] == "explicit"
+assert list(reopened_rig.pose.bones["head"].constraints) == [], "a temporary IK constraint was left on head"
+assert list(reopened_rig.pose.bones["neck"].constraints) == [], "a temporary IK constraint was left on neck"
+assert list(reopened_rig.pose.bones["spine"].constraints) == [], "a temporary IK constraint was left on spine"
+assert not any(obj.name.startswith("__solve_bone_reach__") for obj in bpy.data.objects), (
+    "a scratch Empty was left behind"
+)
+
+# achieved_error_m is read while the constraint is still live. What the caller keeps is the
+# captured pose reapplied after it was removed, so measure the rig itself.
+bpy.context.view_layer.update()
+applied_error = (reopened_rig.matrix_world @ reopened_rig.pose.bones["head"].tail - target_point).length
+assert applied_error < REACH_TOLERANCE, f"the reapplied pose sits {applied_error} m from the target"
+
+# Omitting the pole synthesizes one from the chain's rest bend, and it has to solve just as well.
+rest_pose(reopened_rig)
+synthesized = handler.solve_bone_reach(reopened_rig.name, [{"tip_bone": "head", "target": reach_target}])
+assert synthesized["reaches"][0]["pole_source"] == "resolved"
+synthesized_error = synthesized["reaches"][0]["achieved_error_m"]
+assert synthesized_error < REACH_TOLERANCE, f"the synthesized pole missed its target by {synthesized_error} m"
+
+# This rig's spine/neck rest chain is dead straight; omitting pole_target has no bend to infer.
+rest_pose(reopened_rig)
+refuses(
+    lambda: handler.solve_bone_reach(reopened_rig.name, [{"tip_bone": "neck", "target": reach_target}]),
+    "rest pose is straight",
+)
+
+# Two reaches naming an overlapping chain in one call are refused, not silently resolved.
+refuses(
+    lambda: handler.solve_bone_reach(
+        reopened_rig.name,
+        [
+            {"tip_bone": "head", "target": reach_target, "pole_target": reach_pole},
+            {"tip_bone": "spine", "target": reach_target},
+        ],
+    ),
+    "claimed by more than one reach",
+)
+
+# A refused reach cleans up after itself too: the target's scratch Empty is created before the
+# pole is resolved, and the IK constraint before the chain is read.
+assert not any(obj.name.startswith("__solve_bone_reach__") for obj in bpy.data.objects), (
+    "a refused reach left a scratch Empty behind"
+)
+assert list(reopened_rig.pose.bones["head"].constraints) == [], "a refused reach left an IK constraint on head"
+
+print(f"solve_bone_reach: achieved_error_m {reach_error:.9f}, reapplied {applied_error:.9f}")
 
 print(f"aim error: object {object_error:.12f} deg, world point {point_error:.12f} deg")
 print(f"keyed playback error: frame 1 {first_frame_error:.12f} deg, frame 24 {playback_error:.12f} deg")

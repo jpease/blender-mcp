@@ -684,6 +684,41 @@ def _bone_pose_entries(bones: int) -> list[dict[str, object]]:
     ]
 
 
+def _reach_records(bones: int) -> list[dict[str, object]]:
+    """
+    Mirror `handlers/character_rigging/posing.py _solve_one_reach`, one entry per solved reach.
+
+    A reach reports the chain it resolved and where the tip's tail landed, and carries the same
+    per-bone pose records `set_character_pose` returns for that chain. Two reaches, split evenly,
+    because the tool exists for the two-rigs-shaking-hands case: one chain per rig, one call.
+
+    Args:
+        bones: How many bones the call posed across every reach.
+
+    Returns:
+        list[dict[str, object]]: One record per reach.
+
+    """
+    posed = _bone_pose_entries(bones)
+    first = bones // 2
+    return [
+        {
+            "tip_bone": _bone_name(start),
+            "chain_bones": [_bone_name(index) for index in range(start, start + length)],
+            "chain_length": length,
+            "chain_length_source": "resolved",
+            "pole_source": "resolved",
+            "target_world": _floats(3),
+            "head_world": _floats(3, 3),
+            "tail_world": _floats(3, 6),
+            # What a real 500-iteration Blender IK solve converges to, measured on a bent chain.
+            "achieved_error_m": 3.28369698225788e-05,
+            "bones": posed[start : start + length],
+        }
+        for start, length in ((0, first), (first, bones - first))
+    ]
+
+
 def _scene_finding(index: int) -> dict[str, object]:
     """
     Mirror `handlers/texture/validation.py:8 _finding`, as `validate_scene` aggregates them.
@@ -1597,6 +1632,14 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "changed_objects": ["Hero_Rig"],
             "changed_resources": [{"type": "ACTION", "name": "Hero_Action"}],
         },
+        # `handlers/character_rigging/posing.py solve_bone_reach`; per reach it adds the solver's
+        # own report to the same per-bone records set_character_pose returns for that chain.
+        "solve_bone_reach": lambda scale: {
+            "armature_object": "Hero_Rig",
+            "changed_bones": [_bone_name(index) for index in range(scale.bones)],
+            "reaches": _reach_records(scale.bones),
+            "changed_objects": ["Hero_Rig"],
+        },
         # --- animation: handlers/animation.py, handlers/object_animation.py -------------
         "inspect_animation": lambda _scale: {
             "target": {"type": "OBJECT", "name": "Camera_Hero"},
@@ -1948,6 +1991,10 @@ _ARGUMENTS: Mapping[str, Mapping[str, object]] = MappingProxyType(
         "set_object_transform": {"object_name": "Hero", "patch": {"location": [0.0, 0.0, 0.0]}},
         "set_scene_camera": {"scene_name": "Scene", "camera_name": "Camera_Hero"},
         "set_viewport_overlay": {"toggle": "CAVITY", "enabled": True},
+        "solve_bone_reach": {
+            "armature_object_name": "Hero_Rig",
+            "reaches": [{"tip_bone": "hand.L", "target": [0.6, -0.1, 1.1]}],
+        },
         "unlink_libraries": {"library_uids": [977], "confirm": True},
         "validate_camera_rig": {"scene_name": "Scene"},
         "validate_lighting_setup": {"scene_name": "Scene"},

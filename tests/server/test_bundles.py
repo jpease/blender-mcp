@@ -339,7 +339,7 @@ def test_shot_mode_lights_the_shot_but_excludes_texture_authoring_and_rig_constr
     assert "create_orbit_camera_rig" not in shot, "rig construction belongs to camera-rigs, not shot"
 
 
-POSING_TOOLS = frozenset({"set_character_pose", "keyframe_character_pose", "list_character_bones"})
+POSING_TOOLS = frozenset({"set_character_pose", "keyframe_character_pose", "list_character_bones", "solve_bone_reach"})
 
 
 def test_shot_mode_can_pose_a_linked_character_without_rig_construction() -> None:
@@ -355,9 +355,9 @@ def test_character_posing_bundle_adds_only_the_posing_tools() -> None:
 
 
 def test_character_rigging_bundle_keeps_every_rigging_tool_after_the_split() -> None:
-    """Existing `character-rigging` configs lose nothing: all 23 tools, posing included."""
+    """Existing `character-rigging` configs lose nothing: all 24 tools, posing included."""
     rigging = _tool_names_for_toolsets("character-rigging") - _tool_names_for_toolsets(None)
-    assert len(rigging) == 23
+    assert len(rigging) == 24
     assert rigging >= POSING_TOOLS | {"create_armature", "bind_mesh_to_armature", "add_pose_bone_constraint"}
 
 
@@ -487,12 +487,20 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # Raised a third time, from 205,260, by `list_character_bones(bone_names=…)`: 459 bytes that
 # turn reading three bones' rest axes off a 187-bone rig from six paginated calls (53,023
 # bytes) into one 997-byte reply.
-SHOT_MODE_BYTE_CEILING = 205_719
+# Raised a fourth time, from 205,719, by two changes measured apart: 4,490 bytes are
+# `solve_bone_reach`'s `BoneReach` schema and tool description (payload_report with and without
+# that one tool), which is what turns "bend this chain until the hand lands on that point" from
+# roughly fourteen guessed `rotate` calls into one; the other 1,986 are
+# `get_viewport_screenshot`'s new `view` (ViewSpec) and `shading_override` parameters, which
+# also land in the core surface below. Measured shot payload 212,711 bytes.
+SHOT_MODE_BYTE_CEILING = 213_000
 
 # The same rule for the default, core-only surface, and the same work: 166 bytes for
 # `validate_scene`'s `persistence` scope, 2,202 for `inspect_delivery`, 601 for `save_shot`'s
-# provenance switches.
-DEFAULT_MODE_BYTE_CEILING = 69_831
+# provenance switches. Raised from 69,831 by `get_viewport_screenshot`'s `view`/
+# `shading_override` parameters, the only core-surface growth in that pass: 1,986 bytes, for a
+# measured 71,817. No posing tool is in core, so none of `solve_bone_reach` is in this figure.
+DEFAULT_MODE_BYTE_CEILING = 72_000
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

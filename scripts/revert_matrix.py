@@ -83,6 +83,7 @@ ADDON_LIGHTING_INSPECTION = ROOT / "src/blender_mcp/bundled/addon/handlers/light
 ADDON_LIGHTING_RENDERING = ROOT / "src/blender_mcp/bundled/addon/handlers/lighting/rendering.py"
 SERVER_LIGHTING_INSPECTION_TOOL = ROOT / "src/blender_mcp/server/tools/lighting/inspection.py"
 SERVER_LIGHTING_RENDERING_TOOL = ROOT / "src/blender_mcp/server/tools/lighting/rendering.py"
+ADDON_CR_FOUNDATION = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/foundation.py"
 ADDON_POSING = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/posing.py"
 SERVER_POSING_TOOL = ROOT / "src/blender_mcp/server/tools/character_rigging/posing.py"
 ADDON_RENDERING = ROOT / "src/blender_mcp/bundled/addon/handlers/rendering.py"
@@ -134,6 +135,7 @@ AMT = "tests/test_addon_manager.py"
 LIGHTT = "tests/server/tools/lighting/test_tools.py"
 CTRLT = "tests/server/tools/character_rigging/test_controls.py"
 POSET = "tests/server/tools/character_rigging/test_posing.py"
+CRFT = "tests/server/tools/character_rigging/test_foundation.py"
 RENDT = "tests/test_rendering_tools.py"
 SVT = "tests/server/tools/test_scene_validate.py"
 DRT = "tests/server/test_dispatch_rules.py"
@@ -4896,17 +4898,18 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 205_260",
-        # One byte below the *measured* payload (201,541), not below the ceiling: the ceiling has
-        # headroom by design, so reverting it to 201_999 would still pass and prove nothing.
-        "SHOT_MODE_BYTE_CEILING = 205_259",
+        "SHOT_MODE_BYTE_CEILING = 213_000",
+        # One byte below the *measured* payload (212,711), not below the ceiling: the ceiling has
+        # headroom by design, so reverting it to 212_999 would still pass and prove nothing.
+        "SHOT_MODE_BYTE_CEILING = 212_710",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
         "server tools: the default ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 69_831",
-        "DEFAULT_MODE_BYTE_CEILING = 69_830",
+        "DEFAULT_MODE_BYTE_CEILING = 72_000",
+        # Same rule: one byte below the measured core payload (71,817), not below the ceiling.
+        "DEFAULT_MODE_BYTE_CEILING = 71_816",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
@@ -6092,24 +6095,28 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "posing: the bone filter is ignored, so naming three bones still reads the whole rig",
-        ADDON_POSING,
+        ADDON_CR_FOUNDATION,
         "    if bone_names is None:\n        return bones",
         "    if True:\n        return bones",
         (
             f"{POSET}::test_named_bones_are_returned_in_one_page_instead_of_paged_to",
             f"{POSET}::test_an_unknown_bone_name_is_refused_rather_than_silently_dropped",
+            f"{CRFT}::test_selected_bones_returns_named_bones_in_armature_order_not_request_order",
         ),
     ),
     Revert(
         "posing: a bone the rig does not have is dropped from the page instead of refused",
-        ADDON_POSING,
+        ADDON_CR_FOUNDATION,
         '    if missing:\n        raise ValueError(f"Bones not found in armature',
         '    if False:\n        raise ValueError(f"Bones not found in armature',
-        (f"{POSET}::test_an_unknown_bone_name_is_refused_rather_than_silently_dropped",),
+        (
+            f"{POSET}::test_an_unknown_bone_name_is_refused_rather_than_silently_dropped",
+            f"{CRFT}::test_selected_bones_refuses_an_unknown_name",
+        ),
     ),
     Revert(
         "posing: the bone filter accepts a shape that is not a list of names",
-        ADDON_POSING,
+        ADDON_CR_FOUNDATION,
         "    if not isinstance(bone_names, list) or not 1 <= len(bone_names) <= _MAX_BONE_PAGE:",
         "    if False:",
         (
@@ -6119,7 +6126,7 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "posing: a blank or non-string bone name passes the filter",
-        ADDON_POSING,
+        ADDON_CR_FOUNDATION,
         "        if not isinstance(name, str) or not name.strip():",
         "        if False:",
         (
@@ -6129,10 +6136,13 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "posing: the list is narrowed even when no filter was asked for",
-        ADDON_POSING,
+        ADDON_CR_FOUNDATION,
         "    if bone_names is None:\n        return bones",
         "    if bone_names is None:\n        return bones[:1]",
-        (f"{POSET}::test_no_filter_still_lists_every_bone",),
+        (
+            f"{POSET}::test_no_filter_still_lists_every_bone",
+            f"{CRFT}::test_selected_bones_returns_every_bone_in_armature_order_when_unfiltered",
+        ),
     ),
 ]
 

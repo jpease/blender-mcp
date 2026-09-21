@@ -1399,6 +1399,54 @@ def _constraint_payload_fields(spec, target, pole_target, action, action_slot=No
     return fields
 
 
+# Longest bone_names filter accepted, and the page size list_character_bones pages a whole
+# rig at. The heaviest production rigs here carry 187-238 bones, so two pages cover one.
+# get_character_rig_info paginates further (500) but shares this narrower cap for its own
+# bone_names filter, so naming exact bones behaves identically in both tools.
+_MAX_BONE_PAGE = 200
+
+
+def _selected_bones(armature, bone_names):
+    """
+    Narrow an armature's rest bones to the ones the caller named, in armature order.
+
+    Shared by list_character_bones and get_character_rig_info: reading a few bones' data off
+    a 187-bone rig otherwise costs several paginated calls, because a per-bone payload spends
+    the reply budget at a few dozen bones a page at best. A name that does not exist is refused
+    rather than silently omitted: a caller asking for three bones and receiving two would pose
+    or inspect the wrong one.
+
+    Args:
+        armature: The armature object.
+        bone_names: Exact bone names to keep, or None for every bone.
+
+    Returns:
+        list: The matching `bpy.types.Bone`s, in armature order, so paging a filtered list
+        behaves exactly like paging an unfiltered one.
+
+    Raises:
+        ValueError: When `bone_names` is not a list of 1 to `_MAX_BONE_PAGE` non-empty
+            strings, or names a bone this armature does not have.
+
+    """
+    bones = list(armature.data.bones)
+    if bone_names is None:
+        return bones
+    if not isinstance(bone_names, list) or not 1 <= len(bone_names) <= _MAX_BONE_PAGE:
+        raise ValueError(f"bone_names must be a list of 1 to {_MAX_BONE_PAGE} bone names")
+    wanted = []
+    for name in bone_names:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("each bone_names entry must be a non-empty string")
+        wanted.append(name.strip())
+    present = {bone.name for bone in bones}
+    missing = sorted({name for name in wanted if name not in present})
+    if missing:
+        raise ValueError(f"Bones not found in armature '{armature.name}': {missing}")
+    requested = set(wanted)
+    return [bone for bone in bones if bone.name in requested]
+
+
 class FoundationHandlersMixin:
     """Inspect and edit armature foundations, bindings, weights, and constraints."""
 
@@ -1407,6 +1455,7 @@ class FoundationHandlersMixin:
         armature_object_name,
         bone_limit=100,
         bone_offset=0,
+        bone_names=None,
         dependency_limit=100,
         dependency_offset=0,
         include_custom_properties=True,
@@ -1415,7 +1464,7 @@ class FoundationHandlersMixin:
         bpy.context.view_layer.update()
         _validate_limit_offset(bone_limit, bone_offset, 500, "bone")
         _validate_limit_offset(dependency_limit, dependency_offset, 500, "dependency")
-        bones = list(armature_obj.data.bones)
+        bones = _selected_bones(armature_obj, bone_names)
         start, end, truncated, next_offset = paginate(len(bones), bone_offset, bone_limit, 500)
         dependencies = _dependent_meshes(armature_obj)
         dep_start, dep_end, dep_truncated, dep_next = paginate(

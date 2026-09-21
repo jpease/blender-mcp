@@ -309,3 +309,96 @@ async def keyframe_character_pose(
         },
         [armature_object_name],
     )
+
+
+class BoneReach(_StrictModel):
+    """
+    Bend an unbranched ancestor chain so tip_bone's TAIL reaches a world point.
+
+    tip_bone is driven by a temporary Blender IK constraint, evaluated, captured, then
+    removed - never left live on the rig - and the captured pose is applied through the same
+    matrix+space="POSE" mechanism set_character_pose uses for an explicit matrix entry. Pick
+    tip_bone as the bone whose POSITION must be exact; pose anything distal to it (e.g. a
+    hand's grip shape) separately with set_character_pose's rotate/aim_at. For a handshake,
+    that is usually a wrist-class bone, not the hand/fingertip bone - the hand's own
+    orientation is posed separately.
+    """
+
+    tip_bone: str = Field(min_length=1, max_length=63)
+    target: tuple[float, float, float] | None = None
+    target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
+    chain_length: Annotated[int, Field(ge=1, le=32)] | None = None
+    pole_target: tuple[float, float, float] | None = None
+    pole_target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
+    pole_angle_degrees: float = 0.0
+    use_stretch: bool = False
+    iterations: Annotated[int, Field(ge=1, le=1000)] = 500
+
+    @model_validator(mode="after")
+    def validate_reach(self) -> "BoneReach":
+        """
+        Reject a reach that names no target, two targets, or two pole targets.
+
+        Returns:
+            BoneReach: This model, unchanged.
+
+        Raises:
+            ValueError: If neither or both target forms are given, or both pole forms are.
+
+        """
+        if (self.target is None) == (self.target_object is None):
+            raise ValueError("Supply exactly one of target or target_object")
+        if self.pole_target is not None and self.pole_target_object is not None:
+            raise ValueError("Supply at most one of pole_target or pole_target_object")
+        return self
+
+
+@mcp.tool()
+async def solve_bone_reach(
+    ctx: Context,
+    armature_object_name: str,
+    reaches: Annotated[list[BoneReach], Field(min_length=1, max_length=8)],
+    detail: bool = False,
+) -> dict:
+    """
+    Bend one or more unbranched bone chains so each tip_bone's tail reaches a world point.
+
+    chain_length omitted: resolved to the longest unbranched ancestor run above tip_bone -
+    every bone up to (not including) the first ancestor with more than one child, or a root.
+    Always reported back, whether resolved or supplied explicitly.
+
+    pole_target/pole_target_object omitted: synthesized from the chain's REST pose - the
+    perpendicular offset of the chain's middle joint from the straight line between the
+    chain's root-most head and tip_bone's rest tail. Refused when the rest pose is straight
+    (no natural bend to infer a pole from); supply one explicitly then.
+
+    Two reaches in the same call may not claim the same bone - solving it to two different
+    targets is ambiguous, so it is refused rather than letting the later reach silently win.
+
+    Args:
+        ctx: MCP request context.
+        armature_object_name: An existing object of type ARMATURE with pose_position='POSE'.
+        reaches: One to eight independent chains to solve, applied together as one pose.
+        detail: Also report each bone's pre-call pose matrix, and report both matrices at
+            Blender's own precision instead of rounded to six decimal places.
+
+    Returns:
+        armature_object, changed_bones naming every bone any reach posed, and reaches with
+        one entry per requested reach: tip_bone, chain_bones (tip first), chain_length,
+        chain_length_source ("explicit" or "resolved"), pole_source ("explicit" or
+        "resolved"), target_world, head_world, tail_world, achieved_error_m (the distance
+        between tail_world and the target after the solve - a large value means the target
+        was out of the chain's reach), and bones, the same per-bone records
+        set_character_pose returns for this chain.
+
+    """
+    return await asyncio.to_thread(
+        _call,
+        "solve_bone_reach",
+        {
+            "armature_object_name": armature_object_name,
+            "reaches": [reach.model_dump(exclude_none=True) for reach in reaches],
+            "detail": detail,
+        },
+        [armature_object_name],
+    )

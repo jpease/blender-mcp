@@ -10,20 +10,24 @@ Blender drops it at save, so restoring a previous assignment would throw the wor
 
 import contextlib
 import math
+import uuid
 
 import bpy
 import mathutils
 
 from ...helpers import paginate, sync_from_editmode
 from .foundation import (
+    _MAX_BONE_PAGE,
     _action_fcurve_collections,
     _armature_object,
     _bone_path_token,
     _finite,
     _matrix_list,
     _required_name,
+    _selected_bones,
     _validate_limit_offset,
     _vector,
+    _vector_tuple,
 )
 
 _POSE_SPACES = {"LOCAL", "LOCAL_WITH_PARENT", "POSE", "WORLD"}
@@ -31,9 +35,6 @@ _POSE_SPACES = {"LOCAL", "LOCAL_WITH_PARENT", "POSE", "WORLD"}
 # the channel delta from rest. Every other space states an absolute placement in the armature
 # (or the scene), so a child's target has to be built after its parent has moved.
 _PARENT_RELATIVE_SPACE = "LOCAL"
-# A page an agent can read in full without spending its context on a whole rig; the heaviest
-# production rigs here carry 187-238 bones, so two pages cover one.
-_MAX_BONE_PAGE = 200
 
 _AXIS_INDEX = {"X": 0, "Y": 1, "Z": 2}
 _SIGNED_AXIS_SIGNS = {"X": 1.0, "-X": -1.0, "Y": 1.0, "-Y": -1.0, "Z": 1.0, "-Z": -1.0}
@@ -761,44 +762,270 @@ def _place_playhead(scene, frame):
     scene.frame_set(whole, subframe=frame - whole)
 
 
-def _selected_bones(armature, bone_names):
-    """
-    Narrow an armature's rest bones to the ones the caller named, in armature order.
+# Longest chain solve_bone_reach will auto-resolve or accept explicitly - matches
+# BoneReach.chain_length's Field(le=32) on the server side.
+_MAX_REACH_CHAIN = 32
+# Names for the scratch Empty objects and IK constraint solve_bone_reach creates for one
+# reach's evaluation. Never left behind: removed before the call returns on every path,
+# success or failure (mutation_transaction's rollback additionally covers the Empties, as
+# ordinary created objects, if an exception unwinds past their own try/finally).
+_REACH_HELPER_PREFIX = "__solve_bone_reach__"
 
-    Reading three bones' rest axes off a 187-bone rig otherwise costs six paginated calls,
-    because `rest_axes` spends the reply budget at roughly 22 bones a page. A name that does
-    not exist is refused rather than silently omitted: a caller asking for three bones and
-    receiving two would pose the wrong one.
+
+def _rest_ancestor_chain(tip, length):
+    """
+    Build an exact-length ancestor run above tip, root-most last, ignoring branching.
+
+    Args:
+        tip: The rest bone (`armature.data.bones[...]`) the reach targets.
+        length: The exact chain length the caller asked for explicitly.
+
+    Returns:
+        list: `length` `bpy.types.Bone`s, tip first.
+
+    Raises:
+        ValueError: If tip has fewer than `length - 1` ancestors.
+
+    """
+    chain = [tip]
+    bone = tip
+    for _step in range(length - 1):
+        if bone.parent is None:
+            raise ValueError(f"'{tip.name}' has only {len(chain)} ancestor(s); chain_length={length} exceeds them")
+        chain.append(bone.parent)
+        bone = bone.parent
+    return chain
+
+
+def _unbranched_ancestor_chain(tip, max_length):
+    """
+    Tip-to-root ancestor run, stopping before the first fork (2+ children) or the last root.
+
+    Args:
+        tip: The rest bone the reach targets.
+        max_length: The longest chain this will return.
+
+    Returns:
+        list: 1 to `max_length` `bpy.types.Bone`s, tip first.
+
+    """
+    chain = [tip]
+    bone = tip
+    while len(chain) < max_length:
+        parent = bone.parent
+        if parent is None or len(parent.children) > 1:
+            break
+        chain.append(parent)
+        bone = parent
+    return chain
+
+
+def _synthesize_pole(armature, chain):
+    """
+    Infer a pole point from the chain's REST-pose bend, in world space.
+
+    The chain's middle joint - found by walking tip_tail, then every chain bone's head in
+    order down to root_head, and taking the one at the midpoint of that list - is projected
+    off the straight root-to-tip line; what is left of it is the bend direction, scaled out
+    by the chain's total rest length. A chain with only one bone, or whose rest pose is
+    dead straight, has no such direction and is refused rather than guessed.
 
     Args:
         armature: The armature object.
-        bone_names: Exact bone names to keep, or None for every bone.
+        chain: The reach's resolved chain, tip first, as returned by
+            `_unbranched_ancestor_chain` or `_rest_ancestor_chain`.
 
     Returns:
-        list: The matching `bpy.types.Bone`s, in armature order, so paging a filtered list
-        behaves exactly like paging an unfiltered one.
+        mathutils.Vector: A world-space point off to the bend side of the chain.
 
     Raises:
-        ValueError: When `bone_names` is not a list of 1 to `_MAX_BONE_PAGE` non-empty
-            strings, or names a bone this armature does not have.
+        ValueError: If the chain's root and tip coincide, or its rest pose is straight.
 
     """
-    bones = list(armature.data.bones)
-    if bone_names is None:
-        return bones
-    if not isinstance(bone_names, list) or not 1 <= len(bone_names) <= _MAX_BONE_PAGE:
-        raise ValueError(f"bone_names must be a list of 1 to {_MAX_BONE_PAGE} bone names")
-    wanted = []
-    for name in bone_names:
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("each bone_names entry must be a non-empty string")
-        wanted.append(name.strip())
-    present = {bone.name for bone in bones}
-    missing = sorted({name for name in wanted if name not in present})
-    if missing:
-        raise ValueError(f"Bones not found in armature '{armature.name}': {missing}")
-    requested = set(wanted)
-    return [bone for bone in bones if bone.name in requested]
+    root_head = chain[-1].head_local
+    tip_tail = chain[0].tail_local
+    axis = tip_tail - root_head
+    if axis.length <= _AIM_MIN_LENGTH:
+        raise ValueError(f"'{chain[0].name}' chain root and tip coincide; supply pole_target explicitly")
+    axis = axis.normalized()
+    joints = [tip_tail, *(bone.head_local for bone in chain)]
+    mid = joints[len(joints) // 2]
+    offset = mid - root_head
+    projected = offset - axis * offset.dot(axis)
+    if projected.length <= _AIM_MIN_RESIDUAL:
+        raise ValueError(
+            f"'{chain[0].name}' chain's rest pose is straight; no natural pole direction can "
+            "be inferred - supply pole_target or pole_target_object"
+        )
+    projected = projected.normalized()
+    pole_local = mid + projected * sum(bone.length for bone in chain)
+    return armature.matrix_world @ pole_local
+
+
+def _reach_helper_object(location):
+    """Create a scratch Empty at a world point, for an IK target/pole with no named object."""
+    empty = bpy.data.objects.new(f"{_REACH_HELPER_PREFIX}{uuid.uuid4().hex}", None)
+    bpy.context.collection.objects.link(empty)
+    empty.location = location
+    return empty
+
+
+def _resolved_reach_target(point, object_name, label):
+    """
+    Resolve an existing named object, or a scratch Empty at an explicit world point.
+
+    Args:
+        point: A raw world-space point, or None.
+        object_name: An existing object's name, or None. Exactly one of point/object_name is
+            non-None; the caller has already enforced that (BoneReach's own validator, for
+            target/target_object, and solve_bone_reach's own pole handling, for pole_target/
+            pole_target_object).
+        label: What this target is, for the not-found message.
+
+    Returns:
+        tuple: `(object, is_temporary)`. is_temporary is True for a scratch Empty this
+            function created, which the caller must remove once the IK solve has read it.
+
+    Raises:
+        ValueError: If object_name does not name an existing object.
+
+    """
+    if object_name is not None:
+        obj = bpy.data.objects.get(object_name)
+        if obj is None:
+            raise ValueError(f"{label} object not found: {object_name}")
+        return obj, False
+    return _reach_helper_object(_vector_tuple(point, label)), True
+
+
+def _configured_reach_constraint(tip_pose_bone, reach, target_obj, pole_obj, chain_count):
+    """Add and configure one reach's temporary IK constraint on tip_pose_bone."""
+    fields = {
+        "name": f"{_REACH_HELPER_PREFIX}{uuid.uuid4().hex}",
+        "target": target_obj,
+        "pole_target": pole_obj,
+        "chain_count": chain_count,
+        "pole_angle": math.radians(reach.get("pole_angle_degrees", 0.0)),
+        "use_stretch": bool(reach.get("use_stretch", False)),
+        "iterations": int(reach.get("iterations", 500)),
+        # tip_bone's TAIL is what the model promises reaches target, not just its rotation.
+        "use_tail": True,
+    }
+    constraint = tip_pose_bone.constraints.new(type="IK")
+    try:
+        for field, value in fields.items():
+            setattr(constraint, field, value)
+    except Exception:
+        # The constraint is on the rig from `new()` onwards, and the caller's own try/finally
+        # only covers a constraint this function returned. A value Blender's RNA refuses must
+        # not leave a live IK constraint behind - the same reason `add_pose_bone_constraint`
+        # removes a constraint it created but could not configure.
+        tip_pose_bone.constraints.remove(constraint)
+        raise
+    return constraint
+
+
+def _resolve_reach_chain(armature, reach, captured):
+    """Resolve the rest-bone chain a reach's tip_bone/chain_length imply, refusing any overlap."""
+    tip_name = _required_name(reach.get("tip_bone"), "tip_bone")
+    rest_tip = armature.data.bones.get(tip_name)
+    if rest_tip is None:
+        raise ValueError(f"Pose bone not found: {tip_name}")
+    requested_length = reach.get("chain_length")
+    if requested_length is None:
+        rest_chain = _unbranched_ancestor_chain(rest_tip, _MAX_REACH_CHAIN)
+        chain_length_source = "resolved"
+    else:
+        rest_chain = _rest_ancestor_chain(rest_tip, requested_length)
+        chain_length_source = "explicit"
+    overlap = sorted(name for name in (bone.name for bone in rest_chain) if name in captured)
+    if overlap:
+        raise ValueError(f"Bones claimed by more than one reach: {overlap}")
+    return rest_chain, chain_length_source
+
+
+def _resolved_reach_pole(armature, reach, rest_chain):
+    """Resolve the reach's pole object, synthesizing one from the rest bend when none is named."""
+    pole_point = reach.get("pole_target")
+    pole_object_name = reach.get("pole_target_object")
+    if pole_object_name is not None or pole_point is not None:
+        pole_obj, pole_is_temp = _resolved_reach_target(pole_point, pole_object_name, "pole_target")
+        return pole_obj, pole_is_temp, "explicit"
+    return _reach_helper_object(tuple(_synthesize_pole(armature, rest_chain))), True, "resolved"
+
+
+def _resolve_reach_geometry(armature, reach, rest_chain):
+    """Resolve the reach's target and pole objects, and where the pole came from."""
+    target_obj, target_is_temp = _resolved_reach_target(reach.get("target"), reach.get("target_object"), "target")
+    try:
+        pole_obj, pole_is_temp, pole_source = _resolved_reach_pole(armature, reach, rest_chain)
+    except Exception:
+        # A scratch Empty for the target already exists by the time the pole is resolved, and
+        # `_solve_one_reach`'s try/finally has not started yet. An unresolvable pole - an
+        # unknown object, or a rest chain too straight to infer one from - must not strand it.
+        if target_is_temp:
+            bpy.data.objects.remove(target_obj, do_unlink=True)
+        raise
+    return target_obj, target_is_temp, pole_obj, pole_is_temp, pole_source
+
+
+def _solve_one_reach(armature, reach, captured):
+    """
+    Resolve, temporarily IK-solve, and capture one reach's chain into captured.
+
+    Args:
+        armature: The armature object being posed.
+        reach: One validated BoneReach entry, as a dict.
+        captured: `{pose_bone_name: pose_space_matrix}`, shared across every reach in this
+            call and extended in place with this reach's chain bones.
+
+    Returns:
+        dict: This reach's solver metadata - tip_bone, chain_bones, chain_length,
+        chain_length_source, pole_source, target_world, head_world, tail_world and
+        achieved_error_m. Does not include "bones"; the caller adds that once every
+        reach's captured matrices have been applied together.
+
+    Raises:
+        ValueError: If tip_bone is unknown, chain_length is explicit but exceeds tip_bone's
+            ancestors, this reach's chain overlaps an earlier reach's, an explicit target or
+            pole names an object that does not exist, or an omitted pole cannot be
+            synthesized from a straight or degenerate rest chain.
+
+    """
+    rest_chain, chain_length_source = _resolve_reach_chain(armature, reach, captured)
+    target_obj, target_is_temp, pole_obj, pole_is_temp, pole_source = _resolve_reach_geometry(
+        armature, reach, rest_chain
+    )
+    tip_pose_bone = armature.pose.bones[rest_chain[0].name]
+    constraint = None
+    try:
+        constraint = _configured_reach_constraint(tip_pose_bone, reach, target_obj, pole_obj, len(rest_chain))
+        bpy.context.view_layer.update()
+        for rest_bone in rest_chain:
+            captured[rest_bone.name] = _matrix_list(armature.pose.bones[rest_bone.name].matrix)
+        target_world = tuple(target_obj.matrix_world.translation)
+        head_world = tuple(armature.matrix_world @ tip_pose_bone.head)
+        tail_world = tuple(armature.matrix_world @ tip_pose_bone.tail)
+        achieved_error_m = (armature.matrix_world @ tip_pose_bone.tail - target_obj.matrix_world.translation).length
+    finally:
+        if constraint is not None:
+            tip_pose_bone.constraints.remove(constraint)
+        if target_is_temp:
+            bpy.data.objects.remove(target_obj, do_unlink=True)
+        if pole_is_temp:
+            bpy.data.objects.remove(pole_obj, do_unlink=True)
+        bpy.context.view_layer.update()
+    return {
+        "tip_bone": rest_chain[0].name,
+        "chain_bones": [bone.name for bone in rest_chain],
+        "chain_length": len(rest_chain),
+        "chain_length_source": chain_length_source,
+        "pole_source": pole_source,
+        "target_world": list(target_world),
+        "head_world": list(head_world),
+        "tail_world": list(tail_world),
+        "achieved_error_m": achieved_error_m,
+    }
 
 
 class PoseAnimationHandlersMixin:
@@ -875,6 +1102,27 @@ class PoseAnimationHandlersMixin:
             # reply budget shortens, so this is what still names every bone the call posed.
             "changed_bones": [record["bone"] for record in records],
             "bones": records,
+            "changed_objects": [armature.name],
+        }
+
+    def solve_bone_reach(self, armature_object_name, reaches, detail=False):
+        """Bend one or more unbranched chains so each tip_bone's tail reaches a point."""
+        armature = _armature_object(armature_object_name)
+        if armature.data.pose_position != "POSE":
+            raise ValueError("Armature must use pose_position='POSE' to solve a bone reach")
+        if not reaches:
+            raise ValueError("At least one reach entry is required")
+        captured = {}
+        solver_info = [_solve_one_reach(armature, reach, captured) for reach in reaches]
+        poses = [{"bone_name": name, "matrix": matrix} for name, matrix in captured.items()]
+        pose_reply = self.set_character_pose(armature_object_name, poses, space="POSE", detail=detail)
+        by_bone = {record["bone"]: record for record in pose_reply["bones"]}
+        for entry in solver_info:
+            entry["bones"] = [by_bone[name] for name in entry["chain_bones"]]
+        return {
+            "armature_object": armature.name,
+            "changed_bones": pose_reply["changed_bones"],
+            "reaches": solver_info,
             "changed_objects": [armature.name],
         }
 
