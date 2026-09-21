@@ -30,6 +30,7 @@ item, and its P2/P3 design sections are marked superseded where the shipped code
 |---|---|
 | `4efb47b` | `scripts/rig_scenarios/scenario_viewport_view.py` + `tests/test_viewport_view_gate.py`: the live-GUI gate that closes the one unproven runtime claim from #4 (the offscreen GPU draw with synthetic matrices). Stdlib-only PNG decode; framing asserted by silhouette diff against a same-scene reference capture, so it is theme-independent. |
 | `457d5b6` | Revert-matrix work: 9 new rows for the preflight gate and `capability_introspection`, 2 documented `NOT_INDIVIDUALLY_FALSIFIABLE` nodes, `tests/test_capability_introspection.py` added to `NEW_TEST_FILES` with the curation rule written down. |
+| `422db60` | `scripts/rig_scenarios/scenario_render_progress.py` + `tests/test_render_progress_gate.py`: the first live **MCP client** path in this repo. Spawns the shipped `blender-mcp` console script over stdio against the rig's Blender and proves per-frame progress notifications and a real `notifications/cancelled` landing between frames. |
 
 Earlier in the same push, 10 pre-existing rows were repointed after code moved (5
 bone-filter rows → `character_rigging/foundation.py`, 3 rendering rows → the extracted
@@ -45,11 +46,13 @@ hand-off gate (`lint`, `fmt-check`, `typecheck`, `test`).
 
 | Command | Result | When |
 |---|---|---|
-| `just check` | `lint: clean, 28 changed files, 2688 owned lines`; `fmt-check: 417 files already formatted`; `typecheck: 0 errors, 0 warnings, 0 notes`; `test: 1648 passed, 2 skipped in 52s` (the 2 skips are the live-GUI gates) | `457d5b6` |
+| `just check` | `lint: clean`; `fmt-check: 419 files already formatted`; `typecheck: 0 errors, 0 warnings, 0 notes`; `test: 1648 passed, 3 skipped in 55s` (the 3 skips are the live-GUI gates) | `422db60` |
 | `just smoke` | `ok` on all 23 `tests/blender_*_smoke.py` against real headless Blender 5.2.2, ~18s | after the six plan commits |
 | `just anchors` | `rows: 631   anchors intact: 631   anchors BROKEN: 0` | `457d5b6` |
 | `just matrix` (full) | `reverts run: 631`; `reverts that failed to break their own nodes: 0`; `new test nodes with no revert and no written-down reason: 0`; 267s | `457d5b6` |
-| `.venv/bin/python scripts/blender_rig.py --work-dir <tmp> --scenario scripts/rig_scenarios/scenario_viewport_view.py` | `RIG PASSED` in 3.2s. `camera_object` silhouette 0.560 of frame at (0.499, 0.498); `eye_target` silhouette 0.560 at (0.499, 0.498); every synthetic capture `method=offscreen`; `_mcp_synthetic_view` absent from `bpy.data`; `MATERIAL` applied then restored to `SOLID`; `RENDERED` refused; live capture byte-identical before/after an aimed one | this session |
+| `.venv/bin/python scripts/blender_rig.py --work-dir <tmp> --scenario scripts/rig_scenarios/scenario_viewport_view.py` | `RIG PASSED` in 3.2s. `camera_object` silhouette 0.560 of frame at (0.499, 0.498); `eye_target` silhouette 0.560 at (0.499, 0.498); every synthetic capture `method=offscreen`; `_mcp_synthetic_view` absent from `bpy.data`; `MATERIAL` applied then restored to `SOLID`; `RENDERED` refused; live capture byte-identical before/after an aimed one | `4efb47b` |
+| `.venv/bin/python scripts/blender_rig.py --work-dir <tmp> --scenario scripts/rig_scenarios/scenario_render_progress.py` | `RIG PASSED` in 5.4s. 37 tools served over stdio; progress `[(1,3,'Rendered frame 7 (1/3)'), (2,3,'…8 (2/3)'), (3,3,'…9 (3/3)')]` matching `frame_count=3` and 3 PNGs; a hand-sent `notifications/cancelled` after frame 1 of 24 ended the call as `McpError: Request cancelled` with 1 frame on disk at cancel and 2 after a 3s settle; session and addon both still serving afterwards | `422db60` |
+| `BLENDERMCP_LIVE_RIG=1 pytest -m phase2_gate -q` (`just gate`) | `3 passed, 1648 deselected in 11.8s` | `422db60` |
 
 Useful narrower commands:
 
@@ -58,7 +61,7 @@ Useful narrower commands:
 .venv/bin/python -m pytest tests/test_rendering_tools.py -q                  # 47 passed (34 before #5)
 .venv/bin/python -m pytest tests/server/tools/character_rigging -q           # 80 passed
 .venv/bin/python -m pytest tests/test_capability_introspection.py -q         # 5 passed
-BLENDERMCP_LIVE_RIG=1 .venv/bin/python -m pytest -m phase2_gate -q           # the two live-GUI gates (`just gate`)
+BLENDERMCP_LIVE_RIG=1 .venv/bin/python -m pytest -m phase2_gate -q           # the three live-GUI gates (`just gate`)
 ```
 
 ---
@@ -67,11 +70,11 @@ BLENDERMCP_LIVE_RIG=1 .venv/bin/python -m pytest -m phase2_gate -q           # t
 
 Nothing in the suite is failing. These are the gaps, not breakages:
 
-1. **No live-MCP-client proof for `render_scene` orchestration (#5).** A real
-   `progressToken` progress notification, a real `CancelledNotification` mid-animation, and
-   the real per-frame round-trip overhead are all untested; only fixtures cover the
-   aggregation and the cancellation checkpoint placement. No harness for a live client
-   exists in this repo yet — that is the build cost of closing it.
+1. **Live-client progress and cancellation are now proven** (`scenario_render_progress.py`),
+   so the only part of #5 still unmeasured is per-frame round-trip *overhead* versus the
+   single-call addon path — nobody has timed the two against a production-sized animation.
+   The orchestrated path is the default (`orchestrate_animation=true`); if that overhead ever
+   matters, `orchestrate_animation=false` still reaches the old single-call path.
 2. **`just matrix` is green as of `457d5b6`** (631 rows, 0 survivors, 0 uncovered). It takes
    ~4.5 minutes and rewrites source files in place, so run it from a clean tree, run nothing
    else against the checkout meanwhile, and check `git status` afterwards in case a crash
@@ -117,15 +120,12 @@ The audit's own critical findings are still open and are the highest-value work 
 
 ## 5. Next steps, in order
 
-1. **Live-client harness for progress/cancellation** (gap §3.1). Smallest useful version: a
-   script that speaks MCP over stdio to this server, sends `render_scene(mode="ANIMATION")`
-   with a `progressToken`, asserts one notification per frame, then sends
-   `CancelledNotification` and asserts the frames already written are exactly the ones on
-   disk. Nothing in the repo speaks MCP as a client yet, so this is a new harness, not an
-   extension of `scripts/blender_rig.py` (which speaks the addon's own socket protocol).
-2. **Finish the rubric** (§4): score the three unscored slices, audit the three missing
-   domains, then build the 100-point breakdown the synthesis file asks for.
-3. **Standing audit backlog from `AGENTS.md`**, highest severity first:
+1. **Finish the rubric** (§4): score the three unscored slices (scene/core/modeling,
+   camera/lighting, liquid/fluid — the slice files exist, the score lines do not), audit the
+   three missing domains (retopology, geometry nodes, validation), then build the 100-point
+   breakdown `.audit_tmp/AUDIT_SYNTHESIS.md` asks for. Until that exists there is no
+   aggregate score anyone may quote.
+2. **Standing audit backlog from `AGENTS.md`**, highest severity first:
    `execute_blender_code` on an unauthenticated auto-started socket (Critical); RNA enum
    queries at class level breaking the Cycles fallback check (Critical, from the audit);
    no video/FFmpeg output and no compositor authoring (Critical capability gaps);
