@@ -5195,6 +5195,20 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
+        "server instructions: the parameter-naming conventions are deleted from the instructions",
+        SERVER_APP,
+        "\n\nTool parameter naming follows three conventions, so a name is guessable rather than something to\n"
+        "fail once and learn: a tool that creates a new object of some kind names that kind parameter\n"
+        "`<noun>_type` (light_type, primitive_type, domain_type), never bare `type`. A tool that creates a\n"
+        "new object always takes `collection_name` explicitly - it is looked up or created, never defaulted\n"
+        "from scene state. A tool that patches fields on an object that already exists (set_object_transform,\n"
+        "configure_light, configure_camera, ...) takes one nested argument named `patch` (or a named group\n"
+        "such as `optics`/`display`) instead of flat top-level keywords - read that argument's own schema for\n"
+        "its field list before calling.",
+        "",
+        (f"{SIT}::test_the_instructions_state_the_three_parameter_naming_conventions",),
+    ),
+    Revert(
         "server instructions: the instructions are written but never handed to FastMCP",
         SERVER_APP,
         "instructions=SERVER_INSTRUCTIONS)",

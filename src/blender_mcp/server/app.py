@@ -120,6 +120,15 @@ locally.
 Object names after a library override: a name shared with the linked original resolves to the
 editable override. A name linked from several libraries with no local object is refused with each
 library's session_uid - override one with create_override.
+
+Tool parameter naming follows three conventions, so a name is guessable rather than something to
+fail once and learn: a tool that creates a new object of some kind names that kind parameter
+`<noun>_type` (light_type, primitive_type, domain_type), never bare `type`. A tool that creates a
+new object always takes `collection_name` explicitly - it is looked up or created, never defaulted
+from scene state. A tool that patches fields on an object that already exists (set_object_transform,
+configure_light, configure_camera, ...) takes one nested argument named `patch` (or a named group
+such as `optics`/`display`) instead of flat top-level keywords - read that argument's own schema for
+its field list before calling.
 """.strip()
 
 # Create the MCP server with lifespan support

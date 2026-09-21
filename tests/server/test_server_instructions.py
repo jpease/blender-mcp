@@ -26,3 +26,10 @@ def test_the_instructions_name_the_way_out_of_the_ambiguity_refusal() -> None:
 def test_the_served_instructions_are_the_ones_stated_here() -> None:
     """A rule written in the constant but not handed to FastMCP reaches no client."""
     assert mcp.instructions == SERVER_INSTRUCTIONS
+
+
+def test_the_instructions_state_the_three_parameter_naming_conventions() -> None:
+    """A guessed `type=`, a missing `collection_name`, or flat kwargs each cost one failed call."""
+    assert "never bare `type`" in _PROSE
+    assert "always takes `collection_name` explicitly" in _PROSE
+    assert "named `patch`" in _PROSE
