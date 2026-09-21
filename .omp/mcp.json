@@ -3,9 +3,9 @@
   "mcpServers": {
     "blender": {
       "type": "stdio",
-      "command": "uv",
-      "args": ["run", "blender-mcp"],
-      "cwd": "/Users/jpease/Developer/github/jpease/blender-mcp"
+      "command": "/Users/jpease/Developer/github/jpease/blender-mcp/.venv/bin/blender-mcp",
+      "cwd": "/Users/jpease/Developer/github/jpease/blender-mcp",
+      "env": { "BLENDER_MCP_TOOLSETS": "shot" }
     }
   }
 }

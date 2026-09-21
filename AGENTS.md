@@ -134,7 +134,23 @@ Audit date: 2026-08-29
 
 ## Scope and verification
 
-The current MCP exposes **45 registered tools**. The earlier count of 44 omitted one registered tool. All current public tools and their Blender-side handlers were reviewed for correctness, reliability, Blender API usage, agent usability, and production workflow coverage.
+At the time of this audit the MCP exposed **45 registered tools**, and every one of them plus its
+Blender-side handler was reviewed for correctness, reliability, Blender API usage, agent usability,
+and production workflow coverage. **That count is historical: the surface is now 301 tools**, and a
+server process registers only a subset of them.
+
+Read the count below as "what this audit covered", never as "what a session sees". Two different
+numbers are routinely mistaken for each other and for this one:
+
+- **301** — every tool in the catalog, registered only with `BLENDER_MCP_TOOLSETS=all`.
+- **~34** — the default `core` bundle a process registers when `BLENDER_MCP_TOOLSETS` is unset:
+  scene inspection, object editing, viewport, animation, file lifecycle/linking. Camera, rendering,
+  lighting, world, character posing, texture, retopology and the simulation domains are **absent by
+  design**, not missing. `shot` (76 tools) adds camera, lighting, rendering and character posing;
+  see the Tool Bundles table in `README.md`.
+- **~297** — `get_addon_status`'s `capability_count`: Blender-side socket commands the add-on
+  dispatches, which is a different surface from the MCP tools a client mounts. A full
+  `capability_count` alongside a short tool list is the expected shape, not a registration fault.
 
 - `poetry run pytest -q`: **133 passed**
 - No live Blender/GPU validation was completed; modifier geometry, imports, and viewport rendering are code/test verified only.
