@@ -542,6 +542,78 @@ def _frame_from_filename(path):
     return int(match.group()) if match else None
 
 
+def _default_requested_filepath(scene, filepath):
+    """
+    Resolve the caller's requested output path, defaulting to the scene's own stored template.
+
+    Shared by render_scene and plan_render_animation, so the "no filepath and no scene default"
+    refusal is worded identically whichever entry point a caller used.
+
+    Args:
+        scene: Scene whose stored render.filepath is the fallback.
+        filepath: The caller's explicit path, or None to use the scene's own.
+
+    Returns:
+        str: The resolved, non-empty requested path text (not yet validated for shape).
+
+    Raises:
+        ValueError: If no path was given and the scene has none stored, or the resolved text is
+            empty.
+
+    """
+    requested_filepath = filepath
+    if requested_filepath is None:
+        requested_filepath = scene.render.filepath
+        if not isinstance(requested_filepath, str) or not requested_filepath.strip():
+            raise ValueError(
+                "No filepath was given and the scene has no render output path set. Pass filepath, "
+                "or set it once with configure_render_settings(patch={'output': {'filepath': ...}})."
+            )
+    if not isinstance(requested_filepath, str) or not requested_filepath.strip():
+        raise ValueError("filepath must be a non-empty string")
+    return requested_filepath
+
+
+def _validate_animation_frame_range(scene, max_animation_frames, confirm_frame_range):
+    """
+    Enforce the max_animation_frames cap and the untouched-default-range guard.
+
+    Shared by render_scene's ANIMATION branch and plan_render_animation, so an animation's
+    frame count is validated identically whether or not it is actually rendered.
+
+    Args:
+        scene: Scene whose frame_start/frame_end/frame_step decide the frame count.
+        max_animation_frames: Upper bound on the number of frames this call may touch; the
+            caller has already checked this is an int in range.
+        confirm_frame_range: Whether the caller explicitly accepted rendering the untouched
+            default 1-250 range.
+
+    Returns:
+        list[int]: The frames the animation covers, in render order.
+
+    Raises:
+        ValueError: If the frame count exceeds max_animation_frames, or the range is
+            Blender's untouched default and unconfirmed.
+
+    """
+    frame_count = ((scene.frame_end - scene.frame_start) // scene.frame_step) + 1
+    if frame_count > max_animation_frames:
+        raise ValueError(
+            f"Animation contains {frame_count} frames, exceeding max_animation_frames={max_animation_frames}"
+        )
+    if (
+        (scene.frame_start, scene.frame_end) == (1, 250)
+        and not scene.get("blender_mcp_frame_range_authored", False)
+        and not confirm_frame_range
+    ):
+        raise ValueError(
+            "The scene's frame range is still Blender's default 1-250 and no MCP call has set it; "
+            f"this ANIMATION would render {frame_count} frames. Set frame_start/frame_end with "
+            "configure_render_settings, or pass confirm_frame_range=true to render 1-250 deliberately."
+        )
+    return list(range(scene.frame_start, scene.frame_end + 1, scene.frame_step))
+
+
 class RenderingHandlersMixin:
     """Expose production render configuration and bounded rendering."""
 
@@ -708,6 +780,63 @@ class RenderingHandlersMixin:
             return {"removed": view_layer_name, "changed_resources": [view_layer_name]}
         return {"view_layer": _layer_info(layer), "changed_resources": [layer.name]}
 
+    def plan_render_animation(self, scene_name, filepath=None, max_animation_frames=250, confirm_frame_range=False):
+        """
+        Validate and resolve an ANIMATION render without rendering anything.
+
+        Read-only: scene.render.filepath is restored before returning, whatever it was set to
+        while computing frame_path(). Shared validation (_default_requested_filepath,
+        _validate_animation_frame_range) keeps this plan's refusals - and frame count - identical
+        to render_scene(mode="ANIMATION")'s own. Exists so a caller can drive an animation as N
+        independent STILL calls (for per-frame progress and cancellation) while still getting
+        Blender's own frame_path() templating for each frame's output path, which is not
+        reproducible outside bpy.
+
+        Args:
+            scene_name: Scene to plan against, or the active scene when omitted.
+            filepath: Caller's requested animation template; defaults to the scene's own stored
+                render output path, exactly as render_scene does.
+            max_animation_frames: Upper bound on the frames this plan may cover.
+            confirm_frame_range: Whether the caller explicitly accepted the untouched 1-250
+                default range.
+
+        Returns:
+            dict: requested_filepath (the caller's template, unresolved - what persist_output
+                would store), output (its absolute resolved form), frame_current (unchanged by
+                this call), and frames - an ordered list of {"frame": int, "path": str}, each
+                path the exact absolute file render_scene(mode="STILL", frame=..., filepath=...)
+                must be given to reproduce this animation's naming.
+
+        Raises:
+            ValueError: The same shapes render_scene(mode="ANIMATION") itself refuses: no
+                filepath and no scene default, an unusable output shape, an out-of-bounds
+                max_animation_frames, too many frames, or an unconfirmed default frame range.
+
+        """
+        scene = _scene(scene_name)
+        if isinstance(max_animation_frames, bool) or not isinstance(max_animation_frames, int):
+            raise ValueError("max_animation_frames must be an integer")
+        if not 1 <= max_animation_frames <= _MAX_ANIMATION_FRAMES:
+            raise ValueError("max_animation_frames must be between 1 and 10000")
+        requested_filepath = _default_requested_filepath(scene, filepath)
+        output = _resolve_render_output(scene, requested_filepath, "ANIMATION")
+        frames = _validate_animation_frame_range(scene, max_animation_frames, confirm_frame_range)
+        original_path = scene.render.filepath
+        try:
+            scene.render.filepath = output
+            plan = [
+                {"frame": current_frame, "path": os.path.abspath(scene.render.frame_path(frame=current_frame))}
+                for current_frame in frames
+            ]
+        finally:
+            scene.render.filepath = original_path
+        return {
+            "requested_filepath": requested_filepath,
+            "output": output,
+            "frame_current": scene.frame_current,
+            "frames": plan,
+        }
+
     def render_scene(
         self,
         scene_name,
@@ -740,16 +869,7 @@ class RenderingHandlersMixin:
             raise ValueError("frame must be an integer")
         if mode == "ANIMATION" and frame is not None:
             raise ValueError("frame is only valid for STILL renders")
-        requested_filepath = filepath
-        if requested_filepath is None:
-            requested_filepath = scene.render.filepath
-            if not isinstance(requested_filepath, str) or not requested_filepath.strip():
-                raise ValueError(
-                    "No filepath was given and the scene has no render output path set. Pass filepath, "
-                    "or set it once with configure_render_settings(patch={'output': {'filepath': ...}})."
-                )
-        if not isinstance(requested_filepath, str) or not requested_filepath.strip():
-            raise ValueError("filepath must be a non-empty string")
+        requested_filepath = _default_requested_filepath(scene, filepath)
         if persist_output and mode == "STILL":
             raise ValueError(
                 "persist_output stores a per-frame template, and a STILL path names one file: storing it "
@@ -771,22 +891,8 @@ class RenderingHandlersMixin:
             or max_duration_seconds <= 0
         ):
             raise ValueError("max_duration_seconds must be a positive finite number")
-        frame_count = ((scene.frame_end - scene.frame_start) // scene.frame_step) + 1
-        if mode == "ANIMATION" and frame_count > max_animation_frames:
-            raise ValueError(
-                f"Animation contains {frame_count} frames, exceeding max_animation_frames={max_animation_frames}"
-            )
-        if (
-            mode == "ANIMATION"
-            and (scene.frame_start, scene.frame_end) == (1, 250)
-            and not scene.get("blender_mcp_frame_range_authored", False)
-            and not confirm_frame_range
-        ):
-            raise ValueError(
-                "The scene's frame range is still Blender's default 1-250 and no MCP call has set it; "
-                f"this ANIMATION would render {frame_count} frames. Set frame_start/frame_end with "
-                "configure_render_settings, or pass confirm_frame_range=true to render 1-250 deliberately."
-            )
+        if mode == "ANIMATION":
+            _validate_animation_frame_range(scene, max_animation_frames, confirm_frame_range)
 
         original_path = scene.render.filepath
         original_frame = scene.frame_current

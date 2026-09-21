@@ -5,6 +5,7 @@ import contextlib
 import logging
 import os
 import tempfile
+import time
 
 from pathlib import Path
 from typing import Annotated, Literal
@@ -18,6 +19,11 @@ from ..connection import get_blender_connection
 from .envelope import envelope_for, ok
 
 logger = logging.getLogger("BlenderMCPServer")
+
+# Matches the addon's own render_scene(mode="ANIMATION") progress-array cap
+# (bundled/addon/handlers/rendering.py), so an orchestrated run's detail=True reply truncates
+# "progress" at the same length a single-call ANIMATION already does.
+_PROGRESS_ENTRY_LIMIT = 1000
 
 
 class RenderSettingsPatch(BaseModel):
@@ -202,8 +208,12 @@ class ViewLayerPatch(BaseModel):
         return self
 
 
+async def _send(command: str, params: dict) -> dict:
+    return await asyncio.to_thread(get_blender_connection().send_command, command, params)
+
+
 async def _call(command: str, params: dict, *, changed_resources: list[str] | None = None) -> dict:
-    result = await asyncio.to_thread(get_blender_connection().send_command, command, params)
+    result = await _send(command, params)
     return envelope_for(result, changed_resources=changed_resources or ())
 
 
@@ -277,6 +287,196 @@ async def manage_view_layers(
     )
 
 
+def _aggregate_animation_summary(
+    *,
+    scene_name: str,
+    output: str,
+    frame_current: int,
+    render_slot_policy: str,
+    persisted: bool,
+    verify_passes: bool,
+    frame_replies: list[dict],
+    frame_count_planned: int,
+    cancelled: bool,
+    cancellation_reason: str | None,
+    duration_seconds: float,
+    detail: bool,
+) -> dict:
+    """
+    Combine N per-frame STILL replies into the exact summary shape a single ANIMATION call returns today.
+
+    frame_replies is one detail=True render_scene(mode="STILL") reply per completed frame, in
+    render order. passes/pass_verification come from the LAST completed frame, matching the
+    single-call path reading Render Result once, after its whole loop. An empty frame_replies
+    (cancelled before any frame rendered) reports first_file/last_file as None, bytes_written
+    as 0, and passes as empty - honest about there being no render to report on, rather than the
+    single-call path's own quirk of reading whatever Render Result happened to predate the call.
+
+    Args:
+        scene_name: Scene the animation rendered against.
+        output: The animation's resolved absolute output template (plan_render_animation's
+            "output").
+        frame_current: The scene's frame_current before this animation started.
+        render_slot_policy: The caller's original request - echoed back, not each per-frame
+            call's own effective value.
+        persisted: Whether the caller's template was actually written back onto the scene.
+        verify_passes: Whether an empty passes list on the last completed frame must raise.
+        frame_replies: Completed per-frame STILL replies, in render order.
+        frame_count_planned: Number of frames plan_render_animation resolved.
+        cancelled: Whether max_duration_seconds stopped the run early.
+        cancellation_reason: Human-readable reason when cancelled, else None.
+        duration_seconds: Wall-clock time the whole orchestrated run took.
+        detail: Whether to add the per-frame "files"/"progress" arrays.
+
+    Returns:
+        The same summary shape render_scene(mode="ANIMATION") returns for a single call.
+
+    Raises:
+        RuntimeError: If verify_passes is set and the last completed frame captured no passes.
+
+    """
+    last = frame_replies[-1] if frame_replies else None
+    passes = last["passes"] if last else []
+    pass_verification = last["pass_verification"] if last else None
+    if verify_passes and not passes:
+        raise RuntimeError("Render completed but no enabled passes could be verified")
+    files = [reply["files"][0] for reply in frame_replies]
+    progress = [
+        {
+            "frame": entry["frame"],
+            "completed": index + 1,
+            "total": frame_count_planned,
+            "fraction": (index + 1) / frame_count_planned,
+        }
+        for index, entry in enumerate(files)
+        if index < _PROGRESS_ENTRY_LIMIT
+    ]
+    summary = {
+        "scene": scene_name,
+        "mode": "ANIMATION",
+        "filepath": output,
+        "frame": frame_current,
+        "frame_count": len(frame_replies),
+        "operator_result": last["operator_result"] if last else ["FINISHED"],
+        "settings_restored": not persisted,
+        "status": "CANCELLED" if cancelled else "COMPLETED",
+        "cancelled": cancelled,
+        "cancellation_reason": cancellation_reason,
+        "duration_seconds": duration_seconds,
+        "render_slot_policy": render_slot_policy,
+        "output_persisted": persisted,
+        "first_file": files[0]["path"] if files else None,
+        "last_file": files[-1]["path"] if files else None,
+        "bytes_written": sum(entry["bytes"] or 0 for entry in files),
+        "passes": passes,
+        "pass_verification": pass_verification,
+    }
+    if not detail:
+        return summary
+    return {
+        **summary,
+        "files": files,
+        "progress": progress,
+        "progress_truncated": len(files) > len(progress),
+    }
+
+
+async def _render_animation_orchestrated(
+    ctx: Context,
+    *,
+    scene_name: str,
+    filepath: str | None,
+    view_layer_name: str | None,
+    max_animation_frames: int,
+    confirm_overwrite: bool,
+    confirm_frame_range: bool,
+    render_slot_policy: str,
+    verify_outputs: bool,
+    verify_passes: bool,
+    max_duration_seconds: float | None,
+    persist_output: bool,
+    detail: bool,
+) -> dict:
+    """
+    Drive mode="ANIMATION" as N independent STILL calls to the existing addon render_scene command.
+
+    Reports real per-frame progress and lands real MCP cancellation between frames - instead of
+    one blocking call Blender's main-thread timer cannot interrupt or report out of until every
+    frame is done.
+
+    render_slot_policy is honoured only on the first per-frame call (a NEW_SLOT would
+    otherwise be created once per frame); every later frame is forced to USE_ACTIVE so all
+    frames land in the slot the first call chose. persist_output is never forwarded to a
+    per-frame call (render_scene refuses persist_output on a STILL); when the whole run
+    completes uncancelled, the caller's template is written back with one extra
+    configure_render_settings call instead, matching what the single-call path does directly.
+    """
+    plan = await _send(
+        "plan_render_animation",
+        {
+            "scene_name": scene_name,
+            "filepath": filepath,
+            "max_animation_frames": max_animation_frames,
+            "confirm_frame_range": confirm_frame_range,
+        },
+    )
+    frames = plan["frames"]
+    started = time.monotonic()
+    replies: list[dict] = []
+    cancelled = False
+    cancellation_reason: str | None = None
+    for index, entry in enumerate(frames):
+        if max_duration_seconds is not None and time.monotonic() - started >= max_duration_seconds:
+            cancelled = True
+            cancellation_reason = "max_duration_seconds exceeded"
+            break
+        reply = await _send(
+            "render_scene",
+            {
+                "scene_name": scene_name,
+                "filepath": entry["path"],
+                "mode": "STILL",
+                "view_layer_name": view_layer_name,
+                "frame": entry["frame"],
+                "confirm_render": True,
+                "confirm_overwrite": confirm_overwrite,
+                "render_slot_policy": render_slot_policy if index == 0 else "USE_ACTIVE",
+                "verify_outputs": verify_outputs,
+                "verify_passes": False,
+                "persist_output": False,
+                "detail": True,
+            },
+        )
+        replies.append(reply)
+        await ctx.report_progress(
+            index + 1, len(frames), message=f"Rendered frame {entry['frame']} ({index + 1}/{len(frames)})"
+        )
+
+    completed = len(replies) == len(frames)
+    persisted = bool(persist_output) and not cancelled and completed
+    if persisted:
+        await _send(
+            "configure_render_settings",
+            {"scene_name": scene_name, "patch": {"output": {"filepath": plan["requested_filepath"]}}},
+        )
+
+    summary = _aggregate_animation_summary(
+        scene_name=scene_name,
+        output=plan["output"],
+        frame_current=plan["frame_current"],
+        render_slot_policy=render_slot_policy,
+        persisted=persisted,
+        verify_passes=verify_passes,
+        frame_replies=replies,
+        frame_count_planned=len(frames),
+        cancelled=cancelled,
+        cancellation_reason=cancellation_reason,
+        duration_seconds=time.monotonic() - started,
+        detail=detail,
+    )
+    return envelope_for(summary, changed_resources=[scene_name])
+
+
 @mcp.tool()
 async def render_scene(
     ctx: Context,
@@ -295,6 +495,7 @@ async def render_scene(
     max_duration_seconds: Annotated[float | None, Field(gt=0, le=604_800)] = None,
     persist_output: bool = False,
     detail: bool = False,
+    orchestrate_animation: bool = True,
 ) -> dict:
     """
     Render a still or bounded animation to an explicit path after confirmation.
@@ -317,9 +518,33 @@ async def render_scene(
     ("<dir>/sh010.png"); an ANIMATION takes a per-frame prefix ("<dir>/sh010_") or an
     explicit template ("<dir>/sh010_####.png") and is refused a plain "<dir>/sh010.png",
     which Blender would write as "sh010.png0001.png".
+
+    An ANIMATION (orchestrate_animation=true, the default) renders as independent per-frame
+    calls instead of one call Blender cannot be interrupted out of or report progress from
+    until every frame is done: this reports real progress after each frame and responds to a
+    client cancellation between frames. Set orchestrate_animation=false for the single
+    blocking legacy call instead - the reply shape is identical either way.
     """
     if not confirm_render:
         raise ToolError("confirm_render=True is required")
+    if mode == "ANIMATION" and frame is not None:
+        raise ToolError("frame is only valid for STILL renders")
+    if mode == "ANIMATION" and orchestrate_animation:
+        return await _render_animation_orchestrated(
+            ctx,
+            scene_name=scene_name,
+            filepath=filepath,
+            view_layer_name=view_layer_name,
+            max_animation_frames=max_animation_frames,
+            confirm_overwrite=confirm_overwrite,
+            confirm_frame_range=confirm_frame_range,
+            render_slot_policy=render_slot_policy,
+            verify_outputs=verify_outputs,
+            verify_passes=verify_passes,
+            max_duration_seconds=max_duration_seconds,
+            persist_output=persist_output,
+            detail=detail,
+        )
     return await _call(
         "render_scene",
         {

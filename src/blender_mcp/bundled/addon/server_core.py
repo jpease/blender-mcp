@@ -1327,6 +1327,7 @@ class BlenderMCPServer(
             "configure_scene_physics": self.configure_scene_physics,
             "keyframe_object_transform": self.keyframe_object_transform,
             "manage_view_layers": self.manage_view_layers,
+            "plan_render_animation": self.plan_render_animation,
             "render_scene": self.render_scene,
             "inspect_render_output": self.inspect_render_output,
             "get_polyhaven_status": self.get_polyhaven_status,

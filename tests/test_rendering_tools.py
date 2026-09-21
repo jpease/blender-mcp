@@ -6,6 +6,7 @@ import importlib
 import inspect
 import math
 import os
+import threading
 import types
 
 from pathlib import Path
@@ -783,3 +784,393 @@ def test_render_scene_reply_summarises_and_detail_restores_the_per_frame_arrays(
     assert [entry["frame"] for entry in detailed["files"]] == [1, 2, 3]
     assert [entry["completed"] for entry in detailed["progress"]] == [1, 2, 3]
     assert detailed["progress_truncated"] is False
+
+
+# ---------------------------------------------------------------------------
+# plan_render_animation: read-only, shares validation with render_scene's own
+# ANIMATION branch, and must agree with it on every frame's output path.
+# ---------------------------------------------------------------------------
+
+
+def test_plan_render_animation_matches_render_scenes_own_frame_paths(monkeypatch, tmp_path) -> None:
+    handler, scene, _bpy = _renderable(monkeypatch, tmp_path)
+    scene.frame_end = 3
+
+    plan = handler.plan_render_animation("Scene", str(tmp_path / "beat_"))
+
+    assert plan["requested_filepath"] == str(tmp_path / "beat_")
+    assert plan["output"] == str(tmp_path / "beat_")
+    assert plan["frame_current"] == 1
+    assert [f["frame"] for f in plan["frames"]] == [1, 2, 3]
+    assert [f["path"] for f in plan["frames"]] == [
+        f"{tmp_path / 'beat_'}0001.png",
+        f"{tmp_path / 'beat_'}0002.png",
+        f"{tmp_path / 'beat_'}0003.png",
+    ]
+    # Read-only: scene.render.filepath is unchanged after planning.
+    assert not scene.render.filepath
+
+
+def test_plan_render_animation_refuses_the_untouched_default_range(monkeypatch, tmp_path) -> None:
+    handler, _scene, _bpy = _renderable(monkeypatch, tmp_path)
+
+    with pytest.raises(ValueError, match="still Blender's default 1-250"):
+        handler.plan_render_animation("Scene", str(tmp_path / "sh010_"))
+
+
+def test_plan_render_animation_and_render_scene_agree_on_every_frame_path(monkeypatch, tmp_path) -> None:
+    """The exact regression this extraction exists to prevent: two implementations drifting apart."""
+    handler, scene, _bpy = _renderable(monkeypatch, tmp_path)
+    scene.frame_end = 3
+
+    plan = handler.plan_render_animation("Scene", str(tmp_path / "beat_"))
+    legacy = handler.render_scene(
+        "Scene", str(tmp_path / "beat_"), mode="ANIMATION", confirm_render=True, verify_passes=False, detail=True
+    )
+
+    assert [f["path"] for f in plan["frames"]] == [entry["path"] for entry in legacy["files"]]
+
+
+def test_plan_render_animation_is_registered_and_read_only(monkeypatch) -> None:
+    addon, _bpy = _load_addon(monkeypatch, data={})
+    server = addon.BlenderMCPServer()
+
+    assert "plan_render_animation" in server._build_command_handlers()
+    assert "plan_render_animation" in server._READ_ONLY_COMMANDS
+
+
+# ---------------------------------------------------------------------------
+# Server-orchestrated ANIMATION: per-frame STILL calls, aggregated to the same
+# summary shape a single call returns.
+# ---------------------------------------------------------------------------
+
+
+def _fake_still_reply(frame, path, *, bytes_written=5, render_slot_policy="USE_ACTIVE"):
+    """One render_scene(mode="STILL", detail=True) reply, shaped exactly as the addon returns it."""
+    return {
+        "scene": "Scene",
+        "mode": "STILL",
+        "filepath": path,
+        "frame": frame,
+        "frame_count": 1,
+        "operator_result": ["FINISHED"],
+        "settings_restored": True,
+        "status": "COMPLETED",
+        "cancelled": False,
+        "cancellation_reason": None,
+        "duration_seconds": 0.01,
+        "render_slot_policy": render_slot_policy,
+        "output_persisted": False,
+        "first_file": path,
+        "last_file": path,
+        "bytes_written": bytes_written,
+        "passes": ["Combined"],
+        "pass_verification": "RENDERED_ONLY",
+        "files": [{"frame": frame, "path": path, "bytes": bytes_written}],
+        "progress": [{"frame": frame, "completed": 1, "total": 1, "fraction": 1.0}],
+        "progress_truncated": False,
+    }
+
+
+def test_aggregate_animation_summary_combines_per_frame_replies(monkeypatch) -> None:
+    replies = [
+        _fake_still_reply(1, "/tmp/beat_0001.png", render_slot_policy="NEW_SLOT"),
+        _fake_still_reply(2, "/tmp/beat_0002.png"),
+        _fake_still_reply(3, "/tmp/beat_0003.png"),
+    ]
+
+    summary = rendering._aggregate_animation_summary(
+        scene_name="Scene",
+        output="/tmp/beat_",
+        frame_current=1,
+        render_slot_policy="NEW_SLOT",
+        persisted=False,
+        verify_passes=True,
+        frame_replies=replies,
+        frame_count_planned=3,
+        cancelled=False,
+        cancellation_reason=None,
+        duration_seconds=0.05,
+        detail=False,
+    )
+
+    assert summary == {
+        "scene": "Scene",
+        "mode": "ANIMATION",
+        "filepath": "/tmp/beat_",
+        "frame": 1,
+        "frame_count": 3,
+        "operator_result": ["FINISHED"],
+        "settings_restored": True,
+        "status": "COMPLETED",
+        "cancelled": False,
+        "cancellation_reason": None,
+        "duration_seconds": 0.05,
+        "render_slot_policy": "NEW_SLOT",
+        "output_persisted": False,
+        "first_file": "/tmp/beat_0001.png",
+        "last_file": "/tmp/beat_0003.png",
+        "bytes_written": 15,
+        "passes": ["Combined"],
+        "pass_verification": "RENDERED_ONLY",
+    }
+
+
+def test_aggregate_animation_summary_detail_adds_files_and_progress() -> None:
+    replies = [_fake_still_reply(f, f"/tmp/beat_{f:04d}.png") for f in (1, 2, 3)]
+
+    detailed = rendering._aggregate_animation_summary(
+        scene_name="Scene",
+        output="/tmp/beat_",
+        frame_current=1,
+        render_slot_policy="NEW_SLOT",
+        persisted=False,
+        verify_passes=False,
+        frame_replies=replies,
+        frame_count_planned=3,
+        cancelled=False,
+        cancellation_reason=None,
+        duration_seconds=0.05,
+        detail=True,
+    )
+
+    assert [entry["frame"] for entry in detailed["files"]] == [1, 2, 3]
+    assert [entry["completed"] for entry in detailed["progress"]] == [1, 2, 3]
+    assert detailed["progress_truncated"] is False
+
+
+def test_aggregate_animation_summary_reports_a_cancelled_partial_run() -> None:
+    """Only 2 of 3 planned frames completed; the summary must say so, not claim frame_count=3."""
+    replies = [_fake_still_reply(1, "/tmp/beat_0001.png"), _fake_still_reply(2, "/tmp/beat_0002.png")]
+
+    summary = rendering._aggregate_animation_summary(
+        scene_name="Scene",
+        output="/tmp/beat_",
+        frame_current=1,
+        render_slot_policy="NEW_SLOT",
+        persisted=False,
+        verify_passes=False,
+        frame_replies=replies,
+        frame_count_planned=3,
+        cancelled=True,
+        cancellation_reason="max_duration_seconds exceeded",
+        duration_seconds=0.02,
+        detail=False,
+    )
+
+    assert summary["status"] == "CANCELLED"
+    assert summary["frame_count"] == 2
+    assert summary["last_file"] == "/tmp/beat_0002.png"
+    assert summary["output_persisted"] is False
+
+
+def test_aggregate_animation_summary_zero_completed_frames_reports_empty_not_stale() -> None:
+    """Cancelled before frame 1 ever rendered: nothing to report, not a guess from a prior render."""
+    summary = rendering._aggregate_animation_summary(
+        scene_name="Scene",
+        output="/tmp/beat_",
+        frame_current=1,
+        render_slot_policy="NEW_SLOT",
+        persisted=False,
+        verify_passes=False,
+        frame_replies=[],
+        frame_count_planned=3,
+        cancelled=True,
+        cancellation_reason="max_duration_seconds exceeded",
+        duration_seconds=0.0,
+        detail=False,
+    )
+
+    assert summary["frame_count"] == 0
+    assert summary["first_file"] is None
+    assert summary["last_file"] is None
+    assert summary["bytes_written"] == 0
+    assert summary["operator_result"] == ["FINISHED"]
+    assert summary["passes"] == []
+
+
+def test_aggregate_animation_summary_raises_when_verify_passes_finds_none() -> None:
+    with pytest.raises(RuntimeError, match="no enabled passes could be verified"):
+        rendering._aggregate_animation_summary(
+            scene_name="Scene",
+            output="/tmp/beat_",
+            frame_current=1,
+            render_slot_policy="NEW_SLOT",
+            persisted=False,
+            verify_passes=True,
+            frame_replies=[],
+            frame_count_planned=3,
+            cancelled=True,
+            cancellation_reason="max_duration_seconds exceeded",
+            duration_seconds=0.0,
+            detail=False,
+        )
+
+
+class _AnimationConnection:
+    """Fake connection for the orchestrated ANIMATION path: plan, N STILL calls, an optional persist."""
+
+    def __init__(self, frame_count=3):
+        self.calls = []
+        self.frame_count = frame_count
+
+    def send_command(self, command, params):
+        self.calls.append((command, params))
+        if command == "plan_render_animation":
+            frames = [{"frame": f, "path": f"/tmp/beat_{f:04d}.png"} for f in range(1, self.frame_count + 1)]
+            return {
+                "requested_filepath": "//renders/beat_",
+                "output": "/tmp/beat_",
+                "frame_current": 1,
+                "frames": frames,
+            }
+        if command == "render_scene":
+            return _fake_still_reply(
+                params["frame"], params["filepath"], render_slot_policy=params["render_slot_policy"]
+            )
+        if command == "configure_render_settings":
+            return {"scene": "Scene", "changed": ["output.filepath"], "changed_resources": ["Scene"]}
+        raise AssertionError(f"unexpected command {command}")
+
+
+class _FakeReportProgressContext:
+    """Records report_progress calls with the real Context.report_progress(progress, total, message) signature."""
+
+    def __init__(self):
+        self.progress_calls = []
+
+    async def report_progress(self, progress, total=None, message=None):
+        self.progress_calls.append((progress, total, message))
+
+
+def test_orchestrated_animation_calls_plan_then_one_still_per_frame_then_persists(monkeypatch) -> None:
+    connection = _AnimationConnection(frame_count=3)
+    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+    ctx = _FakeReportProgressContext()
+
+    envelope = asyncio.run(
+        rendering.render_scene(
+            ctx=ctx,
+            scene_name="Scene",
+            filepath="//renders/beat_",
+            mode="ANIMATION",
+            confirm_render=True,
+            render_slot_policy="NEW_SLOT",
+            persist_output=True,
+            detail=True,
+        )
+    )
+
+    command_sequence = [command for command, _params in connection.calls]
+    assert command_sequence == [
+        "plan_render_animation",
+        "render_scene",
+        "render_scene",
+        "render_scene",
+        "configure_render_settings",
+    ]
+    render_slot_policies = [
+        params["render_slot_policy"] for command, params in connection.calls if command == "render_scene"
+    ]
+    assert render_slot_policies == ["NEW_SLOT", "USE_ACTIVE", "USE_ACTIVE"]
+    persist_patch = connection.calls[-1][1]["patch"]
+    assert persist_patch == {"output": {"filepath": "//renders/beat_"}}
+    assert [call["frame"] for command, call in connection.calls if command == "render_scene"] == [1, 2, 3]
+
+    assert ctx.progress_calls == [
+        (1, 3, "Rendered frame 1 (1/3)"),
+        (2, 3, "Rendered frame 2 (2/3)"),
+        (3, 3, "Rendered frame 3 (3/3)"),
+    ]
+    assert envelope["ok"] is True
+    assert envelope["data"]["mode"] == "ANIMATION"
+    assert envelope["data"]["frame_count"] == 3
+    assert envelope["data"]["output_persisted"] is True
+    assert [entry["frame"] for entry in envelope["data"]["files"]] == [1, 2, 3]
+
+
+def test_orchestrated_animation_rejects_frame_with_animation_mode(monkeypatch) -> None:
+    connection = _AnimationConnection()
+    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+
+    with pytest.raises(ToolError, match="frame is only valid for STILL renders"):
+        asyncio.run(
+            rendering.render_scene(
+                ctx=_FakeReportProgressContext(),
+                scene_name="Scene",
+                mode="ANIMATION",
+                frame=5,
+                confirm_render=True,
+            )
+        )
+    assert connection.calls == []
+
+
+def test_orchestrate_animation_false_uses_the_single_legacy_call(monkeypatch) -> None:
+    connection = _Connection()
+    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+
+    asyncio.run(
+        rendering.render_scene(
+            ctx=_FakeReportProgressContext(),
+            scene_name="Scene",
+            filepath="//renders/beat_",
+            mode="ANIMATION",
+            confirm_render=True,
+            orchestrate_animation=False,
+        )
+    )
+
+    assert len(connection.calls) == 1
+    command, params = connection.calls[0]
+    assert command == "render_scene"
+    assert params["mode"] == "ANIMATION"
+
+
+def test_orchestrated_animation_cancellation_lands_between_frames_and_skips_persist(monkeypatch) -> None:
+    """A real client cancellation must land as CancelledError, not a graceful partial summary."""
+
+    class _GatedAnimationConnection(_AnimationConnection):
+        def __init__(self, frame_count=5, block_at_frame=2):
+            super().__init__(frame_count=frame_count)
+            self.block_at_frame = block_at_frame
+            self._gate = threading.Event()
+
+        def send_command(self, command, params):
+            if command == "render_scene" and params["frame"] == self.block_at_frame:
+                result = super().send_command(command, params)
+                self._gate.wait(timeout=1.0)
+                return result
+            return super().send_command(command, params)
+
+    connection = _GatedAnimationConnection(frame_count=5, block_at_frame=2)
+    monkeypatch.setattr(rendering, "get_blender_connection", lambda: connection)
+    ctx = _FakeReportProgressContext()
+
+    async def drive():
+        task = asyncio.ensure_future(
+            rendering.render_scene(
+                ctx=ctx,
+                scene_name="Scene",
+                filepath="//renders/beat_",
+                mode="ANIMATION",
+                confirm_render=True,
+                persist_output=True,
+            )
+        )
+
+        def render_calls():
+            return [c for c, _p in connection.calls if c == "render_scene"]
+
+        while len(render_calls()) < 2:
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(drive())
+    connection._gate.set()
+
+    assert [c for c, _p in connection.calls] == ["plan_render_animation", "render_scene", "render_scene"]
+    assert ctx.progress_calls == [(1, 5, "Rendered frame 1 (1/5)")]
+    assert all(command != "configure_render_settings" for command, _params in connection.calls)

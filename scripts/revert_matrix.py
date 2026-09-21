@@ -5989,8 +5989,8 @@ REVERTS: list[Revert] = [
     Revert(
         "rendering: a render with no filepath falls back to Blender's own output path silently",
         ADDON_RENDERING,
-        "        requested_filepath = filepath\n        if requested_filepath is None:",
-        '        requested_filepath = filepath or "/tmp/fallback.png"\n        if False:',
+        "    requested_filepath = filepath\n    if requested_filepath is None:",
+        '    requested_filepath = filepath or "/tmp/fallback.png"\n    if False:',
         (
             f"{RENDT}::test_render_scene_without_a_filepath_names_the_tool_that_sets_one",
             f"{RENDT}::test_render_scene_renders_to_the_scenes_own_output_path",
@@ -5999,15 +5999,15 @@ REVERTS: list[Revert] = [
     Revert(
         "rendering: an ANIMATION over Blender's untouched default range renders unasked",
         ADDON_RENDERING,
-        "            and (scene.frame_start, scene.frame_end) == (1, 250)",
-        "            and False",
+        "        (scene.frame_start, scene.frame_end) == (1, 250)",
+        "        False",
         (f"{RENDT}::test_render_scene_refuses_an_animation_over_blenders_untouched_default_range",),
     ),
     Revert(
         "rendering: a frame range the MCP set still trips the default-range guard",
         ADDON_RENDERING,
-        '            and not scene.get("blender_mcp_frame_range_authored", False)',
-        "            and True",
+        '        and not scene.get("blender_mcp_frame_range_authored", False)',
+        "        and True",
         (f"{RENDT}::test_render_scene_accepts_the_default_range_when_it_was_chosen",),
     ),
     Revert(
