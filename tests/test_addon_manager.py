@@ -277,6 +277,31 @@ def test_install_leaves_an_older_installers_backup_alone_and_names_it(tmp_path: 
     assert str(stale) in result.message, "the duplicate Blender would list is not named in the result"
 
 
+def test_install_refuses_to_write_through_a_development_symlink(tmp_path: Path) -> None:
+    """
+    A symlinked install is a checkout Blender loads directly, and the installer must not touch it.
+
+    `shutil.rmtree` refuses a symlink outright, so the sweep used to raise rather than
+    report; and copying through the link would have duplicated the working tree into
+    Blender's addons directory.
+    """
+    from blender_mcp import addon_manager as am
+
+    checkout = am.get_bundled_addon_path()
+    addons = tmp_path / "5.2" / "scripts" / "addons"
+    addons.mkdir(parents=True)
+    link = addons / "blender_mcp"
+    link.symlink_to(checkout, target_is_directory=True)
+
+    result = am.install_addon(addons)
+
+    assert not result.success, "reported an install it did not perform"
+    assert link.is_symlink(), "the installer replaced the development link"
+    assert link.readlink() == checkout, "the link was repointed"
+    assert str(checkout) in result.message, "the result does not say which checkout Blender loads"
+    assert not (am.backup_directory(addons) / "blender_mcp.bak").exists(), "copied the checkout into a backup"
+
+
 def test_handshake_surfaces_writable_output_roots() -> None:
     """The roots Blender reports have to reach the handshake the server caches."""
     blender = Mock()

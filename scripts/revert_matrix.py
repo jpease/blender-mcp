@@ -325,6 +325,7 @@ NEW_NODES_IN_EXISTING_FILES = (
     # --- one addon in Blender's Add-ons list, however many times it is installed ---
     f"{AMT}::test_repeat_installs_leave_one_addon_for_blender_to_load",
     f"{AMT}::test_install_leaves_an_older_installers_backup_alone_and_names_it",
+    f"{AMT}::test_install_refuses_to_write_through_a_development_symlink",
     # --- bounded rejection, aborts around the swap, and a refresh that stops retrying ---
     f"{THREADT}::test_rejecting_a_full_queue_to_distinct_stalled_peers_is_bounded",
     f"{THREADT}::test_an_abort_during_the_pre_swap_drain_answers_the_swaps_own_client",
@@ -3839,6 +3840,13 @@ REVERTS: list[Revert] = [
         '        if path.name.endswith(".bak"):\n            stale_backups.append(str(path))\n            continue\n',
         "",
         (f"{AMT}::test_install_leaves_an_older_installers_backup_alone_and_names_it",),
+    ),
+    Revert(
+        "install: a development symlink is copied through instead of being left alone",
+        ADDON_MANAGER,
+        "    if target.is_symlink():\n",
+        "    if False:\n",
+        (f"{AMT}::test_install_refuses_to_write_through_a_development_symlink",),
     ),
     Revert(
         "get_addon_status: get_addon_status hardcodes the policy as unenforced",

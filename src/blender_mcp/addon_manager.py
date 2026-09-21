@@ -472,34 +472,42 @@ def _backup_addon_file(path: Path, source: Path | None = None) -> Path | None:
         return None
 
 
-def _clear_existing_installs(addons_dir: Path, source: Path) -> tuple[list[str], list[str]]:
+def _clear_existing_installs(addons_dir: Path, source: Path) -> tuple[list[str], list[str], list[str]]:
     """
-    Back up and remove every Blender MCP install in `addons_dir`, leaving backups alone.
+    Back up and remove every Blender MCP install in `addons_dir`, leaving backups and links alone.
 
-    A `<name>.bak` in this directory was written by an older installer, which kept its
-    backups where Blender scans. Treating one as an install would back it up again as
-    `<name>.bak.bak` and leave both behind - the reason a single install grew into four
-    entries in the user's Add-ons list. They are the user's data, so they are reported
-    rather than deleted.
+    A `<name>.bak` here was written by an older installer, which kept its backups where
+    Blender scans. Treating one as an install would back it up again as `<name>.bak.bak`
+    and leave both behind - the reason a single install grew into four entries in the
+    user's Add-ons list. They are the user's data, so they are reported, not deleted.
+
+    A symlink is a development setup pointing Blender straight at a checkout. Copying it
+    would duplicate the working tree and `shutil.rmtree` refuses a symlink outright, so it
+    is reported too and left exactly as it is.
 
     Args:
         addons_dir: The Blender addons directory to sweep.
         source: The bundled addon, so an install identical to it is not backed up again.
 
     Returns:
-        tuple[list[str], list[str]]: The installs removed, and the stale backups left in place.
+        tuple[list[str], list[str], list[str]]: The installs removed, the stale backups
+        left in place, and the symlinks left in place.
 
     """
     replaced: list[str] = []
     stale_backups: list[str] = []
+    linked: list[str] = []
     if not addons_dir.is_dir():
-        return replaced, stale_backups
+        return replaced, stale_backups, linked
     for path in sorted(addons_dir.iterdir()):
-        is_legacy_file = path.is_file() and path.suffix == ".py" and _is_blendermcp_addon_file(path)
+        is_legacy_file = not path.is_symlink() and path.is_file() and _is_blendermcp_addon_file(path)
         is_package_dir = (
             path.is_dir() and (path / "__init__.py").is_file() and _is_blendermcp_addon_file(path / "__init__.py")
         )
-        if not (is_legacy_file or is_package_dir):
+        if not ((is_legacy_file and path.suffix == ".py") or is_package_dir):
+            continue
+        if path.is_symlink():
+            linked.append(f"{path} -> {os.readlink(path)}")
             continue
         if path.name.endswith(".bak"):
             stale_backups.append(str(path))
@@ -512,7 +520,52 @@ def _clear_existing_installs(addons_dir: Path, source: Path) -> tuple[list[str],
         else:
             path.unlink()
         replaced.append(str(path))
-    return replaced, stale_backups
+    return replaced, stale_backups, linked
+
+
+def _install_message(
+    target: Path,
+    addons_dir: Path,
+    *,
+    replaced: list[str],
+    linked: list[str],
+    stale_backups: list[str],
+) -> str:
+    """
+    Say what was installed, and name anything else in that directory Blender will also load.
+
+    Every copy under `scripts/addons` carrying the addon's `bl_info` appears in the user's
+    Add-ons list under the same name, so one of them can be enabled by mistake and run a
+    different protocol against this server. Naming them is the only way that is visible.
+
+    Args:
+        target: Where the addon was copied.
+        addons_dir: The Blender addons directory installed into.
+        replaced: Installs this run removed, `target` included.
+        linked: Symlinked checkouts left in place.
+        stale_backups: Backups an older installer left in `addons_dir`.
+
+    Returns:
+        str: The message `AddonInstallResult` carries.
+
+    """
+    msg = (
+        f"Installed Blender MCP addon to {target}. "
+        "In Blender: Preferences → Add-ons → disable then enable "
+        "'Interface: Blender MCP', or restart Blender, then click Start MCP Server."
+    )
+    if len(replaced) > 1:
+        msg += f" Also updated: {', '.join(replaced[:-1])}."
+    if linked:
+        msg += f" Left these symlinked addons alone, each a checkout Blender loads directly: {', '.join(linked)}."
+    if stale_backups:
+        msg += (
+            f" Blender also loads these older backups as duplicate 'Blender MCP' addons, "
+            f"and enabling one runs that version instead: {', '.join(stale_backups)}. "
+            "Delete them once you no longer need their contents; backups now go to "
+            f"{backup_directory(addons_dir)}, which Blender does not scan."
+        )
+    return msg
 
 
 def install_addon(
@@ -575,27 +628,25 @@ def install_addon(
                 addons_dir=str(addons_dir),
             )
 
-    replaced, stale_backups = _clear_existing_installs(addons_dir, source)
+    replaced, stale_backups, linked = _clear_existing_installs(addons_dir, source)
 
     target = addons_dir / _INSTALLED_DIRNAME
+    if target.is_symlink():
+        # A development setup: Blender already loads the checkout this server runs from,
+        # so there is nothing to copy and replacing the link would discard that setup
+        # silently. Not a success: the caller asked for an install and did not get one.
+        return AddonInstallResult(
+            False,
+            f"{target} is a symlink to {os.readlink(target)}, so Blender already loads that "
+            "checkout directly and no copy was installed. Reload the addon in Blender to pick "
+            f"up your edits, or delete the link first to install a copy of {source}.",
+            addons_dir=str(addons_dir),
+        )
     shutil.copytree(source, target)
     if str(target) not in replaced:
         replaced.append(str(target))
 
-    msg = (
-        f"Installed Blender MCP addon to {target}. "
-        "In Blender: Preferences → Add-ons → disable then enable "
-        "'Interface: Blender MCP', or restart Blender, then click Start MCP Server."
-    )
-    if len(replaced) > 1:
-        msg += f" Also updated: {', '.join(replaced[:-1])}."
-    if stale_backups:
-        msg += (
-            f" Blender also loads these older backups as duplicate 'Blender MCP' addons, "
-            f"and enabling one runs that version instead: {', '.join(stale_backups)}. "
-            "Delete them once you no longer need their contents; backups now go to "
-            f"{backup_directory(addons_dir)}, which Blender does not scan."
-        )
+    msg = _install_message(target, addons_dir, replaced=replaced, linked=linked, stale_backups=stale_backups)
 
     return AddonInstallResult(
         True,
