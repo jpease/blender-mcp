@@ -265,7 +265,25 @@ def _scene_collection(name=None):
     return collection
 
 
+def _update_view_layer():
+    """
+    Flush pending dependency-graph updates so world-space matrices are current.
+
+    `matrix_world` is owned by the dependency graph: after a write to
+    `location`, `rotation_*` or `matrix_basis` it keeps its pre-edit value -
+    identity for an object this session has never evaluated - until the graph
+    re-evaluates. Reading it for a reply, reading it to copy it, and assigning
+    it (which solves a basis against the parent's evaluated matrix) all need
+    the graph to have caught up first. `matrix_basis` is not affected; it is
+    computed from the object's own channels on read.
+    """
+    view_layer = getattr(bpy.context, "view_layer", None)
+    if view_layer is not None:
+        view_layer.update()
+
+
 def _transform_snapshot(obj):
+    _update_view_layer()
     world_location, world_rotation, world_scale = obj.matrix_world.decompose()
     return {
         "location": list(obj.location),
@@ -963,6 +981,11 @@ class SceneHandlersMixin:
         space = str(space).upper()
         if space not in {"LOCAL", "WORLD"}:
             raise ValueError("space must be LOCAL or WORLD")
+        if space == "WORLD":
+            # Both the read below and `obj.matrix_world = ...` resolve against the parent's
+            # evaluated matrix, so an unflushed parent would place this object relative to
+            # wherever the parent used to be.
+            _update_view_layer()
         if "matrix" in patch:
             matrix = mathutils.Matrix(patch["matrix"])
             if space == "WORLD":
@@ -1032,6 +1055,10 @@ class SceneHandlersMixin:
         records = []
         if mode == "COLLECTION_INSTANCE" and not source.users_collection:
             raise ValueError(f"Source object '{source.name}' is not linked to a collection")
+        if not transforms or not all(transforms):
+            # A duplicate with no transform of its own inherits `source.matrix_world`, which
+            # still reads pre-edit until the graph catches up with whatever last moved it.
+            _update_view_layer()
         created = []
         try:
             for index, name in enumerate(names):
@@ -1158,6 +1185,11 @@ class SceneHandlersMixin:
                 seen.add(ancestor)
                 ancestor = planned.get(ancestor, ancestor.parent)
         for record, child in zip(assignments, children, strict=True):
+            if preserve_world_transform:
+                # Per assignment, not once: the world matrix read here and the one written
+                # below both resolve against evaluated parents, and an earlier assignment in
+                # this same loop may have moved one of those parents.
+                _update_view_layer()
             world = child.matrix_world.copy()
             parent_name = record.get("parent_object_name")
             child.parent = _object(parent_name) if parent_name else None

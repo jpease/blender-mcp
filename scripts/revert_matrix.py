@@ -107,6 +107,11 @@ SERVER_POSING_TOOL = ROOT / "src/blender_mcp/server/tools/character_rigging/posi
 # resolve without a round trip, and the handler repeats the check against the resolved target.
 ADDON_CAMERA_TARGETING = ROOT / "src/blender_mcp/bundled/addon/handlers/camera/targeting.py"
 SERVER_CAMERA_TARGETING_TOOL = ROOT / "src/blender_mcp/server/tools/camera/targeting.py"
+# The two camera modules that leave timeline markers behind: the shared resolution that decides
+# whether the earliest one claims the frames before it, and the scene-camera assignment that has
+# to report that in the same words create_camera_markers does.
+ADDON_CAMERA_SHARED = ROOT / "src/blender_mcp/bundled/addon/handlers/camera/_shared.py"
+ADDON_CAMERA_CORE = ROOT / "src/blender_mcp/bundled/addon/handlers/camera/core.py"
 ADDON_RENDERING = ROOT / "src/blender_mcp/bundled/addon/handlers/rendering.py"
 ADDON_DELIVERY = ROOT / "src/blender_mcp/bundled/addon/handlers/delivery.py"
 RENDER_COVERAGE_SCRIPT = ROOT / "scripts/render_coverage.py"
@@ -171,6 +176,7 @@ VIEWT = "tests/server/tools/test_viewport.py"
 SVT = "tests/server/tools/test_scene_validate.py"
 DRT = "tests/server/test_dispatch_rules.py"
 RCT = "tests/test_render_coverage.py"
+SCENETOOLT = "tests/test_scene_tools.py"
 # The camera, character-rigging and object-keyframing tool tests this matrix does not own
 # either; the place-and-aim and action-assignment nodes are listed one by one below.
 CAMT = "tests/server/tools/camera/test_tools.py"
@@ -458,6 +464,13 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{ANIMT}::test_a_driver_expression_may_name_frame_and_its_declared_variables",
     f"{ANIMT}::test_a_driver_expression_still_refuses_undeclared_names_and_calls",
     f"{ANIMT}::test_a_scripted_driver_reaches_blender_with_its_frame_expression",
+    # --- a cycle reports the period it repeats and where a finite count stops ---
+    f"{ANIMT}::test_a_cycle_reports_the_period_each_curve_will_actually_repeat",
+    f"{ANIMT}::test_a_finite_cycle_count_says_where_the_repeat_stops",
+    f"{POSET}::test_keying_past_a_cycle_says_the_period_it_just_changed",
+    f"{POSET}::test_keying_inside_an_existing_cycle_warns_about_nothing",
+    f"{POSET}::test_a_whole_rig_keyed_past_its_cycles_counts_the_bones_it_cannot_name",
+    f"{ANIMT}::test_an_unscoped_cycle_names_the_parameter_that_narrows_it",
     # --- every reply is bounded by the per-reply byte budget ---
     f"{ENVT}::test_an_oversized_record_page_is_cut_to_the_budget_and_stays_resumable",
     f"{ENVT}::test_a_resumed_page_continues_from_the_offset_it_was_given",
@@ -562,6 +575,13 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{CRTT}::test_confirming_the_displacement_moves_the_rig_onto_the_new_action",
     f"{CRTT}::test_ensure_keys_into_an_existing_action_where_create_refuses_it",
     f"{OANIMT}::test_keyframe_object_transform_refuses_one_action_for_several_objects",
+    # --- a transform reply reports the world transform the scene holds, not the pre-edit one ---
+    f"{SCENETOOLT}::test_set_object_transform_reports_the_world_transform_the_scene_now_holds",
+    # --- the path text a render was written to reads the same frame back ---
+    f"{RENDT}::test_inspect_render_output_reads_back_the_tilde_path_a_render_was_written_to",
+    # --- one camera marker binds every frame before it, and both marker paths say so ---
+    f"{CAMT}::test_camera_markers_warn_that_the_earliest_marker_claims_every_frame_before_it",
+    f"{CAMT}::test_setting_the_scene_camera_reports_the_retroactive_binding_in_the_same_words",
 )
 
 # Nodes no single revert can break, each with the reason, so the gap check skips them.
@@ -5484,6 +5504,48 @@ REVERTS: list[Revert] = [
         (f"{ANIMT}::test_a_cycle_prefix_that_names_no_curve_is_refused",),
     ),
     Revert(
+        "animation: a cycled curve reports no period, the way it did when a shot's arms stopped striding",
+        ADDON_ANIMATION,
+        '    record["period_frames"] = period\n',
+        '    record["period_frames"] = None\n',
+        (f"{ANIMT}::test_a_cycle_reports_the_period_each_curve_will_actually_repeat",),
+    ),
+    Revert(
+        "animation: a finite cycle count stops the repeat without saying at which frame",
+        ADDON_ANIMATION,
+        "        if cycles_after:\n",
+        "        if False:\n",
+        (f"{ANIMT}::test_a_finite_cycle_count_says_where_the_repeat_stops",),
+    ),
+    Revert(
+        "pose: a key landing past an existing cycle stretches its period silently again",
+        ADDON_POSING,
+        "else _cycle_extension_warnings(action, prepared, frame)\n",
+        "else []\n",
+        (f"{POSET}::test_keying_past_a_cycle_says_the_period_it_just_changed",),
+    ),
+    Revert(
+        "pose control: every key on a cyclic curve warns, not only one landing outside the cycle",
+        ADDON_POSING,
+        "            if first - _FRAME_TOLERANCE <= frame <= last + _FRAME_TOLERANCE:\n",
+        "            if False:\n",
+        (f"{POSET}::test_keying_inside_an_existing_cycle_warns_about_nothing",),
+    ),
+    Revert(
+        "pose: the per-bone cycle notices are unbounded, so a 500-bone pose spends the reply budget on them",
+        ADDON_POSING,
+        "    for bone in affected[:_MAX_CYCLE_WARNINGS]:\n",
+        "    for bone in affected:\n",
+        (f"{POSET}::test_a_whole_rig_keyed_past_its_cycles_counts_the_bones_it_cannot_name",),
+    ),
+    Revert(
+        "animation: a cut cycle page says only to narrow the scope, never which parameter narrows it",
+        SERVER_ANIMATION_TOOL,
+        "warnings=[] if data_path_prefix else [_UNSCOPED_CYCLE_WARNING],\n",
+        "warnings=[],\n",
+        (f"{ANIMT}::test_an_unscoped_cycle_names_the_parameter_that_narrows_it",),
+    ),
+    Revert(
         "server tools: the five open-world tools are folded into _FILE_TOOLS instead of _BLEND_FILE_TOOLS",
         SERVER_DOCUMENTATION,
         '_FILE_TOOLS = {\n    "bake_retopology_maps",',
@@ -6638,6 +6700,14 @@ REVERTS: list[Revert] = [
         "        if False:",
         (f"{SVT}::test_validate_scene_runs_the_persistence_domain_on_request",),
     ),
+    Revert(
+        "scene transforms: a transform reply decomposes a matrix_world the graph has not evaluated",
+        ADDON_SCENE,
+        # The call alone appears at four sites; the `def` line above it names this one.
+        "def _transform_snapshot(obj):\n    _update_view_layer()\n",
+        "def _transform_snapshot(obj):\n",
+        (f"{SCENETOOLT}::test_set_object_transform_reports_the_world_transform_the_scene_now_holds",),
+    ),
     # --- artefact truth: will this file resolve elsewhere ---
     Revert(
         "delivery: a path outside the shot is published whole instead of by leaf",
@@ -6940,6 +7010,13 @@ REVERTS: list[Revert] = [
         '            scene["blender_mcp_frame_range_authored"] = True',
         "            pass",
         (f"{RENDT}::test_render_scene_accepts_the_default_range_when_it_was_chosen",),
+    ),
+    Revert(
+        "rendering: inspect_render_output reads the caller's path text without resolving it",
+        ADDON_RENDERING,
+        "        resolved_output_path = _resolved_path(output_path) if output_path else None",
+        "        resolved_output_path = output_path",
+        (f"{RENDT}::test_inspect_render_output_reads_back_the_tilde_path_a_render_was_written_to",),
     ),
     Revert(
         "rendering: persist_output stores the resolved path instead of the caller's template",
@@ -7429,6 +7506,22 @@ REVERTS: list[Revert] = [
         "            if (point - placement).length_squared <= _COINCIDENT_DISTANCE_SQUARED:",
         "            if False:",
         (f"{CAMT}::test_handler_point_camera_at_rejects_a_placement_on_the_aim_point",),
+    ),
+    Revert(
+        "camera: a marker no longer says it claims the frames before it",
+        ADDON_CAMERA_SHARED,
+        '    if not camera_cuts or camera_cuts[0]["frame"] <= frame_start:',
+        "    if True:",
+        (f"{CAMT}::test_camera_markers_warn_that_the_earliest_marker_claims_every_frame_before_it",),
+    ),
+    Revert(
+        # Both marker paths must warn in the same words, so the node compares set_scene_camera's
+        # reply against create_camera_markers'. Silencing one side is the drift it exists to catch.
+        "camera: set_scene_camera stops reporting the binding create_camera_markers reports",
+        ADDON_CAMERA_CORE,
+        '            "warnings": _retroactive_cut_warnings(scene.frame_start, _camera_cut_map(scene)),',
+        '            "warnings": [],',
+        (f"{CAMT}::test_setting_the_scene_camera_reports_the_retroactive_binding_in_the_same_words",),
     ),
 ]
 

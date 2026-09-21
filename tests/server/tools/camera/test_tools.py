@@ -337,6 +337,66 @@ def test_marker_list_dispatch_is_read_only(monkeypatch) -> None:
     assert response == {"status": "success", "result": {"action": "LIST", "camera_cuts": []}}
 
 
+def _marker_handler(monkeypatch):
+    """Build the two cameras and the marker list that are all the marker handlers touch."""
+
+    class Markers(list):
+        """The slice of `scene.timeline_markers` the marker handlers use."""
+
+        def get(self, name):
+            """Return the marker of that name, as Blender's collection does."""
+            return next((marker for marker in self if marker.name == name), None)
+
+        def new(self, name, frame):
+            """Append a marker carrying no camera yet, as Blender's collection does."""
+            marker = types.SimpleNamespace(name=name, frame=frame, camera=None)
+            self.append(marker)
+            return marker
+
+        def remove(self, marker):
+            """Drop the marker, as Blender's collection does."""
+            list.remove(self, marker)
+
+    cameras = {
+        name: types.SimpleNamespace(name=name, type="CAMERA", data=f"{name} Data") for name in ("WideCam", "TightCam")
+    }
+    scene = types.SimpleNamespace(
+        name="Scene", frame_start=1, camera=cameras["WideCam"], objects=cameras, timeline_markers=Markers()
+    )
+    addon, _bpy = _load_addon(monkeypatch, data={"scenes": {"Scene": scene}, "objects": cameras})
+    return sys.modules[f"{addon.__name__}.handlers.camera"].CameraHandlersMixin(), scene
+
+
+def test_camera_markers_warn_that_the_earliest_marker_claims_every_frame_before_it(monkeypatch) -> None:
+    """Blender binds an unmarked frame to the earliest marker's camera, so one marker is no cut at all."""
+    handler, _scene = _marker_handler(monkeypatch)
+
+    late = handler.create_camera_markers(
+        "Scene", "CREATE", [{"name": "sh030", "frame": 167, "camera_name": "TightCam"}]
+    )
+
+    assert len(late["warnings"]) == 1
+    warning = late["warnings"][0]
+    assert "'sh030' at frame 167" in warning
+    assert "frames 1-166 render through 'TightCam'" in warning
+    assert "add one at frame 1" in warning
+
+    opened = handler.create_camera_markers("Scene", "CREATE", [{"name": "sh010", "frame": 1, "camera_name": "WideCam"}])
+
+    assert opened["warnings"] == []
+
+
+def test_setting_the_scene_camera_reports_the_retroactive_binding_in_the_same_words(monkeypatch) -> None:
+    """Assigning scene.camera changes nothing for the frames the earliest marker already claims."""
+    handler, _scene = _marker_handler(monkeypatch)
+    handler.create_camera_markers("Scene", "CREATE", [{"name": "sh030", "frame": 167, "camera_name": "TightCam"}])
+
+    assigned = handler.set_scene_camera("Scene", "WideCam")
+
+    assert assigned["warnings"] == handler.create_camera_markers("Scene", "LIST")["warnings"]
+    assert assigned["warnings"] != []
+
+
 def test_handler_camera_patch_rolls_back_assignments(monkeypatch) -> None:
     addon, _bpy = _load_addon(monkeypatch, data={})
     handler = sys.modules[f"{addon.__name__}.handlers.camera._shared"]

@@ -105,9 +105,22 @@ marker_result = handler.create_camera_markers(
     [{"name": "Smoke Shot", "frame": 1, "camera_name": camera.name}],
 )
 assert marker_result["camera_cuts"][0]["camera"] == camera.name
+# A marker sitting on frame_start claims no frame retroactively, so it warns about nothing.
+assert marker_result["warnings"] == []
 assert handler.create_camera_markers(scene.name, "LIST")["changed_objects"] == []
-handler.create_camera_markers(scene.name, "UPDATE", [{"name": "Smoke Shot", "frame": 5}])
+moved = handler.create_camera_markers(scene.name, "UPDATE", [{"name": "Smoke Shot", "frame": 5}])
 assert scene.timeline_markers["Smoke Shot"].frame == 5
+assert len(moved["warnings"]) == 1
+assert f"frames {scene.frame_start}-4 render through '{camera.name}'" in moved["warnings"][0]
+
+# The binding that warning describes, measured rather than remembered: frame 1 holds no marker of
+# its own, and Blender still resolves it to the frame-5 marker's camera instead of the scene's.
+previous_frame = scene.frame_current
+scene.camera = destination
+scene.frame_set(1)
+assert scene.camera.name == camera.name
+scene.frame_set(previous_frame)
+scene.camera = camera
 
 match_result = handler.match_camera_transform(destination.name, "FULL", source_object_name=camera.name)
 assert match_result["destination"] == destination.name

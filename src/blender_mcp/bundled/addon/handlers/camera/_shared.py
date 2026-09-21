@@ -123,6 +123,50 @@ def _scene(name):
     return scene
 
 
+def _camera_cut_map(scene):
+    return [
+        {"name": marker.name, "frame": marker.frame, "camera": getattr(marker.camera, "name", None)}
+        for marker in sorted(scene.timeline_markers, key=lambda item: (item.frame, item.name))
+        if marker.camera is not None
+    ]
+
+
+def _retroactive_cut_warnings(frame_start, camera_cuts):
+    """
+    Warn when the frames before the earliest camera marker are bound to that marker's camera.
+
+    Blender resolves a frame that has no camera marker at or before it to the *earliest*
+    marker's camera rather than to the scene's own camera, so a lone marker at frame 167 claims
+    frames 1-166 as well and no cut is visible anywhere on the timeline. Measured on 5.2.2
+    alongside the neighbouring trap no reply can show either: a marker whose camera has
+    hide_render=True is skipped by that same resolution, which silently leaves scene.camera
+    rendering every frame as though the marker had never been created.
+
+    Args:
+        frame_start: The scene's first frame.
+        camera_cuts: Camera-carrying marker records in frame order, each with "name", "frame"
+            and "camera", as `_camera_cut_map` builds them.
+
+    Returns:
+        list[str]: One warning naming the retroactively bound span, or empty when the earliest
+            marker is at or before frame_start and every frame renders the camera its own
+            marker names.
+
+    """
+    if not camera_cuts or camera_cuts[0]["frame"] <= frame_start:
+        return []
+    earliest = camera_cuts[0]
+    return [
+        f"The earliest camera marker is '{earliest['name']}' at frame {earliest['frame']}, later "
+        f"than the scene's frame_start {frame_start}: Blender binds a frame that has no marker at "
+        f"or before it to the earliest marker's camera, not to the scene's own camera, so frames "
+        f"{frame_start}-{earliest['frame'] - 1} render through '{earliest['camera']}' as well and "
+        f"the timeline holds no visible cut. One marker binds the whole timeline; a cut exists "
+        f"only between two markers, so add one at frame {frame_start} naming the camera the "
+        f"opening frames should use."
+    ]
+
+
 def _object(name, *, scene=None):
     obj = bpy.data.objects.get(name)
     if obj is None:

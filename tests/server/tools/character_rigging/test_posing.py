@@ -455,10 +455,11 @@ class _Key:
 
 
 class _FCurve:
-    def __init__(self, data_path, array_index, keys) -> None:
+    def __init__(self, data_path, array_index, keys, modifiers=()) -> None:
         self.data_path = data_path
         self.array_index = array_index
         self.keyframe_points = [_Key(frame, value) for frame, value in keys]
+        self.modifiers = list(modifiers)
 
     def evaluate(self, frame) -> float:
         return next(point.co[1] for point in self.keyframe_points if math.isclose(point.co[0], frame, abs_tol=1e-6))
@@ -866,6 +867,98 @@ def test_a_keyed_euler_aim_stays_on_the_previous_keys_branch(monkeypatch) -> Non
     naive = max(abs(value - reference) for value, reference in zip(natural, previous, strict=True))
     assert naive == pytest.approx(2.0 * math.pi, abs=1e-9)
     assert math.degrees(jump) < 1e-6
+
+
+def _cyclic_action(bone_names, extent=(1.0, 25.0)):
+    """Install an action whose rotation curves for these bones already carry a Cycles modifier."""
+    action = _Action("CHAR1_sh030_motion")
+    sys.modules["bpy"].data.actions["CHAR1_sh030_motion"] = action
+    action.fcurves = [
+        _FCurve(
+            f'pose.bones["{name}"].rotation_quaternion',
+            index,
+            [(extent[0], 0.0), (extent[1], 0.0)],
+            modifiers=[types.SimpleNamespace(type="CYCLES")],
+        )
+        for name in bone_names
+        for index in range(4)
+    ]
+    return action
+
+
+def test_keying_past_a_cycle_says_the_period_it_just_changed(monkeypatch) -> None:
+    """
+    The trap that broke a shot's arms: a later gesture silently restretched a 24-frame loop.
+
+    The arms' curves already carried a Cycles modifier over frames 1-25 when a high-five was
+    keyed at 162. Blender did exactly what it was asked - the modifier repeats its own curve's
+    key extent, so the extent, and the period, became 161 frames - and the arms drifted for
+    the rest of the shot instead of striding. Extending a cycle on purpose is legitimate, so
+    this must warn and key, never refuse.
+    """
+    server, _rig, _animation, _posing, _spine, head = _head_rig(monkeypatch)
+    _cyclic_action([head.name])
+
+    reply = server.keyframe_character_pose(
+        "CHAR1_rig",
+        "CHAR1_sh030_motion",
+        162.0,
+        [{"bone_name": head.name, "rotation_euler": (0.0, 0.44, 0.0)}],
+        action_policy="REUSE",
+    )
+
+    assert [frame for _path, frame, _group, _values in head.keyed] == [162.0], "the key was refused, not warned about"
+    # One bone, four channels, one warning - and it names what changed, not that something did.
+    assert len(reply["warnings"]) == 1, reply["warnings"]
+    warning = reply["warnings"][0]
+    assert f"Bone '{head.name}'" in warning
+    assert "frame 162" in warning
+    assert "frames 1-25" in warning
+    assert "becomes 161 frames instead of 24" in warning
+    # Lifted by the envelope, so it survives the page of keys being cut to fit the budget.
+    assert warning in envelope_for(reply, changed_objects=[])["warnings"]
+
+
+def test_keying_inside_an_existing_cycle_warns_about_nothing(monkeypatch) -> None:
+    """A key at frame 12 of a 1-25 loop changes no period; warning about it would train the eye off."""
+    server, _rig, _animation, _posing, _spine, head = _head_rig(monkeypatch)
+    _cyclic_action([head.name])
+
+    reply = server.keyframe_character_pose(
+        "CHAR1_rig",
+        "CHAR1_sh030_motion",
+        12.0,
+        [{"bone_name": head.name, "rotation_euler": (0.0, 0.44, 0.0)}],
+        action_policy="REUSE",
+    )
+
+    assert reply["warnings"] == []
+
+
+def test_a_whole_rig_keyed_past_its_cycles_counts_the_bones_it_cannot_name(monkeypatch) -> None:
+    """
+    Warnings are lifted whole and never paged, so one per posed bone would spend the budget.
+
+    A 500-bone pose is a legal call. Naming the first few and counting the rest keeps the
+    notice bounded while still saying which bones to look at first.
+    """
+    bones = [_PoseBone(f"CHAR1_bone_{index:02d}") for index in range(9)]
+    server, _rig, _animation, _posing_module = _posing(monkeypatch, bones)
+    _cyclic_action([bone.name for bone in bones])
+
+    reply = server.keyframe_character_pose(
+        "CHAR1_rig",
+        "CHAR1_sh030_motion",
+        162.0,
+        [{"bone_name": bone.name, "rotation_euler": (0.0, 0.44, 0.0)} for bone in bones],
+        action_policy="REUSE",
+    )
+
+    assert len(reply["warnings"]) == 5, reply["warnings"]
+    assert sum(f"Bone '{bone.name}'" in reply["warnings"][0] for bone in bones) == 1
+    summary = reply["warnings"][-1]
+    assert summary.startswith("5 further bone(s) keyed at frame 162")
+    assert "CHAR1_bone_04" in summary and "and 1 more" in summary
 
 
 def test_rest_axes_are_reported_only_when_asked_for(monkeypatch) -> None:

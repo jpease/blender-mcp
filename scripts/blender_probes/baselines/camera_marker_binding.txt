@@ -1,0 +1,27 @@
+exit: 0
+--- stdout ---
+<t>  render           | Saved: '<tmp>/tmp<rand>/probe.png'
+=== BLENDER === <version>
+
+=== markers: cut_a@1 -> CamA, cut_b@5 -> CamB ===
+
+=== does scene.frame_set apply the binding? ===
+  frame_set(6) -> scene.camera = CamB
+  frame_set(2) -> scene.camera = CamA
+
+=== does a bare scene.frame_current assignment apply it? ===
+  scene.camera = CamA, then scene.frame_current = 6 -> scene.camera = CamA
+
+=== does the still render operator re-apply it over a forced scene.camera? ===
+  scene.camera = CamA at frame 6, render ['FINISHED'] -> scene.camera = CamB
+
+=== what does a frame before the earliest marker resolve to? ===
+  only marker is cut_b@5 -> CamB, scene.camera = CamA, frame_set(1) -> scene.camera = CamB
+
+=== is a marker camera hidden from render honoured? ===
+  CamB.hide_render = True, scene.camera = CamA, frame_set(6) -> scene.camera = CamA
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---

@@ -1256,6 +1256,7 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "previous_camera": "Camera",
             "camera": "Camera_Hero",
             "marker": None,
+            "warnings": [],
             "changed_objects": [],
         },
         "create_camera_target": lambda _scale: {
@@ -1266,7 +1267,12 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "constraints": [],
             "changed_objects": ["Camera_Hero_target"],
         },
-        "create_camera_markers": lambda _scale: {"action": "LIST", "camera_cuts": [], "changed_objects": []},
+        "create_camera_markers": lambda _scale: {
+            "action": "LIST",
+            "camera_cuts": [],
+            "warnings": [],
+            "changed_objects": [],
+        },
         # `handlers/camera/targeting.py:353 frame_camera_on_objects`.
         "frame_camera_on_objects": lambda _scale: {
             "camera": "Camera_Hero",
@@ -1782,10 +1788,22 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
                     "array_index": array_index,
                     "mode_before": "REPEAT_OFFSET",
                     "mode_after": "REPEAT_OFFSET",
+                    "first_key_frame": 1.0,
+                    "last_key_frame": 25.0,
+                    "period_frames": 24.0,
                 }
                 for index in range(scale.bones)
                 for path, width in (("location", 3), ("rotation_quaternion", 4), ("scale", 3))
                 for array_index in range(width)
+            ],
+            # The disagreement notice, at the length it reaches when two limbs were keyed over
+            # different extents: it is what tells the caller the arms stopped striding.
+            "warnings": [
+                'These curves do not share one cycle period: 24 frames (e.g. pose.bones["thigh.L"].location, '
+                'keys 1-25), 161 frames (e.g. pose.bones["upper_arm.L"].location, keys 1-162). A Cycles '
+                "modifier repeats its own curve's key extent, so they loop at different rates and drift apart "
+                "instead of repeating together. Key them over the same frame range, or scope this call with "
+                "data_path_prefix."
             ],
             "changed_resources": ["Hero_Action"],
         },

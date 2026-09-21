@@ -63,6 +63,9 @@ _SINGULAR_TOLERANCE = 1e-12
 _ROTATION_CHANNEL_WIDTH = {"rotation_quaternion": 4, "rotation_axis_angle": 4, "rotation_euler": 3}
 # Frames compare as floats; a key at 12 and a request at 12.0000001 are the same key.
 _FRAME_TOLERANCE = 1e-6
+# One call may pose 500 bones, and the envelope lifts warnings whole rather than paging them,
+# so the per-bone cycle notices are named up to this many and then counted.
+_MAX_CYCLE_WARNINGS = 4
 
 
 def _signed_axis(name, label):
@@ -608,6 +611,23 @@ def _match_previous_rotation(action, pose_bone, path, frame):
     return False
 
 
+def _bone_curve_path(bone_name, data_path):
+    """
+    Spell the F-Curve data_path one bone channel or custom property is keyed under.
+
+    Args:
+        bone_name: The posed bone.
+        data_path: A channel name, or a custom property's `["name"]` subscript.
+
+    Returns:
+        str: The full curve path. A channel joins with a dot; a subscript concatenates
+        directly, the two spellings `_pose_key_paths` emits.
+
+    """
+    separator = "" if data_path.startswith("[") else "."
+    return f"{_bone_path_token(bone_name)}{separator}{data_path}"
+
+
 def _style_written_keys(action, changed_keys, style):
     """
     Style only the points this call wrote, named by (bone, data_path, frame).
@@ -628,11 +648,8 @@ def _style_written_keys(action, changed_keys, style):
     """
     wanted = {}
     for record in changed_keys:
-        # A channel path joins with a dot; a custom property's path is already a `["name"]`
-        # subscript and concatenates directly, the same two spellings `_pose_key_paths` emits.
-        token = _bone_path_token(record["bone"])
-        separator = "" if record["data_path"].startswith("[") else "."
-        wanted.setdefault(f"{token}{separator}{record['data_path']}", []).append(float(record["frame"]))
+        path = _bone_curve_path(record["bone"], record["data_path"])
+        wanted.setdefault(path, []).append(float(record["frame"]))
     changed = 0
     for collection in action_fcurve_collections(action):
         for curve in collection:
@@ -644,6 +661,70 @@ def _style_written_keys(action, changed_keys, style):
                     style_point(point, style)
                     changed += 1
     return changed
+
+
+def _cycle_extension_warnings(action, prepared, frame):
+    """
+    Warn once per bone whose new key lands outside a cycle its curves already repeat.
+
+    A Cycles F-Modifier repeats its own curve's key extent, so keying a bone at frame 162
+    when its curves cycle over frames 1-24 does not add a frame to a 24-frame loop: it makes
+    the loop 161 frames long, and that bone stops moving at the rate the rest of the rig
+    does. Blender does exactly what it was asked and says nothing, which is how a walk's arms
+    drifted through one slow interpolation for a whole shot. Extending a cycle on purpose is
+    legitimate authoring, so this warns and keys rather than refusing.
+
+    Args:
+        action: The action about to be keyed, read before `_write_pose_keys` writes to it.
+        prepared: `_validate_pose_specs` output: the bones and channels about to be keyed.
+        frame: The frame this call keys.
+
+    Returns:
+        list[str]: One warning per affected bone, naming the frame, the extent it fell
+        outside and the period that extent just became, bounded by `_MAX_CYCLE_WARNINGS`
+        with one summary line for the rest. Warnings are lifted whole into the envelope and
+        never paged, so 500 posed bones must not be able to spend the reply budget on them.
+
+    """
+    owners = {}
+    for pose_bone, spec, _matrix in prepared:
+        for path in _pose_key_paths(pose_bone, spec):
+            owners[_bone_curve_path(pose_bone.name, path)] = pose_bone.name
+    stretched = {}
+    for collection in action_fcurve_collections(action):
+        for curve in collection:
+            bone = owners.get(curve.data_path)
+            if bone is None or bone in stretched:
+                continue
+            if not any(modifier.type == "CYCLES" for modifier in curve.modifiers):
+                continue
+            frames = [float(point.co[0]) for point in curve.keyframe_points]
+            if len(frames) <= 1:
+                continue
+            first, last = min(frames), max(frames)
+            if first - _FRAME_TOLERANCE <= frame <= last + _FRAME_TOLERANCE:
+                continue
+            stretched[bone] = (curve.data_path, first, last)
+    affected = list(stretched)
+    warnings = []
+    for bone in affected[:_MAX_CYCLE_WARNINGS]:
+        path, first, last = stretched[bone]
+        warnings.append(
+            f"Bone '{bone}' is keyed at frame {frame:g}, outside the frames {first:g}-{last:g} its curves "
+            f"already cycle over ({path}). A Cycles modifier repeats its own curve's key extent, so this "
+            f"bone's period becomes {max(last, frame) - min(first, frame):g} frames instead of "
+            f"{last - first:g} and it stops looping with the rest of the rig. Key it inside the cycle, or "
+            "re-cycle the action deliberately."
+        )
+    remainder = affected[_MAX_CYCLE_WARNINGS:]
+    if remainder:
+        listed = ", ".join(remainder[:_MAX_CYCLE_WARNINGS])
+        trailing = f" and {len(remainder) - _MAX_CYCLE_WARNINGS} more" if len(remainder) > _MAX_CYCLE_WARNINGS else ""
+        warnings.append(
+            f"{len(remainder)} further bone(s) keyed at frame {frame:g} land outside the cycle their own curves "
+            f"carry, stretching it the same way: {listed}{trailing}."
+        )
+    return warnings
 
 
 def _refuse_unkeyable_request(keying_policy, style, action_policy, action_name, prepared):
@@ -783,6 +864,7 @@ def _keyframe_reply(
     changed_keys,
     interpolation_count,
     pose_records,
+    warnings,
 ):
     """
     Describe what one single-frame keying call left behind.
@@ -797,6 +879,7 @@ def _keyframe_reply(
         changed_keys: One record per channel keyed.
         interpolation_count: How many keys had their style set.
         pose_records: Per-bone matrices for a `detail` request, or None to omit them.
+        warnings: Non-fatal notices about what this call's keys did to the action.
 
     Returns:
         dict: The handler reply.
@@ -812,6 +895,9 @@ def _keyframe_reply(
         changed_keys,
         interpolation_count,
     )
+    # The envelope lifts these and never shortens them, so a notice about a cycle this call
+    # just stretched survives the page of keys being cut down to fit the budget.
+    reply["warnings"] = warnings
     if pose_records is not None:
         # The pose is restored before this returns, so these matrices describe what was keyed at
         # the requested frame, not what the rig is holding now.
@@ -1866,6 +1952,10 @@ class PoseAnimationHandlersMixin:
             pose_records = []
             if keying_policy != "REMOVE":
                 pose_records = _apply_pose_specs(armature, prepared, space, detail=detail)
+            # Measured before the write: afterwards this frame is inside the extent it widened,
+            # and the stretched cycle is invisible again. REMOVE narrows an extent rather than
+            # widening one, and has no key landing outside anything.
+            warnings = [] if keying_policy == "REMOVE" else _cycle_extension_warnings(action, prepared, frame)
             changed_keys = _write_pose_keys(action, prepared, frame, keying_policy)
             interpolation_count = 0 if keying_policy == "REMOVE" else _style_written_keys(action, changed_keys, style)
         return _keyframe_reply(
@@ -1878,6 +1968,7 @@ class PoseAnimationHandlersMixin:
             changed_keys=changed_keys,
             interpolation_count=interpolation_count,
             pose_records=pose_records if detail else None,
+            warnings=warnings,
         )
 
     def keyframe_bone_reach(

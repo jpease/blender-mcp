@@ -634,6 +634,12 @@ async def render_scene(
     until every frame is done: this reports real progress after each frame and responds to a
     client cancellation between frames. Set orchestrate_animation=false for the single
     blocking legacy call instead - the reply shape is identical either way.
+
+    A long ANIMATION can outlive the calling client's own MCP request timeout, which is not a
+    failure of the render: Blender keeps writing frames, and the files land. A timeout here
+    means the outcome is unknown, not lost - re-read it with inspect_render_output on the
+    expected last frame before re-rendering. Bound the call instead with max_duration_seconds,
+    which cancels between frames and reports what was written, or raise the client's timeout.
     """
     if not confirm_render:
         raise ToolError("confirm_render=True is required")

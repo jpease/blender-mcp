@@ -26,6 +26,9 @@ _TARGET_COLLECTIONS = {
 # curve's own start-to-end delta each repeat, which is what keeps a walking character walking
 # instead of teleporting back to where the cycle started.
 _CYCLE_MODES = frozenset({"NONE", "REPEAT", "REPEAT_OFFSET", "MIRROR"})
+# How many distinct cycle periods one disagreement warning spells out before summarising the
+# rest: enough to name the limbs that disagree, few enough to stay inside the reply budget.
+_MAX_LISTED_PERIODS = 3
 _NLA_TRACK_PROPERTIES = {"mute", "solo", "lock"}
 _NLA_STRIP_PROPERTIES = {
     "frame_start",
@@ -848,6 +851,187 @@ def _resolved_edit_action(owner, action_name, replace_active, allow_shared):
         raise
 
 
+def _curve_key_extent(curve):
+    """
+    Measure the first and last keyed frame of one F-Curve.
+
+    Args:
+        curve: The F-Curve to measure.
+
+    Returns:
+        tuple | None: (first_frame, last_frame), or None when the curve holds no keys.
+
+    """
+    frames = [float(point.co[0]) for point in curve.keyframe_points]
+    return (min(frames), max(frames)) if frames else None
+
+
+def _cycle_record(curve, operation, modes, cycles):
+    """
+    Describe one curve's cycle, including the period it will actually repeat at.
+
+    The period is the number the caller believes they are setting and could not see: a Cycles
+    F-Modifier repeats its own curve's first-to-last key span, not the scene range and not its
+    neighbours' span. A curve that picks up a key from a later gesture therefore repeats a
+    different, longer span than the rest of the rig without anything having been asked for.
+
+    Args:
+        curve: The curve just cycled or un-cycled.
+        operation: SET or REMOVE; a removed cycle has no modes and no repeat bounds.
+        modes: (mode_before, mode_after) as requested.
+        cycles: (cycles_before, cycles_after) as requested; 0 is Blender's unlimited.
+
+    Returns:
+        dict: data_path, array_index, mode_before, mode_after, first_key_frame,
+        last_key_frame, period_frames (None when the curve has fewer than two keys), plus
+        repeat_start_frame/repeat_end_frame when a finite count bounds the repeat.
+
+    """
+    mode_before, mode_after = modes
+    cycles_before, cycles_after = (int(count) for count in cycles)
+    extent = _curve_key_extent(curve)
+    record = {
+        "data_path": curve.data_path,
+        "array_index": curve.array_index,
+        "mode_before": mode_before if operation == "SET" else None,
+        "mode_after": mode_after if operation == "SET" else None,
+        "first_key_frame": extent[0] if extent else None,
+        "last_key_frame": extent[1] if extent else None,
+        "period_frames": None,
+    }
+    if extent is None:
+        return record
+    first, last = extent
+    # One key is an extent of zero: there is nothing between it and itself to repeat, so the
+    # honest answer is that this curve has no period, not that its period is 0.
+    if last <= first:
+        return record
+    period = last - first
+    record["period_frames"] = period
+    if operation == "SET":
+        if cycles_before:
+            record["repeat_start_frame"] = first - cycles_before * period
+        if cycles_after:
+            record["repeat_end_frame"] = last + cycles_after * period
+    return record
+
+
+def _unrepeatable_warning(records):
+    """
+    Warn about curves a Cycles modifier cannot make cyclic.
+
+    Args:
+        records: The per-curve records this call built.
+
+    Returns:
+        str | None: One warning naming how many curves have no period, or None.
+
+    """
+    without = [record["data_path"] for record in records if record["period_frames"] is None]
+    if not without:
+        return None
+    return (
+        f"{len(without)} of the {len(records)} curves carry fewer than two keys, so they have no extent to "
+        f"repeat and the Cycles modifier on them changes nothing (e.g. {without[0]}). Key them across the "
+        "cycle's frame range first."
+    )
+
+
+def _period_disagreement_warning(records):
+    """
+    Warn when the curves made cyclic do not all repeat at the same rate.
+
+    This is the failing run's first trap: legs keyed over frames 1-24 and arms that had picked
+    up keys at 162 and 185 were cycled in one call, and each repeated its own extent. The legs
+    strode; the arms drifted through one slow 161-frame interpolation, and nothing said so.
+
+    Args:
+        records: The per-curve records this call built.
+
+    Returns:
+        str | None: One warning naming each distinct period with an example curve, or None
+        when every curve that can cycle repeats the same span.
+
+    """
+    groups = {}
+    for record in records:
+        if record["period_frames"] is not None:
+            groups.setdefault(record["period_frames"], record)
+    if len(groups) <= 1:
+        return None
+    listed = sorted(groups.items())[:_MAX_LISTED_PERIODS]
+    spelled = ", ".join(
+        f"{period:g} frames (e.g. {record['data_path']}, keys {record['first_key_frame']:g}-"
+        f"{record['last_key_frame']:g})"
+        for period, record in listed
+    )
+    remainder = len(groups) - len(listed)
+    if remainder:
+        spelled += f", and {remainder} further period(s)"
+    return (
+        f"These curves do not share one cycle period: {spelled}. A Cycles modifier repeats its own curve's "
+        "key extent, so they loop at different rates and drift apart instead of repeating together. Key "
+        "them over the same frame range, or scope this call with data_path_prefix."
+    )
+
+
+def _finite_repeat_warning(records, count, field, label, phrase):
+    """
+    State where a finite cycle count stops repeating, and what governs past it.
+
+    Args:
+        records: The per-curve records this call built.
+        count: The requested cycle count; 0 is unlimited and warns about nothing.
+        field: The record field holding the bound, repeat_start_frame or repeat_end_frame.
+        label: The argument name to quote back.
+        phrase: How the bound reads for this direction.
+
+    Returns:
+        str | None: One warning naming the bounding frame(s), or None when unlimited.
+
+    """
+    bounds = sorted({record[field] for record in records if record.get(field) is not None})
+    if not bounds:
+        return None
+    where = (
+        f"frame {bounds[0]:g}"
+        if len(bounds) == 1
+        else f"frames {bounds[0]:g} to {bounds[-1]:g}, one per curve, because they do not share a period"
+    )
+    return (
+        f"{label}={int(count)} is finite: {phrase} {where}. Past it the Cycles modifier contributes nothing "
+        "and the curve's own extrapolation takes over - by default a constant hold at the end key, which "
+        f"snaps to that value and freezes there. {label}=0 repeats without end."
+    )
+
+
+def _cycle_warnings(records, operation, cycles_before, cycles_after):
+    """
+    Every non-fatal notice one cycle call owes its caller.
+
+    Args:
+        records: The per-curve records this call built.
+        operation: SET or REMOVE; a removal cycles nothing, so it warns about nothing.
+        cycles_before: The requested backward repeat count; 0 is unlimited.
+        cycles_after: The requested forward repeat count; 0 is unlimited.
+
+    Returns:
+        list[str]: The warnings, in the order a caller needs them.
+
+    """
+    if operation != "SET":
+        return []
+    candidates = (
+        _unrepeatable_warning(records),
+        _period_disagreement_warning(records),
+        _finite_repeat_warning(records, cycles_after, "repeat_end_frame", "cycles_after", "the last repeat ends at"),
+        _finite_repeat_warning(
+            records, cycles_before, "repeat_start_frame", "cycles_before", "the first repeat starts at"
+        ),
+    )
+    return [warning for warning in candidates if warning is not None]
+
+
 class AnimationHandlersMixin:
     """Expose generic animation inspection, Actions, and keyframes."""
 
@@ -1131,20 +1315,16 @@ class AnimationHandlersMixin:
                 # Blender spells "forever" as zero cycles, in both directions.
                 modifier.cycles_before = int(cycles_before)
                 modifier.cycles_after = int(cycles_after)
-            records.append(
-                {
-                    "data_path": curve.data_path,
-                    "array_index": curve.array_index,
-                    "mode_before": mode_before if operation == "SET" else None,
-                    "mode_after": mode_after if operation == "SET" else None,
-                }
-            )
+            records.append(_cycle_record(curve, operation, (mode_before, mode_after), (cycles_before, cycles_after)))
         return {
             "action": action.name,
             "action_slot": slot_identifier,
             "operation": operation,
             "curve_count": len(records),
             "modifiers": records,
+            # The envelope lifts these, so the period a curve will really repeat at, and the
+            # frame a finite count stops at, reach a caller who read nothing but the warnings.
+            "warnings": _cycle_warnings(records, operation, cycles_before, cycles_after),
             "changed_resources": [action.name],
         }
 

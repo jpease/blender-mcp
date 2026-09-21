@@ -513,6 +513,25 @@ def _validate_render_patch(patch):
     return patch
 
 
+def _resolved_path(path):
+    """
+    Resolve a caller's path text to the file it names, the way the render writer does.
+
+    `~`, Blender's `//` blend-relative prefix and a plain relative path each name a real file
+    only once resolved. Doing it in one place is what keeps a file `render_scene` wrote
+    readable by `inspect_render_output` from the same text the caller typed: the two differed
+    on `~` for as long as each spelled the resolution itself.
+
+    Args:
+        path: The caller's path text.
+
+    Returns:
+        str: The absolute path that text names.
+
+    """
+    return os.path.abspath(bpy.path.abspath(os.path.expanduser(path)))
+
+
 def _render_output_suggestion(name, extension):
     """
     Rebuild a filename with the scene's image-format extension, the way Blender itself would.
@@ -552,7 +571,7 @@ def _refuse_container_output(scene, filepath):
     if not isinstance(filepath, str) or not filepath.strip():
         raise ValueError("filepath must be a non-empty string")
     extension = scene.render.file_extension
-    output = os.path.abspath(bpy.path.abspath(os.path.expanduser(filepath)))
+    output = _resolved_path(filepath)
     # os.path.abspath drops a trailing separator, so the directory intent has to be read off the
     # caller's own text before it is normalised away.
     if filepath.endswith(("/", os.sep)) or os.path.isdir(output):
@@ -592,7 +611,7 @@ def _resolve_render_output(scene, filepath, mode):
     """
     extension = scene.render.file_extension
     _refuse_container_output(scene, filepath)
-    output = os.path.abspath(bpy.path.abspath(os.path.expanduser(filepath)))
+    output = _resolved_path(filepath)
     directory = os.path.dirname(output)
     if not directory or not os.path.isdir(directory):
         # The caller's own text, not the resolved path, which can expose Blender's working directory.
@@ -1022,6 +1041,12 @@ class RenderingHandlersMixin:
                 if max_duration_seconds is not None and time.monotonic() - started >= max_duration_seconds:
                     cancelled = True
                     break
+                # Measured on 5.2.2: frame_set is what applies the timeline's camera-marker
+                # binding - a bare `scene.frame_current = n` assignment does not - and
+                # bpy.ops.render.render applies it again on top, overwriting a scene.camera
+                # forced between the two. So this loop already renders the camera the markers
+                # resolve to, exactly as Blender's own animation render does, and no per-frame
+                # camera switching here could override that if it wanted to.
                 scene.frame_set(current_frame)
                 if mode == "ANIMATION":
                     scene.render.filepath = output
@@ -1097,7 +1122,9 @@ class RenderingHandlersMixin:
             filepath: Destination path this call writes the (possibly downscaled) copy to.
             output_path: Path to an existing rendered file on disk. Takes precedence over frame;
                 the reported frame is then read back out of the filename Blender wrote, and stays
-                null when that filename does not carry one unambiguously.
+                null when that filename does not carry one unambiguously. `~` and Blender's `//`
+                prefix resolve exactly as they do when render_scene writes, so the text that
+                wrote a frame reads it back; source_path reports the resolved path.
             frame: Frame number the in-memory Render Result must currently hold; only
                 checked when output_path is omitted.
             max_size: Maximum size in pixels for the largest dimension of the saved copy.
@@ -1115,14 +1142,15 @@ class RenderingHandlersMixin:
             raise ValueError("No destination filepath provided")
 
         staging_path = None
-        if output_path:
-            if not os.path.isfile(output_path):
-                raise ValueError(f"Render output file not found: {output_path}")
+        resolved_output_path = _resolved_path(output_path) if output_path else None
+        if resolved_output_path:
+            if not os.path.isfile(resolved_output_path):
+                raise ValueError(f"Render output file not found: {resolved_output_path}")
             source = "output_path"
             # The caller's own `frame` is documented as ignored here, so a narration of "here is
             # frame 24" is only backed by what Blender actually encoded in the filename.
-            frame = _frame_from_filename(output_path)
-            img = bpy.data.images.load(output_path, check_existing=False)
+            frame = _frame_from_filename(resolved_output_path)
+            img = bpy.data.images.load(resolved_output_path, check_existing=False)
         else:
             render_result = bpy.data.images.get("Render Result")
             if render_result is None:
@@ -1162,6 +1190,6 @@ class RenderingHandlersMixin:
             "native_height": native_height,
             "filepath": filepath,
             "source": source,
-            "source_path": output_path,
+            "source_path": resolved_output_path,
             "frame": frame,
         }

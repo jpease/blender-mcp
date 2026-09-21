@@ -25,6 +25,11 @@ from blender_mcp_scene_smoke.handlers.scene import SceneHandlersMixin  # ruff: i
 from blender_mcp_scene_smoke.server_core import BlenderMCPServer  # ruff: ignore[module-import-not-at-top-of-file]
 
 
+def rounded(values):
+    """Serialize a float sequence at the precision float32 transforms actually carry."""
+    return [round(float(value), 5) for value in values]
+
+
 def main() -> None:
     """Exercise native geometry, transforms, collections, hierarchy, constraints, and modifiers."""
     handler = SceneHandlersMixin()
@@ -188,6 +193,68 @@ def main() -> None:
         preserve_world_transform=True,
     )
     assert bpy.data.objects["Scene Smoke Linked"].parent is obj
+
+    # --- World-space reply fields report the evaluated scene, not the pre-edit one -------------
+    # `matrix_world` is owned by the dependency graph: after a write to `location` or
+    # `matrix_basis` it keeps its pre-edit value - identity for an object this session has never
+    # evaluated - until the graph re-evaluates. A reply that decomposed it without flushing first
+    # reported a world transform the scene did not hold, while `location` beside it was correct.
+    pivot = bpy.data.objects.new("Scene Smoke Pivot", None)
+    bpy.context.scene.collection.objects.link(pivot)
+    pivot.location = (10.0, 0.0, 0.0)
+    born = handler.create_geometry_object(
+        "Scene Smoke Child",
+        {"kind": "MESH", "vertices": [(0, 0, 0), (1, 0, 0), (0, 1, 0)], "edges": [], "faces": [(0, 1, 2)]},
+        location=(4.0, 0.0, 0.0),
+    )
+    assert rounded(born["transform"]["world_location"]) == [4.0, 0.0, 0.0], born["transform"]
+    handler.manage_object_hierarchy(
+        [{"child_object_name": "Scene Smoke Child", "parent_object_name": "Scene Smoke Pivot"}],
+        preserve_world_transform=False,
+    )
+    child = bpy.data.objects["Scene Smoke Child"]
+
+    local_move = handler.set_object_transform("Scene Smoke Child", {"location": (1.0, 2.0, 3.0)}, "LOCAL")
+    independent = inspector.get_object_info("Scene Smoke Child")
+    bpy.context.view_layer.update()
+    truth = rounded(child.matrix_world.translation)
+    assert truth == [11.0, 2.0, 3.0], truth
+    assert rounded(local_move["location"]) == [1.0, 2.0, 3.0], local_move
+    assert rounded(local_move["world_location"]) == truth, local_move
+    assert rounded(row[3] for row in local_move["matrix_world"][:3]) == truth, local_move
+    assert rounded(row[3] for row in independent["matrix_world"][:3]) == truth, independent["matrix_world"]
+
+    # A WORLD-space patch solves its basis against the parent's evaluated matrix, so a parent
+    # moved earlier in this same session used to drag the result by the parent's un-evaluated delta.
+    pivot.location = (20.0, 0.0, 0.0)
+    world_move = handler.set_object_transform("Scene Smoke Child", {"location": (5.0, 0.0, 0.0)}, "WORLD")
+    bpy.context.view_layer.update()
+    assert rounded(child.matrix_world.translation) == [5.0, 0.0, 0.0], rounded(child.matrix_world.translation)
+    assert rounded(world_move["world_location"]) == [5.0, 0.0, 0.0], world_move
+
+    carrier = bpy.data.objects.new("Scene Smoke Carrier", None)
+    bpy.context.scene.collection.objects.link(carrier)
+    bpy.context.view_layer.update()
+    preserved = rounded(child.matrix_world.translation)
+    carrier.location = (100.0, 0.0, 0.0)
+    handler.manage_object_hierarchy(
+        [{"child_object_name": "Scene Smoke Child", "parent_object_name": "Scene Smoke Carrier"}],
+        preserve_world_transform=True,
+    )
+    bpy.context.view_layer.update()
+    assert rounded(child.matrix_world.translation) == preserved, rounded(child.matrix_world.translation)
+
+    # A duplicate with no transform of its own inherits the source's world matrix.
+    child.location = (7.0, 7.0, 7.0)
+    handler.duplicate_or_instance_objects("Scene Smoke Child", ["Scene Smoke Inherit"], None, "LINKED_DATA")
+    bpy.context.view_layer.update()
+    inherited = rounded(bpy.data.objects["Scene Smoke Inherit"].matrix_world.translation)
+    assert inherited == rounded(child.matrix_world.translation), inherited
+
+    handler.remove_scene_objects(
+        ["Scene Smoke Inherit", "Scene Smoke Child", "Scene Smoke Carrier", "Scene Smoke Pivot"],
+        confirm_remove=True,
+    )
 
     handler.manage_object_constraints(
         "Scene Smoke Copy",

@@ -27,13 +27,17 @@ from blender_mcp_rendering_smoke.handlers.rendering import RenderingHandlersMixi
 
 
 def _check_output_path_resolution(handler: RenderingHandlersMixin, scene: bpy.types.Scene) -> None:
-    """`~` means the home directory, and a bad path's error does not expose Blender's working directory."""
+    """`~` means the home directory on both sides, and a bad path's error hides Blender's working directory."""
     with tempfile.TemporaryDirectory() as home:
         previous_home = os.environ.get("HOME")
         os.environ["HOME"] = home
         try:
             handler.render_scene(scene.name, "~/tilde.png", confirm_render=True, render_slot_policy="NEW_SLOT")
             assert (Path(home) / "tilde.png").is_file()
+            # The defect this pins: the writer expanded `~` and the reader did not, so the very
+            # path render_scene had just written was reported missing on the next call.
+            inspected = handler.inspect_render_output(str(Path(home) / "copy.png"), output_path="~/tilde.png")
+            assert inspected["source_path"] == str(Path(home) / "tilde.png")
         finally:
             if previous_home is None:
                 del os.environ["HOME"]

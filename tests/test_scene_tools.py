@@ -1,13 +1,15 @@
 """Regression coverage for declarative scene composition tools."""
 
 import asyncio
+import sys
+import types
 
 import pytest
 
 from conftest import StubFactory
 from pydantic import ValidationError
 from pydantic_core import to_json
-from test_mutation_transaction import _load_addon
+from test_mutation_transaction import FakeCollection, _load_addon
 
 # These imports register tools on the process-global FastMCP app for the whole session, and
 # `scene_authoring` loads after `finalize_tool_documentation`, so its tools lack annotations.
@@ -236,3 +238,102 @@ def test_attribute_domains_are_rejected_per_geometry_kind() -> None:
             strokes=[scene_authoring.GreasePencilStroke(points=[(0, 0, 0)])],
             attributes=[scene_authoring.GeometryAttribute(name="bad", data_type="FLOAT", domain="CURVE", values=[1.0])],
         )
+
+
+class _Matrix4:
+    """A translation-only 4x4, with the `mathutils.Matrix` surface these handlers touch."""
+
+    def __init__(self, rows) -> None:
+        self.rows = [list(row) for row in rows]
+
+    @classmethod
+    def at(cls, x: float, y: float, z: float) -> "_Matrix4":
+        """Build the matrix that translates to (x, y, z)."""
+        return cls([[1.0, 0.0, 0.0, x], [0.0, 1.0, 0.0, y], [0.0, 0.0, 1.0, z], [0.0, 0.0, 0.0, 1.0]])
+
+    @property
+    def translation(self) -> tuple[float, float, float]:
+        """Read the translation column."""
+        return (self.rows[0][3], self.rows[1][3], self.rows[2][3])
+
+    def decompose(self) -> tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]:
+        """Split into location, rotation quaternion, and scale, as mathutils does."""
+        return self.translation, (1.0, 0.0, 0.0, 0.0), (1.0, 1.0, 1.0)
+
+    def copy(self) -> "_Matrix4":
+        """Copy, as mathutils does."""
+        return _Matrix4(self.rows)
+
+    def __iter__(self):
+        return iter(self.rows)
+
+
+class _DepsgraphObject:
+    """
+    An object whose `matrix_world` is owned by the dependency graph, as Blender's is.
+
+    Writing `location` or `matrix_basis` leaves `matrix_world` holding its
+    previous value - identity while the object has never been evaluated - until
+    `view_layer.update()` re-evaluates it. That lag is the whole defect: a reply
+    built by decomposing an unflushed `matrix_world` describes a scene state that
+    no longer exists.
+    """
+
+    def __init__(self, name: str, parent: "_DepsgraphObject | None" = None) -> None:
+        self.name = name
+        self.library = None
+        self.parent = parent
+        self.location = [0.0, 0.0, 0.0]
+        self.rotation_mode = "XYZ"
+        self.rotation_euler = types.SimpleNamespace(x=0.0, y=0.0, z=0.0)
+        self.scale = [1.0, 1.0, 1.0]
+        self.matrix_world = _Matrix4.at(0.0, 0.0, 0.0)
+
+    @property
+    def matrix_basis(self) -> _Matrix4:
+        """Read the object's own channels, which never lag behind a write."""
+        return _Matrix4.at(*self.location)
+
+    @matrix_basis.setter
+    def matrix_basis(self, matrix: _Matrix4) -> None:
+        self.location = list(matrix.translation)
+
+    def evaluate(self) -> None:
+        """Re-evaluate this object's world matrix from its parent's, as the graph does."""
+        origin = self.parent.matrix_world.translation if self.parent is not None else (0.0, 0.0, 0.0)
+        x, y, z = (base + own for base, own in zip(origin, self.location, strict=True))
+        self.matrix_world = _Matrix4.at(x, y, z)
+
+
+def test_set_object_transform_reports_the_world_transform_the_scene_now_holds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A LOCAL patch's reply reports the evaluated world transform, not the pre-edit one.
+
+    The reported defect: `location` was right while `matrix_world`,
+    `world_location` and `world_rotation_quaternion` in the same reply echoed
+    the object's world transform from before the edit.
+    """
+    pivot = _DepsgraphObject("Pivot")
+    child = _DepsgraphObject("Child", parent=pivot)
+    pivot.location = [10.0, 0.0, 0.0]
+    objects = FakeCollection()
+    objects["Pivot"] = pivot
+    objects["Child"] = child
+    addon, bpy = _load_addon(monkeypatch, data={"objects": objects})
+
+    def evaluate_scene() -> None:
+        for obj in objects:
+            obj.evaluate()
+
+    bpy.context.view_layer = types.SimpleNamespace(update=evaluate_scene)
+    monkeypatch.setattr(sys.modules["mathutils"], "Matrix", _Matrix4, raising=False)
+    evaluate_scene()
+    handler = addon.BlenderMCPServer()
+
+    reply = handler.set_object_transform("Child", {"matrix": _Matrix4.at(1.0, 2.0, 3.0).rows}, "LOCAL")
+
+    assert reply["location"] == [1.0, 2.0, 3.0]
+    assert reply["world_location"] == [11.0, 2.0, 3.0]
+    assert [row[3] for row in reply["matrix_world"][:3]] == [11.0, 2.0, 3.0]

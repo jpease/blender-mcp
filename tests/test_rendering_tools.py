@@ -518,6 +518,26 @@ def test_inspect_render_output_reports_the_frame_its_filename_carries(monkeypatc
     assert inspect("sh010_12345.png") is None
 
 
+def test_inspect_render_output_reads_back_the_tilde_path_a_render_was_written_to(monkeypatch, tmp_path) -> None:
+    """render_scene expands `~` when it writes, so the same text must name the same file when read."""
+    handler, _scene, _handlers = _rendering_handler(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rendered = tmp_path / "renders" / "sh010_0007.png"
+    rendered.parent.mkdir()
+    rendered.write_bytes(b"")
+
+    result = handler.inspect_render_output(str(tmp_path / "copy.png"), output_path="~/renders/sh010_0007.png")
+
+    assert result["source_path"] == str(rendered)
+    assert result["frame"] == 7
+
+    with pytest.raises(ValueError) as missing:
+        handler.inspect_render_output(str(tmp_path / "copy.png"), output_path="~/renders/absent.png")
+
+    # The path the caller can go and look at, not the "~" text that names nothing on disk.
+    assert str(tmp_path / "renders" / "absent.png") in str(missing.value)
+
+
 def test_eevee_ray_tracing_patch_reaches_the_nested_options_struct(monkeypatch) -> None:
     """Blender 5.2 keeps screen-trace controls on scene.eevee.ray_tracing_options, not scene.eevee."""
     handler, scene, _handlers = _rendering_handler(monkeypatch)

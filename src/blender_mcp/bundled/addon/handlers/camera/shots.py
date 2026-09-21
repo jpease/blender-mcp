@@ -3,11 +3,13 @@
 
 from ._shared import (
     _camera,
+    _camera_cut_map,
     _finite_number,
     _frame,
     _patch_values,
     _plain,
     _required_name,
+    _retroactive_cut_warnings,
     _scene,
     _validate_display,
 )
@@ -25,12 +27,53 @@ _CAMERA_GUIDES = {
 }
 
 
-def _camera_cut_map(scene):
-    return [
-        {"name": marker.name, "frame": marker.frame, "camera": getattr(marker.camera, "name", None)}
-        for marker in sorted(scene.timeline_markers, key=lambda item: (item.frame, item.name))
-        if marker.camera is not None
-    ]
+def _prepared_marker_edits(scene, action, edits, replace_existing):
+    """
+    Validate every requested marker edit before the first one is applied.
+
+    Every refusal in here is raised while the timeline is still untouched, so a request
+    naming one bad marker among twenty leaves the scene as it was rather than half-cut.
+
+    Args:
+        scene: Scene holding the timeline markers.
+        action: CREATE, UPDATE or REMOVE; LIST never reaches here.
+        edits: The requested marker edits, already bounded by the caller.
+        replace_existing: Whether CREATE may take over a marker that already exists.
+
+    Returns:
+        tuple[list[str], list[tuple]]: The edited names in request order, and one
+        `(name, existing_marker, frame, camera)` per edit, with frame and camera None
+        for REMOVE.
+
+    Raises:
+        ValueError: If a name repeats, a marker is missing or already present, or a
+            CREATE omits the frame or camera it cannot infer.
+
+    """
+    names = []
+    prepared = []
+    for index, edit in enumerate(edits):
+        name = _required_name(edit.get("name"), f"markers[{index}].name")
+        if name in names:
+            raise ValueError(f"Duplicate marker name in request: {name}")
+        names.append(name)
+        existing = scene.timeline_markers.get(name)
+        if action == "CREATE":
+            if edit.get("frame") is None or edit.get("camera_name") is None:
+                raise ValueError("CREATE requires frame and camera_name for every marker")
+            if existing is not None and not replace_existing:
+                raise ValueError(f"Marker already exists: {name}")
+        elif existing is None:
+            raise ValueError(f"Marker not found: {name}")
+        if action == "REMOVE":
+            prepared.append((name, existing, None, None))
+            continue
+        frame = _frame(edit.get("frame", existing.frame if existing else None), f"markers[{index}].frame")
+        camera_name = edit.get("camera_name", getattr(existing.camera, "name", None) if existing else None)
+        if camera_name is None:
+            raise ValueError(f"markers[{index}].camera_name is required")
+        prepared.append((name, existing, frame, _camera(camera_name, scene=scene)))
+    return names, prepared
 
 
 class _ShotsMixin:
@@ -44,34 +87,16 @@ class _ShotsMixin:
         if action == "LIST":
             if edits:
                 raise ValueError("LIST does not accept marker edits")
-            return {"action": action, "camera_cuts": _camera_cut_map(scene), "changed_objects": []}
+            cuts = _camera_cut_map(scene)
+            return {
+                "action": action,
+                "camera_cuts": cuts,
+                "warnings": _retroactive_cut_warnings(scene.frame_start, cuts),
+                "changed_objects": [],
+            }
         if not edits or len(edits) > 200:
             raise ValueError("A mutating marker request requires 1 to 200 edits")
-        names = []
-        prepared = []
-        for index, edit in enumerate(edits):
-            name = _required_name(edit.get("name"), f"markers[{index}].name")
-            if name in names:
-                raise ValueError(f"Duplicate marker name in request: {name}")
-            names.append(name)
-            existing = scene.timeline_markers.get(name)
-            if action == "CREATE":
-                if edit.get("frame") is None or edit.get("camera_name") is None:
-                    raise ValueError("CREATE requires frame and camera_name for every marker")
-                if existing is not None and not replace_existing:
-                    raise ValueError(f"Marker already exists: {name}")
-            elif action in {"UPDATE", "REMOVE"} and existing is None:
-                raise ValueError(f"Marker not found: {name}")
-            if action != "REMOVE":
-                frame = _frame(edit.get("frame", existing.frame if existing else None), f"markers[{index}].frame")
-                camera_name = edit.get("camera_name", getattr(existing.camera, "name", None) if existing else None)
-                if camera_name is None:
-                    raise ValueError(f"markers[{index}].camera_name is required")
-                camera = _camera(camera_name, scene=scene)
-            else:
-                frame = None
-                camera = None
-            prepared.append((name, existing, frame, camera))
+        names, prepared = _prepared_marker_edits(scene, action, edits, replace_existing)
         changed_cameras = []
         for name, existing, frame, camera in prepared:
             if action == "REMOVE":
@@ -81,10 +106,12 @@ class _ShotsMixin:
             marker.frame = frame
             marker.camera = camera
             changed_cameras.append(camera.name)
+        cuts = _camera_cut_map(scene)
         return {
             "action": action,
             "edited_markers": names,
-            "camera_cuts": _camera_cut_map(scene),
+            "camera_cuts": cuts,
+            "warnings": _retroactive_cut_warnings(scene.frame_start, cuts),
             "changed_objects": list(dict.fromkeys(changed_cameras)),
             "changed_resources": [scene.name],
         }

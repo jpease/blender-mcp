@@ -26,6 +26,15 @@ AnimationTargetType = Literal[
     "SHAPE_KEYS",
     "NODE_GROUP",
 ]
+# `modifiers` is a page the envelope shortens, and this tool takes no offset, so a cut page is
+# gone rather than resumable - the generic shortening notice can only say "narrow the scope",
+# which is not a move unless the reader already knows which parameter narrows. Named here and
+# passed into the reply on an unscoped call so it is present while the page is measured.
+_UNSCOPED_CYCLE_WARNING = (
+    "Every curve in the slot was cycled; a shortened modifiers page carries no offset to resume from, so "
+    're-run with data_path_prefix - \'pose.bones["thigh.L"]\' for one limb, "location" for the root alone - '
+    "to see the records it dropped."
+)
 _DRIVER_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SAFE_EXPRESSION_NODES = (
     ast.Expression,
@@ -326,9 +335,12 @@ async def set_action_cycle(
         action_slot_identifier: Which of the action's slots to modify, when several qualify.
 
     Returns:
-        action, action_slot, operation, curve_count (how many curves were touched), and
-        modifiers with one record per curve (data_path, array_index, mode_before,
-        mode_after). A long action shortens modifiers to fit the reply budget.
+        action, action_slot, operation, curve_count, warnings, and modifiers - per curve:
+        data_path, array_index, mode_before, mode_after, first_key_frame, last_key_frame,
+        period_frames (what that curve repeats: its own key extent, null under two keys),
+        and, for a finite count, repeat_end_frame/repeat_start_frame - where repetition
+        stops and the curve's own extrapolation takes over, by default holding the end
+        key: a snap, then a freeze. modifiers shortens to fit the reply budget.
 
     """
     return await call_blender(
@@ -345,6 +357,7 @@ async def set_action_cycle(
             "action_slot_identifier": action_slot_identifier,
         },
         changed_resources=[action_name],
+        warnings=[] if data_path_prefix else [_UNSCOPED_CYCLE_WARNING],
     )
 
 

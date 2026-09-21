@@ -14,6 +14,7 @@ from ._shared import (
     _MIN_FRAME,
     _bounded_int,
     _camera,
+    _camera_cut_map,
     _camera_settings,
     _ensure_collection,
     _finite_number,
@@ -23,6 +24,7 @@ from ._shared import (
     _patch_values,
     _positive,
     _required_name,
+    _retroactive_cut_warnings,
     _scene,
     _transform_info,
     _update_view_layer,
@@ -213,6 +215,9 @@ class _CoreMixin:
             "previous_camera": previous.name if previous else None,
             "camera": camera.name,
             "marker": ({"name": marker.name, "frame": marker.frame, "camera": marker.camera.name} if marker else None),
+            # Reported whether or not this call made a marker: assigning scene.camera while the
+            # timeline's earliest camera marker sits after frame_start changes nothing at all.
+            "warnings": _retroactive_cut_warnings(scene.frame_start, _camera_cut_map(scene)),
             "changed_objects": [],
         }
 

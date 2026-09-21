@@ -334,10 +334,18 @@ class _FakeModifierStack(list):
         return modifier
 
 
+class _FakeKey:
+    """One keyframe point; `set_action_cycle` reads the frame it sits on, nothing else."""
+
+    def __init__(self, frame) -> None:
+        self.co = (float(frame), 0.0)
+
+
 class _FakeCurve:
-    def __init__(self, data_path, array_index, *, cyclic=False) -> None:
+    def __init__(self, data_path, array_index, *, cyclic=False, frames=(1.0, 25.0)) -> None:
         self.data_path = data_path
         self.array_index = array_index
+        self.keyframe_points = [_FakeKey(frame) for frame in frames]
         self.modifiers = _FakeModifierStack()
         if cyclic:
             self.modifiers.new(type="CYCLES")
@@ -407,3 +415,76 @@ def test_curve_count_reports_the_curves_the_call_touched(monkeypatch) -> None:
     assert result["curve_count"] == 1
     assert [record["array_index"] for record in result["modifiers"]] == [0]
     assert not any(modifier.type == "CYCLES" for curve in curves for modifier in curve.modifiers)
+
+
+def test_a_cycle_reports_the_period_each_curve_will_actually_repeat(monkeypatch) -> None:
+    """
+    The period is the number the caller thinks they are setting and could not see.
+
+    A Cycles modifier repeats its own curve's key extent. In the failing run the legs were
+    keyed over frames 1-25 and the arms had picked up a later gesture's keys at 162, so one
+    call made them cyclic at two different rates; both replies read as identical successes and
+    the arms drifted through one slow interpolation for the rest of the shot.
+    """
+    curves = [
+        _FakeCurve('pose.bones["thigh.L"].rotation_quaternion', 0, frames=(1.0, 25.0)),
+        _FakeCurve('pose.bones["upper_arm.L"].rotation_quaternion', 0, frames=(1.0, 162.0)),
+        _FakeCurve('pose.bones["head"].rotation_quaternion', 0, frames=(7.0,)),
+    ]
+    handler, target = _cycle_handler(monkeypatch, curves)
+
+    result = handler.set_action_cycle(target, "Walk", action_slot_identifier="OBRig")
+
+    assert [record["period_frames"] for record in result["modifiers"]] == [24.0, 161.0, None]
+    assert [record["first_key_frame"] for record in result["modifiers"]] == [1.0, 1.0, 7.0]
+    assert [record["last_key_frame"] for record in result["modifiers"]] == [25.0, 162.0, 7.0]
+    # Unlimited in both directions by default, so there is no bound to report.
+    assert not any("repeat_end_frame" in record or "repeat_start_frame" in record for record in result["modifiers"])
+    disagreement = next(warning for warning in result["warnings"] if "do not share one cycle period" in warning)
+    assert "24 frames" in disagreement and "161 frames" in disagreement
+    assert 'pose.bones["thigh.L"].rotation_quaternion' in disagreement
+    assert 'pose.bones["upper_arm.L"].rotation_quaternion' in disagreement
+    assert any("fewer than two keys" in warning for warning in result["warnings"])
+
+
+def test_a_finite_cycle_count_says_where_the_repeat_stops(monkeypatch) -> None:
+    """
+    cycles_after=6 stopped a walk dead at frame 169 and nothing said so.
+
+    Past the last repeat the modifier contributes nothing and the raw curve's extrapolation
+    takes over, which for a travelling root is a snap back to the last keyed value and then a
+    freeze - the reported symptom, from an argument that looked like "six more strides".
+    """
+    handler, target = _cycle_handler(monkeypatch, [_FakeCurve("location", 1, frames=(1.0, 25.0))])
+
+    result = handler.set_action_cycle(target, "Walk", cycles_before=2, cycles_after=6, action_slot_identifier="OBRig")
+
+    record = result["modifiers"][0]
+    assert record["repeat_end_frame"] == pytest.approx(25.0 + 6 * 24.0)
+    assert record["repeat_start_frame"] == pytest.approx(1.0 - 2 * 24.0)
+    forward = next(warning for warning in result["warnings"] if warning.startswith("cycles_after=6"))
+    assert "frame 169" in forward
+    assert "extrapolation" in forward
+    backward = next(warning for warning in result["warnings"] if warning.startswith("cycles_before=2"))
+    assert "frame -47" in backward
+
+
+def test_an_unscoped_cycle_names_the_parameter_that_narrows_it(monkeypatch) -> None:
+    """
+    A cut `modifiers` page is gone, not paused: this tool takes no offset to resume from.
+
+    The envelope's own shortening notice can only say "narrow the scope", which is not a move
+    unless the reader already knows which parameter narrows. The hint rides in the reply the
+    budget measures, so it is there in the same list as the notice it answers.
+    """
+    connection = _Connection()
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+    target = animation.AnimationTarget(type="OBJECT", name="Rig")
+
+    unscoped = asyncio.run(animation.set_action_cycle(None, target, "Walk"))
+    scoped = asyncio.run(animation.set_action_cycle(None, target, "Walk", data_path_prefix="location"))
+
+    assert any("data_path_prefix" in warning for warning in unscoped["warnings"]), unscoped["warnings"]
+    assert any("no offset to resume from" in warning for warning in unscoped["warnings"])
+    # A call that already narrowed has used the remedy; repeating it would be noise on the wire.
+    assert scoped["warnings"] == []
