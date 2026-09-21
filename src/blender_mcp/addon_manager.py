@@ -230,6 +230,12 @@ class AddonHandshake:
     # enforce nothing.
     file_roots: list[str] = field(default_factory=list)
     file_roots_enforced: bool = False
+    # Per-command accepted keyword names ("*" = accepts arbitrary kwargs via **kwargs).
+    # Internal only - read by connection.send_command's preflight gate. Deliberately never
+    # added to tools/core.py:_status_payload: `capabilities` alone (291 short names) already
+    # gets shortened by envelope._fit_budget under get_addon_status(detail=True), and this
+    # field is far heavier per entry - it would make that truncation dramatically worse.
+    capability_params: dict[str, list[str] | str] = field(default_factory=dict)
 
     def session_marker(self) -> tuple[str | None, int | None]:
         """
@@ -668,6 +674,43 @@ def normalized_session_text_list(value: object, max_chars: int = _MAX_REPORTED_P
     return admitted
 
 
+_MAX_CAPABILITY_PARAM_NAME_CHARS = 128
+_MAX_CAPABILITY_PARAMS_PER_COMMAND = 64
+
+
+def normalized_capability_params(value: object) -> dict[str, list[str] | str]:
+    """
+    Sanitize the handshake's per-command accepted-parameter-name map.
+
+    Command names are a membership set the same way `capabilities` is - connection.py's gate
+    compares them for exact equality against literal command names it already knows - so a
+    name a cleaning pass would change is dropped rather than published cleaned, the same rule
+    normalized_session_text_list applies to its own elements.
+
+    Args:
+        value: The raw `capability_params` field from get_addon_info, or anything else.
+
+    Returns:
+        dict[str, list[str] | str]: Command name to its accepted keyword names, or the literal
+        "*" for a handler that accepts arbitrary keywords.
+
+    """
+    if not isinstance(value, dict):
+        return {}
+    cleaned: dict[str, list[str] | str] = {}
+    for raw_command, params in value.items():
+        command = normalized_session_text(raw_command, max_chars=_MAX_CAPABILITY_PARAM_NAME_CHARS)
+        if command is None or not _is_structurally_intact(raw_command, command):
+            continue
+        if params == "*":
+            cleaned[command] = "*"
+            continue
+        cleaned[command] = normalized_session_text_list(params, max_chars=_MAX_CAPABILITY_PARAM_NAME_CHARS)[
+            :_MAX_CAPABILITY_PARAMS_PER_COMMAND
+        ]
+    return cleaned
+
+
 # `bl_info["version"]` is a short tuple of ints; eight parts is ample.
 _MAX_VERSION_PARTS = 8
 
@@ -759,6 +802,7 @@ def handshake_addon(blender_connection) -> AddonHandshake:
             session_indeterminate=info.get("session_indeterminate") is True,
             file_roots=normalized_session_text_list(info.get("file_roots")),
             file_roots_enforced=info.get("file_roots_enforced") is True,
+            capability_params=normalized_capability_params(info.get("capability_params")),
         )
     except Exception as e:
         msg = str(e).lower()

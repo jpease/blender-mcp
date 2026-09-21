@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..addon_manager import (
+    EXPECTED_ADDON_PROTOCOL_VERSION,
     AddonHandshake,
     format_handshake_log,
     handshake_addon,
@@ -256,6 +257,17 @@ class BlenderConnection:
                 f"'{command_type}' is not supported by the installed Blender addon "
                 f"(protocol {handshake.protocol_version}). Update the addon and reconnect."
             )
+        if handshake:
+            accepted = handshake.capability_params.get(command_type)
+            if isinstance(accepted, list):
+                unsupported = sorted(set(params or {}) - set(accepted))
+                if unsupported:
+                    detail = "" if handshake.up_to_date else f" {format_handshake_log(handshake)}"
+                    raise Exception(
+                        f"'{command_type}' does not accept {unsupported} on the installed Blender addon "
+                        f"(protocol {handshake.protocol_version}, expected {EXPECTED_ADDON_PROTOCOL_VERSION})."
+                        f"{detail}"
+                    )
         # Hold the lock across send+receive: the response is matched to the
         # command purely by ordering on the stream (backstopped by the id
         # check below), so overlapping calls would hand each other's

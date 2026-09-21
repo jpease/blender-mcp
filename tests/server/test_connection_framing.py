@@ -463,6 +463,61 @@ def test_the_command_gate_reads_the_refreshed_capability_set(monkeypatch: pytest
     assert conn.send_command("import_polyhaven_asset") == {"ok": "import_polyhaven_asset"}
 
 
+def test_the_command_gate_refuses_a_parameter_the_addon_predates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    A command name the addon supports can still refuse one of its parameters.
+
+    save_shot existed before write_provenance was added to it; the addon advertising the
+    command name was not enough to catch that drift, and the caller found out only from a
+    raw TypeError deep in the addon's own handler.
+    """
+    _reset_handshake_state(
+        monkeypatch,
+        _cached(
+            capabilities=["set_object_transform"],
+            capability_params={"set_object_transform": ["object_name", "space"]},
+        ),
+    )
+    conn = BlenderConnection(host="localhost", port=0)
+    calls: list[str] = []
+    conn.send_command_locked = lambda command_type, _params=None: calls.append(command_type)  # pyright: ignore[reportAttributeAccessIssue]
+
+    with pytest.raises(Exception, match="patch"):
+        conn.send_command("set_object_transform", {"object_name": "Cube", "patch": {"location": [0, 0, 0]}})
+
+    assert calls == [], "the gate must refuse before the round trip, not after"
+
+
+def test_the_command_gate_does_not_filter_when_the_addon_omits_capability_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An addon built before capability_params existed must not be gated as though it accepts nothing."""
+    _reset_handshake_state(monkeypatch, _cached(capabilities=["set_object_transform"]))
+    conn = BlenderConnection(host="localhost", port=0)
+    calls: list[str] = []
+    conn.send_command_locked = lambda command_type, params=None: calls.append(command_type) or {"ok": True}  # pyright: ignore[reportAttributeAccessIssue]
+
+    conn.send_command("set_object_transform", {"object_name": "Cube", "patch": {}, "space": "WORLD"})
+
+    assert calls == ["set_object_transform"]
+
+
+def test_the_command_gate_never_filters_a_command_marked_as_accepting_anything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _reset_handshake_state(
+        monkeypatch,
+        _cached(capabilities=["run_geometry_nodes_tool"], capability_params={"run_geometry_nodes_tool": "*"}),
+    )
+    conn = BlenderConnection(host="localhost", port=0)
+    calls: list[str] = []
+    conn.send_command_locked = lambda command_type, params=None: calls.append(command_type) or {"ok": True}  # pyright: ignore[reportAttributeAccessIssue]
+
+    conn.send_command("run_geometry_nodes_tool", {"anything": 1, "goes": 2})
+
+    assert calls == ["run_geometry_nodes_tool"]
+
+
 def test_a_barrier_rejection_read_off_the_socket_marks_the_handshake_stale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

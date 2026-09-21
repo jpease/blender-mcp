@@ -16,6 +16,7 @@ import bpy
 import mathutils
 
 from . import ADDON_PROTOCOL_VERSION, authored, bl_info
+from .capability_introspection import capability_params
 from .file_paths import canonical_path
 from .handlers.animation import AnimationHandlersMixin
 from .handlers.camera import CameraHandlersMixin
@@ -1982,18 +1983,22 @@ class BlenderMCPServer(
         `capabilities` depends on the open .blend's `blendermcp_use_*` flags, so
         a client re-handshakes when `session_epoch` moves; a save or a failed
         load leaves it alone. `session_indeterminate` tells a client why most
-        of its commands are being refused.
+        of its commands are being refused. `capability_params` reports each
+        command's accepted keyword names, or "*" for one that takes **kwargs,
+        for the server's preflight parameter gate.
 
         Returns:
             Result produced by the operation.
 
         """
         session = session_snapshot()
+        handlers = self._build_command_handlers()
         return {
             "name": bl_info.get("name", "Blender MCP"),
             "addon_version": list(bl_info.get("version", (0, 0))),
             "protocol_version": ADDON_PROTOCOL_VERSION,
-            "capabilities": sorted({"ping", "get_polyhaven_status", "get_nd_status", *self._build_command_handlers()}),
+            "capabilities": sorted({"ping", "get_polyhaven_status", "get_nd_status", *handlers}),
+            "capability_params": capability_params(handlers),
             "blender_version": bpy.app.version_string,
             "writable_output_roots": self._writable_output_roots(),
             # Enforced containment, unlike the advisory roots above.

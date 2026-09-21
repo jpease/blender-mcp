@@ -271,6 +271,60 @@ def test_handshake_defaults_writable_output_roots_when_the_addon_omits_them() ->
     )
 
 
+def test_handshake_surfaces_capability_params() -> None:
+    """A per-command accepted-keyword map has to reach the cached handshake to gate anything."""
+    blender = MagicMock()
+    blender.send_command.return_value = {
+        "protocol_version": EXPECTED_ADDON_PROTOCOL_VERSION,
+        "addon_version": [1, 0, 0],
+        "capabilities": ["set_object_transform"],
+        "blender_version": "5.2.2",
+        "capability_params": {"set_object_transform": ["object_name", "space"], "run_geometry_nodes_tool": "*"},
+    }
+    handshake = handshake_addon(blender)
+    assert handshake.capability_params == {
+        "set_object_transform": ["object_name", "space"],
+        "run_geometry_nodes_tool": "*",
+    }
+
+
+def test_handshake_defaults_capability_params_when_the_addon_omits_it() -> None:
+    """An addon built before this field existed must not be gated as though it accepts nothing."""
+    blender = MagicMock()
+    blender.send_command.return_value = {
+        "protocol_version": EXPECTED_ADDON_PROTOCOL_VERSION,
+        "addon_version": [1, 0, 0],
+        "capabilities": ["ping"],
+        "blender_version": "5.2.2",
+    }
+    assert handshake_addon(blender).capability_params == {}
+
+
+def test_capability_params_drops_a_command_name_that_only_matches_once_cleaned() -> None:
+    """Command names are compared for exact equality by the gate; a cleaned name must not be published."""
+    blender = MagicMock()
+    blender.send_command.return_value = {
+        "protocol_version": EXPECTED_ADDON_PROTOCOL_VERSION,
+        "addon_version": [1, 0, 0],
+        "capabilities": ["ping"],
+        "blender_version": "5.2.2",
+        "capability_params": {f"ping{_HOSTILE_SESSION_ID}": ["x"], "ping": ["y"]},
+    }
+    assert handshake_addon(blender).capability_params == {"ping": ["y"]}
+
+
+def test_capability_params_drops_a_hostile_parameter_name_inside_the_list() -> None:
+    blender = MagicMock()
+    blender.send_command.return_value = {
+        "protocol_version": EXPECTED_ADDON_PROTOCOL_VERSION,
+        "addon_version": [1, 0, 0],
+        "capabilities": ["ping"],
+        "blender_version": "5.2.2",
+        "capability_params": {"ping": ["x", _HOSTILE_SESSION_ID, "y"]},
+    }
+    assert handshake_addon(blender).capability_params == {"ping": ["x", "y"]}
+
+
 # Any non-zero epoch will do.
 _EPOCH = 4
 
@@ -544,7 +598,7 @@ def _published_strings(value: object) -> list[str]:
     Collect every string a handshake result would put in front of a client.
 
     Args:
-        value: A handshake field value, which may be a scalar or a list.
+        value: A handshake field value, which may be a scalar, a list, or a dict.
 
     Returns:
         list[str]: Every string reachable from it.
@@ -554,6 +608,10 @@ def _published_strings(value: object) -> list[str]:
         return [value]
     if isinstance(value, list | tuple):
         return [text for element in value for text in _published_strings(element)]
+    if isinstance(value, dict):
+        return [
+            text for key, element in value.items() for text in (*_published_strings(key), *_published_strings(element))
+        ]
     return []
 
 
