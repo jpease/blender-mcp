@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context, Image
 from mcp.server.fastmcp.exceptions import ToolError
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..app import mcp
 from ..connection import get_blender_connection
@@ -212,6 +212,62 @@ async def get_mesh_data(
         raise ToolError(f"Error getting mesh data: {e}") from e
 
 
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+# Named so the two RUF069-sensitive float comparisons below compare against a constant
+# rather than a bare literal, and so lens_mm's default and its camera_object conflict check
+# cannot drift apart.
+_DEFAULT_LENS_MM: float = 50.0
+
+# Mirrors _look_quaternion's own <= 1e-16 length_squared guard (camera/_shared.py) - this
+# check runs server-side, before any addon round trip, on the raw eye/target tuples only
+# (target_object's world position is not known here; _look_quaternion re-checks it live).
+_DEGENERATE_LENGTH_SQUARED: float = 1e-16
+
+
+class ViewSpec(_StrictModel):
+    """
+    An ad hoc camera view for get_viewport_screenshot, independent of the live viewport.
+
+    Supply exactly one source of view: camera_object (an existing camera already in the
+    scene, using that camera's own lens) or eye with exactly one of target/target_object (a
+    one-off look-at built from a world point and a camera position, never added to the
+    scene).
+    """
+
+    camera_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
+    eye: tuple[float, float, float] | None = None
+    target: tuple[float, float, float] | None = None
+    target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
+    up: tuple[float, float, float] = (0.0, 0.0, 1.0)
+    lens_mm: Annotated[float, Field(gt=0.0)] = _DEFAULT_LENS_MM
+
+    @model_validator(mode="after")
+    def _validate_view(self) -> "ViewSpec":
+        ad_hoc = self.eye is not None or self.target is not None or self.target_object is not None
+        if (self.camera_object is not None) == ad_hoc:
+            raise ValueError("Supply exactly one of camera_object or eye (with target or target_object)")
+        if ad_hoc:
+            if self.eye is None:
+                raise ValueError("eye is required when target or target_object is given")
+            if (self.target is None) == (self.target_object is None):
+                raise ValueError("Supply exactly one of target or target_object")
+            if self.target is not None:
+                dx, dy, dz = (t - e for t, e in zip(self.target, self.eye, strict=True))
+                if dx * dx + dy * dy + dz * dz <= _DEGENERATE_LENGTH_SQUARED:
+                    raise ValueError("eye and target cannot occupy the same point")
+        if self.camera_object is not None and self.lens_mm != _DEFAULT_LENS_MM:
+            raise ValueError("lens_mm has no effect when camera_object is given - it uses that camera's own lens")
+        if self.up != (0.0, 0.0, 1.0):
+            raise ValueError("up currently only supports the default world-Z-up (0.0, 0.0, 1.0)")
+        return self
+
+
+ShadingOverride = Literal["SOLID", "MATERIAL"]
+
+
 def _screenshot_metadata(result: dict) -> dict:
     """
     Build the metadata dict for a viewport screenshot result, alongside its Image content item.
@@ -220,19 +276,27 @@ def _screenshot_metadata(result: dict) -> dict:
         result: The raw dict returned by the Blender-side screenshot handler.
 
     Returns:
-        dict: "width", "height", "method" ("offscreen" or "window_grab", indicating how the capture was taken).
+        dict: "width", "height", "method" ("offscreen" or "window_grab", indicating how the
+        capture was taken), "view_source" ("live_viewport", "camera_object", or "eye_target" -
+        which source actually produced this capture), "shading_mode" (the space.shading.type
+        actually used, whether or not shading_override was given).
 
     """
     return {
         "width": result.get("width"),
         "height": result.get("height"),
         "method": result.get("method"),
+        "view_source": result.get("view_source"),
+        "shading_mode": result.get("shading_mode"),
     }
 
 
 @mcp.tool(structured_output=False)
 async def get_viewport_screenshot(
-    ctx: Context, max_size: Annotated[int, Field(ge=16, le=4096)] = 1000
+    ctx: Context,
+    max_size: Annotated[int, Field(ge=16, le=4096)] = 1000,
+    view: ViewSpec | None = None,
+    shading_override: ShadingOverride | None = None,
 ) -> list[Image | dict]:
     """
     Capture the current Blender 3D viewport as an image for visual inspection.
@@ -244,9 +308,16 @@ async def get_viewport_screenshot(
     Args:
         ctx: MCP request context.
         max_size: Maximum pixel length of the image's largest dimension; defaults to 1000.
+        view: An ad hoc camera view (see ViewSpec) to capture from instead of the live
+            viewport's current navigation. Omit to capture exactly what the viewport is
+            showing right now (unchanged default behavior).
+        shading_override: Force SOLID or MATERIAL viewport shading for just this capture,
+            then restore whatever shading the live viewport had. Both are cheap single-pass
+            rasterization; RENDERED (real render-engine cost) is not offered here.
 
     Returns:
-        [Image, dict]: the screenshot, then an envelope whose data has "width", "height", "method".
+        [Image, dict]: the screenshot, then an envelope whose data has "width", "height",
+        "method", "view_source", "shading_mode".
 
     Raises:
         Exception: If the operation cannot be completed.
@@ -262,7 +333,13 @@ async def get_viewport_screenshot(
         result = await asyncio.to_thread(
             blender.send_command,
             "get_viewport_screenshot",
-            {"max_size": max_size, "filepath": temp_path, "format": "png"},
+            {
+                "max_size": max_size,
+                "filepath": temp_path,
+                "format": "png",
+                "view": view.model_dump() if view is not None else None,
+                "shading_override": shading_override,
+            },
         )
 
         if "error" in result:

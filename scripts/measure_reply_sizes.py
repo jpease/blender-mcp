@@ -1004,7 +1004,13 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "changed_objects": ["Hero_002"],
         },
         "set_viewport_overlay": lambda _scale: {"toggle": "CAVITY", "enabled": True},
-        "get_viewport_screenshot": lambda _scale: {"width": 1000, "height": 562, "method": "offscreen"},
+        "get_viewport_screenshot": lambda _scale: {
+            "width": 1000,
+            "height": 562,
+            "method": "offscreen",
+            "view_source": "live_viewport",
+            "shading_mode": "SOLID",
+        },
         # --- file lifecycle and linking: handlers/file_lifecycle.py, handlers/linking.py
         "get_session_info": lambda _scale: {
             **_SESSION_FIELDS,

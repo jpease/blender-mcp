@@ -35,17 +35,35 @@ def test_preview_metadata_defaults_missing_fields() -> None:
 
 
 def test_screenshot_metadata_reports_width_height_and_method() -> None:
-    result = {"width": 1000, "height": 562, "method": "offscreen"}
+    result = {
+        "width": 1000,
+        "height": 562,
+        "method": "offscreen",
+        "view_source": "eye_target",
+        "shading_mode": "MATERIAL",
+    }
 
     metadata = _screenshot_metadata(result)
 
-    assert metadata == {"width": 1000, "height": 562, "method": "offscreen"}
+    assert metadata == {
+        "width": 1000,
+        "height": 562,
+        "method": "offscreen",
+        "view_source": "eye_target",
+        "shading_mode": "MATERIAL",
+    }
 
 
 def test_screenshot_metadata_defaults_missing_fields_to_none() -> None:
     metadata = _screenshot_metadata({})
 
-    assert metadata == {"width": None, "height": None, "method": None}
+    assert metadata == {
+        "width": None,
+        "height": None,
+        "method": None,
+        "view_source": None,
+        "shading_mode": None,
+    }
 
 
 def test_screenshot_tempfile_is_removed_when_blender_fails(monkeypatch, tmp_path) -> None:
