@@ -280,6 +280,8 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{MUTT}::test_persistence_an_assigned_datablock_is_not_reported",
     f"{MUTT}::test_persistence_a_linked_datablock_is_never_this_commands_authorship",
     f"{MUTT}::test_persistence_the_warning_names_at_most_five_and_counts_the_rest",
+    # --- a refusal in the console does not read like a fault ---
+    f"{MUTT}::test_a_refused_request_is_logged_without_a_traceback",
     f"{SVT}::test_persistence_findings_flag_unreferenced_and_fake_user_only_datablocks",
     f"{SVT}::test_persistence_findings_ignore_linked_datablocks",
     f"{SVT}::test_persistence_findings_report_truncation_past_max_findings",
@@ -3847,6 +3849,14 @@ REVERTS: list[Revert] = [
         "    if target.is_symlink():\n",
         "    if False:\n",
         (f"{AMT}::test_install_refuses_to_write_through_a_development_symlink",),
+    ),
+    Revert(
+        "dispatch: a refused request is logged as a fault, traceback and all",
+        ADDON_SERVER_CORE,
+        "        except ValueError as refusal:\n",
+        "        except _NeverRaised as refusal:\n",
+        (f"{MUTT}::test_a_refused_request_is_logged_without_a_traceback",),
+        also="\nclass _NeverRaised(Exception):\n    pass\n",
     ),
     Revert(
         "get_addon_status: get_addon_status hardcodes the policy as unenforced",

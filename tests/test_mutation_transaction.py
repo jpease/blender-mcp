@@ -265,6 +265,41 @@ def test_failed_mutating_handler_rolls_back_created_datablocks(monkeypatch) -> N
     assert undo_calls == []
 
 
+def test_a_refused_request_is_logged_without_a_traceback(monkeypatch, caplog) -> None:
+    """
+    A handler refusing the client's own arguments is not a fault, and must not read as one.
+
+    Every unconfirmed `reset_session` and every path outside the file roots used to print
+    `Command X failed in its handler` plus a full traceback into Blender's console, which is
+    where an actual fault also appears. An operator who learns to skim those skims the one
+    that matters. The client is told exactly the same thing either way.
+    """
+    addon, _bpy = _load_addon(monkeypatch, data={})
+    server = addon.BlenderMCPServer()
+
+    def refuses():
+        raise ValueError("reset_session discards the open file; pass confirm=true")
+
+    def breaks():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(server, "_build_command_handlers", lambda: {"list_scene_objects": refuses, "broken": breaks})
+
+    with caplog.at_level("DEBUG"):
+        refusal = server.execute_command_internal({"type": "list_scene_objects", "params": {}})
+        fault = server.execute_command_internal({"type": "broken", "params": {}})
+
+    assert refusal == {"status": "error", "message": "reset_session discards the open file; pass confirm=true"}
+    assert fault == {"status": "error", "message": "boom"}
+
+    by_message = {record.getMessage(): record for record in caplog.records}
+    refused = next(record for message, record in by_message.items() if "refused" in message)
+    failed = next(record for message, record in by_message.items() if "failed in its handler" in message)
+    assert refused.exc_info is None, "a refusal still carries a traceback"
+    assert "pass confirm=true" in refused.getMessage(), "the refusal does not say what was refused"
+    assert failed.exc_info is not None, "an unexpected failure lost its traceback"
+
+
 def test_successful_mutating_handler_pushes_one_undo_checkpoint(monkeypatch) -> None:
     data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
     addon, bpy = _load_addon(monkeypatch, data=data)

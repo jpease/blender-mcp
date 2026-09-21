@@ -1922,6 +1922,14 @@ class BlenderMCPServer(
         try:
             logger.debug("Dispatching %s", cmd_type)
             return {"status": "success", "result": self._run_handler(cmd_type, handler, params)}
+        except ValueError as refusal:
+            # A refusal, not a fault: the handler layer raises ValueError when the client's
+            # own arguments are rejected - an unconfirmed destructive call, a path outside
+            # the file roots, a name that does not resolve. Printing a traceback for each one
+            # teaches whoever watches Blender's console to skim past tracebacks, which is
+            # where an actual fault will be. The client is told exactly the same either way.
+            logger.info("Command %s refused: %s", cmd_type, refusal)
+            return {"status": "error", "message": str(refusal)}
         except Exception as error:
             logger.exception("Command %s failed in its handler", cmd_type)
             return {"status": "error", "message": str(error)}
