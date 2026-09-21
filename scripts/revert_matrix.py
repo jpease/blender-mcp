@@ -322,6 +322,9 @@ NEW_NODES_IN_EXISTING_FILES = (
         f"{AMT}::test_handshake_refuses_a_session_id_that_is_not_a_string[{case}]"
         for case in ("dict", "list", "int", "bool", "float")
     ),
+    # --- one addon in Blender's Add-ons list, however many times it is installed ---
+    f"{AMT}::test_repeat_installs_leave_one_addon_for_blender_to_load",
+    f"{AMT}::test_install_leaves_an_older_installers_backup_alone_and_names_it",
     # --- bounded rejection, aborts around the swap, and a refresh that stops retrying ---
     f"{THREADT}::test_rejecting_a_full_queue_to_distinct_stalled_peers_is_bounded",
     f"{THREADT}::test_an_abort_during_the_pre_swap_drain_answers_the_swaps_own_client",
@@ -3818,6 +3821,24 @@ REVERTS: list[Revert] = [
             f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[file_roots_enforced]",
             f"{AMT}::test_handshake_reads_an_addon_that_omits_the_file_path_policy_as_permissive",
         ),
+    ),
+    # --- installing the addon leaves exactly one addon for Blender to list ---
+    Revert(
+        "install: the backup is kept inside the directory Blender scans for addons",
+        ADDON_MANAGER,
+        '    backup = backup_directory(path.parent) / (path.name + ".bak")\n',
+        '    backup = path.with_name(path.name + ".bak")\n',
+        (
+            f"{AMT}::test_repeat_installs_leave_one_addon_for_blender_to_load",
+            f"{AMT}::test_repeat_install_preserves_original_backup",
+        ),
+    ),
+    Revert(
+        "install: the installer treats its own backup as an install and backs that up too",
+        ADDON_MANAGER,
+        '        if path.name.endswith(".bak"):\n            stale_backups.append(str(path))\n            continue\n',
+        "",
+        (f"{AMT}::test_install_leaves_an_older_installers_backup_alone_and_names_it",),
     ),
     Revert(
         "get_addon_status: get_addon_status hardcodes the policy as unenforced",

@@ -34,6 +34,10 @@ EXPECTED_ADDON_PROTOCOL_VERSION = 34
 
 _ADDON_MARKER = 'bl_info = {\n    "name": "Blender MCP"'
 _INSTALLED_DIRNAME = "blender_mcp"
+# Backups live here, a sibling of `scripts/addons`, because Blender loads every directory
+# under `scripts/addons` that carries a `bl_info` - a backup kept there becomes a duplicate
+# "Blender MCP" in the user's Add-ons list, and one of them can be enabled by mistake.
+_BACKUP_DIRNAME = "blendermcp_backups"
 _PROTOCOL_RE = re.compile(r"ADDON_PROTOCOL_VERSION\s*=\s*(\d+)")
 _BL_INFO_NAME_RE = re.compile(r"""["']name["']\s*:\s*["']Blender MCP["']""")
 
@@ -407,22 +411,40 @@ def _trees_equal(a: Path, b: Path) -> bool:
     return all(_trees_equal(a / sub, b / sub) for sub in cmp.common_dirs)
 
 
+def backup_directory(addons_dir: Path) -> Path:
+    """
+    Name the directory backups are kept in, beside the addons directory, never inside it.
+
+    Blender loads every directory under `scripts/addons` that carries a `bl_info`, so a
+    backup kept there is a second enabled-able "Blender MCP" in the user's Add-ons list,
+    indistinguishable from the real one. `scripts/` itself is not an addon search path.
+
+    Args:
+        addons_dir: The Blender addons directory being installed into.
+
+    Returns:
+        Path: Where `_backup_addon_file` writes, created on demand.
+
+    """
+    return addons_dir.parent / _BACKUP_DIRNAME
+
+
 def _backup_addon_file(path: Path, source: Path | None = None) -> Path | None:
     """
-    Keep one .bak copy before overwriting, so local edits are recoverable.
+    Keep one backup copy before overwriting, so local edits are recoverable.
 
     `path` may be a single-file legacy install or a package directory.
     Skipped when it already matches `source`: a repeat install would
-    otherwise overwrite a .bak holding the user's real previous version with
+    otherwise overwrite a backup holding the user's real previous version with
     an identical copy of the bundled addon, destroying the very edits the
     backup exists to preserve.
 
     Args:
         path: Filesystem path to inspect or update.
-        source: Value for source.
+        source: The bundled addon, to skip backing up a copy of itself.
 
     Returns:
-        Path | None: Result produced by the operation.
+        Path | None: The backup written, or None when there was nothing to keep.
 
     """
     if not path.exists():
@@ -435,8 +457,9 @@ def _backup_addon_file(path: Path, source: Path | None = None) -> Path | None:
                 return None
         except OSError as e:
             logger.debug(f"Could not compare {path} with {source}: {e}")
-    backup = path.with_name(path.name + ".bak")
+    backup = backup_directory(path.parent) / (path.name + ".bak")
     try:
+        backup.parent.mkdir(parents=True, exist_ok=True)
         if backup.exists():
             shutil.rmtree(backup) if backup.is_dir() else backup.unlink()
         if path.is_dir():
@@ -447,6 +470,49 @@ def _backup_addon_file(path: Path, source: Path | None = None) -> Path | None:
     except OSError as e:
         logger.debug(f"Could not back up {path}: {e}")
         return None
+
+
+def _clear_existing_installs(addons_dir: Path, source: Path) -> tuple[list[str], list[str]]:
+    """
+    Back up and remove every Blender MCP install in `addons_dir`, leaving backups alone.
+
+    A `<name>.bak` in this directory was written by an older installer, which kept its
+    backups where Blender scans. Treating one as an install would back it up again as
+    `<name>.bak.bak` and leave both behind - the reason a single install grew into four
+    entries in the user's Add-ons list. They are the user's data, so they are reported
+    rather than deleted.
+
+    Args:
+        addons_dir: The Blender addons directory to sweep.
+        source: The bundled addon, so an install identical to it is not backed up again.
+
+    Returns:
+        tuple[list[str], list[str]]: The installs removed, and the stale backups left in place.
+
+    """
+    replaced: list[str] = []
+    stale_backups: list[str] = []
+    if not addons_dir.is_dir():
+        return replaced, stale_backups
+    for path in sorted(addons_dir.iterdir()):
+        is_legacy_file = path.is_file() and path.suffix == ".py" and _is_blendermcp_addon_file(path)
+        is_package_dir = (
+            path.is_dir() and (path / "__init__.py").is_file() and _is_blendermcp_addon_file(path / "__init__.py")
+        )
+        if not (is_legacy_file or is_package_dir):
+            continue
+        if path.name.endswith(".bak"):
+            stale_backups.append(str(path))
+            continue
+        # A legacy single-file install can never match the package source byte-for-byte,
+        # so always back it up rather than trying to content-compare a file against a directory.
+        _backup_addon_file(path, source if is_package_dir else None)
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        replaced.append(str(path))
+    return replaced, stale_backups
 
 
 def install_addon(
@@ -509,24 +575,7 @@ def install_addon(
                 addons_dir=str(addons_dir),
             )
 
-    replaced: list[str] = []
-    if addons_dir.is_dir():
-        for path in list(addons_dir.iterdir()):
-            is_legacy_file = path.is_file() and path.suffix == ".py" and _is_blendermcp_addon_file(path)
-            is_package_dir = (
-                path.is_dir() and (path / "__init__.py").is_file() and _is_blendermcp_addon_file(path / "__init__.py")
-            )
-            if not (is_legacy_file or is_package_dir):
-                continue
-            # A legacy single-file install can never match the package
-            # source byte-for-byte, so always back it up rather than trying
-            # to content-compare a file against a directory.
-            _backup_addon_file(path, source if is_package_dir else None)
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
-            replaced.append(str(path))
+    replaced, stale_backups = _clear_existing_installs(addons_dir, source)
 
     target = addons_dir / _INSTALLED_DIRNAME
     shutil.copytree(source, target)
@@ -540,6 +589,13 @@ def install_addon(
     )
     if len(replaced) > 1:
         msg += f" Also updated: {', '.join(replaced[:-1])}."
+    if stale_backups:
+        msg += (
+            f" Blender also loads these older backups as duplicate 'Blender MCP' addons, "
+            f"and enabling one runs that version instead: {', '.join(stale_backups)}. "
+            "Delete them once you no longer need their contents; backups now go to "
+            f"{backup_directory(addons_dir)}, which Blender does not scan."
+        )
 
     return AddonInstallResult(
         True,

@@ -213,7 +213,7 @@ def test_repeat_install_over_a_package_replaces_it_in_place(tmp_path: Path, monk
 
 
 def test_repeat_install_preserves_original_backup(tmp_path: Path) -> None:
-    """A second install must not overwrite the .bak holding the user's edits."""
+    """A second install must not overwrite the backup holding the user's edits."""
     from blender_mcp import addon_manager as am
 
     addons = tmp_path / "4.2" / "scripts" / "addons"
@@ -223,7 +223,7 @@ def test_repeat_install_preserves_original_backup(tmp_path: Path) -> None:
     target.write_text(original, encoding="utf-8")
 
     assert am.install_addon(addons).success
-    backup = target.with_suffix(".py.bak")
+    backup = am.backup_directory(addons) / "blender_mcp.py.bak"
     assert backup.is_file()
     assert "USER LOCAL EDIT" in backup.read_text(encoding="utf-8")
 
@@ -232,6 +232,49 @@ def test_repeat_install_preserves_original_backup(tmp_path: Path) -> None:
     assert "USER LOCAL EDIT" in backup.read_text(encoding="utf-8"), (
         "repeat install clobbered the backup of the user's previous addon"
     )
+
+
+def test_repeat_installs_leave_one_addon_for_blender_to_load(tmp_path: Path) -> None:
+    """
+    Blender lists every `bl_info` directory under `scripts/addons`, so backups may not live there.
+
+    One install became four: upgrading a user's older copy wrote `blender_mcp.bak` beside it,
+    and each later run backed that backup up again as `<name>.bak.bak`. Every copy carried the
+    same `bl_info` name, so the Add-ons list showed four identical "Blender MCP" entries and
+    enabling the wrong one ran an older protocol against the current server.
+    """
+    from blender_mcp import addon_manager as am
+
+    addons = tmp_path / "5.2" / "scripts" / "addons"
+    installed = addons / "blender_mcp"
+    installed.mkdir(parents=True)
+    (installed / "__init__.py").write_text(_stale_addon_source(), encoding="utf-8")
+
+    for _ in range(4):
+        assert am.install_addon(addons).success
+
+    loadable = sorted(path.name for path in addons.iterdir() if (path / "__init__.py").is_file())
+    assert loadable == ["blender_mcp"], f"Blender would load {len(loadable)} addons: {loadable}"
+    assert (am.backup_directory(addons) / "blender_mcp.bak" / "__init__.py").is_file(), (
+        "the replaced install was not kept anywhere"
+    )
+
+
+def test_install_leaves_an_older_installers_backup_alone_and_names_it(tmp_path: Path) -> None:
+    """A `.bak` already in the addons directory is the user's data, and it is why Blender shows duplicates."""
+    from blender_mcp import addon_manager as am
+
+    addons = tmp_path / "5.2" / "scripts" / "addons"
+    stale = addons / "blender_mcp.bak"
+    stale.mkdir(parents=True)
+    (stale / "__init__.py").write_text(_stale_addon_source(), encoding="utf-8")
+
+    result = am.install_addon(addons)
+
+    assert result.success
+    assert (stale / "__init__.py").is_file(), "the installer deleted a backup it did not write"
+    assert not (addons / "blender_mcp.bak.bak").exists(), "the installer backed up its own backup"
+    assert str(stale) in result.message, "the duplicate Blender would list is not named in the result"
 
 
 def test_handshake_surfaces_writable_output_roots() -> None:
