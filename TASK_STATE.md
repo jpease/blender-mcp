@@ -30,7 +30,7 @@ item, and its P2/P3 design sections are marked superseded where the shipped code
 |---|---|
 | `4efb47b` | `scripts/rig_scenarios/scenario_viewport_view.py` + `tests/test_viewport_view_gate.py`: the live-GUI gate that closes the one unproven runtime claim from #4 (the offscreen GPU draw with synthetic matrices). Stdlib-only PNG decode; framing asserted by silhouette diff against a same-scene reference capture, so it is theme-independent. |
 | `457d5b6` | Revert-matrix work: 9 new rows for the preflight gate and `capability_introspection`, 2 documented `NOT_INDIVIDUALLY_FALSIFIABLE` nodes, `tests/test_capability_introspection.py` added to `NEW_TEST_FILES` with the curation rule written down. |
-| `422db60` | `scripts/rig_scenarios/scenario_render_progress.py` + `tests/test_render_progress_gate.py`: the first live **MCP client** path in this repo. Spawns the shipped `blender-mcp` console script over stdio against the rig's Blender and proves per-frame progress notifications and a real `notifications/cancelled` landing between frames. |
+| `48bfc5a` | `scripts/rig_scenarios/scenario_render_progress.py` + `tests/test_render_progress_gate.py`: the first live **MCP client** path in this repo. Spawns the shipped `blender-mcp` console script over stdio against the rig's Blender and proves per-frame progress notifications and a real `notifications/cancelled` landing between frames. |
 
 Earlier in the same push, 10 pre-existing rows were repointed after code moved (5
 bone-filter rows → `character_rigging/foundation.py`, 3 rendering rows → the extracted
@@ -46,13 +46,13 @@ hand-off gate (`lint`, `fmt-check`, `typecheck`, `test`).
 
 | Command | Result | When |
 |---|---|---|
-| `just check` | `lint: clean`; `fmt-check: 419 files already formatted`; `typecheck: 0 errors, 0 warnings, 0 notes`; `test: 1648 passed, 3 skipped in 55s` (the 3 skips are the live-GUI gates) | `422db60` |
+| `just check` | `lint: clean`; `fmt-check: 419 files already formatted`; `typecheck: 0 errors, 0 warnings, 0 notes`; `test: 1648 passed, 3 skipped in 55s` (the 3 skips are the live-GUI gates) | `48bfc5a` |
 | `just smoke` | `ok` on all 23 `tests/blender_*_smoke.py` against real headless Blender 5.2.2, ~18s | after the six plan commits |
 | `just anchors` | `rows: 631   anchors intact: 631   anchors BROKEN: 0` | `457d5b6` |
 | `just matrix` (full) | `reverts run: 631`; `reverts that failed to break their own nodes: 0`; `new test nodes with no revert and no written-down reason: 0`; 267s | `457d5b6` |
 | `.venv/bin/python scripts/blender_rig.py --work-dir <tmp> --scenario scripts/rig_scenarios/scenario_viewport_view.py` | `RIG PASSED` in 3.2s. `camera_object` silhouette 0.560 of frame at (0.499, 0.498); `eye_target` silhouette 0.560 at (0.499, 0.498); every synthetic capture `method=offscreen`; `_mcp_synthetic_view` absent from `bpy.data`; `MATERIAL` applied then restored to `SOLID`; `RENDERED` refused; live capture byte-identical before/after an aimed one | `4efb47b` |
-| `.venv/bin/python scripts/blender_rig.py --work-dir <tmp> --scenario scripts/rig_scenarios/scenario_render_progress.py` | `RIG PASSED` in 5.4s. 37 tools served over stdio; progress `[(1,3,'Rendered frame 7 (1/3)'), (2,3,'…8 (2/3)'), (3,3,'…9 (3/3)')]` matching `frame_count=3` and 3 PNGs; a hand-sent `notifications/cancelled` after frame 1 of 24 ended the call as `McpError: Request cancelled` with 1 frame on disk at cancel and 2 after a 3s settle; session and addon both still serving afterwards | `422db60` |
-| `BLENDERMCP_LIVE_RIG=1 pytest -m phase2_gate -q` (`just gate`) | `3 passed, 1648 deselected in 11.8s` | `422db60` |
+| `.venv/bin/python scripts/blender_rig.py --work-dir <tmp> --scenario scripts/rig_scenarios/scenario_render_progress.py` | `RIG PASSED` in 5.4s. 37 tools served over stdio; progress `[(1,3,'Rendered frame 7 (1/3)'), (2,3,'…8 (2/3)'), (3,3,'…9 (3/3)')]` matching `frame_count=3` and 3 PNGs; a hand-sent `notifications/cancelled` after frame 1 of 24 ended the call as `McpError: Request cancelled` with 1 frame on disk at cancel and 2 after a 3s settle; session and addon both still serving afterwards | `48bfc5a` |
+| `BLENDERMCP_LIVE_RIG=1 pytest -m phase2_gate -q` (`just gate`) | `3 passed, 1648 deselected in 11.8s` | `48bfc5a` |
 
 Useful narrower commands:
 
