@@ -57,6 +57,7 @@ ADDON_OUTPUT_ROOTS = ROOT / "src/blender_mcp/bundled/addon/output_roots.py"
 ADDON_FILE_PATHS = ROOT / "src/blender_mcp/bundled/addon/file_paths.py"
 ADDON_POLYHAVEN = ROOT / "src/blender_mcp/bundled/addon/handlers/polyhaven.py"
 ADDON_SERVER_CORE = ROOT / "src/blender_mcp/bundled/addon/server_core.py"
+ADDON_CAPABILITY_INTROSPECTION = ROOT / "src/blender_mcp/bundled/addon/capability_introspection.py"
 SERVER_CORE_TOOL = ROOT / "src/blender_mcp/server/tools/core.py"
 SERVER_CONNECTION = ROOT / "src/blender_mcp/server/connection.py"
 ADDON_SESSION = ROOT / "src/blender_mcp/bundled/addon/session.py"
@@ -148,6 +149,7 @@ MUTT = "tests/test_mutation_transaction.py"
 QBT = "tests/test_quiet_box.py"
 THREADT = "tests/server/test_threading.py"
 CONNT = "tests/server/test_connection_framing.py"
+CAPT = "tests/test_capability_introspection.py"
 HOSTILE_LIB = f"{SESSIONT}::test_a_hostile_library_path_is_reduced_the_same_way_a_failure_note_is"
 # The `name` half of the same table, with short ids so a row can list its nodes; the
 # `filepath` half's ids run to hundreds of characters.
@@ -177,7 +179,29 @@ NFKC_BACKSLASH_LIB = (
 )
 
 # Test files this matrix owns outright: every node they collect must be accounted for.
-NEW_TEST_FILES = (RIGT, DOCKT, ROOTST, CORET, CLIT, SESSIONT, QBT, TSWAPT, FPT, PHT, FLT, LKT, SFLT, OLT, CANDT, SIT)
+# CAPT joins this set because `capability_params` is a trust-boundary field like the rest of
+# them: it feeds a refusal the server makes before any round trip. Feature-behaviour files
+# (posing, rendering, viewport) stay off it and are tracked node by node instead, matching how
+# RENDT/POSET nodes are listed in NEW_NODES_IN_EXISTING_FILES.
+NEW_TEST_FILES = (
+    RIGT,
+    DOCKT,
+    ROOTST,
+    CORET,
+    CLIT,
+    SESSIONT,
+    QBT,
+    TSWAPT,
+    FPT,
+    PHT,
+    FLT,
+    LKT,
+    SFLT,
+    OLT,
+    CANDT,
+    SIT,
+    CAPT,
+)
 # Nodes in files the matrix does not own. `coverage_gaps()` sees only these and the nodes
 # collected from NEW_TEST_FILES, so a node left off this list is never checked.
 NEW_NODES_IN_EXISTING_FILES = (
@@ -491,6 +515,26 @@ NOT_INDIVIDUALLY_FALSIFIABLE: dict[str, str] = {
         "because that list is derived from `dataclasses.fields(AddonHandshake)`, which is the point of it: "
         "the case exists so that a future change publishing this field raw is caught, not because a revert "
         "can reach it today. The sibling fields that a single revert *can* reach each have a row."
+    ),
+    f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[capability_params]": (
+        "the sweep hands every field the same hostile *string*, and this field is a dict by "
+        "construction: `normalized_capability_params` returns `{}` for any non-dict, so the node "
+        "passes whatever the per-entry sanitisation does. Measured, not argued - replacing "
+        "`normalized_session_text_list(params, ...)` with `list(params)` leaves this case green "
+        "while `test_capability_params_drops_a_hostile_parameter_name_inside_the_list` fails, so "
+        "naming it on that row made the row a SURVIVOR. It is kept in the parametrization because "
+        "the list is derived from `dataclasses.fields(AddonHandshake)`: the case exists to catch a "
+        "future change that publishes this field raw. The sanitisation a revert *can* reach is "
+        "falsifiable through the two dedicated `capability_params` nodes."
+    ),
+    f"{CAPT}::test_self_is_never_reported_for_a_bound_method": (
+        "nothing in `capability_params` excludes `self`: `inspect.signature` on an already-bound "
+        "method does not show it at all, which is the fact this node pins. There is no line to "
+        "revert - the assertion guards the shape of the input `_build_command_handlers()` hands in "
+        "(bound methods, never unbound functions), so it would only fail if that call site changed "
+        "to pass classes or unbound functions. The reporting rules a revert reaches - sorting, the "
+        "`**kwargs` sentinel, positional-only exclusion, and the unreadable-signature fallback - "
+        "each have their own row."
     ),
     f"{POSET}::test_a_local_space_pose_is_the_channel_value_whatever_the_parent_did": (
         "it is the control for the row above it: LOCAL is `matrix_basis`, which is parent-relative by "
@@ -6143,6 +6187,70 @@ REVERTS: list[Revert] = [
             f"{POSET}::test_no_filter_still_lists_every_bone",
             f"{CRFT}::test_selected_bones_returns_every_bone_in_armature_order_when_unfiltered",
         ),
+    ),
+    # --- the preflight parameter gate: what the addon accepts, not just what it names ---
+    Revert(
+        "handshake: a command's accepted-keyword list is reported unsorted",
+        ADDON_CAPABILITY_INTROSPECTION,
+        "            result[name] = sorted(parameter.name for parameter in parameters",
+        "            result[name] = list(parameter.name for parameter in reversed(list(parameters))",
+        (f"{CAPT}::test_a_handler_with_named_parameters_reports_them_sorted",),
+    ),
+    Revert(
+        "handshake: a **kwargs handler is reported as accepting a fixed name list",
+        ADDON_CAPABILITY_INTROSPECTION,
+        "        if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters):",
+        "        if False:",
+        (f"{CAPT}::test_a_handler_taking_kwargs_reports_the_wildcard_sentinel",),
+    ),
+    Revert(
+        "handshake: a positional-only parameter is published as an accepted keyword",
+        ADDON_CAPABILITY_INTROSPECTION,
+        "if parameter.kind in _KEYWORD_KINDS)",
+        "if parameter.kind is not inspect.Parameter.VAR_POSITIONAL)",
+        (f"{CAPT}::test_a_positional_only_parameter_is_not_reported_as_an_accepted_keyword",),
+    ),
+    Revert(
+        "handshake: an unreadable handler signature crashes the handshake instead of reporting '*'",
+        ADDON_CAPABILITY_INTROSPECTION,
+        "        except (TypeError, ValueError):",
+        "        except NotImplementedError:",
+        (f"{CAPT}::test_a_value_that_is_not_callable_reports_the_wildcard_sentinel_instead_of_raising",),
+    ),
+    Revert(
+        "handshake: a hostile command name is published cleaned instead of dropped",
+        ADDON_MANAGER,
+        "        if command is None or not _is_structurally_intact(raw_command, command):",
+        "        if command is None:",
+        (f"{AMT}::test_capability_params_drops_a_command_name_that_only_matches_once_cleaned",),
+    ),
+    Revert(
+        "handshake: parameter names inside the list are published unsanitised",
+        ADDON_MANAGER,
+        "        cleaned[command] = normalized_session_text_list(params, max_chars=_MAX_CAPABILITY_PARAM_NAME_CHARS)[",
+        "        cleaned[command] = list(params)[",
+        (f"{AMT}::test_capability_params_drops_a_hostile_parameter_name_inside_the_list",),
+    ),
+    Revert(
+        "transport: the gate accepts a parameter the installed addon's handler does not",
+        SERVER_CONNECTION,
+        "            if isinstance(accepted, list):",
+        "            if isinstance(accepted, dict):",
+        (f"{CONNT}::test_the_command_gate_refuses_a_parameter_the_addon_predates",),
+    ),
+    Revert(
+        "transport control: the gate filters against a command it was told accepts anything",
+        SERVER_CONNECTION,
+        "            if isinstance(accepted, list):",
+        "            if accepted is not None:",
+        (f"{CONNT}::test_the_command_gate_never_filters_a_command_marked_as_accepting_anything",),
+    ),
+    Revert(
+        "transport control: an addon predating capability_params is gated as accepting nothing",
+        SERVER_CONNECTION,
+        "            accepted = handshake.capability_params.get(command_type)",
+        "            accepted = handshake.capability_params.get(command_type, [])",
+        (f"{CONNT}::test_the_command_gate_does_not_filter_when_the_addon_omits_capability_params",),
     ),
 ]
 
