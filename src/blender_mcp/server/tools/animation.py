@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ..app import mcp
 from ..connection import get_blender_connection
 from .envelope import envelope_for
+from .key_style import Easing, HandleType, Interpolation
 
 AnimationTargetType = Literal[
     "OBJECT",
@@ -68,7 +69,10 @@ class KeyframeEdit(BaseModel):
     array_index: Annotated[int, Field(ge=-1, le=63)] = -1
     frame: Annotated[float, Field(ge=-1_000_000, le=1_000_000)]
     value: float | list[float] | None = None
-    interpolation: Literal["CONSTANT", "LINEAR", "BEZIER"] = "BEZIER"
+    interpolation: Interpolation = "BEZIER"
+    handle_left: HandleType = "AUTO_CLAMPED"
+    handle_right: HandleType = "AUTO_CLAMPED"
+    easing: Easing | None = None
     group: Annotated[str | None, Field(min_length=1, max_length=128)] = None
 
     @model_validator(mode="after")
@@ -292,6 +296,66 @@ async def edit_keyframes(
 
 
 @mcp.tool()
+async def set_action_cycle(
+    ctx: Context,
+    target: AnimationTarget,
+    action_name: Annotated[str, Field(min_length=1, max_length=128)],
+    operation: Literal["SET", "REMOVE"] = "SET",
+    mode_before: Literal["NONE", "REPEAT", "REPEAT_OFFSET", "MIRROR"] = "REPEAT_OFFSET",
+    mode_after: Literal["NONE", "REPEAT", "REPEAT_OFFSET", "MIRROR"] = "REPEAT_OFFSET",
+    cycles_before: Annotated[int, Field(ge=0, le=10_000)] = 0,
+    cycles_after: Annotated[int, Field(ge=0, le=10_000)] = 0,
+    data_path_prefix: Annotated[str, Field(min_length=1, max_length=512)] | None = None,
+    action_slot_identifier: str | None = None,
+) -> dict:
+    """
+    Make an action's curves repeat outside their keyed range, which is what turns 24 keyed frames into a walk.
+
+    REPEAT_OFFSET, the default, adds the curve's start-to-end delta to each repeat, so a root
+    that travelled one metre across the cycle keeps travelling: repeat two starts where repeat
+    one ended. REPEAT restarts from the first key every cycle, which teleports a travelling
+    character back to the origin; use it for curves that return to where they began, and for
+    the rotations of a cycle authored in place. 0 cycles means unlimited, in both directions.
+
+    Args:
+        ctx: MCP request context.
+        target: The ID whose action is made cyclic.
+        action_name: The action to modify. An action of that name must exist.
+        operation: SET adds or updates the Cycles modifier; REMOVE deletes it, leaving a
+            curve that has none untouched.
+        mode_before: Extrapolation before the first key.
+        mode_after: Extrapolation after the last key.
+        cycles_before: How many repeats before the range; 0 is unlimited.
+        cycles_after: How many repeats after the range; 0 is unlimited.
+        data_path_prefix: Only touch curves whose data_path starts with this - e.g.
+            'pose.bones["thigh.L"]' for one limb, or "location" for root travel alone.
+            Omitted, every curve in the slot is made cyclic.
+        action_slot_identifier: Which of the action's slots to modify, when several qualify.
+
+    Returns:
+        action, action_slot, operation, curve_count (how many curves were touched), and
+        modifiers with one record per curve (data_path, array_index, mode_before,
+        mode_after). A long action shortens modifiers to fit the reply budget.
+
+    """
+    return await _call(
+        "set_action_cycle",
+        {
+            "target": target.model_dump(),
+            "action_name": action_name,
+            "operation": operation,
+            "mode_before": mode_before,
+            "mode_after": mode_after,
+            "cycles_before": cycles_before,
+            "cycles_after": cycles_after,
+            "data_path_prefix": data_path_prefix,
+            "action_slot_identifier": action_slot_identifier,
+        },
+        changed_resources=[action_name],
+    )
+
+
+@mcp.tool()
 async def bake_evaluated_animation(
     ctx: Context,
     target: EvaluatedBakeTarget,
@@ -299,7 +363,10 @@ async def bake_evaluated_animation(
     frame_end: int,
     frame_step: Annotated[int, Field(ge=1, le=10_000)] = 1,
     action_name: Annotated[str, Field(min_length=1, max_length=128)] = "Evaluated Bake",
-    interpolation: Literal["CONSTANT", "LINEAR", "BEZIER"] = "LINEAR",
+    interpolation: Interpolation = "LINEAR",
+    handle_left: HandleType = "AUTO_CLAMPED",
+    handle_right: HandleType = "AUTO_CLAMPED",
+    easing: Easing | None = None,
     transform_tolerance: Annotated[float, Field(ge=0)] = 0.0,
     confirm_bake: bool = False,
 ) -> dict:
@@ -319,6 +386,9 @@ async def bake_evaluated_animation(
             "frame_step": frame_step,
             "action_name": action_name,
             "interpolation": interpolation,
+            "handle_left": handle_left,
+            "handle_right": handle_right,
+            "easing": easing,
             "transform_tolerance": transform_tolerance,
             "confirm_bake": confirm_bake,
         },

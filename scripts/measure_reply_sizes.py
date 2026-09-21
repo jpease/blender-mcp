@@ -65,6 +65,7 @@ class SceneScale:
         mesh_vertices: Vertices in the inspected mesh; `get_mesh_data` pages 100.
         findings: Validation findings `validate_scene` reports; it pages none.
         override_objects: Objects in the overridden linked collection; the handler lists 100.
+        cycle_frames: Frames in the keyed walk cycle; `keyframe_bone_reach` pages none.
 
     """
 
@@ -75,6 +76,7 @@ class SceneScale:
     mesh_vertices: int = 162
     findings: int = 84
     override_objects: int = 40
+    cycle_frames: int = 24
 
 
 REFERENCE_SCALE = SceneScale()
@@ -688,9 +690,12 @@ def _reach_records(bones: int) -> list[dict[str, object]]:
     """
     Mirror `handlers/character_rigging/posing.py _solve_one_reach`, one entry per solved reach.
 
-    A reach reports the chain it resolved and where the tip's tail landed, and carries the same
-    per-bone pose records `set_character_pose` returns for that chain. Two reaches, split evenly,
-    because the tool exists for the two-rigs-shaking-hands case: one chain per rig, one call.
+    A reach reports the chain it resolved, where the tip's tail landed, whether that is inside
+    the requested tolerance and how the target sits against the chain's own reach, and carries
+    the same per-bone pose records `set_character_pose` returns for that chain. Two reaches,
+    split evenly, because the tool exists for the two-rigs-shaking-hands case: one chain per
+    rig, one call. The converged case is the sample: a missed reach costs the same four fields
+    plus one envelope warning, and a warning is bounded by the budget the envelope already fits.
 
     Args:
         bones: How many bones the call posed across every reach.
@@ -713,9 +718,54 @@ def _reach_records(bones: int) -> list[dict[str, object]]:
             "tail_world": _floats(3, 6),
             # What a real 500-iteration Blender IK solve converges to, measured on a bent chain.
             "achieved_error_m": 3.28369698225788e-05,
+            "converged": True,
+            "chain_reach_m": 0.7412000000000001,
+            "target_distance_m": 0.6839274418394129,
+            "out_of_reach": False,
             "bones": posed[start : start + length],
         }
         for start, length in ((0, first), (first, bones - first))
+    ]
+
+
+def _keyed_reach_records(frames: int) -> list[dict[str, object]]:
+    """
+    Mirror `handlers/character_rigging/posing.py _keyed_reach_record`, for a two-foot walk.
+
+    Two reaches, one per foot, each a three-bone leg keyed at every frame of the cycle. This
+    is the tool's whole reason to exist, so the representative call is the representative
+    walk: the per-frame records are what the reply budget shortens, and `changed_bones` and
+    the warnings are what stay complete.
+
+    Args:
+        frames: Frames in the cycle each foot is keyed at.
+
+    Returns:
+        list[dict[str, object]]: One record per reach.
+
+    """
+    return [
+        {
+            "tip_bone": f"foot.{side}",
+            "chain_bones": [f"foot.{side}", f"shin.{side}", f"thigh.{side}"],
+            "chain_length": 3,
+            "chain_length_source": "resolved",
+            "pole_source": "explicit",
+            "keys": [
+                {
+                    "frame": float(frame),
+                    "target_world": _floats(3, frame),
+                    "tail_world": _floats(3, frame + 3),
+                    "achieved_error_m": 3.28369698225788e-05,
+                    "converged": True,
+                    "chain_reach_m": 0.7412000000000001,
+                    "target_distance_m": 0.6839274418394129,
+                    "out_of_reach": False,
+                }
+                for frame in range(1, frames + 1)
+            ],
+        }
+        for side in ("L", "R")
     ]
 
 
@@ -1642,9 +1692,34 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
         # own report to the same per-bone records set_character_pose returns for that chain.
         "solve_bone_reach": lambda scale: {
             "armature_object": "Hero_Rig",
+            "tolerance_m": 0.0001,
             "changed_bones": [_bone_name(index) for index in range(scale.bones)],
             "reaches": _reach_records(scale.bones),
             "changed_objects": ["Hero_Rig"],
+        },
+        # `handlers/character_rigging/posing.py keyframe_bone_reach`; one call keys both feet
+        # across the whole cycle, so its reply is per frame where solve_bone_reach's is per pose.
+        "keyframe_bone_reach": lambda scale: {
+            "armature_object": "Hero_Rig",
+            "action": "Hero_Action",
+            "action_slot": "OBHero_Rig",
+            "assigned_action": "Hero_Action",
+            "tolerance_m": 0.0001,
+            "keying_policy": "REPLACE",
+            "changed_bones": [f"{bone}.{side}" for side in ("L", "R") for bone in ("foot", "shin", "thigh")],
+            "keyed_frames": [float(frame) for frame in range(1, scale.cycle_frames + 1)],
+            "changed_keys": [
+                {"bone": f"{bone}.{side}", "data_path": path, "frame": float(frame)}
+                for frame in range(1, scale.cycle_frames + 1)
+                for side in ("L", "R")
+                for bone in ("foot", "shin", "thigh")
+                for path in ("location", "rotation_quaternion", "scale")
+            ],
+            "interpolation_updates": 1_008,
+            "reaches": _keyed_reach_records(scale.cycle_frames),
+            "changed_objects": ["Hero_Rig"],
+            "changed_resources": [{"type": "ACTION", "name": "Hero_Action"}],
+            "warnings": [],
         },
         # --- animation: handlers/animation.py, handlers/object_animation.py -------------
         "inspect_animation": lambda _scale: {
@@ -1685,6 +1760,35 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "slot": "OBHero",
             "created": True,
             "changed_resources": ["Hero", "HeroAction"],
+        },
+        # `handlers/animation.py set_action_cycle`; one record per curve made cyclic, which for
+        # a walk is every channel of every keyed bone.
+        "set_action_cycle": lambda scale: {
+            "action": "Hero_Action",
+            "action_slot": "OBHero_Rig",
+            "operation": "SET",
+            "curve_count": scale.bones * 10,
+            "modifiers": [
+                {
+                    "data_path": f'pose.bones["{_bone_name(index)}"].{path}',
+                    "array_index": array_index,
+                    "mode_before": "REPEAT_OFFSET",
+                    "mode_after": "REPEAT_OFFSET",
+                }
+                for index in range(scale.bones)
+                for path, width in (("location", 3), ("rotation_quaternion", 4), ("scale", 3))
+                for array_index in range(width)
+            ],
+            "changed_resources": ["Hero_Action"],
+        },
+        # `handlers/scene.py set_scene_frame`; fixed-size, and called once per reviewed frame.
+        "set_scene_frame": lambda _scale: {
+            "scene": "Scene",
+            "frame": 12,
+            "subframe": 0.0,
+            "frame_start": 1,
+            "frame_end": 48,
+            "fps": 24.0,
         },
         "manage_animation_driver": lambda _scale: {
             "target": "Hero",
@@ -2001,6 +2105,23 @@ _ARGUMENTS: Mapping[str, Mapping[str, object]] = MappingProxyType(
             "armature_object_name": "Hero_Rig",
             "reaches": [{"tip_bone": "hand.L", "target": [0.6, -0.1, 1.1]}],
         },
+        "keyframe_bone_reach": {
+            "armature_object_name": "Hero_Rig",
+            "action_name": "Hero_Action",
+            "reaches": [
+                {
+                    "tip_bone": "foot.L",
+                    "keys": [{"frame": float(frame), "target": [0.1, -0.2, 0.0]} for frame in range(1, 25)],
+                    "pole_target": [0.1, -0.8, 0.4],
+                    "hinge": {"bone_name": "shin.L", "axis": "X", "min_degrees": 0.0, "max_degrees": 150.0},
+                }
+            ],
+        },
+        "set_action_cycle": {
+            "target": {"type": "OBJECT", "name": "Hero_Rig"},
+            "action_name": "Hero_Action",
+        },
+        "set_scene_frame": {"frame": 12},
         "unlink_libraries": {"library_uids": [977], "confirm": True},
         "validate_camera_rig": {"scene_name": "Scene"},
         "validate_lighting_setup": {"scene_name": "Scene"},

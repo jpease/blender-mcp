@@ -14,6 +14,7 @@ means ``<addon dir>/__init__.py`` when the path in question is a directory.
 from __future__ import annotations
 
 import filecmp
+import json
 import logging
 import os
 import re
@@ -21,6 +22,7 @@ import shutil
 import sys
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from .text_hygiene import strip_unsafe
@@ -28,12 +30,17 @@ from .text_hygiene import strip_unsafe
 logger = logging.getLogger("BlenderMCPServer")
 
 # Must match ADDON_PROTOCOL_VERSION in bundled/addon/__init__.py
-EXPECTED_ADDON_PROTOCOL_VERSION = 31
+EXPECTED_ADDON_PROTOCOL_VERSION = 33
 
 _ADDON_MARKER = 'bl_info = {\n    "name": "Blender MCP"'
 _INSTALLED_DIRNAME = "blender_mcp"
 _PROTOCOL_RE = re.compile(r"ADDON_PROTOCOL_VERSION\s*=\s*(\d+)")
 _BL_INFO_NAME_RE = re.compile(r"""["']name["']\s*:\s*["']Blender MCP["']""")
+
+# The committed snapshot of the bundled addon's dispatch surface, written by
+# `scripts/update_addon_surface.py` and shipped in the wheel (see package-data in
+# pyproject.toml). `tests/test_addon_surface.py` explains the incident it exists for.
+ADDON_SURFACE_PATH = Path(__file__).resolve().parent / "addon_surface.json"
 
 
 def _addon_init_file(path: Path) -> Path:
@@ -80,7 +87,15 @@ def read_addon_protocol_version(path: Path) -> int | None:
 
 def addon_file_needs_update(path: Path) -> bool:
     """
-    True if path is missing protocol metadata or behind the bundled addon.
+    Report whether path is missing protocol metadata or behind the bundled addon.
+
+    Protocol-only, and deliberately so: this reads a file on disk, and comparing two
+    integers is all a file read can do cheaply. It therefore cannot see the case that
+    burned a user - an install whose protocol number matches but whose dispatch table
+    predates commands this server knows about. `handshake_addon` covers that gap
+    against the live addon, by diffing the reported commands against the committed
+    `addon_surface.json`; no hash of the installed tree is needed here, because
+    `tests/test_addon_surface.py` keeps the protocol number honest at the source.
 
     Args:
         path: Filesystem path to inspect or update.
@@ -236,6 +251,13 @@ class AddonHandshake:
     # gets shortened by envelope._fit_budget under get_addon_status(detail=True), and this
     # field is far heavier per entry - it would make that truncation dramatically worse.
     capability_params: dict[str, list[str] | str] = field(default_factory=dict)
+    # What the committed `addon_surface.json` expects and this addon did not report,
+    # computed once during the handshake so `get_addon_status` can show it without
+    # rebuilding the diff. Non-empty means the installed addon predates this server
+    # even though its protocol number does not say so. Both stay empty for an addon
+    # that is behind on protocol too: the protocol warning already says reinstall.
+    missing_commands: list[str] = field(default_factory=list)
+    missing_parameters: dict[str, list[str]] = field(default_factory=dict)
 
     def session_marker(self) -> tuple[str | None, int | None]:
         """
@@ -742,12 +764,132 @@ def normalized_addon_version(value: object) -> list[int] | None:
     return list(value)
 
 
+@lru_cache(maxsize=1)
+def load_addon_surface() -> dict[str, list[str] | str]:
+    """
+    Read the committed snapshot of the bundled addon's dispatch surface.
+
+    Cached: the file never changes while the process runs, and `handshake_addon`
+    is called on every reconnect. A missing or unreadable file degrades to an empty
+    surface rather than raising - the snapshot only ever *adds* a staleness signal,
+    so losing it must cost a warning, never a working connection. It should never be
+    the normal path; the file ships in the wheel via pyproject's package-data.
+
+    Returns:
+        dict[str, list[str] | str]: Command name to its sorted accepted keyword
+        names, or the ACCEPTS_ANY_KEYWORD sentinel `"*"` for a handler taking
+        `**kwargs`. Empty when the snapshot is absent or malformed.
+
+    """
+    try:
+        document = json.loads(ADDON_SURFACE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        logger.warning(f"Could not read the addon surface snapshot at {ADDON_SURFACE_PATH}: {e}")
+        return {}
+    commands = document.get("commands") if isinstance(document, dict) else None
+    return commands if isinstance(commands, dict) else {}
+
+
+def addon_surface_gap(
+    capabilities: list[str], capability_params: dict[str, list[str] | str]
+) -> tuple[list[str], dict[str, list[str]]]:
+    """
+    Diff what a live addon reports against what the committed snapshot expects.
+
+    The comparison is one-directional on purpose. Commands the addon has and the
+    snapshot does not are *not* staleness: that is a newer addon paired with an
+    older server, plus the provider-gated handlers (polyhaven/sketchfab/nd) that the
+    snapshot deliberately omits because they come and go with the open .blend's scene
+    flags. Only the other direction - the snapshot expecting something the addon
+    never advertised - means the install predates this server.
+
+    Args:
+        capabilities: Command names the addon advertised in its handshake.
+        capability_params: Per-command accepted keyword names the addon advertised.
+
+    Returns:
+        tuple[list[str], dict[str, list[str]]]: Sorted missing command names, and
+        per-command sorted missing keyword names for commands that do exist.
+
+    """
+    expected = load_addon_surface()
+    advertised = set(capabilities)
+    missing_commands = sorted(name for name in expected if name not in advertised)
+    missing_parameters: dict[str, list[str]] = {}
+    for name, parameters in expected.items():
+        if name in missing_commands or not isinstance(parameters, list):
+            continue
+        reported = capability_params.get(name)
+        # A non-list value is the ACCEPTS_ANY_KEYWORD sentinel, and an absent one is an
+        # addon too old to publish capability_params at all. Neither enumerates keywords,
+        # so there is nothing to subtract and guessing would invent a gap.
+        if not isinstance(reported, list):
+            continue
+        gap = sorted(set(parameters) - set(reported))
+        if gap:
+            missing_parameters[name] = gap
+    return missing_commands, missing_parameters
+
+
+# A build that predates a whole toolset is short hundreds of commands, and this warning
+# is read inside an agent's context window; the count carries the magnitude, the names
+# only have to be recognizable enough to confirm the diagnosis.
+_MAX_LISTED_MISSING = 5
+
+
+def _capped(names: list[str]) -> str:
+    """
+    List a few names and count the rest.
+
+    Args:
+        names: The names to list, already in the order they should be read.
+
+    Returns:
+        str: Comma-separated names with a `, +N more` tail once they overflow.
+
+    """
+    overflow = len(names) - _MAX_LISTED_MISSING
+    listed = ", ".join(names[:_MAX_LISTED_MISSING])
+    return f"{listed}, +{overflow} more" if overflow > 0 else listed
+
+
+def _surface_gap_warning(missing_commands: list[str], missing_parameters: dict[str, list[str]]) -> str:
+    """
+    Phrase the same-protocol staleness finding for an agent and the startup log.
+
+    Args:
+        missing_commands: Commands the snapshot expects and the addon never advertised.
+        missing_parameters: Per-command keywords in the same position.
+
+    Returns:
+        str: A one-paragraph warning carrying `_UPDATE_HINT`.
+
+    """
+    shortfalls: list[str] = []
+    if missing_commands:
+        shortfalls.append(f"{len(missing_commands)} command(s) ({_capped(missing_commands)})")
+    if missing_parameters:
+        named = _capped(sorted(missing_parameters))
+        shortfalls.append(f"parameters on {len(missing_parameters)} command(s) ({named})")
+    return (
+        f"Blender addon reports protocol {EXPECTED_ADDON_PROTOCOL_VERSION} but is missing "
+        f"{' and '.join(shortfalls)} that this server ships. It was installed from an earlier "
+        f"build carrying the same protocol number, so comparing version numbers cannot see it. "
+        f"{_UPDATE_HINT}"
+    )
+
+
 def handshake_addon(blender_connection) -> AddonHandshake:
     """
-    Query a connected Blender addon for protocol version.
+    Query a connected Blender addon for protocol version and dispatch surface.
 
     Old addons without get_addon_info are treated as outdated (but still usable
     through validated dedicated tools elsewhere).
+
+    An addon whose protocol number already matches is checked a second way, against
+    the committed `addon_surface.json`: a build from before a command was added
+    carries the same protocol number as one from after it, and that equality is
+    exactly what once let a missing `solve_bone_reach` read as a missing feature.
 
     Args:
         blender_connection: Value for blender connection.
@@ -784,13 +926,26 @@ def handshake_addon(blender_connection) -> AddonHandshake:
                 "restart Blender or disable/enable 'Interface: Blender MCP', "
                 "then Start MCP Server."
             )
+
+        capabilities = normalized_session_text_list(info.get("capabilities"))
+        capability_params = normalized_capability_params(info.get("capability_params"))
+        missing_commands: list[str] = []
+        missing_parameters: dict[str, list[str]] = {}
+        # Only at exact equality. A protocol behind already has its warning above, and one
+        # ahead means the addon is newer than this server, where the snapshot is the stale
+        # party and anything it misses is not the user's problem to fix.
+        if protocol_i == EXPECTED_ADDON_PROTOCOL_VERSION:
+            missing_commands, missing_parameters = addon_surface_gap(capabilities, capability_params)
+            if missing_commands or missing_parameters:
+                up_to_date = False
+                warning = _surface_gap_warning(missing_commands, missing_parameters)
         return AddonHandshake(
             up_to_date=up_to_date,
             protocol_version=protocol_i,
             # Every field is normalized: a raw one could carry newlines, ESC or
             # bidi characters into `get_addon_status` and the handshake log.
             addon_version=normalized_addon_version(info.get("addon_version")),
-            capabilities=normalized_session_text_list(info.get("capabilities")),
+            capabilities=capabilities,
             blender_version=normalized_session_text(info.get("blender_version")),
             source="native",
             warning=warning,
@@ -802,7 +957,9 @@ def handshake_addon(blender_connection) -> AddonHandshake:
             session_indeterminate=info.get("session_indeterminate") is True,
             file_roots=normalized_session_text_list(info.get("file_roots")),
             file_roots_enforced=info.get("file_roots_enforced") is True,
-            capability_params=normalized_capability_params(info.get("capability_params")),
+            capability_params=capability_params,
+            missing_commands=missing_commands,
+            missing_parameters=missing_parameters,
         )
     except Exception as e:
         msg = str(e).lower()

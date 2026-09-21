@@ -68,7 +68,15 @@
 
 ---
 
-## 100-Point Rubric Breakdown (Preliminary, Pending Scene/Core/Modeling)
+## 100-Point Rubric Breakdown (Preliminary — SUPERSEDED)
+
+> **Superseded on 2026-09-21 by `AUDIT_SYNTHESIS.md`.** The breakdown below was taken with
+> three domains unaudited (retopology, geometry nodes, validation) and with camera/lighting
+> scored at a placeholder 10/10 before its slice was read. All nine slices are now scored
+> and verified against the current tree, and the final total is **67/100**, not the 69/100
+> below. Several claims that justified these numbers have since been disproved — see the
+> *Retired claims* table in the synthesis. Read this section only as a record of what the
+> first pass believed.
 
 ### A. Architecture & Abstraction (15 points)
 - **Current evidence**: 

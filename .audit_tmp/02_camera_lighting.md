@@ -364,3 +364,179 @@ except Exception:
 Camera and Lighting tools comprehensively cover production workflows. API coverage is complete and correct for Blender 5.2. Reliability patterns are mature (validate-upfront, state-restore-on-error, orchestration rollback). Boundaries are clean. Ready for production use.
 
 **Rubric Sections 7–8 Verdict:** ✅ **PASS** — comprehensive, robust, production-ready.
+
+---
+
+## Verification pass (2026-09-21)
+
+The findings above were written against the tree of early September. This pass re-reads every
+load-bearing claim against the tree as it stands today and records the result. Nothing above was
+edited; this section supersedes it where the two disagree.
+
+**Scope note on runtime claims.** No Blender process was launched during this pass — the live
+Blender slot was in use for an unrelated measurement. Claims that rest on the original headless
+introspection run are therefore not re-executed here; each is instead resolved against the
+standing smoke suite, which runs the same APIs through a real Blender in `just smoke`, and is
+marked UNVERIFIABLE where no such coverage exists.
+
+### Tool total, freshly counted
+
+Counted by parsing every `@mcp.tool()`-decorated coroutine in the two packages and checking each
+name against `mcp.list_tools()` after import:
+
+| Module | Tools |
+|---|---|
+| `server/tools/camera/animation.py` | 5 |
+| `server/tools/camera/core.py` | 4 |
+| `server/tools/camera/inspection.py` | 2 |
+| `server/tools/camera/shots.py` | 2 |
+| `server/tools/camera/targeting.py` | 4 |
+| `server/tools/camera/rigs.py` | 6 |
+| `server/tools/lighting/construction.py` | 5 |
+| `server/tools/lighting/environment.py` | 3 |
+| `server/tools/lighting/inspection.py` | 4 |
+| `server/tools/lighting/rendering.py` | 3 |
+| **Total** | **23 camera + 15 lighting = 38** |
+
+The headline count is unchanged and all 38 register on the app. **But the count is no longer the
+surface an agent sees.** The domain is split across four bundles (`server/bundles.py:36-37`,
+`53-56`) and the `shot` mode (`server/bundles.py:85`) omits `camera.rigs` entirely: 32 of the 38
+are exposed by default, and the six rig builders this slice praises as the cinematic toolkit
+require the opt-in `camera-rigs` bundle. Every line number quoted in the inventory tables above
+is stale by 20-30 lines; the tables' *contents* are accurate.
+
+### Claim-by-claim result
+
+| # | Claim (line above) | Result | Evidence in the current tree |
+|---|---|---|---|
+| 1 | 23 camera + 15 lighting = 38 tools (11, 21, 53) | **VERIFIED** | Counted above; all 38 present in `mcp.list_tools()`. Incomplete as stated: 6 are opt-in, `server/bundles.py:35-37`, `85` |
+| 2 | `create_studio_lighting` validates everything before any mutation; complete rollback (13, 164-212, 346, 358) | **STALE — now false at the tool level** | The handler's guard is intact (`bundled/addon/handlers/lighting/construction.py:419-424`, `446-504`), but the tool is now two-phase: rig dispatch at `server/tools/lighting/construction.py:263-275`, then a **mandatory** preview at `276-288`. The preview's own argument checks run only there — `server/tools/lighting/rendering.py:197-198` and `142-166` — i.e. after the lights exist. See the worked case below |
+| 3 | `aim_light` has "no explicit rollback; relies on exception propagation" (221) | **STALE — improved** | It now reverses everything: created constraint removed, pre-existing constraint fields restored, created helper removed, pre-existing helper matrix restored (`handlers/lighting/construction.py:307-318`) |
+| 4 | `configure_camera_dof` snapshots and restores focus_object/focus_distance (220) | **VERIFIED — understated** | `handlers/camera/core.py:259-294` also restores every patched DOF field, restores a reused focus target's world matrix, and removes a focus Empty it created |
+| 5 | Camera rig builders validate up front, no rollback needed (222) | **VERIFIED, with a gap the slice missed** | Scalars are validated before any creation (`handlers/camera/rigs.py:88-95`), but there is no name pre-flight: `_new_empty` and `_new_camera_object` call `bpy.data.objects.new` (`handlers/camera/_shared.py:498`, `handlers/camera/rigs.py:41`), so a second rig under the same `rig_name` silently yields `.001` members instead of an error. `create_studio_lighting` refuses (`handlers/lighting/construction.py:419-424`) and `create_camera_target` requires opt-in `reuse` (`handlers/camera/targeting.py:200-201`); the rig builders do neither |
+| 6 | Camera DOF properties present and correctly assigned (94) | **VERIFIED (code side)** | `_DOF_FIELDS` covers `use_dof`/`aperture_*` (`handlers/camera/_shared.py:305-309`); assignment and restore at `handlers/camera/core.py:241-294`. RNA presence itself not re-introspected this pass |
+| 7 | Type-specific light property applicability enforced (109) | **VERIFIED (code side)** | `LightSettings`/`LightPatch` allowlists at `server/tools/lighting/construction.py:16-85`; per-type applicability enforced handler-side before assignment |
+| 8 | `Object.light_linking` present and correctly wrapped (123) | **VERIFIED, by proxy** | Capability check and both-collection rollback at `handlers/lighting/construction.py:351-373`; exercised against real Blender at `tests/blender_lighting_smoke.py:97-98` |
+| 9 | `dust_density` → `aerosol_density` adapter mapping is correct (135, 352) | **UNVERIFIABLE — and untested** | The map still exists at `handlers/lighting/environment.py:356`, with the same literal duplicated inline at `435`. `dust_density`/`aerosol_density` appear **nowhere in `tests/`**, and the sky smoke call omits the field (`tests/blender_lighting_smoke.py:141-156`). The one rename the slice flagged as an API risk is the one translation nothing checks |
+| 10 | Server-side `ProceduralSkySettings` still exposes `dust_density` (135) | **VERIFIED** | `server/tools/lighting/environment.py:24`, also in the cross-field validator at `38` |
+| 11 | `view_transform` validated at setattr time, not enumerable at the boundary (154, 353) | **VERIFIED** | Boundary takes a bare `str` (`server/tools/lighting/rendering.py:113`); real validation is Blender's. Exercised at `tests/blender_lighting_smoke.py:213-215` |
+| 12 | Camera domain: rigs vs. shots, "❌ None" overlap (49, 318-324) | **STALE — false** | All nine fields of `_CAMERA_GUIDES` (`handlers/camera/shots.py:15-25`) are a subset of `_CAMERA_DISPLAY` (`handlers/camera/_shared.py:23-38`). `configure_camera(display=…)` and `configure_camera_render_gate(guides=…)` write the same nine camera-data properties, and neither docstring mentions the other (`server/tools/camera/core.py:125-130`, `server/tools/camera/shots.py:112`) |
+| 13 | Lighting domain: construction / environment / rendering independent (335-337) | **STALE — false for construction** | `construction.py` imports and calls `rendering.render_lighting_preview` (`server/tools/lighting/construction.py:13`, `276`); `server/bundles.py:54-56` documents having to list `lighting.rendering` in `lighting-construction` because of it. Construction cannot be loaded without rendering |
+| 14 | "Clean boundaries … no overlaps" as a domain verdict (14, 347) | **STALE — three cross-domain duplications** | (a) `RenderGatePatch` (`server/tools/camera/shots.py:26-30`) duplicates five `RenderSettingsPatch` fields with identical bounds (`server/tools/rendering.py:35-39`), both writing `scene.render`; (b) `CyclesLightingQuality`/`EeveeLightingQuality` (`server/tools/lighting/rendering.py:21-24`, `46-47`) duplicate `CyclesPatch`/`EeveePatch` (`server/tools/rendering.py:134-140`, `170-171`); (c) `configure_world_background(transparent_film=…)` (`server/tools/lighting/environment.py:50`) duplicates `film_transparent`/`FilmPatch.transparent` (`server/tools/rendering.py:45`, `84`). The audit only compared within the domain; the render domain has since grown into it |
+| 15 | `create_camera` is a sound foundational tool (30) | **STALE — reachable un-rolled-back partial mutation** | The camera datablock and object are created and linked at `handlers/camera/core.py:107-109`, *before* `_validate_optics` (`111`) and `_look_quaternion` (`122`) can raise. Both are reachable: `panorama_type requires projection='PANO'` (`handlers/camera/core.py:56`) and "Camera and aim target cannot occupy the same world position" (`handlers/camera/_shared.py:358`). Neither path is wrapped, so the failure returns an error envelope and leaves an orphan camera object plus an orphan `<name> Data` camera datablock |
+| 16 | Client input validated at the MCP boundary (implicit throughout) | **STALE for one field** | `panorama_type: str \| None` (`server/tools/camera/core.py:33`) is the domain's only un-enumerated enum, and nothing checks it against `projection`. Executed at the boundary: both `panorama_type="totally-made-up"` and the contradictory `projection="PERSP"` + `panorama_type=…` pair were accepted and forwarded verbatim in the `optics` payload; only the handler rejects the latter, and only after creation. Contrary to `AGENTS.md:69` |
+| 17 | Volumetric lighting is indirect-only, no fog/volume authoring (15, 231-236, 354) | **VERIFIED** | `volume_factor` at `server/tools/lighting/construction.py:29`, `67`; EEVEE volumetrics at `server/tools/lighting/rendering.py:49-51`. The only new volume capability is `VolumeGeometry` (`server/tools/scene_authoring.py:272-279`), which imports an OpenVDB file in another domain — it is not lighting authoring. The master rubric's D bullet "volumetric ✅" (`COMPREHENSIVE_AUDIT_FINDINGS.md:102`) is not supported by this domain |
+| 18 | HDRI / procedural sky / light linking / cinematic rigs / DOF / studio presets / color management / quality presets complete (239-308) | **VERIFIED** | Tools and handlers all present as described; smoke coverage for sky, HDRI, studio rig, quality and preview at `tests/blender_lighting_smoke.py:107-206` |
+| 19 | `validate_lighting_setup` is a comprehensive audit (68) | **VERIFIED** | 15 finding codes, from `MISSING_CAMERA` to `EXTREME_DISPLAY_EXPOSURE`, including an explicit cross-engine-difference INFO (`handlers/lighting/inspection.py:290-490`) |
+| 20 | `validate_camera_rig` is structural pre-edit verification (35) | **VERIFIED — understated** | 18 finding codes including parent cycles, driver targets, and evaluated-depsgraph aim/focus-behind-camera checks, plus an honest scope disclaimer that visual correctness was not inferred (`handlers/camera/inspection.py:155-423`) |
+
+### The `create_studio_lighting` regression, worked
+
+Calling the tool with `preview_engine="CYCLES", preview_samples=128` and no `confirm_long_render`,
+or with a preview path that is relative or not `.png`, dispatches `create_studio_lighting` to
+Blender and *then* raises `ToolError` from the preview layer. The caller receives a failure while
+three AREA lights, three light datablocks and possibly a new `Studio Lighting` collection remain
+in the scene. Worse, the retry is blocked: the handler refuses a rig whose member names already
+exist (`handlers/lighting/construction.py:419-424`), so the same call cannot
+succeed until the user deletes the lights by hand. Every one of these checks
+(`server/tools/lighting/rendering.py:142-166`, `197-198`) is a pure argument check that could run
+before the rig dispatch at `server/tools/lighting/construction.py:263-275`.
+
+All three cases were executed against the tool functions with a stub Blender connection, so this
+is observed dispatch order rather than inference: in each one the recorded command list was
+`['create_studio_lighting']` and the call then raised `Cycles previews above 64 samples require
+confirm_long_render=true` / `EEVEE output path must be an absolute .png path`.
+
+This matters out of proportion to its size, because "validate all inputs before any mutation" is
+precisely the property that made this tool the codebase's cited reliability template (line 212,
+`COMPREHENSIVE_AUDIT_FINDINGS.md:62`). The handler still deserves that praise. The tool no longer
+does.
+
+### Findings the earlier pass did not record
+
+- **Light groups are reported but not authorable.** `light_group` is published in every
+  `inspect_light` / `list_lights` detail record (`handlers/lighting/_shared.py:323`), and that read
+  is the *only* occurrence of `lightgroup` in `src/`. Cycles light-group AOVs, the standard way to
+  split a lighting render for compositing, cannot be set up through this domain.
+- **The six rig replies are outside the reply-byte budget catalog.** `scripts/measure_reply_sizes.py`
+  carries a representative payload for every other tool in the domain (camera block `1157-1364`,
+  lighting block `1365-1596`) but none for `create_orbit_camera_rig`, `create_dolly_camera_rig`,
+  `create_crane_camera_rig`, `create_camera_path_rig`, `match_camera_transform` or
+  `duplicate_camera_rig`. Their `_rig_result` shape lists every rig member and constraint
+  (`handlers/camera/rigs.py:521-525`), the widest fan-out in the domain, so these are the replies
+  least safe to leave unmeasured.
+- **`configure_camera_dof` does not enable DOF.** It will set a focus intent while `use_dof` stays
+  false unless the caller passes it in the patch (`server/tools/camera/core.py:64`,
+  `handlers/camera/core.py:241-284`), producing no visible depth of field and no warning saying so —
+  while `create_focus_pull` sets `use_dof = True` for the caller (`handlers/camera/animation.py:409`,
+  `428`). The domain is inconsistent about who owns the switch.
+
+### Reliability patterns that hold up
+
+Worth recording, because they are the domain's real strength and the slice above only gestured at
+them: `_patch_values` (`handlers/camera/_shared.py:362-381`) reverses in order every property it
+assigned before re-raising, so `configure_camera`, `configure_camera_render_gate` and the optics
+path of `create_camera` are each atomic with respect to property writes. On top of that,
+`configure_camera` restores optics if the display patch fails (`handlers/camera/core.py:144-149`),
+`set_scene_camera` restores the previous scene camera and either removes a created marker or
+restores a mutated one (`handlers/camera/core.py:198-210`), `configure_camera_render_gate` restores
+all four patch areas (`handlers/camera/shots.py:181-190`), and `configure_light_linking` restores
+both collections (`handlers/lighting/construction.py:370-373`).
+
+---
+
+## Score estimate
+
+**Score estimate**: 7/10 (breadth and validation tooling are genuinely top-tier; the orchestration
+pattern that earned the perfect preliminary score has regressed, four "no overlap" boundaries are
+false, and the most foundational tool in the domain leaks datablocks on a reachable error)
+
+| Category | Score | Evidence |
+|---|---|---|
+| **Tool completeness** | 9/10 | 38 tools freshly counted and all registered; rigs, animation, targeting, composition, construction, environment, quality, colour, preview all present. Gaps: no light-group authoring (`handlers/lighting/_shared.py:323`), no volume/fog lighting authoring (`server/tools/lighting/rendering.py:49-51` is the ceiling) |
+| **Reliability** | 6/10 | `_patch_values` atomicity and the DOF/marker/linking/gate restore paths are exemplary (`handlers/camera/_shared.py:362-381`, `handlers/camera/core.py:198-210`, `259-294`). Against that: `create_studio_lighting` mutates before validating its own preview arguments and blocks its own retry (`server/tools/lighting/construction.py:263-288`, `handlers/lighting/construction.py:419-424`), and `create_camera` orphans an object and a datablock on a reachable validation error (`handlers/camera/core.py:107-122`) |
+| **Boundaries & redundancy** | 6/10 | Within the domain, `configure_camera(display=)` and `configure_camera_render_gate(guides=)` write the same nine properties (`handlers/camera/_shared.py:23-38` ⊇ `handlers/camera/shots.py:15-25`). Across domains, three more duplications with `server/tools/rendering.py` (resolution/aspect, engine sampling, film transparency). `lighting.construction` also hard-depends on `lighting.rendering` (`server/tools/lighting/construction.py:13`) |
+| **Validation** | 9/10 | `validate_camera_rig` 18 codes with evaluated-transform checks and an honest scope note (`handlers/camera/inspection.py:155-423`); `validate_lighting_setup` 15 codes including cross-engine caveats (`handlers/lighting/inspection.py:290-490`). Deducted only for the unvalidated `panorama_type` string at the boundary (`server/tools/camera/core.py:33`) |
+| **Test & budget discipline** | 7/10 | Three live smoke scripts cover the domain's load-bearing APIs (`tests/blender_lighting_smoke.py`, `tests/blender_camera_smoke.py`, `tests/blender_camera_framing_smoke.py`), and 32 of 38 replies carry a measured sample payload. The `dust_density`→`aerosol_density` translation has no test at all, and the six rig replies have no sample |
+| **Agentability** | 7/10 | Docstrings state spaces, boundaries and confirmations well, and `create_studio_lighting` is still the right shape of one-call preset. But the cinematic rig toolkit is withheld from the default `shot` mode (`server/bundles.py:35-37`, `85`), the four overlapping tools give an agent two ways to set resolution and guides with no cross-reference, and `configure_camera_dof` silently leaves DOF off |
+
+### Mapping onto rubric categories A-J
+
+| Category | Direction from this domain | Basis |
+|---|---|---|
+| **A. Architecture & Abstraction (15)** | **Down.** The A entry cites "Camera/Lighting: 38 tools, exemplary orchestration ✅" (`COMPREHENSIVE_AUDIT_FINDINGS.md:78`); the orchestration claim no longer holds, and the domain now contributes redundancy rather than only clean structure | Claims 2, 12, 13, 14 above |
+| **B. Tool Quality & Redundancy (15)** | **Down.** B's evidence list has no camera/lighting redundancy entry. There are four: guides/display, render gate/render settings, lighting quality/engine patches, transparent film | Claim 12, 14 |
+| **C. Scene & Asset Pipeline (10)** | **Neutral.** No camera/lighting bearing either way; `VolumeGeometry` belongs to scene authoring | Claim 17 |
+| **D. Lighting & Camera (10)** | **Down, materially.** See verdict below | Claims 1, 2, 12, 14, 15, 17 |
+| **E. Animation/Rigging/Simulation (10)** | **Slightly down.** Camera animation (focus pull, dolly zoom, shake, interpolation) is solid, but the camera *rig* builders are opt-in and have no member-name pre-flight | Claims 1, 5 |
+| **F. Rendering (15)** | **Neutral to slightly down.** `render_lighting_preview` is well-bounded and cleans its temp files (`server/tools/lighting/rendering.py:226-231`), but it now overlaps `render_scene` in capability and duplicates engine-quality surface | Claim 14 |
+| **G. Compositing (5)** | **Down.** G scores 1/5 for having no authoring. Light groups being readable but not writable (`handlers/lighting/_shared.py:323`) closes off the per-light AOV split that compositing needs, so this domain reinforces the gap rather than mitigating it | New finding |
+| **H. Validation & Reliability (10)** | **Split.** Validation pulls up hard — 33 finding codes across the two validators, with honest scoping. Reliability pulls down — two reachable partial-mutation paths | Claims 15, 19, 20; claim 2 |
+| **I. Agentability & NL (5)** | **Down.** I already docks for confusing multiplicity. This domain adds two ways to set composition guides, two ways to set resolution, two ways to set engine samples, and hides the rig builders from the default mode | Claims 12, 14; bundle finding |
+| **J. Production Completeness (5)** | **Neutral.** J's "camera, lighting … core complete ✅" (`COMPREHENSIVE_AUDIT_FINDINGS.md:149`) still stands on coverage; light-group authoring is the one addition worth listing as missing | Claim 1; new finding |
+
+### Verdict on D = 10/10
+
+**D = 10/10 does not survive verification. It should be 7/10.**
+
+D's preliminary 10/10 rests on four bullets (`COMPREHENSIVE_AUDIT_FINDINGS.md:99-104`). Re-checked:
+
+1. *"Camera: 23 tools covering rigs/animation/composition ✅✅"* — count holds, but 6 of the 23 are
+   withheld from the default `shot` mode (`server/bundles.py:35-37`, `85`).
+2. *"Lighting: 15 tools covering construction/environment/quality ✅✅"* — holds.
+3. *"Light linking, volumetric, HDRI, procedural sky ✅"* — three of four hold. **"Volumetric" was
+   never true**: this slice itself recorded volumetrics as indirect-only (line 231), and there is
+   still no volume or fog authoring in the domain.
+4. *"Exemplary orchestration ✅✅"* — **fails.** The property being praised, validate-everything-then-
+   mutate, is no longer what the tool does, and the resulting partial mutation cannot be retried
+   without manual cleanup.
+
+Two and a half of four bullets survive, and verification additionally surfaced a datablock leak in
+`create_camera`, an unvalidated enum at the MCP boundary, four duplicated boundaries, and an
+untested API translation. A 10/10 would mean a domain with nothing to fix; this one has a concrete
+list. 7/10 is the score the evidence supports — level with the materials and animation slices
+rather than above every other domain, and the deductions are all repairable without new tools:
+hoist the preview argument checks above the rig
+dispatch, wrap `create_camera`'s post-creation validation, make `panorama_type` a `Literal`,
+collapse the guides/gate/quality duplications onto one owner each, and add a `dust_density` case to
+the lighting smoke script.

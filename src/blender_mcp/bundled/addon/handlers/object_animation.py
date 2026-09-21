@@ -8,6 +8,8 @@ from contextlib import suppress
 import bpy
 import mathutils
 
+from .action_assignment import ACTION_POLICIES, action_fcurve_collections, assign_named_action, assigned_slot_identifier
+from .key_style import style_point, validate_key_style
 from .scene import _object, _required_name
 from .scene_physics import _scene, _scene_fps
 
@@ -17,8 +19,6 @@ _MAX_BATCH = 500
 _KEYFRAME_MATCH_TOLERANCE = 1e-5
 _SPACES = {"LOCAL", "WORLD"}
 _POLICIES = {"INSERT_ONLY", "REPLACE_EXISTING"}
-_INTERPOLATIONS = {"CONSTANT", "LINEAR", "BEZIER"}
-_HANDLE_TYPES = {"FREE", "ALIGNED", "VECTOR", "AUTO", "AUTO_CLAMPED"}
 _CHANNEL_LENGTHS = {"location": 3, "rotation_euler": 3, "rotation_quaternion": 4, "scale": 3}
 _EULER_ORDERS = {"XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"}
 
@@ -84,22 +84,23 @@ def _resolve_channels(record, label, obj):
 
 
 def _action_fcurves(id_owner):
+    """
+    Return the action driving `id_owner` and the F-Curves its own keys live in.
+
+    Args:
+        id_owner: The object being keyed.
+
+    Returns:
+        tuple: The assigned action (or None) and its F-Curves, narrowed to this owner's slot
+        so a second object sharing the action never answers for this one's keys.
+
+    """
     animation = getattr(id_owner, "animation_data", None)
     action = getattr(animation, "action", None) if animation is not None else None
     if action is None:
         return None, ()
-    if hasattr(action, "fcurves"):
-        return action, action.fcurves
     slot = getattr(animation, "action_slot", None)
-    curves = []
-    for layer in getattr(action, "layers", ()):
-        for strip in getattr(layer, "strips", ()):
-            if getattr(strip, "type", None) != "KEYFRAME":
-                continue
-            channelbag = strip.channelbag(slot, ensure=False) if slot is not None else None
-            if channelbag is not None:
-                curves.extend(channelbag.fcurves)
-    return action, curves
+    return action, [curve for collection in action_fcurve_collections(action, slot) for curve in collection]
 
 
 def _has_key_at(obj, data_path, frame):
@@ -112,7 +113,7 @@ def _has_key_at(obj, data_path, frame):
     return False
 
 
-def _style_inserted_keys(obj, data_path, frame, interpolation, *, handle_left, handle_right):
+def _style_inserted_keys(obj, data_path, frame, interpolation, *, handle_left, handle_right, easing=None):
     changed = []
     _action, curves = _action_fcurves(obj)
     for curve in curves:
@@ -123,10 +124,7 @@ def _style_inserted_keys(obj, data_path, frame, interpolation, *, handle_left, h
         )
         if point is None:
             continue
-        point.interpolation = interpolation
-        if interpolation == "BEZIER":
-            point.handle_left_type = handle_left
-            point.handle_right_type = handle_right
+        style_point(point, interpolation, handle_left=handle_left, handle_right=handle_right, easing=easing)
         changed.append({"data_path": data_path, "array_index": curve.array_index, "frame": frame})
     return changed
 
@@ -171,6 +169,39 @@ def _apply_and_key(obj, frame, space, channels):
     return inserted
 
 
+def _assign_batch_action(prepared, action_name, policy, slot_identifier, confirm_displace):
+    """
+    Put the batch's object on the named action, before a single key is written.
+
+    An ID holds one action, so a batch naming several objects while naming one action is asking
+    for every object's keys to land in the same place: whichever object is assigned last wins
+    the action and the rest are keyed into whatever else was driving them. That is almost never
+    what an agent means by it, and it is indistinguishable afterwards from the keys having
+    worked, so it is refused rather than resolved.
+
+    Args:
+        prepared: The validated records, read for the objects they key.
+        action_name: The action every key in this batch belongs in.
+        policy: ENSURE, CREATE or REUSE - see `assign_named_action`.
+        slot_identifier: Which of the action's slots to key into, or None to resolve it.
+        confirm_displace: Whether the caller confirmed displacing an action that holds keys.
+
+    Raises:
+        ValueError: If the batch names more than one distinct object.
+
+    """
+    objects = {entry["object_name"]: entry["object"] for entry in prepared}
+    if len(objects) > 1:
+        raise ValueError(
+            f"action_name='{action_name}' names one action, but this batch keys {len(objects)} objects "
+            f"({', '.join(sorted(objects))}): an object holds one action, so call keyframe_object_transform "
+            "once per object, naming the action that object's keys belong in"
+        )
+    assign_named_action(
+        next(iter(objects.values())), action_name, policy, slot_identifier, confirm_displace=confirm_displace
+    )
+
+
 class ObjectAnimationHandlersMixin:
     """Keyframe an object's location/rotation/scale, in local or world space, across a scene."""
 
@@ -181,15 +212,18 @@ class ObjectAnimationHandlersMixin:
         interpolation="BEZIER",
         handle_left="AUTO_CLAMPED",
         handle_right="AUTO_CLAMPED",
+        action_name=None,
+        action_policy="ENSURE",
+        action_slot_identifier=None,
+        confirm_displace_action=False,
     ):
         if not isinstance(keyframes, list) or not 1 <= len(keyframes) <= _MAX_BATCH:
             raise ValueError(f"keyframes must contain between 1 and {_MAX_BATCH} records")
         if policy not in _POLICIES:
             raise ValueError(f"policy must be one of {sorted(_POLICIES)}")
-        if interpolation not in _INTERPOLATIONS:
-            raise ValueError(f"Unsupported interpolation: {interpolation}")
-        if handle_left not in _HANDLE_TYPES or handle_right not in _HANDLE_TYPES:
-            raise ValueError("Unsupported Bezier handle type")
+        validate_key_style(interpolation, handle_left, handle_right)
+        if action_policy not in ACTION_POLICIES:
+            raise ValueError(f"action_policy must be one of {list(ACTION_POLICIES)}")
 
         prepared = []
         seen = set()
@@ -213,13 +247,29 @@ class ObjectAnimationHandlersMixin:
                     "one frame into a single record instead of separate records"
                 )
             seen.add(identity)
-            if policy == "INSERT_ONLY":
-                existing = [path for path in channels if _has_key_at(obj, path, frame)]
-                if existing:
-                    raise ValueError(f"A key already exists at {label} for {existing}; INSERT_ONLY made no changes")
             prepared.append(
-                {"object": obj, "object_name": object_name, "frame": frame, "space": space, "channels": channels}
+                {
+                    "object": obj,
+                    "object_name": object_name,
+                    "label": label,
+                    "frame": frame,
+                    "space": space,
+                    "channels": channels,
+                }
             )
+
+        if action_name is not None:
+            _assign_batch_action(prepared, action_name, action_policy, action_slot_identifier, confirm_displace_action)
+        if policy == "INSERT_ONLY":
+            # Asked after the action is assigned, because "a key already exists here" is a
+            # question about the action this call is about to write into, not about whatever
+            # happened to be driving the object when the call arrived.
+            for entry in prepared:
+                existing = [path for path in entry["channels"] if _has_key_at(entry["object"], path, entry["frame"])]
+                if existing:
+                    raise ValueError(
+                        f"A key already exists at {entry['label']} for {existing}; INSERT_ONLY made no changes"
+                    )
 
         changed_keys = []
         for entry in prepared:
@@ -245,9 +295,13 @@ class ObjectAnimationHandlersMixin:
                 if action is not None
             }
         )
+        # One slot is only well defined when one object was keyed: a batch spanning several
+        # objects lands in as many slots as it has objects, and `actions` already names those.
+        single_owner = prepared[0]["object"] if len(changed_objects) == 1 else None
         return {
             "keyframes": changed_keys,
             "actions": actions,
+            "action_slot": assigned_slot_identifier(single_owner) if single_owner is not None else None,
             "policy": policy,
             "changed_objects": changed_objects,
             "changed_resources": actions,

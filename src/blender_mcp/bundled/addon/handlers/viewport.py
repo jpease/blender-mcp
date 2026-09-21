@@ -162,12 +162,17 @@ def _render_offscreen(space, region, view_matrix, window_matrix, max_size, filep
     buf.dimensions = width * height * 4
     pixels = np.asarray(buf, dtype=np.float32) / 255.0  # GPU buffer is 0..255
 
+    # image.save() raises on an unwritable path or a format bpy rejects, and the datablock is
+    # already in bpy.data by then: without this finally a failed capture leaves an orphan
+    # "mcp_viewport" image behind in the user's file, one per attempt.
     image = bpy.data.images.new("mcp_viewport", width, height, alpha=True)
-    image.pixels.foreach_set(pixels.ravel())
-    image.filepath_raw = filepath
-    image.file_format = image_format.upper()
-    image.save()
-    bpy.data.images.remove(image)
+    try:
+        image.pixels.foreach_set(pixels.ravel())
+        image.filepath_raw = filepath
+        image.file_format = image_format.upper()
+        image.save()
+    finally:
+        bpy.data.images.remove(image)
     return width, height
 
 
@@ -186,14 +191,18 @@ def _window_grab_fallback(area, max_size, filepath, image_format):
     with bpy.context.temp_override(area=area):
         bpy.ops.screen.screenshot_area(filepath=filepath)
     img = bpy.data.images.load(filepath)
-    width, height = img.size
-    if max(width, height) > max_size:
-        s = max_size / max(width, height)
-        width, height = int(width * s), int(height * s)
-        img.scale(width, height)
-        img.file_format = image_format.upper()
-        img.save()
-    bpy.data.images.remove(img)
+    try:
+        width, height = img.size
+        if max(width, height) > max_size:
+            s = max_size / max(width, height)
+            width, height = int(width * s), int(height * s)
+            img.scale(width, height)
+            img.file_format = image_format.upper()
+            img.save()
+    finally:
+        # Same reason as _render_offscreen's: a failed scale/save must not leave the loaded
+        # screenshot sitting in bpy.data.images.
+        bpy.data.images.remove(img)
     return width, height
 
 

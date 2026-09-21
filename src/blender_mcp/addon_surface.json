@@ -1,0 +1,2545 @@
+{
+  "commands": {
+    "add_camera_constraint": [
+      "constraint_name",
+      "constraint_type",
+      "forward_axis",
+      "influence",
+      "invert_x",
+      "invert_y",
+      "invert_z",
+      "lock_axis",
+      "maximum",
+      "minimum",
+      "offset_factor",
+      "owner_name",
+      "owner_space",
+      "preserve_transform",
+      "scene_name",
+      "stack_index",
+      "subtarget",
+      "target_name",
+      "target_space",
+      "track_axis",
+      "up_axis",
+      "use_curve_follow",
+      "use_fixed_location",
+      "use_x",
+      "use_y",
+      "use_z"
+    ],
+    "add_camera_shake": [
+      "camera_name",
+      "collection_name",
+      "control_name",
+      "depth",
+      "frame_end",
+      "frame_end_at_seconds",
+      "frame_start",
+      "frame_start_at_seconds",
+      "influence",
+      "noise_scale",
+      "phase",
+      "rotation_strength",
+      "scene_name",
+      "translation_strength"
+    ],
+    "add_cloth_collider": [
+      "existing_policy",
+      "modifier_name",
+      "object_name",
+      "registrations",
+      "settings"
+    ],
+    "add_cloth_simulation": [
+      "cache_frame_end",
+      "cache_frame_start",
+      "collision_collection_name",
+      "collisions",
+      "existing_policy",
+      "material",
+      "modifier_index",
+      "modifier_name",
+      "object_name",
+      "preset",
+      "solver"
+    ],
+    "add_fluid_effector": [
+      "domain_object_name",
+      "domain_type",
+      "effector_type",
+      "existing_policy",
+      "modifier_name",
+      "object_name",
+      "settings"
+    ],
+    "add_fluid_flow": [
+      "behavior",
+      "domain_object_name",
+      "domain_type",
+      "existing_policy",
+      "gas_flow_type",
+      "modifier_name",
+      "object_name",
+      "settings"
+    ],
+    "add_liquid_effector": [
+      "domain_object_name",
+      "effector_type",
+      "existing_policy",
+      "modifier_name",
+      "object_name",
+      "settings"
+    ],
+    "add_liquid_flow": [
+      "behavior",
+      "domain_object_name",
+      "existing_policy",
+      "modifier_name",
+      "object_name",
+      "settings"
+    ],
+    "add_pose_bone_constraint": [
+      "armature_object_name",
+      "bone_name",
+      "constraint"
+    ],
+    "add_radial_array_modifier": [
+      "apply",
+      "axis",
+      "count",
+      "object_name",
+      "pivot_location",
+      "pivot_object_name",
+      "radius"
+    ],
+    "add_rigid_bodies": [
+      "body_type",
+      "confirm_delete_baked_cache",
+      "existing_policy",
+      "object_names",
+      "scene_name",
+      "settings",
+      "source_settings_object_name",
+      "world_collection_name"
+    ],
+    "add_support_loops": [
+      "clamp",
+      "corner_policy",
+      "edge_indices",
+      "expected_revision",
+      "object_name",
+      "projection_offset",
+      "side",
+      "source_object_name",
+      "subdivision_levels",
+      "width"
+    ],
+    "aim_light": [
+      "bounds_position",
+      "constraint_name",
+      "helper_collection_name",
+      "helper_name",
+      "light_name",
+      "method",
+      "scene_name",
+      "target_bone_name",
+      "target_object_name",
+      "target_point"
+    ],
+    "analyze_cloth_performance": [
+      "confirm_short_bake",
+      "frames",
+      "include_short_bake",
+      "max_total_evaluations",
+      "modifier_name",
+      "object_name",
+      "short_bake_frame_end",
+      "short_bake_frame_start",
+      "warm_repeats"
+    ],
+    "analyze_liquid_performance": [
+      "domain_object_name",
+      "frames",
+      "max_cache_entries",
+      "max_dependency_objects",
+      "measure_replay_evaluation",
+      "modifier_name",
+      "timeout_seconds"
+    ],
+    "analyze_procedural_performance": [
+      "frames",
+      "instance_limit",
+      "modifier_name",
+      "object_name",
+      "repetitions",
+      "time_limit_seconds",
+      "topology_warning_threshold"
+    ],
+    "analyze_rigid_body_performance": [
+      "maximum_pair_checks",
+      "object_names",
+      "sample_frames",
+      "scene_name",
+      "timeout_seconds",
+      "triangle_warning_threshold"
+    ],
+    "analyze_surface_conformity": [
+      "attribute_name",
+      "create_heat_map",
+      "max_distance",
+      "object_name",
+      "sample_edge_midpoints",
+      "sample_face_centroids",
+      "sample_vertices",
+      "source_object_name",
+      "worst_limit"
+    ],
+    "animate_cloth_parameters": [
+      "cloth_modifier_name",
+      "keyframes",
+      "object_name",
+      "policy"
+    ],
+    "animate_liquid_flow": [
+      "domain_object_name",
+      "keyframes",
+      "modifier_name",
+      "object_name",
+      "policy",
+      "subframes"
+    ],
+    "animate_rigid_body_release": [
+      "action_name",
+      "angular_velocity",
+      "confirm_delete_baked_cache",
+      "frame",
+      "linear_velocity",
+      "object_name",
+      "overwrite_existing_action",
+      "pre_roll_frames",
+      "scene_name",
+      "transition"
+    ],
+    "apply_liquid_quality_profile": [
+      "domain_object_name",
+      "mesh_patch",
+      "modifier_name",
+      "profile",
+      "solver_patch"
+    ],
+    "apply_pbr_texture_set": [
+      "ao_display_strength",
+      "height_strength",
+      "material_name",
+      "normal_strength",
+      "reuse_existing_images",
+      "target_engine",
+      "textures",
+      "uv_map_name"
+    ],
+    "assign_bone_custom_shapes": [
+      "armature_object_name",
+      "assignments",
+      "hide_widgets_from_render",
+      "widget_collection_name"
+    ],
+    "assign_material": [
+      "face_indices",
+      "material_name",
+      "mode",
+      "object_names",
+      "slot_index"
+    ],
+    "attach_geometry_nodes_modifier": [
+      "input_values",
+      "modifier_name",
+      "new_group_name",
+      "node_group_name",
+      "object_name",
+      "show_render",
+      "show_viewport",
+      "single_user",
+      "stack_index"
+    ],
+    "bake_evaluated_animation": [
+      "action_name",
+      "confirm_bake",
+      "easing",
+      "frame_end",
+      "frame_start",
+      "frame_step",
+      "handle_left",
+      "handle_right",
+      "interpolation",
+      "target",
+      "transform_tolerance"
+    ],
+    "bake_ragdoll_to_armature": [
+      "action_name",
+      "angular_tolerance_radians",
+      "armature_object_name",
+      "blend_in_frames",
+      "blend_out_frames",
+      "confirm_overwrite_action",
+      "frame_end",
+      "frame_start",
+      "frame_step",
+      "mappings",
+      "position_tolerance",
+      "reduce_keys",
+      "scene_name"
+    ],
+    "bake_retopology_maps": [
+      "cage_extrusion",
+      "cage_object_name",
+      "confirm",
+      "height",
+      "high_poly_object_names",
+      "map_type",
+      "margin",
+      "max_ray_distance",
+      "normal_space",
+      "normal_swizzle",
+      "object_name",
+      "output_path",
+      "overwrite",
+      "uv_map_name",
+      "width"
+    ],
+    "bake_rigid_bodies_to_keyframes": [
+      "action_name_prefix",
+      "confirm_overwrite_animation",
+      "frame_end",
+      "frame_start",
+      "frame_step",
+      "key_scale",
+      "object_names",
+      "output_collection_name",
+      "output_mode",
+      "scene_name"
+    ],
+    "bake_texture_map": [
+      "cage_extrusion",
+      "cage_object_name",
+      "confirm",
+      "height",
+      "high_poly_object_names",
+      "map_type",
+      "margin",
+      "max_ray_distance",
+      "normal_space",
+      "normal_swizzle",
+      "object_name",
+      "output_path",
+      "overwrite",
+      "target_engine",
+      "uv_map_name",
+      "width"
+    ],
+    "bind_mesh_to_armature": [
+      "armature_object_name",
+      "confirm_replace_weights",
+      "existing_modifier_policy",
+      "mesh_object_names",
+      "method",
+      "modifier_index",
+      "modifier_name",
+      "parent_meshes",
+      "preserve_volume",
+      "replacement_policy"
+    ],
+    "bind_surface_deformation": [
+      "action",
+      "duplicate_tolerance",
+      "falloff",
+      "invert_vertex_group",
+      "modifier_name",
+      "object_name",
+      "sparse_bind",
+      "strength",
+      "target_object_name",
+      "vertex_group"
+    ],
+    "build_quad_patch": [
+      "boundary_u0",
+      "boundary_u1",
+      "boundary_v0",
+      "boundary_v1",
+      "coordinate_space",
+      "corners",
+      "expected_revision",
+      "interpolation",
+      "object_name",
+      "projection_offset",
+      "source_object_name",
+      "u_segments",
+      "v_segments"
+    ],
+    "clean_skin_weights": [
+      "armature_object_name",
+      "confirm_remove_orphan_groups",
+      "influence_limit",
+      "mesh_object_name",
+      "normalize",
+      "protected_group_names",
+      "remove_orphan_groups",
+      "threshold",
+      "vertex_indices"
+    ],
+    "clear_edge_marks": [
+      "object_name"
+    ],
+    "clear_materials": [
+      "object_names"
+    ],
+    "clear_vertex_groups": [
+      "object_name"
+    ],
+    "configure_armature_bones": [
+      "armature_object_name",
+      "bone_patches",
+      "pose_bone_patches"
+    ],
+    "configure_bendy_bones": [
+      "armature_object_name",
+      "patches"
+    ],
+    "configure_camera": [
+      "camera_name",
+      "display",
+      "optics"
+    ],
+    "configure_camera_dof": [
+      "camera_name",
+      "focus_collection_name",
+      "focus_distance",
+      "focus_object_name",
+      "focus_point",
+      "focus_target_name",
+      "patch",
+      "reuse_focus_target",
+      "scene_name"
+    ],
+    "configure_camera_render_gate": [
+      "border",
+      "camera_name",
+      "guides",
+      "render",
+      "safe_areas",
+      "scene_name"
+    ],
+    "configure_cloth_collider": [
+      "modifier_name",
+      "object_name",
+      "patch"
+    ],
+    "configure_cloth_collisions": [
+      "modifier_name",
+      "object_name",
+      "patch"
+    ],
+    "configure_cloth_field_weights": [
+      "modifier_name",
+      "object_name",
+      "patch"
+    ],
+    "configure_cloth_internal_springs": [
+      "max_estimated_springs",
+      "modifier_name",
+      "object_name",
+      "patch"
+    ],
+    "configure_cloth_material": [
+      "modifier_name",
+      "object_name",
+      "patch",
+      "preset"
+    ],
+    "configure_cloth_pinning": [
+      "group_name",
+      "modifier_name",
+      "object_name",
+      "patch"
+    ],
+    "configure_cloth_pressure": [
+      "modifier_name",
+      "object_name",
+      "patch"
+    ],
+    "configure_cloth_rest_shape": [
+      "cache_frame_end",
+      "cache_frame_start",
+      "modifier_name",
+      "object_name",
+      "shape_key_name",
+      "use_dynamic_mesh"
+    ],
+    "configure_cloth_sewing": [
+      "create_missing_edges",
+      "dry_run",
+      "max_pair_distance",
+      "modifier_name",
+      "object_name",
+      "seam_pairs",
+      "sewing_force_max"
+    ],
+    "configure_cloth_solver": [
+      "modifier_name",
+      "object_name",
+      "patch"
+    ],
+    "configure_color_management": [
+      "exposure",
+      "gamma",
+      "look",
+      "scene_name",
+      "view_transform"
+    ],
+    "configure_fluid_solver": [
+      "domain_object_name",
+      "domain_type",
+      "modifier_name",
+      "patch"
+    ],
+    "configure_hdri_environment": [
+      "create_world",
+      "image_path",
+      "projection",
+      "replacement_policy",
+      "rotation",
+      "scene_name",
+      "strength",
+      "transparent_film",
+      "world_name"
+    ],
+    "configure_light": [
+      "light_name",
+      "patch"
+    ],
+    "configure_light_linking": [
+      "blocker_collection_name",
+      "clear_blockers",
+      "clear_receivers",
+      "light_name",
+      "receiver_collection_name",
+      "scene_name"
+    ],
+    "configure_lighting_quality": [
+      "cycles",
+      "detail",
+      "eevee",
+      "preset",
+      "scene_name",
+      "target_engine"
+    ],
+    "configure_liquid_diffusion": [
+      "config",
+      "domain_object_name",
+      "modifier_name"
+    ],
+    "configure_liquid_effector": [
+      "domain_object_name",
+      "modifier_name",
+      "object_name",
+      "patch"
+    ],
+    "configure_liquid_flow": [
+      "domain_object_name",
+      "modifier_name",
+      "object_name",
+      "patch"
+    ],
+    "configure_liquid_force_fields": [
+      "create_collection",
+      "domain_object_name",
+      "fields",
+      "force_collection_name",
+      "modifier_name",
+      "scene_name",
+      "weights"
+    ],
+    "configure_liquid_mesh": [
+      "domain_object_name",
+      "modifier_name",
+      "patch"
+    ],
+    "configure_liquid_scope_and_boundaries": [
+      "boundaries",
+      "clear_effector_collection",
+      "clear_flow_collection",
+      "clear_force_collection",
+      "create_missing_collections",
+      "domain_object_name",
+      "effector_collection_name",
+      "flow_collection_name",
+      "force_collection_name",
+      "modifier_name"
+    ],
+    "configure_liquid_secondary_particles": [
+      "domain_object_name",
+      "modifier_name",
+      "patch"
+    ],
+    "configure_liquid_solver": [
+      "domain_object_name",
+      "modifier_name",
+      "patch"
+    ],
+    "configure_pbr_material": [
+      "material_name",
+      "patch",
+      "target_engine"
+    ],
+    "configure_procedural_sky": [
+      "create_world",
+      "scene_name",
+      "settings",
+      "sun_collection_name",
+      "sun_energy",
+      "sun_name",
+      "sync_sun",
+      "target_engine",
+      "world_name"
+    ],
+    "configure_render_settings": [
+      "detail",
+      "patch",
+      "scene_name"
+    ],
+    "configure_retopology_symmetry": [
+      "axis",
+      "bisect",
+      "clipping",
+      "merge",
+      "merge_tolerance",
+      "mirror_object_name",
+      "mirror_vertex_groups",
+      "modifier_name",
+      "object_name",
+      "source_side",
+      "symmetry_tolerance",
+      "validate_seam"
+    ],
+    "configure_rigid_bodies": [
+      "confirm_delete_baked_cache",
+      "scene_name",
+      "targets"
+    ],
+    "configure_rigid_body_constraint": [
+      "configuration",
+      "confirm_delete_baked_cache",
+      "constraint_object_name",
+      "object1_name",
+      "object2_name",
+      "scene_name"
+    ],
+    "configure_rigid_body_force_fields": [
+      "confirm_delete_baked_cache",
+      "create_collection",
+      "fields",
+      "force_collection_name",
+      "scene_name",
+      "weights"
+    ],
+    "configure_rigid_body_world": [
+      "body_collection_name",
+      "cache",
+      "confirm_delete_baked_cache",
+      "confirm_reassign_populated_collections",
+      "constraint_collection_name",
+      "effector_weights",
+      "gravity",
+      "scene_name",
+      "use_gravity",
+      "world"
+    ],
+    "configure_scene_physics": [
+      "patch",
+      "scene_name"
+    ],
+    "configure_surface_projection": [
+      "apply",
+      "auxiliary_target_name",
+      "cull_face",
+      "invert_cull",
+      "invert_vertex_group",
+      "modifier_name",
+      "negative_direction",
+      "object_name",
+      "offset",
+      "positive_direction",
+      "project_axes",
+      "project_limit",
+      "target_object_name",
+      "vertex_group",
+      "wrap_method",
+      "wrap_mode"
+    ],
+    "configure_texture_image": [
+      "alpha_mode",
+      "colorspace",
+      "image_name",
+      "semantic"
+    ],
+    "configure_texture_mapping": [
+      "material_name",
+      "settings",
+      "texture_node_names"
+    ],
+    "configure_world_background": [
+      "color",
+      "create_world",
+      "scene_name",
+      "strength",
+      "transparent_film",
+      "world_name"
+    ],
+    "copy_geometry_node_group": [
+      "collision_policy",
+      "copy_action",
+      "copy_object_data",
+      "duplicate_object_name",
+      "duplicated_object_name",
+      "new_name",
+      "node_group_name",
+      "reassign_duplicate_modifiers",
+      "reassign_modifiers"
+    ],
+    "copy_object_transform": [
+      "match_location",
+      "match_rotation",
+      "match_scale",
+      "object_name",
+      "reference_object_name",
+      "space"
+    ],
+    "create_armature": [
+      "bones",
+      "collection_name",
+      "display",
+      "name",
+      "world_transform"
+    ],
+    "create_bake_cage": [
+      "collection_name",
+      "high_poly_object_names",
+      "name",
+      "object_name",
+      "offset",
+      "validate_enclosure",
+      "vertex_group"
+    ],
+    "create_camera": [
+      "collection_name",
+      "location",
+      "look_at_object_name",
+      "look_at_point",
+      "make_active",
+      "name",
+      "optics",
+      "projection",
+      "rotation_euler",
+      "rotation_quaternion",
+      "scene_name"
+    ],
+    "create_camera_markers": [
+      "action",
+      "markers",
+      "replace_existing",
+      "scene_name"
+    ],
+    "create_camera_path_rig": [
+      "camera_name",
+      "collection_name",
+      "curve_object_name",
+      "end_frame",
+      "forward_axis",
+      "path_points",
+      "rig_name",
+      "scene_name",
+      "spline_type",
+      "start_frame",
+      "target_object_name",
+      "up_axis",
+      "use_curve_follow"
+    ],
+    "create_camera_target": [
+      "camera_names",
+      "collection_name",
+      "constraint_type",
+      "location",
+      "name",
+      "reuse",
+      "scene_name",
+      "target_object_name",
+      "use_evaluated_bounds_center"
+    ],
+    "create_character_cloth_setup": [
+      "add_solidify",
+      "add_subdivision",
+      "armature_modifier_name",
+      "armature_object_name",
+      "body_collider_object_names",
+      "cache_frame_end",
+      "cache_frame_start",
+      "cloth_modifier_name",
+      "collider_modifier_name",
+      "collider_settings",
+      "collision_collection_name",
+      "collisions",
+      "existing_policy",
+      "garment_object_name",
+      "material",
+      "pin_group_name",
+      "rest_frame",
+      "solidify_modifier_name",
+      "solidify_thickness",
+      "solver",
+      "subdivision_levels",
+      "subdivision_modifier_name"
+    ],
+    "create_cloth_attachment": [
+      "attachment_modifier_name",
+      "attachment_type",
+      "bind",
+      "bone_name",
+      "cloth_modifier_name",
+      "cloth_object_name",
+      "existing_policy",
+      "pin_group_name",
+      "rest_frame",
+      "target_object_name"
+    ],
+    "create_cloth_proxy_rig": [
+      "allow_topology_change",
+      "bind_modifier_name",
+      "bind_type",
+      "cloth_modifier_name",
+      "decimate_ratio",
+      "existing_policy",
+      "mesh_deform_precision",
+      "proxy_object_name",
+      "proxy_source_policy",
+      "render_object_name",
+      "rest_frame",
+      "surface_deform_falloff",
+      "validation_frames",
+      "vertex_group_name"
+    ],
+    "create_compound_rigid_body": [
+      "child_collision_shape",
+      "child_object_names",
+      "confirm_delete_baked_cache",
+      "render_object_name",
+      "root_object_name",
+      "scene_name",
+      "total_mass"
+    ],
+    "create_crane_camera_rig": [
+      "arm_length",
+      "base_height",
+      "collection_name",
+      "create_target",
+      "elevation",
+      "lens",
+      "location",
+      "pan",
+      "rig_name",
+      "roll",
+      "scene_name",
+      "tilt"
+    ],
+    "create_curve_generator": "*",
+    "create_dolly_camera_rig": [
+      "camera_height",
+      "collection_name",
+      "create_target",
+      "lens",
+      "location",
+      "rail_direction",
+      "rig_name",
+      "scene_name",
+      "target_distance",
+      "yaw"
+    ],
+    "create_dolly_zoom": [
+      "camera_name",
+      "end_at_seconds",
+      "end_distance",
+      "end_frame",
+      "framing_axis",
+      "interpolation",
+      "movement_object_name",
+      "scene_name",
+      "start_at_seconds",
+      "start_distance",
+      "start_frame",
+      "start_lens",
+      "subject_object_name",
+      "subject_point",
+      "subject_reference_size"
+    ],
+    "create_fluid_domain": "*",
+    "create_focus_pull": [
+      "camera_name",
+      "collection_name",
+      "end_at_seconds",
+      "end_frame",
+      "end_point",
+      "end_subject_name",
+      "focus_control_name",
+      "interpolation",
+      "mode",
+      "scene_name",
+      "start_at_seconds",
+      "start_frame",
+      "start_point",
+      "start_subject_name"
+    ],
+    "create_geometry_node_group": [
+      "collision_policy",
+      "color_tag",
+      "description",
+      "execution_role",
+      "geometry_types",
+      "name",
+      "panels",
+      "purpose",
+      "sockets",
+      "tool_modes"
+    ],
+    "create_geometry_object": [
+      "collection_name",
+      "geometry",
+      "location",
+      "name",
+      "rotation",
+      "scale"
+    ],
+    "create_ik_chain": [
+      "armature_object_name",
+      "chain_bone_names",
+      "constraint_name",
+      "iterations",
+      "pole_control",
+      "target_control",
+      "use_stretch"
+    ],
+    "create_ik_fk_limb": [
+      "armature_object_name",
+      "control_collection",
+      "deform_bone_names",
+      "fk_prefix",
+      "ik_prefix",
+      "ik_target",
+      "mechanism_collection",
+      "pole_control",
+      "property_bone_name",
+      "property_name"
+    ],
+    "create_light": [
+      "collection_name",
+      "light_type",
+      "location",
+      "name",
+      "rotation_euler",
+      "scene_name",
+      "settings"
+    ],
+    "create_liquid_domain": [
+      "cache_directory",
+      "cache_frame_end",
+      "cache_frame_start",
+      "cache_type",
+      "cfl_condition",
+      "collection_name",
+      "dimensions",
+      "effector_collection_name",
+      "flow_collection_name",
+      "location",
+      "modifier_name",
+      "new_object_name",
+      "object_name",
+      "resolution_max",
+      "scene_name",
+      "simulation_method",
+      "time_scale",
+      "timesteps_max",
+      "timesteps_min",
+      "use_adaptive_timesteps"
+    ],
+    "create_liquid_guide": [
+      "cache_frame_end",
+      "cache_frame_start",
+      "domain_modifier_name",
+      "domain_object_name",
+      "existing_policy",
+      "guide_alpha",
+      "guide_beta",
+      "guide_collection_name",
+      "guide_mode",
+      "guide_modifier_name",
+      "guide_object_name",
+      "guide_parent_domain_object_name",
+      "guide_vel_factor",
+      "source",
+      "velocity_factor"
+    ],
+    "create_liquid_material": [
+      "assignment",
+      "config",
+      "domain_object_name",
+      "existing_policy",
+      "material_name",
+      "modifier_name",
+      "slot_index"
+    ],
+    "create_liquid_proxy_rig": [
+      "allow_deforming_proxy",
+      "bottom_thickness",
+      "collection_name",
+      "decimate_ratio",
+      "domain_modifier_name",
+      "domain_object_name",
+      "driver",
+      "effector_settings",
+      "existing_policy",
+      "flow_settings",
+      "geometry",
+      "modifier_name",
+      "proxy_object_name",
+      "rim_axis",
+      "role",
+      "scene_name",
+      "source_object_name",
+      "validation_frames",
+      "wall_thickness"
+    ],
+    "create_orbit_camera_rig": [
+      "azimuth",
+      "collection_name",
+      "elevation",
+      "lens",
+      "pivot",
+      "radius",
+      "rig_name",
+      "roll",
+      "scene_name",
+      "target_height"
+    ],
+    "create_override": [
+      "collection_uid",
+      "detail",
+      "scene_uid"
+    ],
+    "create_pbr_material": [
+      "material_name",
+      "preset",
+      "reuse_existing",
+      "settings",
+      "target_engine"
+    ],
+    "create_primitive": [
+      "dimensions",
+      "location",
+      "name",
+      "primitive_type",
+      "purpose",
+      "rotation",
+      "size"
+    ],
+    "create_procedural_array": "*",
+    "create_procedural_boolean": "*",
+    "create_procedural_deformer": "*",
+    "create_procedural_scatter": "*",
+    "create_ragdoll_rig": [
+      "armature_object_name",
+      "bodies",
+      "collision_layers",
+      "confirm_delete_baked_cache",
+      "constraint_collection_name",
+      "joints",
+      "proxy_collection_name",
+      "rig_name",
+      "scene_name",
+      "start_kinematic",
+      "total_mass"
+    ],
+    "create_repeat_zone": [
+      "graph_operations",
+      "input_location",
+      "input_node_name",
+      "iterations",
+      "node_group_name",
+      "output_location",
+      "output_node_name",
+      "state_items"
+    ],
+    "create_retopology_guides": [
+      "collection_name",
+      "guides",
+      "max_projection_distance",
+      "projection_offset",
+      "source_object_name"
+    ],
+    "create_retopology_target": [
+      "add_mirror",
+      "add_shrinkwrap",
+      "collection_name",
+      "grid_segments",
+      "initial_geometry",
+      "name",
+      "size",
+      "source_object_names",
+      "subdivision_levels"
+    ],
+    "create_rig_property_driver": [
+      "armature_object_name",
+      "default",
+      "destinations",
+      "factor",
+      "maximum",
+      "minimum",
+      "offset",
+      "property_bone_name",
+      "property_name",
+      "property_owner",
+      "soft_maximum",
+      "soft_minimum"
+    ],
+    "create_rigid_body_chain": [
+      "axis",
+      "body_names",
+      "chain_name",
+      "collection_name",
+      "configuration",
+      "confirm_delete_baked_cache",
+      "end_anchor_name",
+      "scene_name",
+      "start_anchor_name"
+    ],
+    "create_rigid_body_collision_proxy": [
+      "approximation",
+      "body_type",
+      "collection_name",
+      "confirm_delete_baked_cache",
+      "drive_render_object",
+      "hide_from_render",
+      "low_resolution_source_name",
+      "proxy_name",
+      "scene_name",
+      "settings",
+      "source_object_name"
+    ],
+    "create_rigid_body_constraint": [
+      "collection_name",
+      "configuration",
+      "confirm_delete_baked_cache",
+      "name",
+      "object1_name",
+      "object2_name",
+      "scene_name",
+      "transform"
+    ],
+    "create_rigid_body_constraint_network": [
+      "body_names",
+      "collection_name",
+      "configuration",
+      "confirm_delete_baked_cache",
+      "edges",
+      "max_neighbors",
+      "network_name",
+      "pairing",
+      "radius",
+      "scene_name"
+    ],
+    "create_rigid_body_debris_field": [
+      "collection_name",
+      "collision_layers",
+      "collision_shape",
+      "confirm_delete_baked_cache",
+      "count",
+      "density",
+      "field_name",
+      "region",
+      "scene_name",
+      "seed",
+      "settings",
+      "sources",
+      "start_deactivated",
+      "transform_range"
+    ],
+    "create_rigid_body_proxy_rig": [
+      "confirm_delete_baked_cache",
+      "control_collection_name",
+      "mappings",
+      "proxy_collection_name",
+      "render_collection_name",
+      "rig_name",
+      "scene_name",
+      "settings",
+      "transform_tolerance",
+      "verification_frames"
+    ],
+    "create_secondary_particle_render_setup": [
+      "create_instance_sphere",
+      "display_percentage",
+      "domain_object_name",
+      "helper_collection_name",
+      "helper_object_name",
+      "instance_object_name",
+      "material_name",
+      "max_systems",
+      "modifier_name",
+      "particle_size",
+      "representation"
+    ],
+    "create_shape_key_controls": [
+      "armature_object_name",
+      "controls",
+      "mesh_object_name",
+      "property_bone_name",
+      "property_owner"
+    ],
+    "create_simulation_zone": [
+      "frame_end",
+      "frame_start",
+      "graph_operations",
+      "input_location",
+      "input_node_name",
+      "node_group_name",
+      "output_location",
+      "output_node_name",
+      "skip_simulation",
+      "state_items",
+      "time_step_mode"
+    ],
+    "create_spline_ik_rig": [
+      "armature_object_name",
+      "chain_bone_names",
+      "constraint_name",
+      "curve_collection_name",
+      "curve_object_name",
+      "curve_points",
+      "new_curve_name",
+      "use_curve_radius",
+      "use_even_divisions",
+      "xz_scale_mode",
+      "y_scale_mode"
+    ],
+    "create_studio_lighting": [
+      "camera_name",
+      "collection_name",
+      "key_ratio",
+      "mood",
+      "rig_name",
+      "scene_name",
+      "target_object_name"
+    ],
+    "create_surface_paneling": "*",
+    "create_surface_section": [
+      "collection_name",
+      "component_index",
+      "cyclic",
+      "name",
+      "plane_normal",
+      "plane_origin",
+      "projection_offset",
+      "source_object_name",
+      "vertex_count"
+    ],
+    "create_volume_generator": "*",
+    "duplicate_camera_rig": [
+      "animation_policy",
+      "camera_data_policy",
+      "collection_name",
+      "external_target_policy",
+      "new_rig_name",
+      "path_data_policy",
+      "scene_name",
+      "source_root_name"
+    ],
+    "duplicate_cloth_setup_variant": [
+      "animation_policy",
+      "cache_directory",
+      "collider_policy",
+      "force_field_policy",
+      "material_policy",
+      "mesh_data_policy",
+      "name_suffix",
+      "render_surface_policy",
+      "source_object_name",
+      "variant_collection_name",
+      "variant_object_name"
+    ],
+    "duplicate_liquid_setup_variant": [
+      "activation_policy",
+      "animation_policy",
+      "cache_directory",
+      "material_policy",
+      "mesh_data_policy",
+      "name_suffix",
+      "source_domain_modifier_name",
+      "source_domain_object_name",
+      "variant_collection_name",
+      "variant_domain_object_name"
+    ],
+    "duplicate_or_instance_objects": [
+      "collection_name",
+      "mode",
+      "names",
+      "source_object_name",
+      "transforms"
+    ],
+    "edit_keyframes": [
+      "action_name",
+      "allow_shared_action",
+      "edits",
+      "replace_active_action",
+      "target"
+    ],
+    "edit_node_group_interface": [
+      "edits",
+      "migration_policy",
+      "node_group_name"
+    ],
+    "estimate_cloth_resources": [
+      "cloth_object_names",
+      "collection_name",
+      "object_limit",
+      "object_offset",
+      "scene_name"
+    ],
+    "estimate_liquid_resources": [
+      "domain_object_name",
+      "modifier_name"
+    ],
+    "evaluate_procedural_geometry": [
+      "frame",
+      "instance_limit",
+      "object_name"
+    ],
+    "export_cloth_simulation": [
+      "coordinate_space",
+      "evaluation_policy",
+      "file_format",
+      "filepath",
+      "forward_axis",
+      "frame_end",
+      "frame_start",
+      "frame_step",
+      "include_materials",
+      "include_normals",
+      "include_uvs",
+      "include_vertex_colors",
+      "max_frames",
+      "object_names",
+      "overwrite",
+      "scene_name",
+      "topology_policy",
+      "units",
+      "up_axis"
+    ],
+    "export_liquid_simulation": [
+      "coordinate_space",
+      "domain_object_name",
+      "file_format",
+      "filepath",
+      "forward_axis",
+      "frame_end",
+      "frame_start",
+      "frame_step",
+      "include_materials",
+      "include_secondary_particles",
+      "include_surface",
+      "include_velocity_attributes",
+      "max_frames",
+      "modifier_name",
+      "overwrite",
+      "scene_name",
+      "units",
+      "up_axis"
+    ],
+    "export_rigid_body_animation": [
+      "confirm_overwrite",
+      "coordinate_convention",
+      "filepath",
+      "format",
+      "frame_end",
+      "frame_start",
+      "frame_step",
+      "object_names",
+      "scene_name",
+      "unit_scale"
+    ],
+    "extend_boundary": [
+      "distance",
+      "expected_revision",
+      "guide_points",
+      "mode",
+      "object_name",
+      "ordered_boundary_vertex_indices",
+      "projection_offset",
+      "rows",
+      "source_object_name",
+      "vector"
+    ],
+    "fill_boundary_quads": [
+      "boundary_edge_indices",
+      "expected_revision",
+      "object_name",
+      "offset",
+      "projection_offset",
+      "source_object_name",
+      "span",
+      "use_interp_simple"
+    ],
+    "fit_liquid_domain": [
+      "cache_directory",
+      "collection_name",
+      "collider_object_names",
+      "domain_object_name",
+      "expected_travel",
+      "modifier_name",
+      "new_domain_name",
+      "open_boundaries",
+      "padding",
+      "sample_frame_end",
+      "sample_frame_start",
+      "sample_frame_step",
+      "scene_name",
+      "source_object_names",
+      "splash_height"
+    ],
+    "fit_surface_primitive": [
+      "axis_hint_world",
+      "collection_name",
+      "expected_source_revision",
+      "max_fit_residual",
+      "name",
+      "primitive",
+      "project_to_source",
+      "projection_offset",
+      "source_object_name",
+      "source_vertex_indices",
+      "u_segments",
+      "v_segments"
+    ],
+    "frame_camera_on_objects": [
+      "aim_at_center",
+      "camera_name",
+      "margin",
+      "object_names",
+      "policy",
+      "scene_name"
+    ],
+    "generate_quadriflow_draft": [
+      "collection_name",
+      "mode",
+      "name",
+      "preserve_attributes",
+      "preserve_boundary",
+      "preserve_sharp",
+      "seed",
+      "smooth_normals",
+      "source_object_name",
+      "target_edge_length",
+      "target_faces",
+      "target_ratio",
+      "use_mesh_symmetry",
+      "validation_profile"
+    ],
+    "generate_retopology_lods": [
+      "collection_name",
+      "confirm",
+      "levels",
+      "object_name",
+      "profile",
+      "projection_offset",
+      "reproject",
+      "source_object_name",
+      "transfer_data_types"
+    ],
+    "get_addon_info": [],
+    "get_camera_rig_info": [
+      "animation_limit",
+      "animation_offset",
+      "child_limit",
+      "child_offset",
+      "descendant_depth",
+      "object_name",
+      "scene_name"
+    ],
+    "get_character_rig_info": [
+      "armature_object_name",
+      "bone_limit",
+      "bone_names",
+      "bone_offset",
+      "dependency_limit",
+      "dependency_offset",
+      "include_custom_properties"
+    ],
+    "get_cloth_object_info": [
+      "object_name",
+      "vertex_group_limit",
+      "vertex_group_offset"
+    ],
+    "get_cloth_simulation_info": [
+      "collection_name",
+      "dependency_limit",
+      "dependency_offset",
+      "object_limit",
+      "object_offset",
+      "scene_name"
+    ],
+    "get_fluid_object_info": [
+      "object_name"
+    ],
+    "get_geometry_node_graph": [
+      "limit",
+      "node_group_name",
+      "offset",
+      "sections"
+    ],
+    "get_geometry_node_type_info": [
+      "bl_idname",
+      "category",
+      "limit",
+      "offset",
+      "search"
+    ],
+    "get_liquid_simulation_info": [
+      "dependency_limit",
+      "dependency_offset",
+      "domain_limit",
+      "domain_object_name",
+      "domain_offset",
+      "domain_uuid",
+      "scene_name"
+    ],
+    "get_mesh_data": [
+      "element_type",
+      "limit",
+      "object_name",
+      "offset",
+      "selected_only"
+    ],
+    "get_object_info": [
+      "limit",
+      "name",
+      "offset",
+      "sections"
+    ],
+    "get_polyhaven_status": [],
+    "get_rigid_body_constraint_info": [
+      "constraint_object_names",
+      "limit",
+      "offset",
+      "scene_name"
+    ],
+    "get_rigid_body_object_info": [
+      "object_names"
+    ],
+    "get_rigid_body_scene_info": [
+      "constraint_limit",
+      "constraint_offset",
+      "member_limit",
+      "member_offset",
+      "scene_name"
+    ],
+    "get_scene_physics_info": [
+      "convert_seconds",
+      "scene_name"
+    ],
+    "get_session_info": [],
+    "get_shader_node_type_info": [
+      "bl_idname",
+      "limit",
+      "offset",
+      "search",
+      "target_type"
+    ],
+    "get_sketchfab_status": [],
+    "get_skinning_info": [
+      "armature_object_name",
+      "influence_limit",
+      "membership_limit",
+      "membership_offset",
+      "mesh_object_names",
+      "normalization_tolerance",
+      "weight_epsilon"
+    ],
+    "get_viewport_screenshot": [
+      "filepath",
+      "format",
+      "max_size",
+      "shading_override",
+      "view"
+    ],
+    "inspect_animation": [
+      "limit",
+      "offset",
+      "target"
+    ],
+    "inspect_delivery": [
+      "hash_libraries",
+      "limit",
+      "max_hash_bytes",
+      "offset",
+      "scene_name"
+    ],
+    "inspect_fluid_simulation": [
+      "domain_object_name",
+      "domain_type",
+      "limit",
+      "offset",
+      "scene_name"
+    ],
+    "inspect_light": [
+      "light_name",
+      "scene_name"
+    ],
+    "inspect_lighting_setup": [
+      "detail",
+      "limit",
+      "offset",
+      "scene_name"
+    ],
+    "inspect_material": [
+      "link_limit",
+      "link_offset",
+      "material_name",
+      "node_limit",
+      "node_offset"
+    ],
+    "inspect_render_output": [
+      "filepath",
+      "format",
+      "frame",
+      "max_size",
+      "output_path"
+    ],
+    "inspect_render_setup": [
+      "graph_sections",
+      "limit",
+      "offset",
+      "scene_name"
+    ],
+    "inspect_retopology": [
+      "adjacency_depth",
+      "limit",
+      "object_name",
+      "offset",
+      "selected_vertex_indices"
+    ],
+    "inspect_uv_layout": [
+      "object_name",
+      "overlap_pair_limit",
+      "uv_map_name"
+    ],
+    "keyframe_bone_reach": [
+      "action_name",
+      "action_policy",
+      "action_slot_identifier",
+      "armature_object_name",
+      "confirm_displace_action",
+      "detail",
+      "easing",
+      "handle_left",
+      "handle_right",
+      "interpolation",
+      "keying_policy",
+      "reaches",
+      "tolerance_m"
+    ],
+    "keyframe_camera_rig": [
+      "handle_left",
+      "handle_right",
+      "interpolation",
+      "keyframes",
+      "policy"
+    ],
+    "keyframe_character_pose": [
+      "action_name",
+      "action_policy",
+      "action_slot_identifier",
+      "armature_object_name",
+      "confirm_displace_action",
+      "detail",
+      "easing",
+      "frame",
+      "handle_left",
+      "handle_right",
+      "interpolation",
+      "keying_policy",
+      "poses",
+      "space"
+    ],
+    "keyframe_object_transform": [
+      "action_name",
+      "action_policy",
+      "action_slot_identifier",
+      "confirm_displace_action",
+      "handle_left",
+      "handle_right",
+      "interpolation",
+      "keyframes",
+      "policy"
+    ],
+    "link_canon_library": [
+      "as_override",
+      "collections",
+      "filepath",
+      "objects",
+      "relative",
+      "scene_uid"
+    ],
+    "list_character_bones": [
+      "armature_object_name",
+      "bone_names",
+      "limit",
+      "offset",
+      "rest_axes"
+    ],
+    "list_libraries": [
+      "detail",
+      "limit",
+      "offset"
+    ],
+    "list_lights": [
+      "collection_name",
+      "detail",
+      "light_type",
+      "limit",
+      "offset",
+      "scene_name"
+    ],
+    "list_materials": "*",
+    "list_procedural_systems": [
+      "include_orphans",
+      "limit",
+      "offset"
+    ],
+    "list_scene_objects": [
+      "limit",
+      "offset"
+    ],
+    "list_texture_images": [
+      "include_unused",
+      "limit",
+      "material_name",
+      "offset"
+    ],
+    "load_texture_image": [
+      "check_existing",
+      "max_bytes",
+      "name",
+      "path"
+    ],
+    "manage_animation_action": [
+      "action",
+      "action_name",
+      "replace_active",
+      "source_action_name",
+      "target"
+    ],
+    "manage_animation_driver": [
+      "action",
+      "array_index",
+      "confirm_remove",
+      "data_path",
+      "driver_type",
+      "expression",
+      "mute",
+      "target",
+      "variables"
+    ],
+    "manage_bone_collections": [
+      "armature_object_name",
+      "operations"
+    ],
+    "manage_cloth_cache": [
+      "action",
+      "confirm_bake",
+      "confirm_external_overwrite",
+      "confirm_free_bake",
+      "max_bake_frames",
+      "modifier_name",
+      "object_name",
+      "patch"
+    ],
+    "manage_fluid_cache": "*",
+    "manage_geometry_nodes_bake": [
+      "action",
+      "bake_id",
+      "bake_target",
+      "confirm_bake",
+      "confirm_delete",
+      "confirm_overwrite",
+      "directory",
+      "frame_end",
+      "frame_start",
+      "max_bytes",
+      "max_frames",
+      "modifier_name",
+      "object_name",
+      "time_limit_seconds",
+      "unpack_method"
+    ],
+    "manage_geometry_nodes_modifier": [
+      "action",
+      "confirm_destructive",
+      "modifier_name",
+      "mute",
+      "new_name",
+      "object_name",
+      "replacement_group_name",
+      "show_render",
+      "show_viewport",
+      "stack_index"
+    ],
+    "manage_liquid_cache": [
+      "action",
+      "confirm_bake",
+      "confirm_external_overwrite",
+      "confirm_external_path",
+      "confirm_free",
+      "domain_object_name",
+      "domain_type",
+      "max_bake_frames",
+      "max_existing_cache_bytes",
+      "modifier_name",
+      "patch",
+      "stage"
+    ],
+    "manage_modifiers": [
+      "action",
+      "confirm_destructive",
+      "modifier",
+      "object_name",
+      "position"
+    ],
+    "manage_named_attributes": [
+      "action",
+      "attribute_name",
+      "confirm_destructive",
+      "data_type",
+      "domain",
+      "new_name",
+      "object_name",
+      "values"
+    ],
+    "manage_nla_tracks": [
+      "action",
+      "action_name",
+      "confirm_remove",
+      "frame_start",
+      "strip_name",
+      "strip_patch",
+      "target",
+      "track_name",
+      "track_patch"
+    ],
+    "manage_object_constraints": [
+      "action",
+      "constraint",
+      "object_name",
+      "position"
+    ],
+    "manage_object_hierarchy": [
+      "assignments",
+      "preserve_world_transform"
+    ],
+    "manage_procedural_instances": [
+      "node_group_name",
+      "pick_instance",
+      "realize_instances",
+      "rotation",
+      "scale",
+      "source_name",
+      "source_type",
+      "translation"
+    ],
+    "manage_retopology_checkpoint": [
+      "action",
+      "checkpoint_name",
+      "confirm",
+      "object_name"
+    ],
+    "manage_rigid_body_cache": [
+      "action",
+      "calculate_frame",
+      "confirm_bake",
+      "confirm_external_overwrite",
+      "confirm_free",
+      "max_frame_steps",
+      "scene_name",
+      "settings"
+    ],
+    "manage_scene_collections": [
+      "action",
+      "collection_name",
+      "confirm_remove",
+      "hide_render",
+      "hide_viewport",
+      "object_names",
+      "parent_collection_name"
+    ],
+    "manage_uv_maps": [
+      "action",
+      "confirm",
+      "new_name",
+      "object_name",
+      "source_uv_map_name",
+      "uv_map_name"
+    ],
+    "manage_view_layers": [
+      "action",
+      "confirm_remove",
+      "patch",
+      "scene_name",
+      "view_layer_name"
+    ],
+    "match_camera_transform": [
+      "destination_name",
+      "policy",
+      "source_object_name",
+      "world_transform"
+    ],
+    "mesh_bevel": [
+      "affect",
+      "edge_indices",
+      "object_name",
+      "offset",
+      "segments",
+      "vertex_indices"
+    ],
+    "mesh_boolean": [
+      "cutter_object_name",
+      "keep_cutter",
+      "object_name",
+      "operation"
+    ],
+    "mesh_bridge": [
+      "cuts",
+      "edge_indices",
+      "expected_revision",
+      "interpolation",
+      "loop_a_edge_indices",
+      "loop_b_edge_indices",
+      "object_name",
+      "smoothness",
+      "twist_offset"
+    ],
+    "mesh_extrude": [
+      "face_indices",
+      "object_name",
+      "offset"
+    ],
+    "mesh_inset": [
+      "depth",
+      "face_indices",
+      "object_name",
+      "thickness"
+    ],
+    "mesh_remesh": [
+      "object_name",
+      "voxel_size"
+    ],
+    "mesh_solidify": [
+      "apply",
+      "object_name",
+      "thickness"
+    ],
+    "mesh_subdivide": [
+      "cuts",
+      "face_indices",
+      "object_name"
+    ],
+    "mesh_symmetrize": [
+      "direction",
+      "object_name"
+    ],
+    "mirror_armature_bones": [
+      "armature_object_name",
+      "axis",
+      "bone_names",
+      "mirror_constraints",
+      "source_token",
+      "target_token"
+    ],
+    "open_shot": [
+      "discard_unsaved",
+      "filepath",
+      "load_ui"
+    ],
+    "optimize_uv_layout": [
+      "average_island_scale",
+      "face_indices",
+      "margin",
+      "margin_method",
+      "minimize_stretch_iterations",
+      "object_name",
+      "pack_islands",
+      "rotate",
+      "scale",
+      "udim_source",
+      "uv_map_name"
+    ],
+    "patch_armature_bones": [
+      "armature_object_name",
+      "confirm_animated_rest_changes",
+      "operations"
+    ],
+    "patch_geometry_node_graph": [
+      "node_group_name",
+      "operations"
+    ],
+    "patch_shader_graph": [
+      "enable_nodes",
+      "operations",
+      "target"
+    ],
+    "plan_render_animation": [
+      "confirm_frame_range",
+      "filepath",
+      "max_animation_frames",
+      "scene_name"
+    ],
+    "point_camera_at": [
+      "camera_location",
+      "camera_name",
+      "scene_name",
+      "subtarget",
+      "target_object_name",
+      "target_point"
+    ],
+    "prepare_cloth_render_surface": [
+      "cloth_modifier_name",
+      "corrective_smooth",
+      "corrective_smooth_name",
+      "existing_policy",
+      "object_name",
+      "rest_frame",
+      "solidify",
+      "solidify_name",
+      "subdivision",
+      "subdivision_name",
+      "weighted_normal",
+      "weighted_normal_name"
+    ],
+    "prepare_fracture_rigid_bodies": [
+      "bond_distance",
+      "breaking_threshold",
+      "collision_margin",
+      "collision_shape",
+      "confirm_delete_baked_cache",
+      "constraint_collection_name",
+      "density",
+      "piece_object_names",
+      "scene_name",
+      "use_deactivation"
+    ],
+    "prepare_liquid_render_mesh": [
+      "delivery_object_name",
+      "domain_object_name",
+      "existing_policy",
+      "finish",
+      "laplacian_modifier_name",
+      "material_assignment",
+      "material_name",
+      "material_slot_index",
+      "modifier_name",
+      "output_policy",
+      "smooth_modifier_name",
+      "subdivision_modifier_name"
+    ],
+    "project_mesh_elements": [
+      "backface_policy",
+      "direction",
+      "direction_space",
+      "expected_revision",
+      "max_distance",
+      "method",
+      "negative_direction",
+      "object_name",
+      "offset",
+      "positive_direction",
+      "preserve_boundary",
+      "preserve_symmetry_axis",
+      "source_object_name",
+      "symmetry_tolerance",
+      "vertex_group",
+      "vertex_indices"
+    ],
+    "publish_procedural_asset": [
+      "author",
+      "catalog_id",
+      "description",
+      "fake_user",
+      "node_group_name",
+      "operator_idname",
+      "tags"
+    ],
+    "realize_procedural_output": [
+      "collection_name",
+      "collision_policy",
+      "confirm_destructive",
+      "delivery_mode",
+      "frame",
+      "modifier_name",
+      "object_name",
+      "output_name"
+    ],
+    "redistribute_edge_loop": [
+      "closed",
+      "corner_vertex_indices",
+      "expected_revision",
+      "loop_vertex_indices",
+      "object_name",
+      "preserve_endpoints",
+      "projection_offset",
+      "source_object_name"
+    ],
+    "relax_topology": [
+      "expected_revision",
+      "factor",
+      "iterations",
+      "lock_boundary",
+      "lock_vertex_group",
+      "object_name",
+      "projection_offset",
+      "source_object_name",
+      "vertex_indices"
+    ],
+    "reload_library": [
+      "detail",
+      "library_uid"
+    ],
+    "relocate_library": [
+      "detail",
+      "filepath",
+      "library_uid"
+    ],
+    "remove_cloth_components": [
+      "collection_name",
+      "component_type",
+      "confirm_affected_bakes",
+      "confirm_baked_removal",
+      "modifier_name",
+      "object_name"
+    ],
+    "remove_fluid_components": [
+      "accept_orphaned_cache",
+      "targets"
+    ],
+    "remove_rigid_body_components": [
+      "component_type",
+      "confirm_destructive",
+      "object_names",
+      "rig_id",
+      "scene_name"
+    ],
+    "remove_scene_objects": [
+      "confirm_remove",
+      "managed_rig",
+      "object_names"
+    ],
+    "render_lighting_preview": [
+      "camera_name",
+      "confirm_overwrite",
+      "frame",
+      "height",
+      "output_paths",
+      "samples",
+      "scene_name",
+      "target_engine",
+      "width"
+    ],
+    "render_pbr_material_preview": [
+      "geometry",
+      "material_name",
+      "output_paths",
+      "resolution",
+      "samples",
+      "target_engine",
+      "transparent_background"
+    ],
+    "render_scene": [
+      "confirm_frame_range",
+      "confirm_overwrite",
+      "confirm_render",
+      "detail",
+      "filepath",
+      "frame",
+      "max_animation_frames",
+      "max_duration_seconds",
+      "mode",
+      "persist_output",
+      "render_slot_policy",
+      "scene_name",
+      "verify_outputs",
+      "verify_passes",
+      "view_layer_name"
+    ],
+    "reroute_topology": [
+      "action",
+      "cuts",
+      "edge_indices",
+      "expected_revision",
+      "object_name",
+      "vertex_indices"
+    ],
+    "reset_scene": [
+      "confirm_reset",
+      "purge_orphaned_data",
+      "scene_name"
+    ],
+    "reset_session": [
+      "confirm"
+    ],
+    "run_geometry_nodes_tool": [
+      "confirm_destructive",
+      "edge_indices",
+      "face_indices",
+      "inputs",
+      "mode",
+      "node_group_name",
+      "object_names",
+      "vertex_indices"
+    ],
+    "sample_cloth_simulation": [
+      "collider_sample_limit",
+      "frames",
+      "modifier_name",
+      "object_name",
+      "timeout_seconds",
+      "vertex_sample_limit"
+    ],
+    "sample_liquid_simulation": [
+      "boundary_tolerance_cells",
+      "domain_object_name",
+      "frames",
+      "max_preroll_frames",
+      "modifier_name",
+      "timeout_seconds"
+    ],
+    "sample_rigid_body_simulation": [
+      "escape_bounds_max",
+      "escape_bounds_min",
+      "frame_selection",
+      "include_velocity",
+      "object_names",
+      "scene_name",
+      "stationary_speed",
+      "timeout_seconds"
+    ],
+    "save_shot": [
+      "compress",
+      "confirm_overwrite",
+      "create_directories",
+      "filepath",
+      "provenance_checksums",
+      "relative_remap",
+      "write_provenance"
+    ],
+    "save_texture_image": [
+      "color_depth",
+      "color_mode",
+      "file_format",
+      "image_name",
+      "output_path",
+      "overwrite"
+    ],
+    "set_action_cycle": [
+      "action_name",
+      "action_slot_identifier",
+      "cycles_after",
+      "cycles_before",
+      "data_path_prefix",
+      "mode_after",
+      "mode_before",
+      "operation",
+      "target"
+    ],
+    "set_camera_interpolation": [
+      "array_index",
+      "data_path",
+      "easing",
+      "frame_end",
+      "frame_start",
+      "handle_left",
+      "handle_right",
+      "interpolation",
+      "object_name",
+      "owner"
+    ],
+    "set_character_pose": [
+      "armature_object_name",
+      "confirm_reset_unspecified",
+      "detail",
+      "poses",
+      "reset_unspecified",
+      "space"
+    ],
+    "set_cloth_vertex_weights": [
+      "assignments",
+      "group_name",
+      "modifier_name",
+      "object_name",
+      "operation",
+      "role"
+    ],
+    "set_geometry_nodes_inputs": [
+      "targets"
+    ],
+    "set_object_transform": [
+      "object_name",
+      "patch",
+      "space"
+    ],
+    "set_retopology_features": [
+      "apply_detected",
+      "bevel_weight",
+      "crease",
+      "detect_source_object_name",
+      "edge_indices",
+      "expected_revision",
+      "guide_distance",
+      "guide_object_names",
+      "include_material_boundaries",
+      "object_name",
+      "seam",
+      "sharp",
+      "source_dihedral_angle"
+    ],
+    "set_rigid_body_collision_layers": [
+      "confirm_delete_baked_cache",
+      "policy",
+      "scene_name",
+      "targets"
+    ],
+    "set_rigid_body_mass": [
+      "assignments",
+      "confirm_delete_baked_cache",
+      "scene_name",
+      "target_total_mass"
+    ],
+    "set_scene_camera": [
+      "camera_name",
+      "marker_frame",
+      "marker_name",
+      "replace_marker",
+      "scene_name"
+    ],
+    "set_scene_frame": [
+      "frame",
+      "scene_name",
+      "subframe"
+    ],
+    "set_skin_weights": [
+      "assignments",
+      "normalized_vertices"
+    ],
+    "set_uv_seams": [
+      "action",
+      "angle_threshold",
+      "edge_indices",
+      "object_name",
+      "rule"
+    ],
+    "set_viewport_overlay": [
+      "enabled",
+      "toggle"
+    ],
+    "setup_animated_passive_collider": [
+      "collision_shape",
+      "confirm_delete_baked_cache",
+      "maximum_evaluated_faces",
+      "mesh_source",
+      "object_name",
+      "sample_frames",
+      "scene_name",
+      "use_deform"
+    ],
+    "setup_liquid_shot": [
+      "cache_directory",
+      "cache_frame_end",
+      "cache_frame_start",
+      "cache_type",
+      "collection_name",
+      "containers",
+      "create_validation_volumes",
+      "domain_object_name",
+      "dry_run",
+      "expected_travel",
+      "mesh_patch",
+      "modifier_name",
+      "new_domain_name",
+      "padding",
+      "quality",
+      "scene_name",
+      "solver_patch",
+      "sources",
+      "spill_catch_depth",
+      "spill_catch_margin",
+      "splash_height"
+    ],
+    "solve_bone_reach": [
+      "armature_object_name",
+      "detail",
+      "reaches",
+      "tolerance_m"
+    ],
+    "sync_data_name": [
+      "object_names"
+    ],
+    "test_deformation": [
+      "area_warning_ratio",
+      "check_self_intersections",
+      "frames",
+      "issue_limit",
+      "joint_vertex_groups",
+      "object_name",
+      "reference_frame",
+      "source_object_name",
+      "stretch_warning_ratio"
+    ],
+    "transfer_mesh_attributes": [
+      "apply",
+      "data_types",
+      "destination_layers",
+      "edge_mapping",
+      "loop_mapping",
+      "max_distance",
+      "mix_factor",
+      "mix_mode",
+      "modifier_name",
+      "object_name",
+      "polygon_mapping",
+      "source_layers",
+      "source_object_name",
+      "use_object_transform",
+      "vertex_mapping"
+    ],
+    "transfer_skin_weights": [
+      "commit",
+      "confirm_commit",
+      "destination_policy",
+      "mapping",
+      "max_distance",
+      "mix_factor",
+      "mix_mode",
+      "modifier_name",
+      "normalize",
+      "source_groups",
+      "source_mesh_name",
+      "target_mesh_name",
+      "use_object_transform"
+    ],
+    "unlink_libraries": [
+      "confirm",
+      "library_uids",
+      "purge_orphans"
+    ],
+    "unwrap_retopology_uvs": [
+      "average_island_scale",
+      "margin",
+      "method",
+      "minimize_stretch_iterations",
+      "object_name",
+      "pack_islands",
+      "replace_existing",
+      "uv_map_name"
+    ],
+    "unwrap_uvs": [
+      "create_if_missing",
+      "face_indices",
+      "margin",
+      "method",
+      "object_name",
+      "uv_map_name"
+    ],
+    "validate_camera_rig": [
+      "object_names",
+      "sample_frames",
+      "scene_name"
+    ],
+    "validate_character_rig": [
+      "armature_object_names",
+      "frames",
+      "influence_limit",
+      "issue_limit",
+      "issue_offset",
+      "mesh_object_names",
+      "normalization_tolerance"
+    ],
+    "validate_cloth_setup": [
+      "cloth_object_names",
+      "collection_name",
+      "collision_pair_limit",
+      "evaluated_triangle_limit",
+      "max_findings",
+      "scene_name"
+    ],
+    "validate_geometry_node_graph": [
+      "node_group_name",
+      "object_names",
+      "topology_warning_threshold"
+    ],
+    "validate_lighting_setup": [
+      "limit",
+      "offset",
+      "scene_name",
+      "subject_object_names",
+      "target_engine"
+    ],
+    "validate_liquid_result": [
+      "deadline_frame",
+      "domain_object_name",
+      "frames",
+      "max_preroll_frames",
+      "modifier_name",
+      "overflow_policy",
+      "sample_resolution",
+      "target_fill_fraction",
+      "timeout_seconds",
+      "volume_object_names"
+    ],
+    "validate_liquid_setup": [
+      "domain_object_names",
+      "max_findings",
+      "scene_name"
+    ],
+    "validate_pbr_asset": [
+      "material_names",
+      "object_names",
+      "overlap_pair_limit",
+      "profile"
+    ],
+    "validate_retopology": [
+      "check_self_intersections",
+      "check_skin_weights",
+      "check_uv_overlap",
+      "issue_limit",
+      "object_name",
+      "profile",
+      "source_object_name",
+      "thresholds"
+    ],
+    "validate_rigid_body_setup": [
+      "collision_pair_limit",
+      "evaluated_triangle_limit",
+      "max_findings",
+      "object_names",
+      "scene_name"
+    ],
+    "validate_scene": [
+      "max_findings",
+      "scene_name",
+      "scope"
+    ]
+  },
+  "protocol_version": 33
+}

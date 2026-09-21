@@ -30,6 +30,10 @@ from ._shared import (
 )
 
 _COPY_CONSTRAINTS = {"COPY_LOCATION", "COPY_ROTATION"}
+# Squared distance under which two world points count as the same point. It is deliberately the
+# same floor _look_quaternion applies to its aim direction, so a camera placement this handler
+# accepts can never be rejected a line later by the aim it was computed for.
+_COINCIDENT_DISTANCE_SQUARED = 1e-16
 
 
 def _target_world_point(target, subtarget=None):
@@ -44,6 +48,16 @@ def _target_world_point(target, subtarget=None):
 
 def _set_world_rotation(obj, rotation):
     location, _old_rotation, scale = obj.matrix_world.decompose()
+    obj.matrix_world = mathutils.Matrix.LocRotScale(location, rotation, scale)
+
+
+def _set_world_location(obj, location):
+    # The translation twin of _set_world_rotation, and written the same way for the same reason:
+    # assigning matrix_world makes Blender solve the local channel through the parent chain, so a
+    # camera parented to a rig root, a crane arm, or a path follower still lands on the requested
+    # world point. Assigning .location instead would be read in parent space and quietly put the
+    # camera somewhere else entirely, which is precisely the failure this argument exists to avoid.
+    _old_location, rotation, scale = obj.matrix_world.decompose()
     obj.matrix_world = mathutils.Matrix.LocRotScale(location, rotation, scale)
 
 
@@ -139,6 +153,7 @@ class _TargetingMixin:
         target_object_name=None,
         target_point=None,
         subtarget=None,
+        camera_location=None,
     ):
         scene = _scene(scene_name)
         camera = _camera(camera_name, scene=scene)
@@ -148,6 +163,22 @@ class _TargetingMixin:
             raise ValueError("subtarget requires target_object_name")
         target = _object(target_object_name, scene=scene) if target_object_name is not None else None
         point = _target_world_point(target, subtarget) if target is not None else _vector(target_point, "target_point")
+        placement = _vector(camera_location, "camera_location") if camera_location is not None else None
+        if placement is not None:
+            if (point - placement).length_squared <= _COINCIDENT_DISTANCE_SQUARED:
+                # _look_quaternion refuses a zero-length aim direction as well, but it would only do
+                # so after the camera had already been moved, and it cannot name the coordinates that
+                # collided. Refusing here leaves the camera untouched and hands the caller both
+                # points, which is what they need to pick a different vantage.
+                raise ValueError(
+                    f"camera_location {list(placement)} and the aim target {list(point)} are the same "
+                    "world position; a camera cannot look at the point it occupies"
+                )
+            # _camera() has already run a view-layer update, so the parent chain is evaluated and the
+            # world-space write below resolves against a current parent matrix. Blender's matrix_world
+            # setter also stores what it is given before deriving the local channel, so the aim reads
+            # the new origin back on the next line without a second update.
+            _set_world_location(camera, placement)
         _set_world_rotation(camera, _look_quaternion(camera.matrix_world.translation, point))
         return {
             "camera": camera.name,

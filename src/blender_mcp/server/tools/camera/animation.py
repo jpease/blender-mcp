@@ -9,12 +9,11 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field, model_validator
 
 from ...app import mcp
+from ..key_style import Easing, HandleType, Interpolation
 from ._shared import _call, _StrictModel, _tool_params
 
 AnimationOwner = Literal["OBJECT", "CAMERA_DATA", "CONSTRAINT", "DOF"]
 KeyPolicy = Literal["REPLACE", "INSERT_ONLY"]
-Interpolation = Literal["CONSTANT", "LINEAR", "BEZIER"]
-HandleType = Literal["FREE", "ALIGNED", "VECTOR", "AUTO", "AUTO_CLAMPED"]
 FocusPullMode = Literal["DISTANCE", "FOCUS_CONTROL"]
 FramingAxis = Literal["HORIZONTAL", "VERTICAL"]
 
@@ -85,7 +84,7 @@ async def set_camera_interpolation(
     interpolation: Interpolation = "BEZIER",
     handle_left: HandleType = "AUTO_CLAMPED",
     handle_right: HandleType = "AUTO_CLAMPED",
-    easing: Literal["AUTO", "EASE_IN", "EASE_OUT", "EASE_IN_OUT"] | None = None,
+    easing: Easing | None = None,
 ) -> dict:
     """
     Change interpolation only on one exact channel and inclusive frame interval.

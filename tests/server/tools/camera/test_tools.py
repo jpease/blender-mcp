@@ -3,6 +3,7 @@
 import asyncio
 import math
 import sys
+import types
 
 import pytest
 
@@ -113,6 +114,32 @@ def test_point_camera_at_preflights_target_source_before_dispatch(monkeypatch) -
         )
 
     assert connection.calls == []
+
+
+def test_point_camera_at_places_before_aiming_and_refuses_a_coincident_placement(monkeypatch) -> None:
+    connection = _StubConnection({"camera": "Hero"})
+    monkeypatch.setattr(_shared, "get_blender_connection", lambda: connection)
+
+    _run(
+        camera.point_camera_at,
+        scene_name="Scene",
+        camera_name="Hero",
+        target_point=(0.0, 0.0, 1.6),
+        camera_location=(0.0, -6.0, 1.7),
+    )
+
+    assert connection.calls[0][1]["camera_location"] == (0.0, -6.0, 1.7)
+
+    with pytest.raises(ToolError, match="same point as target_point"):
+        _run(
+            camera.point_camera_at,
+            scene_name="Scene",
+            camera_name="Hero",
+            target_point=(1.0, 2.0, 3.0),
+            camera_location=(1.0, 2.0, 3.0),
+        )
+
+    assert len(connection.calls) == 1
 
 
 def test_configure_camera_serializes_only_explicit_patch_fields(monkeypatch) -> None:
@@ -337,6 +364,38 @@ def test_handler_binary_solver_finds_smallest_fitting_value(monkeypatch) -> None
     solved = handler._binary_smallest_fit(lambda value: value >= 7.5, 0.0, 1.0)
 
     assert solved == pytest.approx(7.5)
+
+
+def test_handler_point_camera_at_rejects_a_placement_on_the_aim_point(monkeypatch) -> None:
+    class Vector(tuple):
+        """The slice of mathutils.Vector the placement guard uses before any transform is read."""
+
+        def __sub__(self, other):
+            return Vector(mine - theirs for mine, theirs in zip(self, other, strict=True))
+
+        @property
+        def length_squared(self):
+            return sum(component * component for component in self)
+
+    class Camera:
+        """A camera whose transform cannot be touched: reading it at all means the guard ran late."""
+
+        name = "Hero"
+        type = "CAMERA"
+        data = "Hero Data"
+
+        @property
+        def matrix_world(self):
+            raise AssertionError("the camera was moved before the coincident placement was rejected")
+
+    subject = Camera()
+    scene = types.SimpleNamespace(name="Scene", objects={"Hero": subject})
+    addon, _bpy = _load_addon(monkeypatch, data={"scenes": {"Scene": scene}, "objects": {"Hero": subject}})
+    monkeypatch.setattr(sys.modules["mathutils"], "Vector", Vector, raising=False)
+    handler = sys.modules[f"{addon.__name__}.handlers.camera.targeting"]._TargetingMixin()
+
+    with pytest.raises(ValueError, match=r"\[1.0, 2.0, 3.0\] and the aim target \[1.0, 2.0, 3.0\]"):
+        handler.point_camera_at("Scene", "Hero", target_point=(1.0, 2.0, 3.0), camera_location=(1.0, 2.0, 3.0))
 
 
 def test_camera_keyframe_requires_exactly_one_timing_source() -> None:

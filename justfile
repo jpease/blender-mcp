@@ -50,6 +50,12 @@ check: lint fmt-check typecheck test
 anchors:
     {{PYTHON}} scripts/check_revert_anchors.py
 
+# Rewrite the committed snapshot of the add-on's dispatch surface. Run it with the
+# protocol bump that a new or re-signed command requires; test_addon_surface.py is
+# what refuses to let the two drift apart.
+addon-surface:
+    {{PYTHON}} scripts/update_addon_surface.py
+
 # Prove each tracked test still fails with its fix reverted; `--only <prefix>` narrows it
 matrix *args:
     {{PYTHON}} scripts/revert_matrix.py "$@"

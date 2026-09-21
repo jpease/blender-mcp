@@ -1,12 +1,22 @@
 # Scene/Core/Modeling/ND/Asset-Import Tools Audit
 
 **Domain**: Scene initialization, geometry creation, mesh editing, modeling, ND workflow, asset import (PolyHaven/Sketchfab)  
-**Slice Size**: 6 server tools files, 5 addon handler mixins, ~2400 LOC  
+**Slice Size**: 7 server tools files (6 at audit time; `scene_authoring.py` was split out of `scene.py`), 5 addon handler mixins  
 **Rubric Sections Evaluated**: 1 (Scene Initialization), 3 (Asset Import & Download), 4 (Production Workflow Architecture)  
 **Audit Date**: 2026-09-05  
 **Blender Target**: 5.2.1 LTS (5.1+ API only)
 
 ---
+> **Re-verification notice (2026-09-21).** This slice was written against the 2026-09-05 tree and
+> has been re-verified claim by claim against the current tree. See **Verification pass
+> (2026-09-21)** and **Score estimate** at the end of this file. Sections 1–11 are the original
+> findings, with the score-bearing ones corrected in place and marked `⚠ STALE`. Parameter lists in
+> §1 have drifted substantially — the `read_only` parameter shown throughout §1 exists on no tool in
+> this domain, and `create_geometry_object`, `remove_scene_objects`, `reset_scene`,
+> `duplicate_or_instance_objects`, `manage_scene_collections`, `manage_object_hierarchy`,
+> `validate_scene`, `mesh_remesh`, `add_radial_array_modifier` and six `nd_*` tools have different
+> signatures now. The verification pass lists each. Treat any §1–§11 claim it does not mark
+> VERIFIED as unre-verified.
 
 ## 1. Tool Inventory & Coverage
 
@@ -279,17 +289,37 @@ world_loc, world_rot, world_scale = obj.matrix_world.decompose()
 
 ### 6.1 Dry-Run Support
 
-**Tools with dry_run flag**: `create_geometry_object`, `set_object_transform`, `manage_object_hierarchy`, `manage_scene_collections`, `manage_object_constraints`, `manage_modifiers`, `duplicate_or_instance_objects`
+**⚠ STALE (2026-09-21)**: no tool in this domain has a `dry_run` or `read_only` parameter. A search
+for either identifier across `server/tools/{scene,scene_authoring,mesh,model,nd,polyhaven,sketchfab}.py`
+returns nothing; the only `dry_run` parameters in the repository are in `server/tools/liquid/shot.py`
+and `server/tools/cloth/configure.py`, neither of which is in this domain.
 
-**Tools WITHOUT dry_run**: `mesh_*` (7 tools), `model_*` (3 tools), `nd_*` (10 tools), `reset_scene`, all asset import/export
+**Corrected**: **no tool in this domain supports dry-run or preview.** What exists instead is
+(a) pre-mutation validation that rejects bad input before the first mutation
+(`bundled/addon/helpers.py:174-192` index bounds, `bundled/addon/handlers/scene.py:1062` batch object
+prevalidation, `server/tools/scene.py:424` modifier-settings validation), (b) identity-based rollback
+on failure (`bundled/addon/transaction.py:407-474`), and (c) explicit confirmation gates on every
+destructive action (`server/tools/scene_authoring.py:342,372`, `server/tools/scene.py:422`,
+`server/tools/nd.py:148`).
 
-**Gap**: **Mesh editing operations cannot be previewed** — agent cannot verify extrude/inset/bevel/bridge result before committing. High risk for iterative design workflows.
+**Gap (still open)**: **mesh editing operations cannot be previewed** — an agent cannot inspect an
+extrude/inset/bevel/bridge result before committing it. Mitigated, not closed, by the mesh geometry
+backup that is restored on failure (`bundled/addon/server_core.py:1827-1857`
+`_GEOMETRY_MUTATING_COMMANDS`, plus `bundled/addon/transaction.py:412-417`).
 
 ### 6.2 Named Object Safety
 
-**Collision protection**: ✓ Explicit naming collision detection in `duplicate_or_instance_objects` (appends .001, .002, etc.). ✓ Scene collections use same auto-incrementing.
+**⚠ STALE (2026-09-21)**: the opposite is now true. `duplicate_or_instance_objects` takes an explicit
+`names` list (there is no `instance_count`), rejects duplicates inside the batch, and rejects any name
+already present in `bpy.data.objects` with `Objects already exist: [...]` before creating anything
+(`bundled/addon/handlers/scene.py:997-1001`). `manage_scene_collections` action `CREATE` likewise
+rejects an existing collection name (`bundled/addon/handlers/scene.py:1049-1050`), and
+`create_geometry_object` rejects a name already in use (`bundled/addon/handlers/scene.py:908-909`).
 
-**Risk**: When importing assets or creating many objects in a loop, name collisions can be silent (Blender auto-increments). No explicit "name already exists" error returned to client.
+**Corrected risk**: a name collision is a hard error, not a silent auto-increment, and a failed batch
+removes the duplicates it had already created (`bundled/addon/handlers/scene.py:1030-1033`). The
+residual risk moves to provider imports: `import_polyhaven_asset`/`import_sketchfab_model` let
+Blender's own importer name the objects, and neither accepts a target collection.
 
 ### 6.3 Determinism & Reproducibility
 
@@ -300,8 +330,10 @@ world_loc, world_rot, world_scale = obj.matrix_world.decompose()
 - ✓ All constraint/modifier specs
 
 **Non-deterministic**:
-- ⚠ `nd_bulk_create_id_materials` (random RGB; no seed parameter)
-- ⚠ `duplicate_or_instance_objects` (auto-incremented names depend on prior scene state)
+- ⚠ `nd_bulk_create_id_materials` — still random distinct colours with no seed parameter
+  (`server/tools/nd.py:222-250`)
+- ⚠ **STALE (2026-09-21)** `duplicate_or_instance_objects` is now deterministic: every name is
+  caller-supplied and collisions are rejected (`bundled/addon/handlers/scene.py:997-1001`)
 
 ---
 
@@ -318,19 +350,56 @@ world_loc, world_rot, world_scale = obj.matrix_world.decompose()
 
 ### 7.2 Critical Gaps
 
-1. **No camera creation** — GeometrySpec missing `kind="CAMERA"`; agent cannot create render cameras
-2. **No world/environment setup** — No `kind="WORLD"` for HDRI assignment; agent cannot set world shader/environment
-3. **No render configuration** — No tool to set Cycles/Eevee, samples, resolution, output path, tile size, denoiser, etc.
-4. **No local file import** — Cannot import FBX/GLTF/OBJ from disk; only Polyhaven/Sketchfab supported
-5. **Modifier settings opaque** — ModifierSpec allows arbitrary dict; no per-type validation; bad settings fail silently at Blender side
+1. ⚠ **STALE** — **camera creation exists**: `create_camera`, `configure_camera`, `set_scene_camera`,
+   `configure_camera_dof` (`server/tools/camera/core.py:72,119,144,175`). Its absence from
+   `GeometrySpec` is tool placement, not a missing capability: that union describes geometry
+   datablocks.
+2. ⚠ **STALE** — **world/environment setup exists**: `configure_world_background`,
+   `configure_hdri_environment`, `configure_procedural_sky`
+   (`server/tools/lighting/environment.py:45,83,129`). `import_polyhaven_asset` wires an HDRI through
+   the managed World graph on `bpy.context.scene.world`, not `bpy.data.worlds[0]`
+   (`bundled/addon/handlers/polyhaven.py:177-178`).
+3. ⚠ **STALE** — **render configuration exists**: `inspect_render_setup`,
+   `configure_render_settings`, `manage_view_layers`, `render_scene`, `inspect_render_output`
+   (`server/tools/rendering.py:221,236,262,481,644`).
+4. ✓ **VERIFIED, still open** — **no local file import**: nothing imports FBX/GLTF/OBJ/USD from a
+   caller-supplied path. `import_scene.*`/`wm.obj_import` appear only inside the provider handlers
+   (`bundled/addon/handlers/polyhaven.py:384-388`, `bundled/addon/handlers/sketchfab.py:343`), and
+   `server/tools/file_lifecycle.py` covers `.blend` open/save/link/override only. Export exists
+   without a matching import (`bundled/addon/handlers/rigid_body/exporting.py:108-109`).
+5. ⚠ **STALE** — **modifier settings are not opaque**: 30 modifier types each carry an explicit
+   setting allowlist and a generated per-type pydantic variant, validated before the call leaves the
+   server (`server/tools/scene.py:111-303`, applied at `server/tools/scene.py:424`) and re-checked
+   against the per-type allowlist Blender-side (`bundled/addon/handlers/scene.py:1222`). An unknown
+   key is rejected rather than passed to Blender. Constraint settings are allowlisted the same way
+   (`bundled/addon/handlers/scene.py:1178`), with a copy-validate-restore fallback on failure
+   (`bundled/addon/handlers/scene.py:1161-1184`).
 
 ### 7.3 Reliability Risks
 
-1. **`nd_pulse_viewport_toggle` NOT idempotent** — Toggles state; calling twice reverts. Violates production contract.
-2. **`nd_clean_utils` destructive with no undo** — Hardcoded destructive, no dry-run, global scope. Extremely risky.
-3. **Operator context assumptions** — Edit-mode mesh ops assume object is mesh + in edit mode; partial failures can leave state corrupted
-4. **No mesh operation dry-run** — `mesh_extrude`, `mesh_inset`, `mesh_bevel`, `mesh_bridge` cannot be previewed; agent cannot validate topology before commit
-5. **Asset import lacks validation** — No post-import checks for normals, scale, missing materials, armature validity
+1. ✓ **VERIFIED — behaviour unchanged, now disclosed** — `nd_pulse_viewport_toggle` is still a pulse
+   rather than a setter (`server/tools/nd.py:356-388`) because ND exposes no readable state for
+   CLEAR_VIEW/CUSTOM_VIEW/UTILS. The docstring now states "it is NOT guaranteed idempotent" and
+   points at the idempotent native setter `set_viewport_overlay` (`server/tools/viewport.py:60`). Not
+   fixable without upstream state; correctly scoped and labelled.
+2. ⚠ **STALE** — `nd_clean_utils` requires `confirm=True` (`server/tools/nd.py:148,165`), reports
+   exactly what it removed by diffing the scene, and leaves one named undo step. Its docstring states
+   why a true dry-run is infeasible without reimplementing ND's cleanup, and that there is no
+   MCP-level rollback once the response is returned.
+3. ⚠ **STALE** — mesh operator context is explicit, not assumed. `edit_mesh` validates indices
+   against the base mesh *before* entering Edit Mode, enters it, and exits in a `finally`, all inside
+   `preserve_mode_and_selection`, which restores mode, active object and selection on both success and
+   failure (`bundled/addon/helpers.py:67-95,174-230`). Every core mesh operator asserts `FINISHED`
+   (`bundled/addon/handlers/mesh.py:137,161,195,221,276,300`), and mesh commands additionally get a
+   geometry backup restored on failure (`bundled/addon/server_core.py:1827-1857`
+   `_GEOMETRY_MUTATING_COMMANDS`).
+4. ✓ **VERIFIED, still open** — no mesh-operation dry-run; see §6.1 as corrected.
+5. ⚠ **PARTIALLY STALE** — provider imports now validate the operator result and report what actually
+   appeared: Sketchfab diffs `session_uid` sets before/after the import, requires `FINISHED`, and
+   records author/licence/attribution provenance onto the imported objects
+   (`bundled/addon/handlers/sketchfab.py:342-382`). Poly Haven reports imported object names rather
+   than the `asset_id` (`server/tools/polyhaven.py:159-164`). What is still missing is geometry QA
+   (normals, scale sanity, missing materials, armature validity) and import-to-collection.
 
 ---
 
@@ -375,6 +444,14 @@ world_loc, world_rot, world_scale = obj.matrix_world.decompose()
 
 **Test Workflow**: Create 3D product scene with floor, product model, studio lights, render camera, HDR environment.
 
+**⚠ STALE (2026-09-21)**: the walkthrough below assumes tools and parameters that do not exist, and
+reports blockers that are not blockers. Corrected walkthrough — every tool named here is registered in
+the current tree: `reset_scene(confirm_reset=True)` → `create_primitive_object("PLANE", ...)` →
+`import_sketchfab_model(uid, target_size)` → `set_object_transform(object_name, patch, space)` →
+`create_light` or `create_studio_lighting` → `configure_hdri_environment` → `create_camera` +
+`set_scene_camera` → `configure_render_settings` → `validate_scene(scene_name, scope=[...])` →
+`render_scene` → `inspect_render_output`. No step is blocked.
+
 ```
 1. reset_scene() → Clear Blender
 2. create_geometry_object(kind="MESH", type="PLANE", name="Floor", scale=(10,10,1)) → Floor
@@ -389,24 +466,37 @@ world_loc, world_rot, world_scale = obj.matrix_world.decompose()
 7. [Cannot render — no camera, no render settings tool]
 ```
 
-**Blockers Identified**:
-- No camera creation
-- No world/HDRI setup
-- No light creation (though `create_geometry_object` should support lights)
-- No render configuration
-- No render tool
+**Blockers Identified** — ⚠ **four of five are STALE**:
+- ~~No camera creation~~ → `server/tools/camera/core.py:72,144`
+- ~~No world/HDRI setup~~ → `server/tools/lighting/environment.py:83`
+- ~~No light creation~~ → `server/tools/lighting/construction.py:89,235`
+- ~~No render configuration~~ → `server/tools/rendering.py:236`
+- ~~No render tool~~ → `server/tools/rendering.py:481`
 
-**Coverage Score**: 40/100 (scene setup only; rendering impossible)
+**Remaining friction (verified)**: the product model can only come from a provider or a `.blend`
+library — a caller-supplied `.fbx`/`.glb`/`.obj` cannot be imported at all — and nothing assigns
+imported objects to a named collection, so an import lands in whatever collection is active.
+
+**Coverage Score**: ⚠ **STALE** — the 40/100 rested entirely on the blockers above. The workflow is
+executable end to end in the current tree.
 
 ---
 
 ## 11. Summary & Verdict
 
 ### Current Status
-- **52 tools total** across 6 server tool files + 5 addon handler mixins
-- **9 geometry types** supported in declarative API
-- **16 constraint types** and **32+ modifier types** exposable
-- **Full asset library integration** (Polyhaven + Sketchfab)
+- ⚠ **STALE** — **43 registered tools** in the seven files this domain owns: `scene.py` (7),
+  `scene_authoring.py` (3), `mesh.py` (13), `model.py` (3), `nd.py` (10), `polyhaven.py` (4),
+  `sketchfab.py` (3). The "52" additionally counted the adjacent inspection/meta surface
+  (`viewport.py` 5, `scene_physics.py` 2, `core.py` 2) and never matched this report's own tables,
+  which enumerate 43. Counting method in the verification pass below.
+- **9 geometry types** in the declarative API — ✓ VERIFIED
+  (`server/tools/scene_authoring.py:282-293`)
+- **16 constraint types** — ✓ VERIFIED (`server/tools/scene.py:76-101`). **30 modifier types**, not
+  "32+", each with an explicit setting allowlist (`server/tools/scene.py:111-257`)
+- **Full asset library integration** (Poly Haven + Sketchfab) — ✓ VERIFIED, and now opt-in per
+  process: both modules live in the `assets` bundle, which neither artist-facing mode selects
+  (`server/bundles.py:59,83-88`)
 
 ### Production-Ready Domains
 - ✓ Scene composition (objects, collections, hierarchy)
@@ -416,27 +506,300 @@ world_loc, world_rot, world_scale = obj.matrix_world.decompose()
 - ✓ Scene validation (comprehensive health checks)
 
 ### Production-Blocked Domains
-- 🔴 Camera creation & setup
-- 🔴 World/HDRI environment
-- 🔴 Render engine configuration
-- 🔴 Local file import (FBX/GLTF/OBJ)
-- 🔴 Render output execution
+- ⚠ **STALE** — Camera creation & setup: `create_camera`/`set_scene_camera` exist
+- ⚠ **STALE** — World/HDRI environment: `configure_hdri_environment`/`configure_world_background`
+  exist
+- ⚠ **STALE** — Render engine configuration: `configure_render_settings` exists
+- 🔴 **VERIFIED, still blocked** — Local file import (FBX/GLTF/OBJ/USD from a caller-supplied path)
+- ⚠ **STALE** — Render output execution: `render_scene`/`inspect_render_output` exist
 
 ### Risk Assessment
-- 🟠 Idempotency: `nd_pulse_viewport_toggle` violates production contract (toggles; not idempotent)
-- 🟠 Destructiveness: `nd_clean_utils` destructive without undo/dry-run
-- 🟠 Validation: Modifier settings dict is opaque; bad settings fail silently
-- 🟠 State restoration: Partial rollback gaps on multi-step collection operations
+- 🟠 ⚠ **PARTIALLY STALE** — Idempotency: `nd_pulse_viewport_toggle` is still a pulse, but it is
+  documented as such and is no longer the only route to a viewport overlay
+  (`server/tools/viewport.py:60`)
+- 🟠 ⚠ **STALE** — Destructiveness: every destructive path in this domain now has an explicit
+  confirmation gate (`server/tools/nd.py:148`, `server/tools/scene_authoring.py:342,372`,
+  `server/tools/scene.py:422`, `bundled/addon/handlers/scene.py:1086`)
+- 🟠 ⚠ **STALE** — Validation: modifier and constraint settings are validated per type on both sides
+  of the socket (`server/tools/scene.py:424`, `bundled/addon/handlers/scene.py:1222,1178`)
+- 🟠 ✓ **VERIFIED, narrowed** — State restoration: collection membership is not among the fields
+  `mutation_transaction` captures (`bundled/addon/transaction.py:412-417`), and a rollback never
+  resurrects a deleted pre-existing datablock (`bundled/addon/transaction.py:427-428`), so
+  `mesh_boolean(keep_cutter=False)` and `reset_scene` are unrecoverable by rollback. Batch object
+  prevalidation (`bundled/addon/handlers/scene.py:1062`) removes the specific mid-sequence collection
+  failure this report described
+- 🟠 **NEW (verified)** — Provider downloads run synchronously inside Blender's main-thread command
+  drain (`bundled/addon/handlers/polyhaven.py:168`, `bundled/addon/network.py:41-61`), so a large
+  import freezes the UI with no progress and no cancellation. Bounded (connect/read timeouts, byte
+  caps) but blocking
 
-### Reliability Grade: B+ (Good)
-- Strong validation and error handling on geometry/constraint/transform paths
-- Transaction-based rollback on failure
-- Explicit naming and collision-safety
-- Weak points: ND viewport management, modifier settings validation, mesh operation dry-run
+### Reliability Grade: A− (re-verified 2026-09-21; was B+)
+- Pre-mutation validation on both sides of the socket; identity-based rollback with explicitly
+  documented limits; exactly one named undo checkpoint per successful request
+- Mode, active object, selection and mesh geometry restored on failure for every mesh operator
+- Explicit caller-supplied names, rejected collisions, confirmation gates on every destructive path
+- Weak points: no preview/dry-run; blocking provider I/O on Blender's main thread; rollback blind
+  spots (collection membership, deleted pre-existing datablocks); `add_radial_array_modifier` pivot
+  geometry still unproven against live Blender
 
 ### Recommendation
-**This domain is 60% complete for production use**. Camera creation, world setup, and render configuration are **blocking** for any render workflow. Local file import is blocking for mixed-asset workflows. Fix critical issues (camera, world, render config, toggle idempotency) to unlock rendering pipelines; then address modifier validation and mesh dry-run for higher confidence.
+⚠ **STALE** — "60% complete", and the camera/world/render-config blockers behind that number, do not
+hold; see the verification pass below. **Corrected**: this domain is production-usable. The one
+capability hole is local file import (FBX/GLTF/OBJ/USD); the one operational hole is asynchronous
+provider I/O with progress and cancellation; and `add_radial_array_modifier`'s arbitrary-pivot
+geometry needs a live-Blender proof before its output is trusted. Mesh-operation preview and
+post-import geometry QA remain worthwhile, but neither blocks production use.
 
 ---
 
 **End Slice 1 Report**
+
+---
+
+## Verification pass (2026-09-21)
+
+Method: every load-bearing claim in §1–§11 was re-read against the current working tree. No Blender
+was available to this pass, so any claim that can only be settled by running Blender is marked
+UNVERIFIABLE with the reason and the command that would settle it (`just smoke`, `just gate`). Paths
+are relative to `src/blender_mcp/`.
+
+`bundled/addon/server_core.py` was being edited by concurrent work while this pass ran, so every
+citation into it carries the symbol name alongside the line range (e.g.
+`server_core.py:2000-2018 _run_handler`); if the numbers have drifted since, resolve by symbol.
+Claims about `add_radial_array_modifier`'s pivot geometry and about render-overhead behaviour are
+deliberately left to the live-Blender work running in parallel rather than asserted here.
+
+### Tool count (counted, not carried over)
+
+Counting `@mcp.tool` registrations in the seven files this domain owns:
+
+| File | Tools | Registration lines |
+|---|---|---|
+| `server/tools/scene.py` | 7 | 306, 322, 347, 367, 386, 403, 442 |
+| `server/tools/scene_authoring.py` | 3 | 303, 334, 358 |
+| `server/tools/mesh.py` | 13 | 22, 77, 121, 168, 223, 290, 326, 374, 418, 454, 500, 532, 562 |
+| `server/tools/model.py` | 3 | 22, 76, 142 |
+| `server/tools/nd.py` | 10 | 52, 99, 147, 185, 222, 253, 289, 321, 356, 391 |
+| `server/tools/polyhaven.py` | 4 | 46, 80, 136, 195 |
+| `server/tools/sketchfab.py` | 3 | 42, 108, 157 |
+| **Total** | **43** | |
+
+**43 tools**, not 52. `scene.py` no longer holds the authoring trio (`create_geometry_object`,
+`remove_scene_objects`, `reset_scene`): those moved to `scene_authoring.py`, which is a separate
+`scene-authoring` bundle (`server/bundles.py:38`). The adjacent inspection/meta surface this report
+cites in §4.1 but does not own adds 9 more (`viewport.py` 5, `scene_physics.py` 2, `core.py` 2) — 52
+with them, which is where the old number came from; it never matched §1's own tables, which enumerate
+43. Whole-server total for context: **298 registered tools** (`server/bundles.py:6`, asserted by
+`tests/server/test_bundles.py`).
+
+### Claim-by-claim result
+
+#### §1.1 Scene composition
+
+| Claim | Verdict | Current truth |
+|---|---|---|
+| "scene.py: 10 tools, 777 LOC" | **STALE** | 7 tools; authoring trio moved to `server/tools/scene_authoring.py:303,334,358` |
+| Every §1.1 tool takes `read_only` | **STALE** | No tool in this domain has `read_only` or `dry_run`; see §6.1 as corrected |
+| `create_geometry_object(object_name, geometry, transform, material_slots, read_only)` | **STALE** | `(name, geometry, collection_name, location, rotation, scale)` — `server/tools/scene_authoring.py:303-311`. No `material_slots`; transforms are flat and parent-local |
+| 9 geometry types, full pydantic validation | **VERIFIED** | `server/tools/scene_authoring.py:282-293` (mesh, spline, text, meta, lattice, point cloud, curves, grease pencil, volume) |
+| `set_object_transform` validates rotation/scale non-degeneracy, 4x4 matrix, mutual exclusion | **VERIFIED** | `server/tools/scene.py:35-50` — rejects empty patches, >1 rotation representation, non-4x4 matrices, matrix-plus-components, zero scale |
+| `manage_object_hierarchy` "no explicit world-transform preservation in code" | **STALE** | `preserve_world_transform: bool = True` (`server/tools/scene.py:371`), applied by capturing and restoring `matrix_world` (`bundled/addon/handlers/scene.py:1132-1138`). The handler also rejects self-parenting and cycles (`:1111-1130`) and validates bone parents (`:1113-1119`) |
+| `manage_scene_collections` actions CREATE/MOVE/LINK | **STALE** | CREATE / LINK_OBJECTS / UNLINK_OBJECTS / SET_VISIBILITY / REMOVE (`server/tools/scene.py:350`) |
+| `manage_scene_collections` "no rollback on partial moves" | **PARTIALLY STALE** | Every object name is resolved before the first mutation (`bundled/addon/handlers/scene.py:1062`), REMOVE requires `confirm_remove` and refuses a non-empty collection (`:1086-1089`), UNLINK refuses to orphan (`:1067-1074`). Residual: collection membership is not a field `mutation_transaction` restores (`bundled/addon/transaction.py:412-417`) |
+| `manage_object_constraints`: 16 types, whitelist-enforced | **VERIFIED** | `server/tools/scene.py:76-101` |
+| `manage_object_constraints`: "no influence/subtarget validation" | **PARTIALLY STALE** | `influence` is bounded `ge=0, le=1` (`server/tools/scene.py:76-101`) and settings are allowlisted per constraint type Blender-side (`bundled/addon/handlers/scene.py:1178`) with copy-validate-restore on failure (`:1161-1184`). `subtarget` is still a free string, validated only by Blender |
+| `manage_modifiers`: 32 types | **STALE** | 30 types (`server/tools/scene.py:111-142`, enumerated in the tool docstring at `:416-419`) |
+| `manage_modifiers`: "settings dict is **opaque**; no per-modifier validation" | **STALE** | Per-type setting allowlists build one pydantic variant per modifier type into a discriminated union, validated before the call leaves the server (`server/tools/scene.py:111-303`, applied `:424`), then re-checked against the per-type allowlist Blender-side (`bundled/addon/handlers/scene.py:1222`). REMOVE/APPLY additionally require `confirm_destructive` (`server/tools/scene.py:422-423`) |
+| `duplicate_or_instance_objects(object_names, instance_count, …, linked)` | **STALE** | `(source_object_name, names, transforms, mode, collection_name)` with `mode` ∈ COPY / LINKED_DATA / COLLECTION_INSTANCE (`server/tools/scene.py:322-330`) |
+| "collision-free naming" (auto-increment) | **STALE** | Collisions are rejected, not incremented (`bundled/addon/handlers/scene.py:997-1001`); a mid-batch failure removes the duplicates already created (`:1030-1033`) |
+| `remove_scene_objects(object_names, recursive, read_only)` | **STALE** | `(object_names, managed_rig, confirm_remove)`; requires `confirm_remove=True` (`server/tools/scene_authoring.py:334-345`) |
+| `reset_scene(preserve_world, preserve_camera, preserve_lights, read_only)` | **STALE** | `(confirm_reset, scene_name, purge_orphaned_data)` (`server/tools/scene_authoring.py:358-373`). No preserve flags; `purge_orphaned_data=True` purges file-wide, which the docstring states |
+| `reset_scene` "no explicit undo" | **PARTIALLY STALE** | It *is* transacted and leaves one named undo checkpoint (`bundled/addon/server_core.py:2000-2018` `_run_handler`); but rollback never resurrects deleted pre-existing datablocks (`bundled/addon/transaction.py:427-428`), so a failure part-way is not recoverable at MCP level. The finding's substance survives; its stated cause does not |
+| `validate_scene(active_domains=[scene, camera, lighting, pbr, cloth, liquid])` | **STALE** | `(scene_name, scope, max_findings)`; `scope` has 7 domains including `persistence`; it orchestrates `validate_pbr_asset`, `validate_lighting_setup`, `validate_cloth_setup`, `validate_liquid_setup`, `validate_camera_rig`, normalizes findings and reports `truncated`/`domain_summaries` (`server/tools/scene.py:442-476`) |
+
+#### §1.2 Mesh editing
+
+| Claim | Verdict | Current truth |
+|---|---|---|
+| `create_primitive_object`: 7 primitives, dimensions override, blockout tagging | **VERIFIED** | `server/tools/mesh.py:18-19`; operator table `bundled/addon/handlers/mesh.py:28-53`; dimensions/purpose semantics `:68-71` |
+| Operator result validation (`FINISHED`) for extrude/inset/bevel/bridge/symmetrize/subdivide | **VERIFIED** | `bundled/addon/handlers/mesh.py:137,161,195,221,276,300` |
+| "no pre-selection state restoration doc" / edit-mode state can be left corrupted | **STALE** | `edit_mesh` validates indices against the base mesh before entering Edit Mode, then exits in `finally`, inside `preserve_mode_and_selection`, which restores mode/active/selection on success *and* failure (`bundled/addon/helpers.py:67-95,174-230`). Mesh commands also carry a geometry backup restored on failure (`bundled/addon/server_core.py:1827-1857` `_GEOMETRY_MUTATING_COMMANDS`) |
+| `mesh_bevel` `affect` is EDGES/VERTS | **STALE** | `Literal["EDGES", "VERTICES"]` (`server/tools/mesh.py:174`) |
+| `mesh_bevel` has no `harden_normals`/`angle_limit` | **VERIFIED** | `server/tools/mesh.py:168-176` |
+| `mesh_bridge`: `edge_indices` deprecated in favour of loop selection | **VERIFIED** | `(loop_a_edge_indices, loop_b_edge_indices, edge_indices, cuts, interpolation, smoothness, twist_offset, expected_revision)` (`server/tools/mesh.py:223-235`). `expected_revision` (`:234`) is a stale-topology guard the rest of the domain lacks |
+| `mesh_symmetrize` has no threshold/merge tolerance | **VERIFIED** | `server/tools/mesh.py:291` exposes `direction` only |
+| `mesh_boolean(mode, keep_cutter)` | **STALE** | Parameter is `operation`; `keep_cutter` defaults **True** (`server/tools/mesh.py:326-332`). Same-object booleans are rejected (`bundled/addon/handlers/mesh.py:245`) |
+| `mesh_subdivide` has no fractal/quad_corner_type | **VERIFIED** | `server/tools/mesh.py:374-379` (`cuts` bounded 1–1000) |
+| `mesh_remesh(voxel_size, smoothness, mode, apply)`; "mode not validated" | **STALE** | Signature is `(object_name, voxel_size)` only (`server/tools/mesh.py:419`). There is no `mode`, `smoothness` or `apply`, so the validation criticism has no referent; the underlying call is still `bpy.ops.object.voxel_remesh` with a `FINISHED` assert (`bundled/addon/handlers/mesh.py:299-301`) |
+| `clear_edge_marks` clears "seam/sharp/crease/bevel", "comprehensive" | **STALE** | Clears `use_edge_sharp`, `use_seam`, `use_freestyle_mark` — crease and bevel weight are untouched (`bundled/addon/handlers/mesh.py:377-382`). The tool's own docstring is accurate ("sharp/seam/freestyle", `server/tools/mesh.py:565-567`); the audit over-stated it |
+
+#### §1.3 Model transform & array
+
+| Claim | Verdict | Current truth |
+|---|---|---|
+| `copy_object_transform`: HIGH, correct world-space decomposition, full quat/euler handling | **VERIFIED** | World path decomposes both matrices and recomposes with `Matrix.LocRotScale` (`bundled/addon/handlers/model.py:78-83`); the result returns the object's rotation in its *native* representation via `rotation_as_native_list`, which exists specifically to avoid `to_euler(rotation_mode)` on QUATERNION/AXIS_ANGLE (`bundled/addon/helpers.py:373-394`), and labels local vs. world explicitly (`handlers/model.py:86-95`). This closes the "High / partially solved" quaternion-formatting row in `AGENTS.md` |
+| `add_radial_array_modifier(count, radius, height_offset, pivot_object, pivot_location, apply)` | **STALE** | `(count, axis, apply, pivot_object_name, pivot_location, radius)` (`server/tools/model.py:76-86`). There is no `height_offset`; `axis` is new; at most one pivot source is accepted and supplying none is an error rather than silently overlapping copies (`bundled/addon/handlers/model.py:140-159`) |
+| No REPEAT_Y/Z or merge settings | **VERIFIED** | The handler sets `count`, `use_relative_offset=False`, `use_object_offset=True`, `offset_object` only (`bundled/addon/handlers/model.py:165-169`) |
+| Pivot rotation is not a true world-space "rotate around this point" | **UNVERIFIABLE (code-corrected, geometry unproven)** | The helper empty is now placed at `Translate(pivot) @ Rotate(angle, axis) @ Translate(-pivot) @ obj.matrix_world` (`bundled/addon/handlers/model.py:164`, `bundled/addon/helpers.py:397-417`) — the composition the finding asked for. Whether the resulting ring is correct for non-origin, parented, rotated and scaled objects cannot be settled without Blender; that live proof is in flight separately and is **not** scored as proven here |
+| `sync_data_name` idempotent batch rename | **VERIFIED** | `server/tools/model.py:142`; `bundled/addon/handlers/model.py:179-204` |
+
+#### §1.4 ND toolkit
+
+| Claim | Verdict | Current truth |
+|---|---|---|
+| `nd_boolean` "no undo on cancel" | **PARTIALLY STALE** | A cancelled ND operator now yields `ok:false`, `changed_objects=[]` and an explicit "scene is unchanged" warning through the shared `_nd_outcome` (`server/tools/nd.py:27-49`). The scene is still not rolled back if ND mutated before cancelling; the *reporting* defect is fixed |
+| `nd_clean_utils`: 🔴 no dry-run, hardcoded destructive, no rollback | **STALE** | Requires `confirm=True` (`server/tools/nd.py:148,165`), reports removed objects/modifiers by before/after diff, and documents both why a true dry-run is infeasible and that there is no MCP-level rollback afterwards (`:149-169`) |
+| `nd_create_id_material(object_name, diffuse_color, color_space)` | **STALE** | `(object_names, material_name)` — a batch, with no colour parameter at all (`server/tools/nd.py:185-190`) |
+| `nd_bulk_create_id_materials(object_names, color_space)`; random RGB, no seed | **PARTIALLY STALE** | Signature is `(object_names)` (`server/tools/nd.py:222`); the no-seed non-determinism is **VERIFIED** and remains the only non-deterministic tool in the domain |
+| `nd_set_lod_suffix(lod_level)`; "no validation that rename succeeds or collides" | **STALE** | Parameter is `mode` (`server/tools/nd.py:253-257`); the tool returns the actual post-rename names and reports those as `changed_objects` rather than the requested ones (`:282-283`) |
+| `nd_single_vertex(object_name)` | **STALE** | `(location)` (`server/tools/nd.py:289-292`); the name comes back from the handler and is omitted from `changed_objects` when cancelled (`:314-315`), which closes the "must not dereference the active object after cancellation" note in `AGENTS.md` |
+| `nd_apply_modifiers`: no selective apply or mode choice | **VERIFIED** | `server/tools/nd.py:321`; the docstring explains that ND's SOFT/HARD variants are driven by modifier keys and unreachable from a script (`:326-329`) |
+| `nd_pulse_viewport_toggle`: 🔴 not idempotent | **VERIFIED (behaviour), disclosed** | Still a pulse (`server/tools/nd.py:356-388`), because ND exposes no readable state for these three toggles; the docstring says so and redirects to the idempotent native setter `set_viewport_overlay` (`server/tools/viewport.py:60`). It is routed around the transaction deliberately (`bundled/addon/server_core.py:1724` `_NON_UNDO_COMMANDS`) |
+| `nd_capture_utils(action=SELECT/DISPLAY)`; overwrites selection without saving state | **STALE (signature) / VERIFIED (behaviour, by design)** | No `action` parameter (`server/tools/nd.py:392`); it displays *and* selects. Replacing the selection is the tool's stated purpose and the docstring says it changes selection/display state only (`:399-401`). Recorded as a documented contract, not an undisclosed gap |
+
+#### §1.5–§1.6 Asset providers
+
+| Claim | Verdict | Current truth |
+|---|---|---|
+| `get_polyhaven_categories`: checks enablement, validates asset_type | **VERIFIED** | `server/tools/polyhaven.py:46-77` |
+| `list_polyhaven_assets`: paginated, deterministic by asset ID | **VERIFIED** | `server/tools/polyhaven.py:80-128`; returns `offset`, `limit`, `truncated`, `next_offset`. This closes the `AGENTS.md` "catalog cannot be paged / rename to list_*" row on both counts |
+| `import_polyhaven_asset`: "async download" | **STALE** | Only the socket round-trip leaves the event loop (`asyncio.to_thread`); the download itself runs synchronously inside Blender's main-thread command drain (`bundled/addon/handlers/polyhaven.py:168,212,344`). Also the parameter is `file_format`, not `format` (`server/tools/polyhaven.py:142`) |
+| Poly Haven networking unbounded / private `tempfile._cleanup()` | **STALE** | All provider HTTP goes through `bundled/addon/network.py:9-61`: `(5, 60)` connect/read timeouts, `raise_for_status`, streamed `iter_content`, declared-size pre-check and hard byte ceilings; per-asset caps at `bundled/addon/handlers/polyhaven.py:14-15`; temp dirs removed in `finally` (`:422-425`). No `tempfile._cleanup` remains anywhere |
+| Destructive world handling (`bpy.data.worlds[0]`) | **STALE** | Uses `bpy.context.scene.world` and only creates a world when the scene has none (`bundled/addon/handlers/polyhaven.py:177-178`) |
+| `apply_polyhaven_texture(asset_id, material_slot_index, replacement_policy, confirm_replace_all)` | **STALE (signature) / VERIFIED (policy)** | `(object_name, texture_id, replacement_policy, material_slot_index, confirm_replace_all)`; REPLACE_ALL requires confirmation and REPLACE_SLOT requires an index, both enforced before the call reaches Blender (`server/tools/polyhaven.py:195-230`) |
+| "no prior material validation" on apply | **UNVERIFIABLE** | The tool reuses the graph built by import rather than rebuilding it (`server/tools/polyhaven.py:216`); whether the resulting slots are correct in a real file needs Blender |
+| `search_sketchfab_models`: cursor pagination, category filter, count cap | **VERIFIED** | `server/tools/sketchfab.py:42-100`; `count` bounded 1–100, returns `next_cursor`/`previous_cursor`. This closes the `AGENTS.md` "search loses pagination information" row |
+| `get_sketchfab_model_preview`: "no explicit error if model not found" | **STALE** | A provider error is raised (`server/tools/sketchfab.py:140-141`). The two-item `[Image, envelope]` return is **VERIFIED** and now documented as deliberate (`:108-117`) |
+| `import_sketchfab_model`: `normalize_size` hardcoded True | **VERIFIED** | `server/tools/sketchfab.py:191` |
+| "no target-size validation" | **STALE** | `target_size` is required and `gt=0` (`server/tools/sketchfab.py:161`) |
+| Sketchfab import does not detect what it imported / loses provenance | **STALE** | `session_uid` before/after diff, `FINISHED` assert, and author / licence / licence-URL / attribution recorded on the imported objects (`bundled/addon/handlers/sketchfab.py:342-382`); temp dir removed in `finally` (`:401-403`) |
+
+#### §2 Blender API introspection
+
+| Claim | Verdict | Current truth |
+|---|---|---|
+| GreasePencil v3 collection/layer/frame/drawing shape confirmed | **UNVERIFIABLE** | No Blender in this pass, and none in CI (`AGENTS.md:106-113`). The code still targets `bpy.data.grease_pencils` (`bundled/addon/handlers/scene.py:464,925`). Re-prove with `just smoke` |
+| REMESH/OCEAN/ARRAY/BEVEL properties exist in 5.2 | **UNVERIFIABLE** | Names are still used, and are now the allowlist itself (`server/tools/scene.py:111-257`), so a wrong name is a rejected request rather than a Blender error. Live re-proof needed |
+| `bridge_edge_loops`, `symmetrize`, `voxel_remesh` present with the expected arguments | **UNVERIFIABLE** | Still called, each with a `FINISHED` assert (`bundled/addon/handlers/mesh.py:220,276,299`) |
+| `matrix_world` decomposition / rotation-mode preservation work as coded | **UNVERIFIABLE (code path confirmed)** | `bundled/addon/handlers/model.py:78-85`, `bundled/addon/helpers.py:373-394` |
+
+#### §3 Reliability assessment
+
+| Claim | Verdict | Current truth |
+|---|---|---|
+| "All mutation operations wrap in `mutation_transaction`, which snapshots scene state" | **PARTIALLY STALE** | The dispatcher wraps mutating commands (`bundled/addon/server_core.py:2000-2018` `_run_handler`), but read-only, non-undo, session-swap and datablock-replacing commands deliberately bypass it (`:1954-1980` `bypasses_transaction`). And it is not a scene snapshot: rollback removes datablocks the request *created*, identified by `session_uid`, and restores a fixed field list — name, data name, local transform, parent, material slots, modifiers added during the request, and mesh geometry for geometry commands (`bundled/addon/transaction.py:410-434`). The limits are stated in the source rather than implied |
+| Undo checkpoint pushed on success | **VERIFIED** | One named checkpoint per successful request, with a warning when undo was unavailable (`bundled/addon/transaction.py:383-397`, merged into the reply at `bundled/addon/server_core.py:2015-2017`) |
+| No pre-operator capability checks | **VERIFIED** | Nothing in this domain probes operator availability before calling; the guard is the `FINISHED` assert afterwards. ND is the exception (`get_nd_status` reports whether `bpy.ops.nd` exists) |
+| Weak area: "modifier settings opaque" | **STALE** | See §1.1 |
+| Weak area: "operator context assumptions" | **STALE** | See §1.2 |
+
+#### §5 Redundancy verdicts
+
+| Claim | Verdict | Current truth |
+|---|---|---|
+| `mesh_boolean` vs `nd_boolean` not redundant | **VERIFIED** | Applied modifier + optional cutter deletion (`server/tools/mesh.py:326-332`) vs. live modifier + cutter retained as a parented utility (`server/tools/nd.py:52-58`) |
+| `manage_modifiers` vs `nd_apply_modifiers`: "Overlap: None" | **STALE** | `manage_modifiers` now has an `APPLY` action gated on `confirm_destructive` (`server/tools/scene.py:407,422`; `bundled/addon/handlers/scene.py:1238-1242`). They do overlap: one named modifier vs. ND's selective all-eligible apply. Still worth keeping both, for a different reason than the one given |
+| `nd_create_id_material` vs `nd_bulk_create_id_materials`: "single call vs. batch call" | **STALE** | Both take a batch. The real difference is one caller-named material for all objects vs. N random distinct ones, so the proposed merge is now a choice between an explicit `material_name` and an `auto_distinct` flag, not a single/batch merge |
+| `manage_object_constraints` is the only constraint tool | **VERIFIED** | No other `@mcp.tool` in the tree manages object constraints |
+
+#### §4 and §10–§11 capability gaps
+
+| Claim | Verdict | Current truth |
+|---|---|---|
+| 🔴 No camera creation | **STALE** | `server/tools/camera/core.py:72,119,144,175` |
+| 🔴 No world/HDRI assignment | **STALE** | `server/tools/lighting/environment.py:45,83,129` |
+| 🔴 No render configuration / no render tool | **STALE** | `server/tools/rendering.py:221,236,262,481,644` |
+| No light creation | **STALE** | `server/tools/lighting/construction.py:89,124,144,192,235` |
+| Unit scale and gravity covered by `configure_scene_physics` | **VERIFIED** | `server/tools/scene_physics.py:18-34,62-78`; `scale_length` bounded 0.001–100 |
+| Viewport: "overlay only; no shading mode selection" | **PARTIALLY STALE** | `get_viewport_screenshot` takes a per-capture `shading_override` (SOLID/MATERIAL) that is always restored (`server/tools/viewport.py:314-315`, `bundled/addon/handlers/viewport.py:95-116`). There is still no persistent shading setter |
+| 🔴 No local file import (FBX/GLTF/OBJ/USD) | **VERIFIED — still open** | Importers appear only inside provider handlers (`bundled/addon/handlers/polyhaven.py:384-388`, `bundled/addon/handlers/sketchfab.py:343`); `server/tools/file_lifecycle.py` covers `.blend` open/save/link/override. Export exists without a matching import (`bundled/addon/handlers/rigid_body/exporting.py:108-109`) |
+| No import-to-named-collection | **VERIFIED — still open** | Neither `import_polyhaven_asset` nor `import_sketchfab_model` accepts a collection (`server/tools/polyhaven.py:136-143`, `server/tools/sketchfab.py:157-162`) |
+| No post-import geometry validation/repair | **VERIFIED — still open** | Operator success and object identity are checked; normals, scale sanity and material completeness are not |
+| "52 tools total" | **STALE** | 43; see the count table above |
+| "9 geometry types / 16 constraint types / 32+ modifier types" | **MIXED** | 9 **VERIFIED**, 16 **VERIFIED**, 30 not 32 (**STALE**) |
+| Coverage score 40/100, "rendering impossible", "60% complete" | **STALE** | Rested entirely on the four capability claims above, all of which are false in the current tree |
+
+### Domain-relevant findings outside this report's original scope
+
+These were found while re-verifying and matter to whoever aggregates the rubric:
+
+1. **`execute_blender_code` no longer exists.** No `@mcp.tool`, handler, or reference to it remains
+   anywhere under `src/blender_mcp/`. The Critical "arbitrary Python execution over an
+   unauthenticated socket" row in `AGENTS.md` is closed by removal, not merely mitigated. Removing a
+   free-form escape hatch also means every capability in this domain must be reachable through a
+   typed tool, which is why the local-file-import gap now bites: there is no longer a fallback path.
+2. **Provider and ND tools are opt-in per process.** `polyhaven`/`sketchfab` are registered only via
+   the `assets` bundle and `nd` only via `geometry-nodes` (`server/bundles.py:42,59`); neither
+   artist-facing mode selects `assets` (`:83-88`). This partially closes the "disabled integrations
+   remain visible to agents" row: registration is now an explicit per-process choice, though a
+   selected bundle still registers its tools regardless of the open `.blend`'s capability flags.
+3. **Blocking provider I/O is the domain's largest remaining operational risk.** Downloads are
+   bounded (`bundled/addon/network.py:9-61`) but synchronous inside the main-thread command drain, so
+   a multi-hundred-megabyte import freezes Blender's UI with no progress and no cancellation.
+4. **Rollback blind spots, stated precisely.** Collection membership is not a restored field
+   (`bundled/addon/transaction.py:412-417`), and a deleted pre-existing datablock is never
+   resurrected (`:427-428`). The two tools that reach that limit in normal use are
+   `mesh_boolean(keep_cutter=False)` and `reset_scene`.
+
+---
+
+## Score estimate
+
+**Score estimate**: 8/10 (verified validation and rollback depth; one real capability hole in local
+file import; blocking provider I/O; radial-array pivot geometry still unproven against live Blender)
+
+Justification, tied only to findings verified above:
+
+- **Raises it.** Input is validated before mutation on both sides of the socket — index bounds
+  (`bundled/addon/helpers.py:174-192`), batch object names (`bundled/addon/handlers/scene.py:1062`),
+  per-type modifier and constraint settings (`server/tools/scene.py:424`,
+  `bundled/addon/handlers/scene.py:1222,1178`), transform representations
+  (`server/tools/scene.py:35-50`). Failure paths restore state: identity-based rollback with
+  documented limits (`bundled/addon/transaction.py:410-434`), mode/active/selection restoration
+  (`bundled/addon/helpers.py:67-95`), mesh geometry backups
+  (`bundled/addon/server_core.py:1827-1857` `_GEOMETRY_MUTATING_COMMANDS`), one named undo
+  checkpoint per request
+  (`bundled/addon/transaction.py:383-397`). Every destructive path has a confirmation gate. Reports
+  describe what actually changed rather than what was requested — ND cancellation
+  (`server/tools/nd.py:27-49`), Sketchfab's `session_uid` diff
+  (`bundled/addon/handlers/sketchfab.py:342-346`), `nd_clean_utils`'s removal diff. Provider HTTP is
+  bounded on every axis (`bundled/addon/network.py:9-61`), and provenance survives import
+  (`bundled/addon/handlers/sketchfab.py:363-382`).
+- **Holds it down.** No local file import at all, with no free-form escape hatch left to work around
+  it. Provider downloads block Blender's main thread with no progress or cancellation. No preview or
+  dry-run for any mesh edit. `add_radial_array_modifier`'s pivot composition is now correct on paper
+  (`bundled/addon/helpers.py:397-417`) but unproven in Blender. `nd_pulse_viewport_toggle` is not
+  idempotent (upstream constraint, honestly documented). Two rollback blind spots. `clear_edge_marks`
+  leaves crease and bevel weight set.
+- **Why 8 and not 7.** The three findings that moved this score most are all corrections: the
+  camera/world/render "blockers" that produced the original 40/100 coverage score do not exist; the
+  "opaque modifier settings" weakness is now a 30-type validated allowlist; and the destructive-ND
+  and edit-mode-corruption risks are gated and restored respectively. Unlike the materials slice
+  (7/10), no verified correctness bug remains in this domain; unlike the rendering slice (5/10), no
+  whole capability class is missing except local file import.
+
+### Rubric category bearing (A–J, per `.audit_tmp/COMPREHENSIVE_AUDIT_FINDINGS.md:71-152`)
+
+| Cat | Weight | Direction | Why, from the verified findings |
+|---|---|---|---|
+| **A. Architecture & Abstraction** | 15 | **↑** | Declarative discriminated-union specs with per-type allowlists (`server/tools/scene.py:111-303`, `server/tools/scene_authoring.py:282-293`); one transaction contract owned by the dispatcher rather than re-implemented per handler (`bundled/addon/server_core.py:2000-2018` `_run_handler`); domain split into bundles so the catalog is selectable (`server/bundles.py:32-88`). Mild drag: the 10 `nd_*` tools are a thin passthrough over a third-party add-on, inheriting its non-idempotent toggle |
+| **B. Tool Quality & Redundancy** | 15 | **↑** | No free-form `bpy` path exists anywhere any more (finding 1 above); pydantic validation throughout; confirmation gates. Drag: `nd_create_id_material` / `nd_bulk_create_id_materials` overlap, and `manage_modifiers` APPLY now overlaps `nd_apply_modifiers` (§5 corrections) |
+| **C. Scene & Asset Pipeline** | 10 | **↓ (largest negative from this domain)** | Scene composition and provider import are strong — pagination, deterministic ordering, byte caps, provenance, diff-based reporting — but **no local file import (FBX/GLTF/OBJ/USD)** and **no import-to-collection**, and no post-import geometry QA. This is the one place where this domain removes points rather than restoring them |
+| **D. Lighting & Camera** | 10 | **– (phantom blocker removed)** | This domain owns none of it, and its "no camera creation / no world setup / no light creation" blockers are false (`server/tools/camera/core.py:72`, `server/tools/lighting/environment.py:83`, `server/tools/lighting/construction.py:89`). The preliminary D score (10/10) never deducted for them; it must not start now. No new D evidence either way |
+| **E. Animation/Rigging/Simulation** | 10 | **↑ (small)** | Contributes only the simulation prerequisites: `configure_scene_physics` gravity and unit scale, validated (`server/tools/scene_physics.py:18-34`), and `validate_scene`'s dirty cloth/rigid-body cache checks (`server/tools/scene.py:453-461`) |
+| **F. Rendering** | 15 | **– (phantom blocker removed)** | The "no render configuration / no render tool" blocker is false (`server/tools/rendering.py:236,481`). No new F evidence; the rendering slice's own findings (video output, timeout, GPU fallback) stand unchanged |
+| **G. Compositing** | 5 | **–** | This domain has no compositing surface and no bearing on the category |
+| **H. Validation & Reliability** | 10 | **↑↑ (largest positive from this domain)** | Two-sided pre-mutation validation; identity-based rollback with explicitly documented limits; mode/selection/geometry restoration; `FINISHED` asserts on every core mesh operator; collision rejection; cancellation reported as `ok:false`; bounded provider networking. Against that: blocking main-thread I/O, the two rollback blind spots, and no operator-availability preflight |
+| **I. Agentability & NL** | 5 | **↑ (mixed)** | Docstrings state coordinate spaces and destructive consequences; stale-index warnings ride in `warnings` (`server/tools/mesh.py` passim); `mesh_bridge`'s `expected_revision` lets an agent detect stale topology (`server/tools/mesh.py:234`); errors name the remediation. Against: no preview/dry-run anywhere, so an agent must mutate to learn; and `nd_pulse_viewport_toggle` cannot be reasoned about idempotently |
+| **J. Production Completeness** | 5 | **↓** | Local file import missing; import organisation missing; post-import repair missing; `add_radial_array_modifier` not yet proven against live Blender. Scene composition, mesh editing and provider import are otherwise complete |
+
+**Aggregation note.** The preliminary A–J scores in `COMPREHENSIVE_AUDIT_FINDINGS.md:71-152` were
+recorded with this domain explicitly listed as pending (`:40-41`), so none of them ever took a
+deduction for this slice's camera/world/render-config "blockers" — and none should be taken now,
+because those blockers do not exist. What this domain actually adds to the 100-point total is:
+a positive in **H** (verified validation and rollback depth) and **A**/**B** (typed surface, no
+free-form `bpy` path left in the tree), a small positive in **E** (validated gravity/unit-scale
+prerequisites and simulation-cache checks), and one genuinely new negative in **C**/**J** — no local
+file import, and no collection organisation for the imports that do exist. `D` and `F` gain only the
+removal of a phantom blocker, not new evidence. The `execute_blender_code` removal (finding 1 above)
+also retires the Critical row at the top of `AGENTS.md`'s pending table, which bears on **H**.

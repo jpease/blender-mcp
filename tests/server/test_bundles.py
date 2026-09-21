@@ -339,7 +339,15 @@ def test_shot_mode_lights_the_shot_but_excludes_texture_authoring_and_rig_constr
     assert "create_orbit_camera_rig" not in shot, "rig construction belongs to camera-rigs, not shot"
 
 
-POSING_TOOLS = frozenset({"set_character_pose", "keyframe_character_pose", "list_character_bones", "solve_bone_reach"})
+POSING_TOOLS = frozenset(
+    {
+        "set_character_pose",
+        "keyframe_character_pose",
+        "list_character_bones",
+        "solve_bone_reach",
+        "keyframe_bone_reach",
+    }
+)
 
 
 def test_shot_mode_can_pose_a_linked_character_without_rig_construction() -> None:
@@ -355,9 +363,9 @@ def test_character_posing_bundle_adds_only_the_posing_tools() -> None:
 
 
 def test_character_rigging_bundle_keeps_every_rigging_tool_after_the_split() -> None:
-    """Existing `character-rigging` configs lose nothing: all 24 tools, posing included."""
+    """Existing `character-rigging` configs lose nothing: all 25 tools, posing included."""
     rigging = _tool_names_for_toolsets("character-rigging") - _tool_names_for_toolsets(None)
-    assert len(rigging) == 24
+    assert len(rigging) == 25
     assert rigging >= POSING_TOOLS | {"create_armature", "bind_mesh_to_armature", "add_pose_bone_constraint"}
 
 
@@ -493,14 +501,49 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # roughly fourteen guessed `rotate` calls into one; the other 1,986 are
 # `get_viewport_screenshot`'s new `view` (ViewSpec) and `shading_override` parameters, which
 # also land in the core surface below. Measured shot payload 212,711 bytes.
-SHOT_MODE_BYTE_CEILING = 213_000
+# Raised a fifth time, from 212,711, by `solve_bone_reach`'s convergence contract: 810 bytes
+# (payload_report with the tool module at HEAD and with the change) for the `tolerance_m`
+# parameter and the Returns rows naming converged/chain_reach_m/target_distance_m/
+# out_of_reach. That is what turns a bare `achieved_error_m` float into an answer an agent can
+# act on - retry, move the rig, or accept - instead of a number it has no threshold for.
+# Measured shot payload 213,521 bytes.
+# Raised a sixth time, from 213,521, by the silent-failure pass, measured per file by swapping
+# that one module back to HEAD: 1,418 bytes are `keyframe_object_transform`'s action surface
+# (action_name/action_policy/action_slot_identifier/confirm_displace_action plus the paragraph
+# naming the trap), 670 are the matching `keyframe_character_pose` policy and displacement
+# wording, 750 are `point_camera_at`'s `camera_location`, and 286 are `get_addon_status`'s two
+# new staleness fields. The first two are what stop a rig's root motion from being silently
+# discarded when a pose is keyed into a new action - the failure mode cost a shot's worth of
+# renders before anyone noticed the characters had stopped moving. Measured shot payload
+# 216,645 bytes.
+# Raised a seventh time, from 216,645, by the character-animation pass, measured per tool with
+# `payload_report(...).per_tool`: 8,330 bytes are `keyframe_bone_reach`, 3,596 `set_action_cycle`
+# and 1,659 `set_scene_frame`; the remaining 2,981 are the shared key-style vocabulary reaching
+# the tools that already keyed - Blender's real 13-member `Keyframe.interpolation` enum instead
+# of the 3 members this surface had been carrying, plus handle_left/handle_right/easing on
+# `keyframe_character_pose`, `edit_keyframes` and `bake_evaluated_animation`. That is what a
+# walk cycle costs: one call plants a foot across a frame range with real IK instead of two
+# calls and a 4x4 matrix round-trip per foot per frame, the playhead can be moved so the agent
+# can look at frame 12 instead of only frame 1, and pose keys can be shaped like every other
+# domain's. Measured shot payload 233,211 bytes.
+SHOT_MODE_BYTE_CEILING = 234_000
 
 # The same rule for the default, core-only surface, and the same work: 166 bytes for
 # `validate_scene`'s `persistence` scope, 2,202 for `inspect_delivery`, 601 for `save_shot`'s
 # provenance switches. Raised from 69,831 by `get_viewport_screenshot`'s `view`/
 # `shading_override` parameters, the only core-surface growth in that pass: 1,986 bytes, for a
 # measured 71,817. No posing tool is in core, so none of `solve_bone_reach` is in this figure.
-DEFAULT_MODE_BYTE_CEILING = 72_000
+# Raised again from 71,817 by the two core-surface halves of the silent-failure pass: 1,418 for
+# `keyframe_object_transform`'s action surface (`object_animation` is core, so root motion is
+# keyed from every mode) and 286 for `get_addon_status`'s missing_commands/missing_parameters,
+# which is how an agent now learns its add-on predates the server instead of concluding a tool
+# does not exist. Measured core payload 73,521 bytes.
+# Raised again from 73,521 by the core-surface half of the character-animation pass: 3,596 for
+# `set_action_cycle` (an action that does not loop is not a cycle) and 1,659 for
+# `set_scene_frame`, plus 1,058 for the widened key-style vocabulary on `edit_keyframes`,
+# `bake_evaluated_animation` and `keyframe_object_transform`. `keyframe_bone_reach` is a posing
+# tool, so none of its 8,330 bytes are in this figure. Measured core payload 79,834 bytes.
+DEFAULT_MODE_BYTE_CEILING = 80_500
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

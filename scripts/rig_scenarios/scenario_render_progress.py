@@ -45,49 +45,52 @@ import json
 import os
 
 from pathlib import Path
-from typing import Protocol
+from types import ModuleType
 
 import anyio
 
-from mcp import ClientSession, StdioServerParameters, types
+from mcp import ClientSession, types
 from mcp.client.stdio import stdio_client
 
-_BARRIER_PATH = Path(__file__).resolve().parent / "scenario_file_swap_barrier.py"
-_BARRIER_SPEC = importlib.util.spec_from_file_location("scenario_file_swap_barrier_shared", _BARRIER_PATH)
-if _BARRIER_SPEC is None or _BARRIER_SPEC.loader is None:
-    raise SystemExit(f"{_BARRIER_PATH} is not loadable - this scenario was copied out of the repository")
-# Imported, not copied, so this scenario reads the readiness receipt's name from the one
-# place that defines it.
-barrier = importlib.util.module_from_spec(_BARRIER_SPEC)
-_BARRIER_SPEC.loader.exec_module(barrier)
+
+def _sibling(file_name: str, module_name: str) -> ModuleType:
+    """
+    Load a sibling scenario-directory module by path.
+
+    Scenarios are loaded by absolute path, so this directory is not on `sys.path` and a
+    plain import does not resolve. Importing rather than copying keeps the readiness
+    receipt's name, and the MCP host helpers, defined in one place each.
+
+    Args:
+        file_name: File name beside this scenario.
+        module_name: Module name to register the loaded module under.
+
+    Returns:
+        module: The loaded module.
+
+    Raises:
+        SystemExit: If the file is missing or not loadable.
+
+    """
+    path = Path(__file__).resolve().parent / file_name
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"{path} is not loadable - this scenario was copied out of the repository")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-class Rig(Protocol):
-    """The part of `BlenderRig` this scenario uses (a Protocol: the rig loads scenarios by path)."""
+barrier = _sibling("scenario_file_swap_barrier.py", "scenario_file_swap_barrier_shared")
+client = _sibling("_mcp_client.py", "rig_scenario_mcp_client")
 
-    work_dir: Path
-
-    def send(self, command_type: str, params: dict | None = None) -> dict:
-        """
-        Send one addon command and return its decoded response.
-
-        Args:
-            command_type: The addon command name.
-            params: Command parameters; omitted means none.
-
-        Returns:
-            dict: The decoded response.
-
-        """
-        ...
-
+Rig = client.Rig
+_SERVER_BINARY = client.SERVER_BINARY
+_STARTUP_TIMEOUT_SECONDS = client.STARTUP_TIMEOUT_SECONDS
+_payload = client.payload
+_unwrapped = client.unwrapped
 
 REQUIRED_COMMANDS = ("plan_render_animation", "render_scene", "configure_render_settings")
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-# The shipped console script (pyproject's [project.scripts]), not an ad hoc -c invocation:
-# what an MCP host would actually launch.
-_SERVER_BINARY = _REPO_ROOT / ".venv" / "bin" / "blender-mcp"
 
 # Three frames is enough for "one notification per frame", and starting at 7 rather than 1
 # makes each message's scene frame differ from its ordinal, so a synthesized message would
@@ -106,72 +109,6 @@ _RENDER_PERCENTAGE = 25
 _SETTLE_SECONDS = 3.0
 _STARTUP_TIMEOUT_SECONDS = 60.0
 _CALL_TIMEOUT_SECONDS = 300.0
-
-
-def _server_parameters(port: int) -> StdioServerParameters:
-    """
-    Describe the server child process, aimed at the rig's Blender.
-
-    `BLENDER_PORT`/`BLENDER_HOST` are the only knobs `get_blender_connection` reads
-    (`server/connection.py`), so a private port needs no code change - but `stdio_client`
-    does not inherit this process's environment, it merges its own default subset with
-    whatever is passed here, so they must be named explicitly.
-
-    `BLENDER_MCP_TOOLSETS` is just as load-bearing: the default catalog is core-only and
-    carries no `render_scene` at all, so without it this scenario would connect to a healthy
-    server that simply does not advertise the tool under test - which is what an MCP host's
-    own config selects, not something the harness may skip.
-
-    Args:
-        port: Port the rig's Blender addon is listening on.
-
-    Returns:
-        StdioServerParameters: Launch description for the shipped console script.
-
-    """
-    return StdioServerParameters(
-        command=str(_SERVER_BINARY),
-        env={"BLENDER_HOST": "localhost", "BLENDER_PORT": str(port), "BLENDER_MCP_TOOLSETS": "rendering"},
-        cwd=str(_REPO_ROOT),
-    )
-
-
-def _payload(result: types.CallToolResult) -> dict:
-    """
-    Read one tool reply's envelope out of an MCP result.
-
-    Raises `RuntimeError`, never `SystemExit`: this runs inside anyio task groups, which
-    bundle a `BaseException` into an `ExceptionGroup` the rig can only report as "a request
-    to stop this process", losing the message that says what actually failed.
-
-    Args:
-        result: The `tools/call` result.
-
-    Returns:
-        dict: The envelope the tool returned.
-
-    Raises:
-        RuntimeError: If the call failed, or carried no readable JSON payload.
-
-    """
-    if result.isError:
-        text = "; ".join(getattr(item, "text", "") for item in result.content)
-        raise RuntimeError(f"tool call failed: {text}")
-    payload = result.structuredContent
-    if payload is None:
-        for item in result.content:
-            text = getattr(item, "text", None)
-            if text:
-                payload = json.loads(text)
-                break
-    if not isinstance(payload, dict):
-        raise RuntimeError(f"tool reply carried no JSON object: {result.content}")
-    # FastMCP wraps a non-model return under "result" when it has to; unwrap to the envelope.
-    if "ok" not in payload and isinstance(payload.get("result"), dict):
-        payload = payload["result"]
-    if payload.get("ok") is not True:
-        raise RuntimeError(f"tool reported failure: {payload}")
-    return payload
 
 
 async def _configure(session: ClientSession, scene: str, first: int, last: int) -> None:
@@ -405,7 +342,7 @@ async def _drive(port: int, scene: str, work_dir: Path) -> None:
 
     """
     async with (
-        stdio_client(_server_parameters(port)) as (read_stream, write_stream),
+        stdio_client(client.server_parameters(port, "rendering")) as (read_stream, write_stream),
         ClientSession(read_stream, write_stream) as session,
     ):
         with anyio.fail_after(_STARTUP_TIMEOUT_SECONDS):
@@ -421,27 +358,6 @@ async def _drive(port: int, scene: str, work_dir: Path) -> None:
         await _check_progress_arrives_once_per_frame(session, scene, work_dir)
         await _check_cancellation_lands_between_frames(session, scene, work_dir)
         await _check_the_session_survives_a_cancellation(session, scene)
-
-
-def _unwrapped(error: BaseException) -> BaseException:
-    """
-    Reduce an anyio task-group failure to the exception that actually failed.
-
-    Every failure inside a task group arrives as an `ExceptionGroup`, and the rig reports one
-    as `ExceptionGroup: unhandled errors in a TaskGroup` with no message from the assertion
-    that fired - which makes a red run unreadable. Nested groups are flattened; the first
-    leaf is the failure, since this scenario never runs two checks concurrently.
-
-    Args:
-        error: The exception the scenario's event loop raised.
-
-    Returns:
-        BaseException: The innermost non-group exception, or `error` itself.
-
-    """
-    while isinstance(error, BaseExceptionGroup) and error.exceptions:
-        error = error.exceptions[0]
-    return error
 
 
 def run(rig: Rig) -> None:

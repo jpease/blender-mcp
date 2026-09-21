@@ -72,6 +72,13 @@ def _status_payload(result: AddonHandshake, *, detail: bool) -> dict[str, object
         "session_indeterminate": result.session_indeterminate,
         "source": result.source,
         "warning": result.warning,
+        # Why `up_to_date` is false when the two protocol numbers match: the installed
+        # add-on's dispatch table is short of what `addon_surface.json` records for this
+        # protocol. Uncapped, unlike `capabilities` above - these are empty in the normal
+        # case, and in the abnormal one every name is the evidence the agent needs to stop
+        # concluding a command was never implemented.
+        "missing_commands": result.missing_commands,
+        "missing_parameters": result.missing_parameters,
         "update_command": "blender-mcp install-addon",
         "after_install": (
             "If the addon file was updated: in Blender, Preferences → Add-ons → "
@@ -166,6 +173,9 @@ async def get_addon_status(ctx: Context, detail: bool = False) -> dict:
         "up_to_date" (bool), "protocol_version"/"expected_protocol_version", "addon_version",
         "capability_count" and "integrations_available" (per-provider, whether the addon advertises that
         integration's commands), "capabilities" (the command names, only with detail), "blender_version",
+        "missing_commands"/"missing_parameters" (empty when current; non-empty means the installed add-on
+        predates this server even though its protocol number matches, and must be reinstalled via
+        "update_command" before those commands will work - they were not omitted from the project),
         "writable_output_roots" (empty when none), "file_roots"/"file_roots_enforced" (false:
         paths unconfined), "current_filepath", "session_id"/"session_epoch" (re-read capabilities if the pair
         moves), "session_indeterminate" (true: a swap aborted; most commands refused, don't save over the file),

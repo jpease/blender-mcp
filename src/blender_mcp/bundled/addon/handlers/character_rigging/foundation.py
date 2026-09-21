@@ -14,6 +14,12 @@ import mathutils
 
 from ...helpers import paginate, preserve_mode_and_selection, set_active, sync_from_editmode
 
+# Imported under this file's existing private name so the three call sites below stay
+# byte-identical: `_remove_bone_references` and `_bone_reference_transaction` already carry
+# an inherited PLR0912 backlog, and rewriting a line inside either would transfer ownership
+# of that finding to this change, which has nothing to do with branch count.
+from ..action_assignment import action_fcurve_collections as _action_fcurve_collections
+
 _MAX_BONES = 100_000
 _MAX_MEMBERSHIPS = 10_000_000
 _BONE_DATA_FIELDS = (
@@ -760,19 +766,6 @@ def _animation_actions(owner):
             if strip.action is not None:
                 actions.append(strip.action)
     return list({action.as_pointer(): action for action in actions}.values())
-
-
-def _action_fcurve_collections(action):
-    """Return mutable F-Curve collections for legacy and Blender 5.1 layered Actions."""
-    collections = []
-    legacy = getattr(action, "fcurves", None)
-    if legacy is not None:
-        collections.append(legacy)
-    for layer in getattr(action, "layers", ()):
-        for strip in getattr(layer, "strips", ()):
-            for channelbag in getattr(strip, "channelbags", ()):
-                collections.append(channelbag.fcurves)
-    return list({id(collection): collection for collection in collections}.values())
 
 
 def _armature_users(armature_obj):

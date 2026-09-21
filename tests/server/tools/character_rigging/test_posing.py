@@ -16,9 +16,11 @@ import types
 import pytest
 
 from pydantic import ValidationError
+from pydantic_core import to_json
 from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import character_rigging
+from blender_mcp.server.tools.envelope import REPLY_BYTE_BUDGET, envelope_for
 
 
 class _Vector:
@@ -1267,3 +1269,247 @@ def test_solve_bone_reach_forwards_reaches_and_omits_unset_optional_fields(monke
         }
     ]
     assert params["detail"] is False
+
+
+# --- solve_bone_reach's convergence contract ----------------------------------------------
+
+
+class _ConstraintStack(list):
+    """The slice of `pose_bone.constraints` a reach drives: `new`, `remove` and iteration."""
+
+    def new(self, type) -> types.SimpleNamespace:
+        self.append(types.SimpleNamespace(type=type))
+        return self[-1]
+
+
+class _ScratchEmpty:
+    """A helper Empty whose `location` write lands in `matrix_world`, as Blender's does."""
+
+    def __init__(self, name) -> None:
+        self.name = name
+        self.matrix_world = _Matrix.Identity(4)
+
+    @property
+    def location(self) -> _Vector:
+        return self.matrix_world.translation
+
+    @location.setter
+    def location(self, value) -> None:
+        self.matrix_world = _Matrix.Translation(tuple(value))
+
+
+class _ReachObjects(dict):
+    """`bpy.data.objects` for a reach: the rig, plus the scratch Empties the solve creates."""
+
+    def new(self, name, _data) -> _ScratchEmpty:
+        self[name] = _ScratchEmpty(name)
+        return self[name]
+
+    def remove(self, obj, do_unlink=True) -> None:
+        del self[obj.name]
+
+
+class _ReachPoseBone(_PoseBone):
+    """A pose bone carrying the armature-space head/tail and constraint stack a reach reads."""
+
+    def __init__(self, name, head, tail, parent=None) -> None:
+        super().__init__(name, rest_relative=_Matrix.Translation(head), parent=parent)
+        self.head = _Vector(head)
+        self.tail = _Vector(tail)
+        self.constraints = _ConstraintStack()
+
+
+# A bent two-bone arm: a 1.0 m upper arm straight down from the origin, then a 0.8 m forearm
+# out along +X. Bent, so a pole can be synthesized from it; 1.8 m of total reach, so a target
+# can be placed unambiguously inside or outside it.
+_ARM_SHOULDER = (0.0, 0.0, 0.0)
+_ARM_ELBOW = (0.0, 0.0, -1.0)
+_ARM_WRIST = (0.8, 0.0, -1.0)
+_ARM_REACH_M = 1.8
+_ARM_POLE = (2.0, 0.0, -1.0)
+
+
+def _reach_rig(monkeypatch, *, solved_tail=_ARM_WRIST, matrix_world=None):
+    """
+    Load the addon against the two-bone arm, with the tip's tail already at solved_tail.
+
+    The fake `bpy` runs no IK, which is the point: the tip's tail stays exactly where this
+    fixture put it, so every reported distance is one the test chose rather than one a
+    solver produced. `tests/blender_character_posing_smoke.py` measures the real solve.
+
+    Args:
+        monkeypatch: The test's monkeypatch.
+        solved_tail: Where the reach's tip tail sits once the constraint has been evaluated.
+        matrix_world: The rig's object matrix; identity when omitted.
+
+    Returns:
+        tuple: the server, and the `bpy` stub, whose `data.objects` also holds any scratch
+        Empty a reach failed to clean up.
+
+    """
+    shoulder_rest = _rest_bone("upper_arm", _ARM_SHOULDER, _ARM_ELBOW)
+    forearm_rest = _rest_bone("forearm", _ARM_ELBOW, _ARM_WRIST, parent=shoulder_rest)
+    upper_arm = _ReachPoseBone("upper_arm", _ARM_SHOULDER, _ARM_ELBOW)
+    forearm = _ReachPoseBone("forearm", _ARM_ELBOW, solved_tail, parent=upper_arm)
+    server, rig, _animation, _posing_module = _posing(monkeypatch, [upper_arm, forearm], matrix_world=matrix_world)
+    rig.data.bones = {"upper_arm": shoulder_rest, "forearm": forearm_rest}
+    bpy = sys.modules["bpy"]
+    bpy.data.objects = _ReachObjects(bpy.data.objects)
+    bpy.context.collection = types.SimpleNamespace(objects=types.SimpleNamespace(link=lambda _obj: None))
+    return server, bpy
+
+
+def _solve(server, target, **kwargs):
+    """Solve the two-bone arm's one reach at a world target, with an explicit pole."""
+    reach = {"tip_bone": "forearm", "target": target, "pole_target": _ARM_POLE}
+    return server.solve_bone_reach("CHAR1_rig", [reach], **kwargs)
+
+
+def test_a_reach_inside_its_tolerance_reports_converged_and_says_nothing_else(monkeypatch) -> None:
+    """A solve that landed is the quiet case: the caller needs no notice to act on."""
+    server, _bpy = _reach_rig(monkeypatch)
+
+    reply = _solve(server, (0.80005, 0.0, -1.0))
+
+    entry = reply["reaches"][0]
+    assert entry["achieved_error_m"] == pytest.approx(5e-5, abs=1e-12)
+    assert entry["converged"] is True
+    assert entry["out_of_reach"] is False
+    assert reply["warnings"] == []
+    # Echoed once for the whole call, not repeated per reach.
+    assert reply["tolerance_m"] == pytest.approx(1e-4, abs=0.0)
+    assert "tolerance_m" not in entry
+
+
+def test_a_tighter_tolerance_turns_the_same_solve_into_a_miss(monkeypatch) -> None:
+    """The tolerance is the caller's to state: the same geometry passes or fails on it."""
+    server, _bpy = _reach_rig(monkeypatch)
+
+    reply = _solve(server, (0.80005, 0.0, -1.0), tolerance_m=1e-6)
+
+    assert reply["reaches"][0]["converged"] is False
+    assert reply["tolerance_m"] == pytest.approx(1e-6, abs=0.0)
+
+
+def test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig(monkeypatch) -> None:
+    """Naming the cause is the point: this one is worth retrying, an out-of-reach one is not."""
+    server, _bpy = _reach_rig(monkeypatch)
+
+    reply = _solve(server, (0.8, 0.0, -1.0005))
+
+    entry = reply["reaches"][0]
+    assert entry["converged"] is False
+    assert entry["out_of_reach"] is False
+    assert entry["target_distance_m"] < entry["chain_reach_m"]
+    warning = reply["warnings"][0]
+    assert "'forearm'" in warning
+    assert "achieved_error_m 0.0005" in warning
+    assert "tolerance_m 0.0001" in warning
+    assert "within the chain's range" in warning
+    assert "solve stalled short of it" in warning
+    assert "out of reach" not in warning
+
+
+def test_a_target_beyond_the_chains_reach_is_reported_as_unreachable(monkeypatch) -> None:
+    """No pose of this chain reaches 5 m out, so retrying the solve is the wrong next move."""
+    server, _bpy = _reach_rig(monkeypatch)
+
+    reply = _solve(server, (5.0, 0.0, 0.0))
+
+    entry = reply["reaches"][0]
+    assert entry["converged"] is False
+    assert entry["out_of_reach"] is True
+    assert entry["chain_reach_m"] == pytest.approx(_ARM_REACH_M, abs=1e-12)
+    assert entry["target_distance_m"] == pytest.approx(5.0, abs=1e-12)
+    warning = reply["warnings"][0]
+    assert "'forearm'" in warning
+    assert "out of reach" in warning
+    assert "target_distance_m 5" in warning
+    assert "chain_reach_m 1.8" in warning
+
+
+def test_the_chains_reach_is_measured_in_world_space_not_in_rest_bone_lengths(monkeypatch) -> None:
+    """A rig scaled x2 reaches twice as far, so rest lengths alone would call a hit a miss."""
+    doubled = _Matrix([[2.0, 0.0, 0.0, 0.0], [0.0, 2.0, 0.0, 0.0], [0.0, 0.0, 2.0, 0.0], [0.0, 0.0, 0.0, 1.0]])
+    server, _bpy = _reach_rig(monkeypatch, matrix_world=doubled)
+
+    # 2.5 m out: past the 1.8 m of rest bone, inside the 3.6 m the scaled rig actually spans.
+    entry = _solve(server, (2.5, 0.0, 0.0))["reaches"][0]
+
+    assert entry["chain_reach_m"] == pytest.approx(2.0 * _ARM_REACH_M, abs=1e-12)
+    assert entry["out_of_reach"] is False
+
+
+@pytest.mark.parametrize("tolerance", [0.0, -1e-4, float("nan"), float("inf")])
+def test_a_tolerance_that_names_no_precision_is_refused_before_the_rig_is_touched(monkeypatch, tolerance) -> None:
+    """A bad tolerance must not leave a half-solved pose, a live IK constraint or a stray Empty."""
+    server, bpy = _reach_rig(monkeypatch)
+    before = _matrix_rows(bpy.data.objects["CHAR1_rig"].pose.bones["forearm"])
+
+    with pytest.raises(ValueError, match="tolerance_m must be"):
+        _solve(server, (0.8, 0.0, -1.0), tolerance_m=tolerance)
+
+    rig = bpy.data.objects["CHAR1_rig"]
+    assert list(bpy.data.objects) == ["CHAR1_rig"]
+    assert list(rig.pose.bones["forearm"].constraints) == []
+    assert _matrix_rows(rig.pose.bones["forearm"]) == before
+
+
+def _matrix_rows(pose_bone) -> list:
+    """Read the pose bone's basis out as plain numbers, so a comparison is by value."""
+    return [list(row) for row in pose_bone.matrix_basis.rows]
+
+
+def _long_reach_rig(monkeypatch, length):
+    """
+    Load the addon against a straight chain of `length` bones, tip last.
+
+    Args:
+        monkeypatch: The test's monkeypatch.
+        length: How many bones the chain carries.
+
+    Returns:
+        tuple: the server, and the tip bone's name.
+
+    """
+    rest_bones = {}
+    pose_bones = []
+    rest_parent = None
+    pose_parent = None
+    for index in range(length):
+        name = f"DEF-tentacle_segment_{index:03d}"
+        head = (0.0, 0.0, -0.1 * index)
+        tail = (0.0, 0.0, -0.1 * (index + 1))
+        rest_parent = _rest_bone(name, head, tail, parent=rest_parent)
+        rest_bones[name] = rest_parent
+        pose_parent = _ReachPoseBone(name, head, tail, parent=pose_parent)
+        pose_bones.append(pose_parent)
+    server, rig, _animation, _posing_module = _posing(monkeypatch, pose_bones)
+    rig.data.bones = rest_bones
+    bpy = sys.modules["bpy"]
+    bpy.data.objects = _ReachObjects(bpy.data.objects)
+    bpy.context.collection = types.SimpleNamespace(objects=types.SimpleNamespace(link=lambda _obj: None))
+    return server, pose_bones[-1].name
+
+
+def test_a_missed_reach_still_warns_after_the_envelope_has_shortened_the_reply(monkeypatch) -> None:
+    """
+    The notice has to outlive budget fitting, or the longest calls lose it exactly when it matters.
+
+    A 32-bone chain overruns the reply budget, so `ok()` cuts the per-bone page down and adds
+    its own shortening notice. The convergence warning rides in the handler's reply rather
+    than being appended to the finished envelope, which is what keeps it in the list.
+    """
+    server, tip = _long_reach_rig(monkeypatch, 32)
+    payload = server.solve_bone_reach(
+        "CHAR1_rig", [{"tip_bone": tip, "target": (9.0, 0.0, 0.0), "pole_target": _ARM_POLE}], detail=True
+    )
+
+    reply = envelope_for(payload, changed_objects=[])
+
+    assert len(to_json(reply, fallback=str, indent=2)) <= REPLY_BYTE_BUDGET
+    kept = len(reply["data"]["reaches"][0]["bones"])
+    assert 0 < kept < 32, "the reply must have been shortened for this to prove anything"
+    assert any("was shortened to" in warning for warning in reply["warnings"])
+    assert any(f"Reach '{tip}' did not converge" in warning for warning in reply["warnings"])
+    assert "warnings" not in reply["data"]

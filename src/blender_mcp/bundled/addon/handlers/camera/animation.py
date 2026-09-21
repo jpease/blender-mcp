@@ -7,6 +7,7 @@ import uuid
 import bpy
 import mathutils
 
+from ..key_style import style_point, validate_key_style
 from ._shared import (
     _camera,
     _ensure_collection,
@@ -38,8 +39,15 @@ _CAMERA_CHANNELS = {
 }
 _DOF_CHANNELS = {"focus_distance", "aperture_fstop"}
 _CONSTRAINT_CHANNELS = {"influence", "offset_factor"}
-_INTERPOLATIONS = {"CONSTANT", "LINEAR", "BEZIER"}
-_HANDLE_TYPES = {"FREE", "ALIGNED", "VECTOR", "AUTO", "AUTO_CLAMPED"}
+# Blender's own `Camera.lens` soft range; a solved dolly-zoom pair outside it cannot be keyed.
+_MIN_LENS_MM = 1
+_MAX_LENS_MM = 10_000
+# Below this squared length the camera and its subject are the same point to float precision,
+# so the direction "away from the subject" is undefined rather than merely small.
+_COINCIDENT_SQUARED_LENGTH = 1e-16
+# Blender rejects a zero focus distance, and a subject exactly on the sensor plane is the
+# only way to ask for one; focus a micrometre out instead of failing the pull.
+_MIN_FOCUS_DISTANCE_M = 1e-6
 
 
 def _animation_owner(record):
@@ -129,17 +137,14 @@ def _key_at(curve, frame):
     return next((point for point in curve.keyframe_points if abs(point.co[0] - frame) <= 1e-5), None)
 
 
-def _set_key_style(id_owner, data_path, frame, array_indices, interpolation, handle_left, handle_right):
+def _set_key_style(id_owner, data_path, frame, array_indices, interpolation, handle_left, handle_right, easing=None):
     changed = []
     for index in array_indices:
         curve = _find_fcurve(id_owner, data_path, index)
         point = _key_at(curve, frame)
         if point is None:
             continue
-        point.interpolation = interpolation
-        if interpolation == "BEZIER":
-            point.handle_left_type = handle_left
-            point.handle_right_type = handle_right
+        style_point(point, interpolation, handle_left=handle_left, handle_right=handle_right, easing=easing)
         changed.append({"data_path": data_path, "array_index": index, "frame": frame})
     return changed
 
@@ -171,13 +176,6 @@ def _assign_and_key(record, resolved, interpolation, handle_left, handle_right):
     return styled
 
 
-def _validate_key_style(interpolation, handle_left, handle_right):
-    if interpolation not in _INTERPOLATIONS:
-        raise ValueError(f"Unsupported interpolation: {interpolation}")
-    if handle_left not in _HANDLE_TYPES or handle_right not in _HANDLE_TYPES:
-        raise ValueError("Unsupported Bézier handle type")
-
-
 def _subject_point(scene, object_name, point):
     if object_name is None:
         return _vector(point, "subject_point")
@@ -191,7 +189,9 @@ def _focus_depth(camera, point):
     return -float(local.z)
 
 
-def _set_interpolation_on_keys(id_owner, data_path, frames, interpolation):
+def _set_interpolation_on_keys(
+    id_owner, data_path, frames, interpolation, handle_left="AUTO_CLAMPED", handle_right="AUTO_CLAMPED", easing=None
+):
     action, curves = _action_fcurves(id_owner)
     if action is None:
         return []
@@ -201,12 +201,296 @@ def _set_interpolation_on_keys(id_owner, data_path, frames, interpolation):
             continue
         for point in curve.keyframe_points:
             if any(abs(point.co[0] - frame) <= 1e-5 for frame in frames):
-                point.interpolation = interpolation
-                if interpolation == "BEZIER":
-                    point.handle_left_type = "AUTO_CLAMPED"
-                    point.handle_right_type = "AUTO_CLAMPED"
+                style_point(point, interpolation, handle_left=handle_left, handle_right=handle_right, easing=easing)
                 changed.append({"data_path": data_path, "array_index": curve.array_index, "frame": point.co[0]})
     return changed
+
+
+def _validated_focus_targets(scene, subjects):
+    """
+    Check that each end of a focus pull names exactly one resolvable subject.
+
+    Args:
+        scene: The scene the subjects are resolved in.
+        subjects: `(label, object_name, point)` for each end of the pull.
+
+    Raises:
+        ValueError: If an end names neither or both forms, or names an object that is
+            not in the scene.
+
+    """
+    for label, object_name, point in subjects:
+        if (object_name is None) == (point is None):
+            raise ValueError(f"Supply exactly one {label} subject or point")
+        if object_name is not None:
+            _object(object_name, scene=scene)
+        else:
+            _vector(point, f"{label}_point")
+
+
+def _focus_depth_warnings(camera, depths):
+    """
+    Say when a focus plane sits behind the camera or outside its clip interval.
+
+    Neither is an error - Blender focuses on the absolute depth either way - but both
+    produce a pull that does not look focused, so they are reported rather than silently
+    keyed.
+
+    Args:
+        camera: The camera whose clip interval the depths are judged against.
+        depths: `(label, camera_space_depth)` for each end of the pull.
+
+    Returns:
+        list[str]: One notice per problem found, in the order the ends were given.
+
+    """
+    warnings = []
+    for label, depth in depths:
+        if depth <= 0:
+            warnings.append(f"The {label} subject is behind the camera; focus uses the absolute camera-space depth.")
+        distance = abs(depth)
+        if distance < camera.data.clip_start or distance > camera.data.clip_end:
+            warnings.append(f"The {label} focus plane is outside the camera clip interval.")
+    return warnings
+
+
+def _validated_dolly_optics(camera, start_distance, end_distance, reference_size, start_lens):
+    """
+    Check the dolly zoom's distances and solve its two focal lengths before anything moves.
+
+    The lens pair is what the effect is: holding the subject's projected size while the
+    camera travels means `lens_end/lens_start` equals `end_distance/start_distance`. A pair
+    outside Blender's 1-10000 mm range cannot be keyed, so it is refused here rather than
+    clamped into a shot that no longer holds the framing.
+
+    Args:
+        camera: The camera object, read for its current lens when start_lens is omitted.
+        start_distance: Camera-to-subject distance at the start frame, in metres.
+        end_distance: The same at the end frame.
+        reference_size: The subject's real size the framing is held against, in metres.
+        start_lens: The focal length to start from, or None to keep the camera's own.
+
+    Returns:
+        tuple: start_distance, end_distance, reference_size, lens_start and lens_end, each
+        validated and coerced to float.
+
+    Raises:
+        ValueError: If a distance or the reference size is not positive, or if either
+            solved focal length leaves Blender's range.
+
+    """
+    start_distance = _finite_number(start_distance, "start_distance")
+    end_distance = _finite_number(end_distance, "end_distance")
+    if start_distance <= 0 or end_distance <= 0:
+        raise ValueError("Dolly-zoom distances must be positive")
+    reference_size = _finite_number(reference_size, "subject_reference_size")
+    if reference_size <= 0:
+        raise ValueError("subject_reference_size must be positive")
+    lens_start = camera.data.lens if start_lens is None else _finite_number(start_lens, "start_lens")
+    lens_end = lens_start * end_distance / start_distance
+    if not _MIN_LENS_MM <= lens_start <= _MAX_LENS_MM or not _MIN_LENS_MM <= lens_end <= _MAX_LENS_MM:
+        raise ValueError(f"Solved focal lengths must remain within Blender's {_MIN_LENS_MM}-{_MAX_LENS_MM} mm range")
+    return start_distance, end_distance, reference_size, lens_start, lens_end
+
+
+def _dolly_zoom_sample(scene, camera, mover, sample, subject, projected_fraction):
+    """
+    Place and key one end of a dolly zoom, then measure what Blender actually evaluated.
+
+    The requested camera position is written through `mover`, which may be a parent or rig
+    empty, so constraints and parenting can land the camera somewhere else. That is measured
+    rather than assumed: the record carries both the requested and the evaluated position.
+
+    Args:
+        scene: The scene, whose playhead this moves to the sample's frame.
+        camera: The camera whose lens is keyed.
+        mover: The object actually translated - the camera or something it hangs from.
+        sample: `(frame, distance, lens)` for this end of the move.
+        subject: `(subject_object_name, subject_point, reference_size)`.
+        projected_fraction: Callable returning the subject's projected frame fraction for a
+            distance and lens pair.
+
+    Returns:
+        tuple: The solution record for this frame, and the notices it raised.
+
+    """
+    frame_value, distance, lens = sample
+    subject_object_name, subject_point, reference_size = subject
+    scene.frame_set(frame_value)
+    point = _subject_point(scene, subject_object_name, subject_point)
+    camera_location = camera.matrix_world.translation.copy()
+    away = camera_location - point
+    if away.length_squared <= _COINCIDENT_SQUARED_LENGTH:
+        # The camera sits on the subject, so "away from it" names no direction; fall back to
+        # the camera's own backwards axis, which is where it would retreat to.
+        away = -(camera.matrix_world.to_quaternion() @ mathutils.Vector((0.0, 0.0, -1.0)))
+    away.normalize()
+    desired_camera_location = point + away * distance
+    mover.matrix_world.translation += desired_camera_location - camera_location
+    mover.keyframe_insert(data_path="location", frame=frame_value)
+    camera.data.lens = lens
+    camera.data.keyframe_insert(data_path="lens", frame=frame_value)
+    _update_view_layer()
+    actual_camera_location = camera.matrix_world.translation.copy()
+    actual_distance = (actual_camera_location - point).length
+    warnings = []
+    if not math.isclose(actual_distance, distance, rel_tol=1e-4, abs_tol=1e-4):
+        warnings.append(
+            f"At frame {frame_value}, constraints or parenting produced distance "
+            f"{actual_distance:.6g} instead of {distance:.6g}."
+        )
+    if distance < camera.data.clip_start or distance > camera.data.clip_end:
+        warnings.append(f"The subject distance at frame {frame_value} is outside the camera clip interval.")
+    return {
+        "frame": frame_value,
+        "distance": distance,
+        "lens": lens,
+        "subject_reference_size": reference_size,
+        "projected_frame_fraction": projected_fraction(distance, lens),
+        "subject_point": list(point),
+        "camera_location": list(desired_camera_location),
+        "evaluated_camera_location": list(actual_camera_location),
+        "evaluated_distance": actual_distance,
+    }, warnings
+
+
+def _projected_fraction(camera, framing_axis, reference_size):
+    """
+    Build the function that says how much of the frame the subject fills.
+
+    The camera's current lens and field of view are read once, here, because the dolly zoom
+    then changes both: sampling them inside the loop would measure the shot being built
+    rather than the one it started from.
+
+    Args:
+        camera: The camera whose current lens and field of view set the reference framing.
+        framing_axis: HORIZONTAL or VERTICAL - which field of view the fraction is of.
+        reference_size: The subject's real size, in metres.
+
+    Returns:
+        Callable: `(distance, lens) -> fraction of the frame the subject spans`.
+
+    """
+    current_lens = camera.data.lens
+    current_angle = camera.data.angle_x if framing_axis == "HORIZONTAL" else camera.data.angle_y
+    current_tangent = math.tan(current_angle / 2)
+
+    def projected_fraction(distance, lens):
+        half_frame = distance * current_tangent * current_lens / lens
+        return reference_size / (2 * half_frame)
+
+    return projected_fraction
+
+
+def _solve_dolly_samples(scene, camera, mover, samples, subject, projected_fraction):
+    """
+    Place, key and measure both ends of a dolly zoom.
+
+    Args:
+        scene: The scene being keyed; its playhead moves to each sample's frame.
+        camera: The camera whose lens is keyed.
+        mover: The object actually translated.
+        samples: `(frame, distance, lens)` per end.
+        subject: `(subject_object_name, subject_point, reference_size)`.
+        projected_fraction: `_projected_fraction`'s callable.
+
+    Returns:
+        dict: solutions, one record per end, and warnings, every notice they raised.
+
+    """
+    solutions = []
+    warnings = []
+    for sample in samples:
+        solution, sample_warnings = _dolly_zoom_sample(scene, camera, mover, sample, subject, projected_fraction)
+        solutions.append(solution)
+        warnings.extend(sample_warnings)
+    return {"solutions": solutions, "warnings": warnings}
+
+
+def _focus_pull_samples(scene, camera, ends):
+    """
+    Read each end's subject position and camera-space depth at that end's own frame.
+
+    The playhead has to move: a subject that is itself animated, or parented to something
+    that is, sits somewhere different at the two ends, and focusing both on the current
+    frame's position is the bug this exists to avoid.
+
+    Args:
+        scene: The scene whose playhead is moved to each end's frame.
+        camera: The camera the depth is measured in front of.
+        ends: `(label, frame, subject_object_name, subject_point)` per end of the pull.
+
+    Returns:
+        list[dict]: One record per end, in order: label, frame, world (the subject's
+        world-space position at that frame) and depth (its camera-space depth, negative
+        behind the camera).
+
+    """
+    samples = []
+    for label, frame_value, subject_object_name, subject_point in ends:
+        scene.frame_set(frame_value)
+        world = _subject_point(scene, subject_object_name, subject_point)
+        samples.append({"label": label, "frame": frame_value, "world": world, "depth": _focus_depth(camera, world)})
+    return samples
+
+
+def _key_focus_distance(camera, samples, interpolation):
+    """
+    Focus the camera by keying `dof.focus_distance` itself, with no helper object.
+
+    Args:
+        camera: The camera whose depth-of-field is keyed.
+        samples: `(frame, camera_space_depth)` for each end of the pull.
+        interpolation: The interpolation to apply to the keys written here.
+
+    Returns:
+        list[dict]: The styled keys, as `_set_interpolation_on_keys` reports them.
+
+    Raises:
+        RuntimeError: If Blender refuses a focus-distance key, which would leave the pull
+            holding one end and not the other.
+
+    """
+    camera.data.dof.use_dof = True
+    camera.data.dof.focus_object = None
+    path = camera.data.dof.path_from_id("focus_distance")
+    for frame_value, depth in samples:
+        # A subject behind the camera has negative depth; Blender focuses on the distance,
+        # and zero is not a legal focus distance.
+        camera.data.dof.focus_distance = max(abs(depth), _MIN_FOCUS_DISTANCE_M)
+        if not camera.data.dof.keyframe_insert(data_path="focus_distance", frame=frame_value):
+            raise RuntimeError(f"Blender refused the focus-distance key at frame {frame_value}")
+    return _set_interpolation_on_keys(camera.data, path, tuple(frame for frame, _depth in samples), interpolation)
+
+
+def _key_focus_control(camera, collection, control_name, samples, interpolation):
+    """
+    Focus the camera by animating a tagged Empty it tracks, which an artist can then re-aim.
+
+    Args:
+        camera: The camera whose depth-of-field is pointed at the control.
+        collection: The collection the control is linked into.
+        control_name: The Empty's name.
+        samples: `(frame, world_point)` for each end of the pull.
+        interpolation: The interpolation to apply to the keys written here.
+
+    Returns:
+        tuple: The created focus-control object and its styled keys.
+
+    """
+    focus_control = bpy.data.objects.new(control_name, None)
+    collection.objects.link(focus_control)
+    _tag(focus_control, str(uuid.uuid4()), "focus_pull")
+    focus_control.empty_display_type = "SPHERE"
+    for frame_value, world_point in samples:
+        focus_control.location = world_point
+        focus_control.keyframe_insert(data_path="location", frame=frame_value)
+    changed_keys = _set_interpolation_on_keys(
+        focus_control, "location", tuple(frame for frame, _point in samples), interpolation
+    )
+    camera.data.dof.use_dof = True
+    camera.data.dof.focus_object = focus_control
+    return focus_control, changed_keys
 
 
 class _AnimationMixin:
@@ -224,7 +508,7 @@ class _AnimationMixin:
             raise ValueError("keyframes must contain between 1 and 500 records")
         if policy not in {"REPLACE", "INSERT_ONLY"}:
             raise ValueError("policy must be REPLACE or INSERT_ONLY")
-        _validate_key_style(interpolation, handle_left, handle_right)
+        validate_key_style(interpolation, handle_left, handle_right)
         prepared = []
         seen = set()
         scene_cache = {}
@@ -298,7 +582,7 @@ class _AnimationMixin:
         handle_right="AUTO_CLAMPED",
         easing=None,
     ):
-        _validate_key_style(interpolation, handle_left, handle_right)
+        validate_key_style(interpolation, handle_left, handle_right, easing)
         start = _frame(frame_start, "frame_start")
         end = _frame(frame_end, "frame_end")
         if start > end:
@@ -325,12 +609,7 @@ class _AnimationMixin:
             matched_curves.append({"data_path": curve.data_path, "array_index": curve.array_index})
             for point in curve.keyframe_points:
                 if start <= point.co[0] <= end:
-                    point.interpolation = interpolation
-                    if interpolation == "BEZIER":
-                        point.handle_left_type = handle_left
-                        point.handle_right_type = handle_right
-                    if easing is not None and hasattr(point, "easing"):
-                        point.easing = easing
+                    style_point(point, interpolation, handle_left=handle_left, handle_right=handle_right, easing=easing)
                     changed.append({"array_index": curve.array_index, "frame": float(point.co[0])})
         if not matched_curves:
             raise ValueError("No matching animation curves were found")
@@ -369,18 +648,11 @@ class _AnimationMixin:
             raise ValueError("start must be less than end")
         if mode not in {"DISTANCE", "FOCUS_CONTROL"}:
             raise ValueError("mode must be DISTANCE or FOCUS_CONTROL")
-        if interpolation not in _INTERPOLATIONS:
-            raise ValueError(f"Unsupported interpolation: {interpolation}")
-        for label, object_name, point in (
-            ("start", start_subject_name, start_point),
-            ("end", end_subject_name, end_point),
-        ):
-            if (object_name is None) == (point is None):
-                raise ValueError(f"Supply exactly one {label} subject or point")
-            if object_name is not None:
-                _object(object_name, scene=scene)
-            else:
-                _vector(point, f"{label}_point")
+        validate_key_style(interpolation, "AUTO_CLAMPED", "AUTO_CLAMPED")
+        _validated_focus_targets(
+            scene,
+            (("start", start_subject_name, start_point), ("end", end_subject_name, end_point)),
+        )
         if mode == "FOCUS_CONTROL":
             _required_name(focus_control_name, "focus_control_name")
             collection = _ensure_collection(scene, collection_name)
@@ -389,58 +661,44 @@ class _AnimationMixin:
 
         original_frame = scene.frame_current
         original_subframe = scene.frame_subframe
-        warnings = []
         try:
-            scene.frame_set(start)
-            start_world = _subject_point(scene, start_subject_name, start_point)
-            start_depth = _focus_depth(camera, start_world)
-            scene.frame_set(end)
-            end_world = _subject_point(scene, end_subject_name, end_point)
-            end_depth = _focus_depth(camera, end_world)
-            for label, depth in (("start", start_depth), ("end", end_depth)):
-                if depth <= 0:
-                    warnings.append(
-                        f"The {label} subject is behind the camera; focus uses the absolute camera-space depth."
-                    )
-                distance = abs(depth)
-                if distance < camera.data.clip_start or distance > camera.data.clip_end:
-                    warnings.append(f"The {label} focus plane is outside the camera clip interval.")
+            samples = _focus_pull_samples(
+                scene,
+                camera,
+                (("start", start, start_subject_name, start_point), ("end", end, end_subject_name, end_point)),
+            )
+            warnings = _focus_depth_warnings(camera, [(item["label"], item["depth"]) for item in samples])
             if mode == "DISTANCE":
-                camera.data.dof.use_dof = True
-                camera.data.dof.focus_object = None
-                path = camera.data.dof.path_from_id("focus_distance")
-                for frame_value, depth in ((start, start_depth), (end, end_depth)):
-                    camera.data.dof.focus_distance = max(abs(depth), 1e-6)
-                    if not camera.data.dof.keyframe_insert(data_path="focus_distance", frame=frame_value):
-                        raise RuntimeError(f"Blender refused the focus-distance key at frame {frame_value}")
-                changed_keys = _set_interpolation_on_keys(camera.data, path, (start, end), interpolation)
+                changed_keys = _key_focus_distance(
+                    camera, [(item["frame"], item["depth"]) for item in samples], interpolation
+                )
                 focus_control = None
             else:
-                focus_control = bpy.data.objects.new(focus_control_name, None)
-                collection.objects.link(focus_control)
-                _tag(focus_control, str(uuid.uuid4()), "focus_pull")
-                focus_control.empty_display_type = "SPHERE"
-                focus_control.location = start_world
-                focus_control.keyframe_insert(data_path="location", frame=start)
-                focus_control.location = end_world
-                focus_control.keyframe_insert(data_path="location", frame=end)
-                changed_keys = _set_interpolation_on_keys(focus_control, "location", (start, end), interpolation)
-                camera.data.dof.use_dof = True
-                camera.data.dof.focus_object = focus_control
+                focus_control, changed_keys = _key_focus_control(
+                    camera,
+                    collection,
+                    focus_control_name,
+                    [(item["frame"], item["world"]) for item in samples],
+                    interpolation,
+                )
         finally:
             scene.frame_set(original_frame, subframe=original_subframe)
-        action_owner = camera.data if mode == "DISTANCE" else focus_control
-        action, _curves = _action_fcurves(action_owner)
-        changed_objects = [camera.name] + ([focus_control.name] if focus_control is not None else [])
+        action, _curves = _action_fcurves(camera.data if mode == "DISTANCE" else focus_control)
         return {
             "camera": camera.name,
             "mode": mode,
-            "start": {"frame": start, "point": list(start_world), "camera_space_depth": start_depth},
-            "end": {"frame": end, "point": list(end_world), "camera_space_depth": end_depth},
+            **{
+                item["label"]: {
+                    "frame": item["frame"],
+                    "point": list(item["world"]),
+                    "camera_space_depth": item["depth"],
+                }
+                for item in samples
+            },
             "focus_control": getattr(focus_control, "name", None),
             "changed_keys": changed_keys,
             "warnings": warnings,
-            "changed_objects": changed_objects,
+            "changed_objects": [camera.name] + ([focus_control.name] if focus_control is not None else []),
             "changed_resources": [camera.data.name, *([action.name] if action is not None else [])],
         }
 
@@ -473,92 +731,51 @@ class _AnimationMixin:
         end = _resolve_frame_from_time(end_frame, end_at_seconds, "end", scene)
         if start >= end:
             raise ValueError("start must be less than end")
-        start_distance = _finite_number(start_distance, "start_distance")
-        end_distance = _finite_number(end_distance, "end_distance")
-        if start_distance <= 0 or end_distance <= 0:
-            raise ValueError("Dolly-zoom distances must be positive")
-        subject_reference_size = _finite_number(subject_reference_size, "subject_reference_size")
-        if subject_reference_size <= 0:
-            raise ValueError("subject_reference_size must be positive")
         if (subject_object_name is None) == (subject_point is None):
             raise ValueError("Supply exactly one subject object or point")
         if subject_object_name is not None:
             _object(subject_object_name, scene=scene)
         else:
             _vector(subject_point, "subject_point")
-        lens_start = camera.data.lens if start_lens is None else _finite_number(start_lens, "start_lens")
-        lens_end = lens_start * end_distance / start_distance
-        if not 1 <= lens_start <= 10_000 or not 1 <= lens_end <= 10_000:
-            raise ValueError("Solved focal lengths must remain within Blender's 1-10000 mm range")
-        if interpolation not in _INTERPOLATIONS:
-            raise ValueError(f"Unsupported interpolation: {interpolation}")
-        current_lens = camera.data.lens
-        current_angle = camera.data.angle_x if framing_axis == "HORIZONTAL" else camera.data.angle_y
-        current_tangent = math.tan(current_angle / 2)
-
-        def projected_fraction(distance, lens):
-            half_frame = distance * current_tangent * current_lens / lens
-            return subject_reference_size / (2 * half_frame)
-
+        start_distance, end_distance, subject_reference_size, lens_start, lens_end = _validated_dolly_optics(
+            camera, start_distance, end_distance, subject_reference_size, start_lens
+        )
+        validate_key_style(interpolation, "AUTO_CLAMPED", "AUTO_CLAMPED")
+        projected_fraction = _projected_fraction(camera, framing_axis, subject_reference_size)
         original_frame = scene.frame_current
         original_subframe = scene.frame_subframe
-        solutions = []
-        warnings = []
         try:
-            for frame_value, distance, lens in ((start, start_distance, lens_start), (end, end_distance, lens_end)):
-                scene.frame_set(frame_value)
-                point = _subject_point(scene, subject_object_name, subject_point)
-                camera_location = camera.matrix_world.translation.copy()
-                away = camera_location - point
-                if away.length_squared <= 1e-16:
-                    away = -(camera.matrix_world.to_quaternion() @ mathutils.Vector((0.0, 0.0, -1.0)))
-                away.normalize()
-                desired_camera_location = point + away * distance
-                delta = desired_camera_location - camera_location
-                mover.matrix_world.translation = mover.matrix_world.translation + delta
-                mover.keyframe_insert(data_path="location", frame=frame_value)
-                camera.data.lens = lens
-                camera.data.keyframe_insert(data_path="lens", frame=frame_value)
-                _update_view_layer()
-                actual_camera_location = camera.matrix_world.translation.copy()
-                actual_distance = (actual_camera_location - point).length
-                if not math.isclose(actual_distance, distance, rel_tol=1e-4, abs_tol=1e-4):
-                    warnings.append(
-                        f"At frame {frame_value}, constraints or parenting produced distance "
-                        f"{actual_distance:.6g} instead of {distance:.6g}."
-                    )
-                if distance < camera.data.clip_start or distance > camera.data.clip_end:
-                    warnings.append(f"The subject distance at frame {frame_value} is outside the camera clip interval.")
-                solutions.append(
-                    {
-                        "frame": frame_value,
-                        "distance": distance,
-                        "lens": lens,
-                        "subject_reference_size": subject_reference_size,
-                        "projected_frame_fraction": projected_fraction(distance, lens),
-                        "subject_point": list(point),
-                        "camera_location": list(desired_camera_location),
-                        "evaluated_camera_location": list(actual_camera_location),
-                        "evaluated_distance": actual_distance,
-                    }
-                )
-            move_keys = _set_interpolation_on_keys(mover, "location", (start, end), interpolation)
-            lens_keys = _set_interpolation_on_keys(camera.data, "lens", (start, end), interpolation)
+            solved = _solve_dolly_samples(
+                scene,
+                camera,
+                mover,
+                ((start, start_distance, lens_start), (end, end_distance, lens_end)),
+                (subject_object_name, subject_point, subject_reference_size),
+                projected_fraction,
+            )
+            changed_keys = [
+                *_set_interpolation_on_keys(mover, "location", (start, end), interpolation),
+                *_set_interpolation_on_keys(camera.data, "lens", (start, end), interpolation),
+            ]
         finally:
             scene.frame_set(original_frame, subframe=original_subframe)
-        move_action, _curves = _action_fcurves(mover)
-        lens_action, _curves = _action_fcurves(camera.data)
-        resources = [action.name for action in (move_action, lens_action) if action is not None]
         return {
             "camera": camera.name,
             "movement_object": mover.name,
             "framing_axis": framing_axis,
-            "solutions": solutions,
-            "changed_keys": [*move_keys, *lens_keys],
+            "solutions": solved["solutions"],
+            "changed_keys": changed_keys,
             "approximation": "Preserves the lens-to-camera-space-distance ratio for the subject reference point.",
-            "warnings": warnings,
+            "warnings": solved["warnings"],
             "changed_objects": list(dict.fromkeys([camera.name, mover.name])),
-            "changed_resources": [camera.data.name, *resources],
+            "changed_resources": [
+                camera.data.name,
+                *[
+                    action.name
+                    for action in (_action_fcurves(mover)[0], _action_fcurves(camera.data)[0])
+                    if action is not None
+                ],
+            ],
         }
 
     def add_camera_shake(

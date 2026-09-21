@@ -13,6 +13,10 @@ from ..object_lookup import find_object
 from ..text_hygiene import client_safe_text
 
 _VALIDATE_SCENE_DOMAINS = ("scene", "camera", "lighting", "pbr", "cloth", "liquid", "persistence")
+# Blender's own `Scene.frame_current` limits; outside them `frame_set` silently clamps, which
+# would make the reply's frame disagree with the one the caller asked for.
+_MIN_SCENE_FRAME = -1_048_574
+_MAX_SCENE_FRAME = 1_048_574
 
 # Every collection `transaction._TRACKED_COLLECTIONS` rolls back, minus `libraries`, spelled
 # out rather than imported so this domain does not depend on another module's private name.
@@ -989,6 +993,31 @@ class SceneHandlersMixin:
             else:
                 obj.matrix_basis = result
         return {"name": obj.name, **_transform_snapshot(obj)}
+
+    def set_scene_frame(self, frame, subframe=0.0, scene_name=None):
+        """Move one scene's playhead so the inspection tools report a different frame."""
+        scene = (
+            bpy.context.scene if scene_name is None else bpy.data.scenes.get(_required_name(scene_name, "scene_name"))
+        )
+        if scene is None:
+            raise ValueError(f"Scene not found: {scene_name}")
+        if isinstance(frame, bool) or not isinstance(frame, int):
+            raise ValueError("frame must be an integer")
+        if not _MIN_SCENE_FRAME <= frame <= _MAX_SCENE_FRAME:
+            raise ValueError(f"frame must be between {_MIN_SCENE_FRAME} and {_MAX_SCENE_FRAME}")
+        subframe = float(subframe)
+        if not 0.0 <= subframe < 1.0:
+            raise ValueError("subframe must be in [0.0, 1.0)")
+        scene.frame_set(frame, subframe=subframe)
+        fps_base = scene.render.fps_base
+        return {
+            "scene": scene.name,
+            "frame": scene.frame_current,
+            "subframe": float(scene.frame_subframe),
+            "frame_start": scene.frame_start,
+            "frame_end": scene.frame_end,
+            "fps": scene.render.fps / fps_base if fps_base else float(scene.render.fps),
+        }
 
     def duplicate_or_instance_objects(
         self, source_object_name, names, transforms=None, mode="LINKED_DATA", collection_name=None

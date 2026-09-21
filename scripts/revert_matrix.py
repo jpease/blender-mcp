@@ -18,8 +18,10 @@ substring, so the prefix is how a group of rows is selected: `session:`, `barrie
 `candidates:`, `object lookup:`, `polyhaven:`, `output_roots:`, `get_addon_status:`,
 `server tools:`, `server instructions:`, `transport:`, `rig:`, `docker:`,
 `entrypoint:`, `quiet box:`, `reply budget:`, `lighting:`, `pose:`,
-`render settings:` and `boundary:`. A `... control:` row is the deliberate
-opposite of its neighbour: it proves the same node also notices over-enforcement.
+`render settings:`, `strict args:`, `addon surface:`, `action assignment:`,
+`camera:` and `boundary:`. A `... control:` row is the deliberate opposite of its
+neighbour: it proves that over-enforcing the same line is caught too, either by the
+same node or by the sibling node that exists to say the guard can be passed.
 
 Each row edits one file in place, runs its nodes, and restores the file in a
 `finally`. Rows edit files under `src/`, `scripts/`, `tests/` and `docker/`, and
@@ -58,6 +60,7 @@ ADDON_FILE_PATHS = ROOT / "src/blender_mcp/bundled/addon/file_paths.py"
 ADDON_POLYHAVEN = ROOT / "src/blender_mcp/bundled/addon/handlers/polyhaven.py"
 ADDON_SERVER_CORE = ROOT / "src/blender_mcp/bundled/addon/server_core.py"
 ADDON_CAPABILITY_INTROSPECTION = ROOT / "src/blender_mcp/bundled/addon/capability_introspection.py"
+ADDON_KEY_STYLE = ROOT / "src/blender_mcp/bundled/addon/handlers/key_style.py"
 SERVER_CORE_TOOL = ROOT / "src/blender_mcp/server/tools/core.py"
 SERVER_CONNECTION = ROOT / "src/blender_mcp/server/connection.py"
 ADDON_SESSION = ROOT / "src/blender_mcp/bundled/addon/session.py"
@@ -67,6 +70,7 @@ ADDON_TEXT_HYGIENE = ROOT / "src/blender_mcp/bundled/addon/text_hygiene.py"
 SERVER_TEXT_HYGIENE = ROOT / "src/blender_mcp/text_hygiene.py"
 ADDON_FILE_LIFECYCLE = ROOT / "src/blender_mcp/bundled/addon/handlers/file_lifecycle.py"
 ADDON_LINKING = ROOT / "src/blender_mcp/bundled/addon/handlers/linking.py"
+ADDON_VIEWPORT = ROOT / "src/blender_mcp/bundled/addon/handlers/viewport.py"
 # Server-side tool wrappers and their registration/documentation surface.
 SERVER_FILE_LIFECYCLE_TOOL = ROOT / "src/blender_mcp/server/tools/file_lifecycle.py"
 # `save_shot.create_directories` and name resolution after a library override.
@@ -76,6 +80,10 @@ SERVER_APP = ROOT / "src/blender_mcp/server/app.py"
 ADDON_SCENE = ROOT / "src/blender_mcp/bundled/addon/handlers/scene.py"
 ADDON_ANIMATION = ROOT / "src/blender_mcp/bundled/addon/handlers/animation.py"
 SERVER_ANIMATION_TOOL = ROOT / "src/blender_mcp/server/tools/animation.py"
+# The object-keyframing handler and the action-assignment module it and the posing handler
+# both key through: one ID holds one action, so both tools make the same mistake.
+ADDON_OBJECT_ANIMATION = ROOT / "src/blender_mcp/bundled/addon/handlers/object_animation.py"
+ADDON_ACTION_ASSIGNMENT = ROOT / "src/blender_mcp/bundled/addon/handlers/action_assignment.py"
 SERVER_ENVELOPE = ROOT / "src/blender_mcp/server/tools/envelope.py"
 # The lighting, posing and render-settings handlers the reply-shape work reshaped, and the
 # server-side wrappers that carry their `detail` flag across the socket.
@@ -87,13 +95,24 @@ SERVER_LIGHTING_RENDERING_TOOL = ROOT / "src/blender_mcp/server/tools/lighting/r
 ADDON_CR_FOUNDATION = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/foundation.py"
 ADDON_POSING = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/posing.py"
 SERVER_POSING_TOOL = ROOT / "src/blender_mcp/server/tools/character_rigging/posing.py"
+# Camera aiming, on both sides of the socket: the server wrapper preflights a placement it can
+# resolve without a round trip, and the handler repeats the check against the resolved target.
+ADDON_CAMERA_TARGETING = ROOT / "src/blender_mcp/bundled/addon/handlers/camera/targeting.py"
+SERVER_CAMERA_TARGETING_TOOL = ROOT / "src/blender_mcp/server/tools/camera/targeting.py"
 ADDON_RENDERING = ROOT / "src/blender_mcp/bundled/addon/handlers/rendering.py"
 ADDON_DELIVERY = ROOT / "src/blender_mcp/bundled/addon/handlers/delivery.py"
 RENDER_COVERAGE_SCRIPT = ROOT / "scripts/render_coverage.py"
 SERVER_RENDERING_TOOL = ROOT / "src/blender_mcp/server/tools/rendering.py"
 SERVER_DOCUMENTATION = ROOT / "src/blender_mcp/server/tools/_documentation.py"
+# Where the tool catalog is registered, and where the hardening pass that follows the
+# registration imports is called from.
+SERVER_TOOLS_INIT = ROOT / "src/blender_mcp/server/tools/__init__.py"
 SERVER_BUNDLES = ROOT / "src/blender_mcp/server/bundles.py"
 TEST_BUNDLES_FILE = ROOT / "tests/server/test_bundles.py"
+# `scripts/update_addon_surface.py` imports the snapshot's builder and serializer from this
+# test module, so the generator and the assertion are one code path and a row reverting it
+# reverts what `just addon-surface` writes.
+TEST_ADDON_SURFACE_FILE = ROOT / "tests/test_addon_surface.py"
 ADDON_INIT = ROOT / "src/blender_mcp/bundled/addon/__init__.py"
 TEST_THREADING_FILE = ROOT / "tests/server/test_threading.py"
 SERVER_CLI = ROOT / "src/blender_mcp/server/cli.py"
@@ -131,6 +150,8 @@ CANDT = "tests/test_candidates.py"
 SIT = "tests/server/test_server_instructions.py"
 SOIT = "tests/server/tools/test_scene_object_inspection.py"
 AMT = "tests/test_addon_manager.py"
+SURFT = "tests/test_addon_surface.py"
+STRICTT = "tests/server/test_strict_tool_args.py"
 # The reply-shape tests for lighting, posing and render settings, in files this matrix
 # does not own: their nodes are listed in NEW_NODES_IN_EXISTING_FILES.
 LIGHTT = "tests/server/tools/lighting/test_tools.py"
@@ -138,9 +159,15 @@ CTRLT = "tests/server/tools/character_rigging/test_controls.py"
 POSET = "tests/server/tools/character_rigging/test_posing.py"
 CRFT = "tests/server/tools/character_rigging/test_foundation.py"
 RENDT = "tests/test_rendering_tools.py"
+VIEWT = "tests/server/tools/test_viewport.py"
 SVT = "tests/server/tools/test_scene_validate.py"
 DRT = "tests/server/test_dispatch_rules.py"
 RCT = "tests/test_render_coverage.py"
+# The camera, character-rigging and object-keyframing tool tests this matrix does not own
+# either; the place-and-aim and action-assignment nodes are listed one by one below.
+CAMT = "tests/server/tools/camera/test_tools.py"
+CRTT = "tests/server/tools/character_rigging/test_tools.py"
+OANIMT = "tests/server/tools/test_object_animation.py"
 # Named because inline it passes the line limit, and `ruff format` rejoins a split f-string.
 _LIST_SCALAR = "test_a_string_where_a_list_belongs_is_not_iterated_character_by_character"
 SESSIONT = "tests/test_session_state.py"
@@ -150,6 +177,7 @@ QBT = "tests/test_quiet_box.py"
 THREADT = "tests/server/test_threading.py"
 CONNT = "tests/server/test_connection_framing.py"
 CAPT = "tests/test_capability_introspection.py"
+KEYSTYLET = "tests/test_key_style.py"
 HOSTILE_LIB = f"{SESSIONT}::test_a_hostile_library_path_is_reduced_the_same_way_a_failure_note_is"
 # The `name` half of the same table, with short ids so a row can list its nodes; the
 # `filepath` half's ids run to hundreds of characters.
@@ -183,6 +211,11 @@ NFKC_BACKSLASH_LIB = (
 # them: it feeds a refusal the server makes before any round trip. Feature-behaviour files
 # (posing, rendering, viewport) stay off it and are tracked node by node instead, matching how
 # RENDT/POSET nodes are listed in NEW_NODES_IN_EXISTING_FILES.
+# STRICTT joins it on the same rule: every node in it is about the argument dict a client sends,
+# which is the outermost trust boundary this server has. SURFT joins it because the file is not
+# about a feature at all - it is the freshness gate itself, and a node added there is by
+# construction another claim about the committed snapshot, so leaving one unaccounted for would
+# be leaving the gate's own coverage to chance.
 NEW_TEST_FILES = (
     RIGT,
     DOCKT,
@@ -201,10 +234,20 @@ NEW_TEST_FILES = (
     CANDT,
     SIT,
     CAPT,
+    STRICTT,
+    SURFT,
+    KEYSTYLET,
 )
 # Nodes in files the matrix does not own. `coverage_gaps()` sees only these and the nodes
 # collected from NEW_TEST_FILES, so a node left off this list is never checked.
 NEW_NODES_IN_EXISTING_FILES = (
+    # --- the drain timer follows the traffic instead of a flat 50 ms poll ---
+    f"{THREADT}::test_a_command_makes_the_next_drain_follow_within_the_active_poll",
+    f"{THREADT}::test_the_drain_poll_relaxes_once_the_session_goes_quiet",
+    f"{THREADT}::test_a_server_that_has_served_nothing_polls_at_the_idle_rate",
+    # --- a failed viewport capture leaves no datablock behind ---
+    f"{VIEWT}::test_offscreen_capture_removes_its_image_datablock_when_the_save_fails",
+    f"{VIEWT}::test_window_grab_removes_the_loaded_screenshot_when_the_rescale_save_fails",
     # --- artefact truth: what the save discards, and who authored the file ---
     f"{MUTT}::test_persistence_an_unreferenced_created_datablock_is_reported",
     f"{MUTT}::test_persistence_a_fake_user_datablock_is_not_reported",
@@ -438,11 +481,30 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{POSET}::test_a_keyed_aim_takes_the_short_way_round_from_the_previous_key",
     f"{POSET}::test_a_keyed_euler_aim_stays_on_the_previous_keys_branch",
     f"{POSET}::test_rest_axes_are_reported_only_when_asked_for",
+    # --- solve_bone_reach says whether it converged, and why not ---
+    f"{POSET}::test_a_reach_inside_its_tolerance_reports_converged_and_says_nothing_else",
+    f"{POSET}::test_a_tighter_tolerance_turns_the_same_solve_into_a_miss",
+    f"{POSET}::test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig",
+    f"{POSET}::test_a_target_beyond_the_chains_reach_is_reported_as_unreachable",
+    f"{POSET}::test_the_chains_reach_is_measured_in_world_space_not_in_rest_bone_lengths",
+    *(
+        f"{POSET}::test_a_tolerance_that_names_no_precision_is_refused_before_the_rig_is_touched[{case}]"
+        for case in ("0.0", "-0.0001", "nan", "inf")
+    ),
+    f"{POSET}::test_a_missed_reach_still_warns_after_the_envelope_has_shortened_the_reply",
     # --- configure_render_settings answers with the paths it wrote, not the whole state ---
     f"{RENDT}::test_configure_render_settings_returns_only_the_patched_values",
     f"{RENDT}::test_configure_render_settings_detail_returns_both_full_state_blocks",
     f"{RENDT}::test_configure_render_settings_reports_a_patch_that_writes_nothing",
     f"{RENDT}::test_configure_render_settings_forwards_detail",
+    # --- place and aim in one call, and refuse a vantage point on the target ---
+    f"{CAMT}::test_point_camera_at_places_before_aiming_and_refuses_a_coincident_placement",
+    f"{CAMT}::test_handler_point_camera_at_rejects_a_placement_on_the_aim_point",
+    # --- an ID holds one action, so assigning one is always also unassigning another ---
+    f"{CRTT}::test_keying_a_pose_refuses_to_displace_an_action_that_holds_keys",
+    f"{CRTT}::test_confirming_the_displacement_moves_the_rig_onto_the_new_action",
+    f"{CRTT}::test_ensure_keys_into_an_existing_action_where_create_refuses_it",
+    f"{OANIMT}::test_keyframe_object_transform_refuses_one_action_for_several_objects",
 )
 
 # Nodes no single revert can break, each with the reason, so the gap check skips them.
@@ -544,6 +606,33 @@ NOT_INDIVIDUALLY_FALSIFIABLE: dict[str, str] = {
         "after the parent moves gives the same answer. That is the claim - the fix for the absolute "
         "spaces had to leave LOCAL alone, and this node is what says so; the sibling node for the "
         "absolute spaces is the one a revert reaches."
+    ),
+    f"{STRICTT}::test_a_valid_call_still_validates_through_its_nested_model": (
+        "`extra='forbid'` only ever adds a refusal, so no revert of the hardening can stop a "
+        "well-formed call validating. Measured, not argued: with `forbid_unknown_tool_arguments(mcp)` "
+        "neutralised the file reports `4 failed, 2 passed` and this is one of the two, because the "
+        "nested `CameraOpticsPatch` is generated by the SDK from the handler's signature and owes "
+        "nothing to the config key `_strict_args` writes. It is the control for its four siblings: it "
+        "exists to catch a hardening pass that rebuilt the top-level model badly enough to lose the "
+        "nested patch type, which is a change to `_strict_args`, not a revert of it."
+    ),
+    f"{STRICTT}::test_the_full_catalog_is_what_the_hardening_was_measured_against": (
+        "a guard on its sibling's method, like the `-O` flag node below: it asserts that `all` really "
+        "is a strictly wider catalog than the default selection, so the catalog-wide sweep above it "
+        "cannot pass by measuring the same small surface twice. Nothing in `_strict_args` can move a "
+        "set comparison between two toolset selections - it is falsified only by a change to "
+        "`bundles.py`, whose own selection rules have rows of their own."
+    ),
+    f"{SURFT}::test_committed_surface_matches_the_live_dispatch_table": (
+        "it compares two artefacts - the `commands` block committed in `addon_surface.json` and the "
+        "table the bundled add-on builds - and the fix *is* that data, so there is no line of it to "
+        "revert. Making the two disagree means either editing the committed JSON, which is data rather "
+        "than behaviour, or deleting a handler from the dispatch table, which would prove that some "
+        "unrelated command exists and nothing about drift detection. Measured: the protocol row leaves "
+        "this node green because it only moves `protocol_version`. The mechanism it shares with the "
+        "rest of the file - that the snapshot is regenerated in one fixed shape and pinned to a "
+        "protocol number - is falsifiable through its three siblings, which the two `addon surface:` "
+        "rows break."
     ),
     "tests/test_session_state.py::test_a_recorded_failure_names_one_bounded_leaf_and_nothing_else[newline]": (
         _DOUBLE_DEFENDED
@@ -678,6 +767,69 @@ def _has_ancestor_directory(candidate, root):
 """
 
 REVERTS: list[Revert] = [
+    # --- the drain timer follows the traffic instead of a flat 50 ms poll ---
+    Revert(
+        "transport: the drain timer back to a flat 50 ms poll",
+        ADDON_SERVER_CORE,
+        "        return self._poll_interval()",
+        "        return 0.05",
+        (f"{THREADT}::test_a_command_makes_the_next_drain_follow_within_the_active_poll",),
+    ),
+    Revert(
+        "transport: the fast poll never relaxing back to the idle rate",
+        ADDON_SERVER_CORE,
+        """        if time.monotonic() - self._last_command_at < self._ACTIVE_WINDOW_SECONDS:
+            return self._ACTIVE_POLL_SECONDS
+        return self._IDLE_POLL_SECONDS""",
+        "        return self._ACTIVE_POLL_SECONDS",
+        (
+            f"{THREADT}::test_the_drain_poll_relaxes_once_the_session_goes_quiet",
+            f"{THREADT}::test_a_server_that_has_served_nothing_polls_at_the_idle_rate",
+        ),
+    ),
+    # --- a failed viewport capture leaves no datablock behind ---
+    Revert(
+        "viewport: the offscreen capture's image removed only when the save succeeds",
+        ADDON_VIEWPORT,
+        """    try:
+        image.pixels.foreach_set(pixels.ravel())
+        image.filepath_raw = filepath
+        image.file_format = image_format.upper()
+        image.save()
+    finally:
+        bpy.data.images.remove(image)""",
+        """    image.pixels.foreach_set(pixels.ravel())
+    image.filepath_raw = filepath
+    image.file_format = image_format.upper()
+    image.save()
+    bpy.data.images.remove(image)""",
+        (f"{VIEWT}::test_offscreen_capture_removes_its_image_datablock_when_the_save_fails",),
+    ),
+    Revert(
+        "viewport: the window grab's loaded screenshot removed only when the rescale succeeds",
+        ADDON_VIEWPORT,
+        """    try:
+        width, height = img.size
+        if max(width, height) > max_size:
+            s = max_size / max(width, height)
+            width, height = int(width * s), int(height * s)
+            img.scale(width, height)
+            img.file_format = image_format.upper()
+            img.save()
+    finally:
+        # Same reason as _render_offscreen's: a failed scale/save must not leave the loaded
+        # screenshot sitting in bpy.data.images.
+        bpy.data.images.remove(img)""",
+        """    width, height = img.size
+    if max(width, height) > max_size:
+        s = max_size / max(width, height)
+        width, height = int(width * s), int(height * s)
+        img.scale(width, height)
+        img.file_format = image_format.upper()
+        img.save()
+    bpy.data.images.remove(img)""",
+        (f"{VIEWT}::test_window_grab_removes_the_loaded_screenshot_when_the_rescale_save_fails",),
+    ),
     # --- which Blender, and which configuration, the rig launches ---
     Revert(
         "rig: --factory-startup dropped from the launch",
@@ -2767,8 +2919,10 @@ REVERTS: list[Revert] = [
     Revert(
         "handshake: capabilities is `list(... or [])` again, which validates the container and nothing in it",
         ADDON_MANAGER,
-        '            capabilities=normalized_session_text_list(info.get("capabilities")),',
-        '            capabilities=list(info.get("capabilities") or []),',
+        # Hoisted out of the AddonHandshake(...) call by the surface-gap check, which needs the
+        # normalized list before the dataclass is built; the revert follows it to its new line.
+        '        capabilities = normalized_session_text_list(info.get("capabilities"))',
+        '        capabilities = list(info.get("capabilities") or [])',
         (
             f"{AMT}::test_every_handshake_field_refuses_the_same_hostile_string[capabilities]",
             f"{AMT}::test_a_hostile_element_inside_a_list_field_is_dropped_not_published[capabilities]",
@@ -4942,18 +5096,18 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 213_000",
-        # One byte below the *measured* payload (212,711), not below the ceiling: the ceiling has
-        # headroom by design, so reverting it to 212_999 would still pass and prove nothing.
-        "SHOT_MODE_BYTE_CEILING = 212_710",
+        "SHOT_MODE_BYTE_CEILING = 234_000",
+        # One byte below the *measured* payload (233,211), not below the ceiling: the ceiling has
+        # headroom by design, so reverting it to 233_999 would still pass and prove nothing.
+        "SHOT_MODE_BYTE_CEILING = 233_210",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
         "server tools: the default ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 72_000",
-        # Same rule: one byte below the measured core payload (71,817), not below the ceiling.
-        "DEFAULT_MODE_BYTE_CEILING = 71_816",
+        "DEFAULT_MODE_BYTE_CEILING = 80_500",
+        # Same rule: one byte below the measured core payload (79,834), not below the ceiling.
+        "DEFAULT_MODE_BYTE_CEILING = 79_833",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
@@ -5254,6 +5408,25 @@ REVERTS: list[Revert] = [
         "its field list before calling.",
         "",
         (f"{SIT}::test_the_instructions_state_the_three_parameter_naming_conventions",),
+    ),
+    Revert(
+        # The three rules an agent cannot infer from any single tool's schema: one shot is one
+        # action, the playhead is movable, and a held contact is IK rather than repeated FK.
+        "server instructions: the animation paragraph is deleted from the instructions",
+        SERVER_APP,
+        "\n\nAnimation is authored one frame at a time into one named action: pass the same `action_name` to\n"
+        "`keyframe_object_transform` and the pose tools, because an ID holds one action and a second one\n"
+        "silently stops the first driving the rig. `set_scene_frame` is how any inspection tool or\n"
+        "screenshot is pointed at another frame - they all report the current frame, so without it you\n"
+        "are reviewing frame 1 forever. A contact that must hold still while the body moves over it -\n"
+        "a planted foot, a hand on a prop - is held by `keyframe_bone_reach`, which re-solves the IK\n"
+        "against the evaluated body pose at each frame; repeated FK rotation slides it instead.",
+        "",
+        (
+            f"{SIT}::test_the_instructions_state_that_one_shot_is_one_action",
+            f"{SIT}::test_the_instructions_name_the_tool_that_moves_the_playhead",
+            f"{SIT}::test_the_instructions_point_a_held_contact_at_the_ik_tool",
+        ),
     ),
     Revert(
         "server instructions: the instructions are written but never handed to FastMCP",
@@ -5580,8 +5753,28 @@ REVERTS: list[Revert] = [
     Revert(
         "pose: keyframe_character_pose does not forward detail",
         SERVER_POSING_TOOL,
-        '            "action_slot_identifier": action_slot_identifier,\n            "detail": detail,\n',
-        '            "action_slot_identifier": action_slot_identifier,\n            "detail": False,\n',
+        # `keyframe_bone_reach` ends its payload with the same two lines, so the anchor reaches
+        # up to `space`, which only `keyframe_character_pose` sends.
+        '            "space": space,\n'
+        '            "keying_policy": keying_policy,\n'
+        '            "interpolation": interpolation,\n'
+        '            "handle_left": handle_left,\n'
+        '            "handle_right": handle_right,\n'
+        '            "easing": easing,\n'
+        '            "action_policy": action_policy,\n'
+        '            "confirm_displace_action": confirm_displace_action,\n'
+        '            "action_slot_identifier": action_slot_identifier,\n'
+        '            "detail": detail,\n',
+        '            "space": space,\n'
+        '            "keying_policy": keying_policy,\n'
+        '            "interpolation": interpolation,\n'
+        '            "handle_left": handle_left,\n'
+        '            "handle_right": handle_right,\n'
+        '            "easing": easing,\n'
+        '            "action_policy": action_policy,\n'
+        '            "confirm_displace_action": confirm_displace_action,\n'
+        '            "action_slot_identifier": action_slot_identifier,\n'
+        '            "detail": False,\n',
         (f"{CTRLT}::test_pose_tools_forward_the_detail_flag",),
     ),
     # --- the pose an agent authors reaches the file, and a child is solved against its parent ---
@@ -5705,6 +5898,88 @@ REVERTS: list[Revert] = [
         '        if "aim_at" in spec and spec["aim_at"]["up"] is None:\n',
         "        if False:\n",
         (f"{POSET}::test_keying_an_aim_without_an_up_reference_is_refused",),
+    ),
+    # --- solve_bone_reach says whether it converged, and why not ---
+    Revert(
+        "pose: a bone reach reports itself converged whatever it achieved",
+        ADDON_POSING,
+        '        "converged": measured["achieved_error_m"] <= tolerance_m,\n',
+        '        "converged": True,\n',
+        (
+            f"{POSET}::test_a_tighter_tolerance_turns_the_same_solve_into_a_miss",
+            f"{POSET}::test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig",
+            f"{POSET}::test_a_target_beyond_the_chains_reach_is_reported_as_unreachable",
+            f"{POSET}::test_a_missed_reach_still_warns_after_the_envelope_has_shortened_the_reply",
+        ),
+    ),
+    Revert(
+        "pose: a bone reach cannot tell an unreachable target from a stalled solve",
+        ADDON_POSING,
+        '        "out_of_reach": measured["target_distance_m"] > measured["chain_reach_m"],\n',
+        '        "out_of_reach": False,\n',
+        (f"{POSET}::test_a_target_beyond_the_chains_reach_is_reported_as_unreachable",),
+    ),
+    Revert(
+        "pose: a bone reach sums rest bone lengths, ignoring the rig's world scale",
+        ADDON_POSING,
+        "    matrix = armature.matrix_world\n"
+        "    return sum((matrix @ bone.tail_local - matrix @ bone.head_local).length for bone in rest_chain)\n",
+        "    return sum(bone.length for bone in rest_chain)\n",
+        (f"{POSET}::test_the_chains_reach_is_measured_in_world_space_not_in_rest_bone_lengths",),
+    ),
+    Revert(
+        "pose: a missed bone reach reports its numbers but raises no warning",
+        ADDON_POSING,
+        '            "warnings": [\n'
+        "                warning\n"
+        "                for warning in (_reach_convergence_warning(entry, tolerance_m) for entry in solver_info)\n"
+        "                if warning is not None\n"
+        "            ],\n",
+        '            "warnings": [],\n',
+        (
+            f"{POSET}::test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig",
+            f"{POSET}::test_a_target_beyond_the_chains_reach_is_reported_as_unreachable",
+            f"{POSET}::test_a_missed_reach_still_warns_after_the_envelope_has_shortened_the_reply",
+        ),
+    ),
+    Revert(
+        "pose: a bone reach takes tolerance_m as given, so 0 or NaN reaches the solve",
+        ADDON_POSING,
+        # `keyframe_bone_reach` validates tolerance_m the same way, so the anchor carries the
+        # line that follows it here and nowhere else.
+        '        tolerance_m = _finite(tolerance_m, "tolerance_m")\n'
+        "        if tolerance_m <= 0.0:\n"
+        '            raise ValueError(f"tolerance_m must be greater than 0 metres, not {tolerance_m}")\n'
+        "        armature = _armature_object(armature_object_name)\n",
+        "        tolerance_m = float(tolerance_m)\n        armature = _armature_object(armature_object_name)\n",
+        tuple(
+            f"{POSET}::test_a_tolerance_that_names_no_precision_is_refused_before_the_rig_is_touched[{case}]"
+            for case in ("0.0", "-0.0001", "nan", "inf")
+        ),
+    ),
+    Revert(
+        "pose: a bone reach never says which tolerance it judged the solve against",
+        ADDON_POSING,
+        '            "tolerance_m": tolerance_m,\n',
+        "",
+        (
+            f"{POSET}::test_a_reach_inside_its_tolerance_reports_converged_and_says_nothing_else",
+            f"{POSET}::test_a_tighter_tolerance_turns_the_same_solve_into_a_miss",
+        ),
+    ),
+    Revert(
+        "pose: every missed bone reach is blamed on the target being out of reach",
+        ADDON_POSING,
+        '    if entry["out_of_reach"]:\n',
+        "    if True:\n",
+        (f"{POSET}::test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig",),
+    ),
+    Revert(
+        "pose: a converged bone reach warns anyway, so every solve carries a notice",
+        ADDON_POSING,
+        '    if entry["converged"]:\n        return None\n',
+        "    if False:\n        return None\n",
+        (f"{POSET}::test_a_reach_inside_its_tolerance_reports_converged_and_says_nothing_else",),
     ),
     # --- configure_render_settings answers with the paths it wrote, not the whole state ---
     Revert(
@@ -6251,6 +6526,172 @@ REVERTS: list[Revert] = [
         "            accepted = handshake.capability_params.get(command_type)",
         "            accepted = handshake.capability_params.get(command_type, [])",
         (f"{CONNT}::test_the_command_gate_does_not_filter_when_the_addon_omits_capability_params",),
+    ),
+    # --- the SDK's generated argument models refuse a key the handler never declared ---
+    Revert(
+        # The call site rather than the function body, because that is where the mechanism is:
+        # `_strict_args` rewrites models that already exist, so it only ever hardens the tools
+        # registered by the import loop above it. This is also how the fix was falsified while it
+        # was being written - neutralise the call and four of the file's six nodes go red.
+        "strict args: the hardening pass never runs, so an unknown top-level argument is dropped again",
+        SERVER_TOOLS_INIT,
+        "\nforbid_unknown_tool_arguments(mcp)\n",
+        "\nif False:\n    forbid_unknown_tool_arguments(mcp)\n",
+        (
+            f"{STRICTT}::test_a_misspelled_argument_is_refused_instead_of_dropped",
+            f"{STRICTT}::test_the_wrongly_nested_patch_from_the_incident_is_refused",
+            f"{STRICTT}::test_every_registered_tool_refuses_an_unknown_argument[all]",
+            f"{STRICTT}::test_every_registered_tool_refuses_an_unknown_argument[None]",
+        ),
+    ),
+    # --- a dispatch-surface change cannot reach a user behind an unchanged protocol number ---
+    Revert(
+        # The anchor carries the current number, so `just anchors` reports this row BROKEN on the
+        # next protocol bump. That is the cheapest possible reminder that the row's claim - the
+        # surface moved and the number did not - has to be re-pointed at the new pair.
+        "addon surface: the dispatch table moved while the protocol number stayed where it was",
+        ADDON_MANAGER,
+        "EXPECTED_ADDON_PROTOCOL_VERSION = 33",
+        "EXPECTED_ADDON_PROTOCOL_VERSION = 32",
+        (
+            f"{SURFT}::test_snapshot_records_the_protocol_version_the_server_expects",
+            f"{SURFT}::test_both_protocol_constants_agree",
+        ),
+    ),
+    Revert(
+        # `scripts/update_addon_surface.py` imports this helper, so reverting it really does revert
+        # what `just addon-surface` writes; the node compares the committed bytes against it.
+        "addon surface: the snapshot is written in dispatch order, so one new command reflows the file",
+        TEST_ADDON_SURFACE_FILE,
+        '    return json.dumps(surface, indent=2, sort_keys=True) + "\\n"',
+        '    return json.dumps(surface, indent=2) + "\\n"',
+        (f"{SURFT}::test_committed_surface_is_serialized_the_way_the_generator_writes_it",),
+    ),
+    # --- one keyframe-style vocabulary, stated twice and enforced once -----------------------
+    Revert(
+        # The add-on cannot import the server package, so the enum members are necessarily
+        # written down twice. A member added to one side only is not a type error and not a
+        # formatting error - it is a schema offering a mode the socket's far end refuses.
+        "key style: the add-on drifts back to the three interpolations the surface used to carry",
+        ADDON_KEY_STYLE,
+        '        "CONSTANT",\n        "LINEAR",\n        "BEZIER",\n        "SINE",\n',
+        '        "CONSTANT",\n        "LINEAR",\n        "BEZIER",\n',
+        (f"{KEYSTYLET}::test_the_advertised_vocabulary_is_the_one_the_addon_accepts[Literal-INTERPOLATIONS]",),
+    ),
+    Revert(
+        "key style: handle types are written under every interpolation, not only BEZIER",
+        ADDON_KEY_STYLE,
+        '    if interpolation == "BEZIER":\n        point.handle_left_type = handle_left\n',
+        "    if True:\n        point.handle_left_type = handle_left\n",
+        (f"{KEYSTYLET}::test_bezier_is_the_only_interpolation_that_records_handle_types",),
+    ),
+    Revert(
+        # Easing is the half of the vocabulary that makes SINE..ELASTIC mean anything; dropped
+        # silently, a call asking for EASE_IN_OUT gets linear-feeling motion and no error.
+        "key style: an easing request is accepted and then dropped",
+        ADDON_KEY_STYLE,
+        "    if easing is not None:\n        point.easing = easing\n",
+        "    if False:\n        point.easing = easing\n",
+        (f"{KEYSTYLET}::test_easing_is_written_on_any_interpolation_and_omitted_when_unset",),
+    ),
+    Revert(
+        # Four style arguments arrive together, so "Unsupported key style" leaves the caller to
+        # guess which of them it meant.
+        "key style: a refusal no longer names the argument that was wrong",
+        ADDON_KEY_STYLE,
+        "        if value not in HANDLE_TYPES:\n"
+        '            raise ValueError(f"Unsupported {label}: {value}; expected one of {sorted(HANDLE_TYPES)}")\n',
+        '        if value not in HANDLE_TYPES:\n            raise ValueError("Unsupported key style")\n',
+        (
+            f"{KEYSTYLET}::test_an_unsupported_style_is_refused_by_the_argument_that_is_wrong[style1-handle_left]",
+            f"{KEYSTYLET}::test_an_unsupported_style_is_refused_by_the_argument_that_is_wrong[style2-handle_right]",
+        ),
+    ),
+    Revert(
+        "key style: the add-on stops accepting a handle type the schema still advertises",
+        ADDON_KEY_STYLE,
+        'HANDLE_TYPES = frozenset({"FREE", "ALIGNED", "VECTOR", "AUTO", "AUTO_CLAMPED"})',
+        'HANDLE_TYPES = frozenset({"ALIGNED", "VECTOR", "AUTO", "AUTO_CLAMPED"})',
+        (f"{KEYSTYLET}::test_the_advertised_vocabulary_is_the_one_the_addon_accepts[Literal-HANDLE_TYPES]",),
+    ),
+    Revert(
+        "key style: the add-on stops accepting an easing direction the schema still advertises",
+        ADDON_KEY_STYLE,
+        'EASINGS = frozenset({"AUTO", "EASE_IN", "EASE_OUT", "EASE_IN_OUT"})',
+        'EASINGS = frozenset({"EASE_IN", "EASE_OUT", "EASE_IN_OUT"})',
+        (f"{KEYSTYLET}::test_the_advertised_vocabulary_is_the_one_the_addon_accepts[Literal-EASINGS]",),
+    ),
+    Revert(
+        "key style: the interpolation refusal no longer names interpolation",
+        ADDON_KEY_STYLE,
+        '        raise ValueError(f"Unsupported interpolation: {interpolation}; expected one of '
+        '{sorted(INTERPOLATIONS)}")\n',
+        '        raise ValueError("Unsupported key style")\n',
+        (f"{KEYSTYLET}::test_an_unsupported_style_is_refused_by_the_argument_that_is_wrong[style0-interpolation]",),
+    ),
+    Revert(
+        "key style: the easing refusal no longer names easing",
+        ADDON_KEY_STYLE,
+        '        raise ValueError(f"Unsupported easing: {easing}; expected one of {sorted(EASINGS)}")\n',
+        '        raise ValueError("Unsupported key style")\n',
+        (f"{KEYSTYLET}::test_an_unsupported_style_is_refused_by_the_argument_that_is_wrong[style3-easing]",),
+    ),
+    # --- an ID holds one action, so assigning one is always also unassigning another ---
+    Revert(
+        "action assignment: an action holding keys is displaced without anyone being asked",
+        ADDON_ACTION_ASSIGNMENT,
+        "    if not confirm_displace:",
+        "    if False:",
+        (f"{CRTT}::test_keying_a_pose_refuses_to_displace_an_action_that_holds_keys",),
+    ),
+    Revert(
+        # The opposite direction on the same line: a guard that cannot be confirmed past is not a
+        # confirmation, it is a wall, and the node that says the caller may mean it is the one
+        # that notices.
+        "action assignment control: the confirmation is ignored, so a confirmed displacement is still refused",
+        ADDON_ACTION_ASSIGNMENT,
+        "    if not confirm_displace:",
+        "    if True:",
+        (f"{CRTT}::test_confirming_the_displacement_moves_the_rig_onto_the_new_action",),
+    ),
+    Revert(
+        "action assignment: CREATE stops asserting that the action it names is not already in the file",
+        ADDON_ACTION_ASSIGNMENT,
+        '    elif policy == "CREATE":',
+        "    elif False:",
+        (f"{CRTT}::test_ensure_keys_into_an_existing_action_where_create_refuses_it",),
+    ),
+    Revert(
+        "action assignment: one action is spread across every object a batch names",
+        ADDON_OBJECT_ANIMATION,
+        "    if len(objects) > 1:",
+        "    if False:",
+        (f"{OANIMT}::test_keyframe_object_transform_refuses_one_action_for_several_objects",),
+    ),
+    # --- place and aim in one call, and refuse a vantage point on the target ---
+    Revert(
+        "camera: camera_location never leaves the server, so a placed aim moves nothing",
+        SERVER_CAMERA_TARGETING_TOOL,
+        '            "camera_location": camera_location,',
+        '            "camera_location": None,',
+        (f"{CAMT}::test_point_camera_at_places_before_aiming_and_refuses_a_coincident_placement",),
+    ),
+    Revert(
+        "camera: a placement on the aim point is dispatched instead of refused before the round trip",
+        SERVER_CAMERA_TARGETING_TOOL,
+        " and tuple(camera_location) == tuple(target_point):",
+        " and False:",
+        (f"{CAMT}::test_point_camera_at_places_before_aiming_and_refuses_a_coincident_placement",),
+    ),
+    Revert(
+        # Reverting `_set_world_location` itself proves nothing - no node reads the placed transform -
+        # but reverting the guard reaches it, because the node's fake camera raises the moment its
+        # matrix_world is touched. That is the claim: the refusal happens before the camera moves.
+        "camera: the handler moves the camera onto the aim point before noticing the two coincide",
+        ADDON_CAMERA_TARGETING,
+        "            if (point - placement).length_squared <= _COINCIDENT_DISTANCE_SQUARED:",
+        "            if False:",
+        (f"{CAMT}::test_handler_point_camera_at_rejects_a_placement_on_the_aim_point",),
     ),
 ]
 

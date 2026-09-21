@@ -36,18 +36,30 @@ async def point_camera_at(
     target_object_name: str | None = None,
     target_point: tuple[float, float, float] | None = None,
     subtarget: str | None = None,
+    camera_location: tuple[float, float, float] | None = None,
 ) -> dict:
     """
-    Rotate a camera once to aim at an object or world-space point.
+    Optionally place a camera at a world point, then rotate it once to aim at an object or point.
 
     Supply exactly one target source. Rotates local -Z toward the target with local Y as up,
     correctly resolving parent space. This is a one-shot rotation, not a constraint — use
     add_camera_constraint for a live tracking relationship.
+
+    camera_location is a world-space point applied before the aim, so place-and-aim is one call
+    rather than set_object_transform followed by this tool. It is parent-aware: a camera parented
+    to a rig root or a path follower still lands on that world point. It is refused when it
+    coincides with the resolved target, because there is then no direction to look along. Use
+    frame_camera_on_objects(policy="MOVE_CAMERA") instead when the distance should be solved from
+    what must fit in frame rather than stated exactly.
     """
     if (target_object_name is None) == (target_point is None):
         raise ToolError("Supply exactly one of target_object_name or target_point")
     if subtarget is not None and target_object_name is None:
         raise ToolError("subtarget requires target_object_name")
+    if camera_location is not None and target_point is not None and tuple(camera_location) == tuple(target_point):
+        # The handler rejects this against the resolved target too (a target_object_name only
+        # resolves inside Blender), but when both points are literal the round trip buys nothing.
+        raise ToolError(f"camera_location {list(camera_location)} is the same point as target_point")
     return await asyncio.to_thread(
         _call,
         "point_camera_at",
@@ -57,6 +69,7 @@ async def point_camera_at(
             "target_object_name": target_object_name,
             "target_point": target_point,
             "subtarget": subtarget,
+            "camera_location": camera_location,
         },
         [camera_name],
     )

@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import character_rigging
+from server.tools.character_rigging.test_posing import _Action, _FCurve, _head_rig
 
 
 def _run(function, **kwargs):
@@ -234,3 +235,67 @@ def test_patch_preflight_accepts_child_before_parent_creation(monkeypatch) -> No
     handler._validate_bone_specs(final, set())
     assert renamed == {}
     assert deleted == []
+
+
+_POSE = ({"bone_name": "CHAR1_head_jnt", "rotation_euler": (0.0, 0.44, 0.0)},)
+
+
+def _rig_driven_by_root_motion(monkeypatch):
+    """
+    Load the head rig already driven by an action holding two location keys.
+
+    That is the shot the guard exists for: `keyframe_object_transform` keyed the root motion
+    into `CHAR1_sh030_root` first, and the pose call arrives next naming an action of its own.
+
+    Args:
+        monkeypatch: The test's monkeypatch.
+
+    Returns:
+        tuple: the server, the rig's animation data, and the root-motion action.
+
+    """
+    server, rig, animation, _posing, _spine, _head = _head_rig(monkeypatch)
+    root_motion = _Action("CHAR1_sh030_root")
+    root_motion.fcurves.append(_FCurve("location", 0, [(1.0, 0.0), (24.0, 5.0)]))
+    animation.action = root_motion
+    # Blender's animation_data_create() both creates the block and hangs it off the ID, which
+    # is what the guard reads: it never creates animation data of its own to ask the question.
+    rig.animation_data = animation
+    return server, animation, root_motion
+
+
+def test_keying_a_pose_refuses_to_displace_an_action_that_holds_keys(monkeypatch) -> None:
+    """Displacing the root motion is how a shot's characters end up standing still."""
+    server, animation, root_motion = _rig_driven_by_root_motion(monkeypatch)
+
+    with pytest.raises(ValueError, match="CHAR1_sh030_root"):
+        server.keyframe_character_pose("CHAR1_rig", "CHAR1_sh030_pose", 1.0, list(_POSE))
+
+    assert animation.action is root_motion
+    # A refusal that had already made the new action would leave a stray empty action behind.
+    assert sys.modules["bpy"].data.actions.get("CHAR1_sh030_pose") is None
+
+
+def test_confirming_the_displacement_moves_the_rig_onto_the_new_action(monkeypatch) -> None:
+    """The caller may well mean it - the confirmation is what says so."""
+    server, animation, _root_motion = _rig_driven_by_root_motion(monkeypatch)
+
+    reply = server.keyframe_character_pose("CHAR1_rig", "CHAR1_sh030_pose", 1.0, list(_POSE), confirm_displace_action=True)
+
+    assert reply["assigned_action"] == "CHAR1_sh030_pose"
+    assert reply["unassigned_action"] == "CHAR1_sh030_root"
+    assert animation.action.name == "CHAR1_sh030_pose"
+
+
+def test_ensure_keys_into_an_existing_action_where_create_refuses_it(monkeypatch) -> None:
+    """ENSURE is the default because keying a second frame of the same shot must not be a new action."""
+    server, _rig, _animation, _posing, _spine, _head = _head_rig(monkeypatch)
+    actions = sys.modules["bpy"].data.actions
+    existing = actions.new("CHAR1_sh030_pose")
+
+    reply = server.keyframe_character_pose("CHAR1_rig", "CHAR1_sh030_pose", 1.0, list(_POSE))
+
+    assert reply["action"] == "CHAR1_sh030_pose"
+    assert actions["CHAR1_sh030_pose"] is existing
+    with pytest.raises(ValueError, match="Action already exists"):
+        server.keyframe_character_pose("CHAR1_rig", "CHAR1_sh030_pose", 2.0, list(_POSE), action_policy="CREATE")

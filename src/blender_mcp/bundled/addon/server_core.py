@@ -309,6 +309,8 @@ class BlenderMCPServer(
         self._clients_lock = threading.Lock()
         # The exact object registered with bpy.app.timers; see _register_drain_timer.
         self._drain_timer = None
+        # When the last command was taken off the queue, for _poll_interval below.
+        self._last_command_at = 0.0
 
     def _get_config_value(self, scene_attr, pref_attr=None, env_var=None):
         """
@@ -517,7 +519,33 @@ class BlenderMCPServer(
             # the drain loop ends and every client waits out its 180 s timeout.
             self._replace_this_dying_timer()
             raise
-        return 0.05
+        return self._poll_interval()
+
+    def _poll_interval(self) -> float:
+        """
+        Say how long Blender should wait before draining the queue again.
+
+        `bpy.app.timers` is the only thread-safe way to reach Blender's main thread from a
+        socket thread, so this interval is the latency floor under every command: a client
+        that sends its next command immediately after reading a reply always misses the
+        tick that just ran and waits out a whole interval. At a flat 50 ms that measured as
+        54.86 ms of pure protocol cost per frame on a 240-frame orchestrated animation -
+        13.2 s a shot, for renders whose frames took 2.5 ms each
+        (`scripts/rig_scenarios/scenario_render_overhead.py`).
+
+        So the poll follows the traffic: fast while a session is active, and back to the
+        cheap idle rate once it goes quiet, which is what keeps an idle Blender idle. The
+        window is generous because the gap between two commands of one sequence includes
+        whatever Blender spent on the first - a slow frame must not drop the session back
+        to the idle rate before its successor arrives.
+
+        Returns:
+            float: Seconds until the next drain.
+
+        """
+        if time.monotonic() - self._last_command_at < self._ACTIVE_WINDOW_SECONDS:
+            return self._ACTIVE_POLL_SECONDS
+        return self._IDLE_POLL_SECONDS
 
     def _drain_batch(self) -> None:
         """
@@ -573,6 +601,8 @@ class BlenderMCPServer(
             processed += 1
             if command.get("type") in self._TICK_ENDING_COMMANDS:
                 break
+        if processed:
+            self._last_command_at = time.monotonic()
 
     def _replace_this_dying_timer(self) -> None:
         """
@@ -1003,6 +1033,14 @@ class BlenderMCPServer(
     _MAX_COMMANDS_PER_TICK = 8
     _DRAIN_TIME_BUDGET_SECONDS = 0.02
 
+    # The drain timer's two rates; `_poll_interval` chooses between them. 5 ms is the
+    # floor a command pays while a session is active, down from the flat 50 ms this timer
+    # used to return, and the idle rate is that old value - an unused Blender polls an
+    # empty queue twenty times a second, exactly as before.
+    _ACTIVE_POLL_SECONDS = 0.005
+    _IDLE_POLL_SECONDS = 0.05
+    _ACTIVE_WINDOW_SECONDS = 5.0
+
     # How often a client thread's recv() wakes to check self.running; also what
     # `_send_bounded` restores after a shorter write.
     _CLIENT_SOCKET_TIMEOUT_SECONDS = 1.0
@@ -1279,6 +1317,7 @@ class BlenderMCPServer(
             "inspect_animation": self.inspect_animation,
             "manage_animation_action": self.manage_animation_action,
             "edit_keyframes": self.edit_keyframes,
+            "set_action_cycle": self.set_action_cycle,
             "bake_evaluated_animation": self.bake_evaluated_animation,
             "manage_nla_tracks": self.manage_nla_tracks,
             "manage_animation_driver": self.manage_animation_driver,
@@ -1313,6 +1352,7 @@ class BlenderMCPServer(
             "get_viewport_screenshot": self.get_viewport_screenshot,
             "create_geometry_object": self.create_geometry_object,
             "set_object_transform": self.set_object_transform,
+            "set_scene_frame": self.set_scene_frame,
             "duplicate_or_instance_objects": self.duplicate_or_instance_objects,
             "manage_scene_collections": self.manage_scene_collections,
             "manage_object_hierarchy": self.manage_object_hierarchy,
@@ -1399,6 +1439,7 @@ class BlenderMCPServer(
             "set_character_pose": self.set_character_pose,
             "keyframe_character_pose": self.keyframe_character_pose,
             "solve_bone_reach": self.solve_bone_reach,
+            "keyframe_bone_reach": self.keyframe_bone_reach,
             "create_shape_key_controls": self.create_shape_key_controls,
             "get_rigid_body_scene_info": self.get_rigid_body_scene_info,
             "get_rigid_body_object_info": self.get_rigid_body_object_info,
@@ -1683,7 +1724,9 @@ class BlenderMCPServer(
     # Commands that mutate nothing worth an undo checkpoint: viewport and
     # capture toggles. Not read-only, so they are not in `_READ_ONLY_COMMANDS`,
     # but a transaction around them would only add undo-stack noise.
-    _NON_UNDO_COMMANDS = frozenset({"set_viewport_overlay", "nd_pulse_viewport_toggle", "nd_capture_utils"})
+    _NON_UNDO_COMMANDS = frozenset(
+        {"set_viewport_overlay", "nd_pulse_viewport_toggle", "nd_capture_utils", "set_scene_frame"}
+    )
 
     # The same, for commands that are only non-undo with some params. A render
     # writes a file rather than scene state - unless `persist_output` stores its

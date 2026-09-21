@@ -168,6 +168,8 @@ assert keyed["action_slot"] is not None
 assert keyed["changed_bones"] == ["settings"]
 assert "bones" not in keyed
 
+# A second action for the detail reply, which displaces the one just keyed: deliberate here,
+# and destructive, so it is confirmed rather than inferred from the call.
 keyed_detail = handler.keyframe_character_pose(
     rig.name,
     "SmokePoseDetail",
@@ -175,6 +177,7 @@ keyed_detail = handler.keyframe_character_pose(
     [{"bone_name": "settings", "location": (0.3, 0, 0)}],
     space="LOCAL",
     action_policy="CREATE",
+    confirm_displace_action=True,
     detail=True,
 )
 assert keyed_detail["changed_bones"] == ["settings"]

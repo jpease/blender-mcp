@@ -33,3 +33,19 @@ def test_the_instructions_state_the_three_parameter_naming_conventions() -> None
     assert "never bare `type`" in _PROSE
     assert "always takes `collection_name` explicitly" in _PROSE
     assert "named `patch`" in _PROSE
+
+
+def test_the_instructions_state_that_one_shot_is_one_action() -> None:
+    """Two actions do not play together, and the second silently wins - the costliest surprise here."""
+    assert "an ID holds one action" in _PROSE
+
+
+def test_the_instructions_name_the_tool_that_moves_the_playhead() -> None:
+    """Every inspection tool reports the current frame, so this is the whole animation review loop."""
+    assert "`set_scene_frame` is how any inspection tool" in _PROSE
+
+
+def test_the_instructions_point_a_held_contact_at_the_ik_tool() -> None:
+    """The reported failure was a sliding foot authored with repeated FK rotation."""
+    assert "`keyframe_bone_reach`" in _PROSE
+    assert "repeated FK rotation slides it" in _PROSE

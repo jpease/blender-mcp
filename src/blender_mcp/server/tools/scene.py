@@ -320,6 +320,39 @@ async def set_object_transform(
 
 
 @mcp.tool()
+async def set_scene_frame(
+    ctx: Context,
+    frame: Annotated[int, Field(ge=-1_048_574, le=1_048_574)],
+    subframe: Annotated[float, Field(ge=0.0, lt=1.0)] = 0.0,
+    scene_name: Annotated[str, Field(min_length=1)] | None = None,
+) -> dict:
+    """
+    Move the playhead, which is how every other inspection tool is pointed at another frame.
+
+    get_object_info, get_character_rig_info, list_character_bones and get_viewport_screenshot
+    all report the current frame. Without moving the playhead, an agent that authored 24
+    frames can only ever look at one of them. Set the frame, then inspect or screenshot, to
+    check what was actually keyed - at minimum a walk's contact, down, passing and up frames.
+
+    Args:
+        ctx: MCP request context.
+        frame: The frame to move to.
+        subframe: Fractional part of the frame, for motion between whole frames.
+        scene_name: Which scene's playhead to move; the active scene when omitted.
+
+    Returns:
+        scene, frame, subframe, and the scene's frame_start, frame_end and fps, so the reply
+        also says whether the requested frame is inside the shot.
+
+    """
+    return await asyncio.to_thread(
+        _call,
+        "set_scene_frame",
+        {"frame": frame, "subframe": subframe, "scene_name": scene_name},
+    )
+
+
+@mcp.tool()
 async def duplicate_or_instance_objects(
     ctx: Context,
     source_object_name: str,

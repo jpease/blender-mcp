@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ..app import mcp
 from ..connection import get_blender_connection
 from .envelope import envelope_for
+from .key_style import HandleType, Interpolation
 
 _MAX_FRAME = 1_048_574
 
@@ -53,9 +54,13 @@ async def keyframe_object_transform(
     ctx: Context,
     keyframes: Annotated[list[ObjectTransformKeyframe], Field(min_length=1, max_length=500)],
     policy: Literal["INSERT_ONLY", "REPLACE_EXISTING"] = "REPLACE_EXISTING",
-    interpolation: Literal["CONSTANT", "LINEAR", "BEZIER"] = "BEZIER",
-    handle_left: Literal["FREE", "ALIGNED", "VECTOR", "AUTO", "AUTO_CLAMPED"] = "AUTO_CLAMPED",
-    handle_right: Literal["FREE", "ALIGNED", "VECTOR", "AUTO", "AUTO_CLAMPED"] = "AUTO_CLAMPED",
+    interpolation: Interpolation = "BEZIER",
+    handle_left: HandleType = "AUTO_CLAMPED",
+    handle_right: HandleType = "AUTO_CLAMPED",
+    action_name: Annotated[str, Field(min_length=1, max_length=63)] | None = None,
+    action_policy: Literal["ENSURE", "CREATE", "REUSE"] = "ENSURE",
+    action_slot_identifier: str | None = None,
+    confirm_displace_action: bool = False,
 ) -> dict:
     """
     Keyframe one or more objects' location/rotation/scale, in local or world space, at a frame or seconds offset.
@@ -70,7 +75,21 @@ async def keyframe_object_transform(
     QUATERNION, otherwise rotation_euler; AXIS_ANGLE objects are rejected (use edit_keyframes instead).
     rotation_mode itself is never changed. Convert seconds to a frame via at_seconds using the target scene's
     fps and frame_start (see get_scene_physics_info / configure_scene_physics) instead of supplying frame.
+
+    Without action_name the keys land in whatever action already drives each object, so which action holds
+    the shot's motion depends on call order. Name one and they are written there: action_policy="ENSURE"
+    (default) creates it when missing and reuses it when present, "CREATE" requires it to be new, "REUSE"
+    requires it to exist, and action_slot_identifier picks the slot when the action carries several. An
+    object holds one action, so a batch naming action_name may name only one object, and displacing a
+    different action that already holds keys is refused unless confirm_displace_action=True: those keys
+    would stop driving anything and Blender drops an unreferenced action at save. Give a character's root
+    motion (here) and its pose (keyframe_character_pose) the same action_name and both play back together.
     """
+    if action_name is not None and len({record.object_name for record in keyframes}) > 1:
+        raise ValueError(
+            f"action_name='{action_name}' names one action, but this batch keys several objects: an object "
+            "holds one action, so call keyframe_object_transform once per object"
+        )
     return await _call(
         "keyframe_object_transform",
         {
@@ -79,6 +98,10 @@ async def keyframe_object_transform(
             "interpolation": interpolation,
             "handle_left": handle_left,
             "handle_right": handle_right,
+            "action_name": action_name,
+            "action_policy": action_policy,
+            "action_slot_identifier": action_slot_identifier,
+            "confirm_displace_action": confirm_displace_action,
         },
         changed_resources=list(dict.fromkeys(record.object_name for record in keyframes)),
     )

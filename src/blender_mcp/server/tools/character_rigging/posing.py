@@ -8,6 +8,7 @@ from mcp.server.fastmcp import Context
 from pydantic import Field, model_validator
 
 from ...app import mcp
+from ..key_style import Easing, HandleType, Interpolation
 from ._shared import _call, _StrictModel
 
 _SignedAxis = Literal["X", "-X", "Y", "-Y", "Z", "-Z"]
@@ -247,20 +248,30 @@ async def keyframe_character_pose(
     poses: Annotated[list[BonePose], Field(min_length=1, max_length=500)],
     space: Literal["LOCAL", "LOCAL_WITH_PARENT", "POSE", "WORLD"] = "LOCAL",
     keying_policy: Literal["INSERT", "REPLACE", "REMOVE"] = "INSERT",
-    interpolation: Literal["CONSTANT", "LINEAR", "BEZIER"] = "BEZIER",
-    action_policy: Literal["CREATE", "REUSE"] = "CREATE",
+    interpolation: Interpolation = "BEZIER",
+    handle_left: HandleType = "AUTO_CLAMPED",
+    handle_right: HandleType = "AUTO_CLAMPED",
+    easing: Easing | None = None,
+    action_policy: Literal["ENSURE", "CREATE", "REUSE"] = "ENSURE",
+    confirm_displace_action: bool = False,
     action_slot_identifier: str | None = None,
     detail: bool = False,
 ) -> dict:
     """
     Apply a pose and insert, replace, or remove exact keys in a named action.
 
-    action_policy="CREATE" (default) requires action_name to not already exist; "REUSE" requires
-    it to already exist, and is the only policy keying_policy="REMOVE" accepts. Each pose's
-    bone_name must name an existing pose bone on armature_object_name. action_slot_identifier
-    selects which of the action's animation slots to key by its `identifier`; it is only required
-    when the action already has multiple candidate slots and none is unambiguously suitable
-    (inspect the action's slots before assuming this can be omitted).
+    action_policy="ENSURE" (default) keys into action_name whether or not it already exists;
+    "CREATE" requires it to be new, "REUSE" requires it to exist, and keying_policy="REMOVE"
+    needs an action that is already there (REUSE, or ENSURE finding one). A rig holds one
+    action, so keying a pose into a second one stops the first driving the rig and Blender
+    drops an unreferenced action at save: when another action already holds keys, the call is
+    refused unless confirm_displace_action=True. Root motion keyed by keyframe_object_transform
+    lives in exactly such an action - pass both it and the pose the same action_name and they
+    play back together. Each pose's bone_name must name an existing pose bone on
+    armature_object_name. action_slot_identifier selects which of the action's animation slots
+    to key by its `identifier`; it is only required when the action already has multiple
+    candidate slots and none is unambiguously suitable (inspect the action's slots before
+    assuming this can be omitted).
 
     The call leaves the rig driven by the action it keyed, which is what makes the animation
     part of the file: an action nothing references has no users and Blender drops it at save.
@@ -290,8 +301,8 @@ async def keyframe_character_pose(
         budget; changed_bones stays complete.
 
     """
-    if keying_policy == "REMOVE" and action_policy != "REUSE":
-        raise ValueError("Removing keys requires action_policy='REUSE'")
+    if keying_policy == "REMOVE" and action_policy == "CREATE":
+        raise ValueError("Removing keys requires an action that already exists, which action_policy='CREATE' forbids")
     return await asyncio.to_thread(
         _call,
         "keyframe_character_pose",
@@ -303,12 +314,48 @@ async def keyframe_character_pose(
             "space": space,
             "keying_policy": keying_policy,
             "interpolation": interpolation,
+            "handle_left": handle_left,
+            "handle_right": handle_right,
+            "easing": easing,
             "action_policy": action_policy,
+            "confirm_displace_action": confirm_displace_action,
             "action_slot_identifier": action_slot_identifier,
             "detail": detail,
         },
         [armature_object_name],
     )
+
+
+class ReachHinge(_StrictModel):
+    """
+    A temporary IK hinge applied to one chain bone for the duration of the solve.
+
+    A knee and an elbow bend on one axis only, and an IK solver with three free axes will
+    happily invert one to reach a target half a frame sooner. The limit is applied to the
+    pose bone, read by the solve, and restored afterwards, so the rig is left exactly as it
+    arrived - the same contract the temporary IK constraint already follows.
+    """
+
+    bone_name: str = Field(min_length=1, max_length=63)
+    axis: Literal["X", "Y", "Z"]
+    min_degrees: float = Field(ge=-180.0, le=180.0)
+    max_degrees: float = Field(ge=-180.0, le=180.0)
+
+    @model_validator(mode="after")
+    def validate_hinge(self) -> "ReachHinge":
+        """
+        Reject an inverted limit interval.
+
+        Returns:
+            ReachHinge: This model, unchanged.
+
+        Raises:
+            ValueError: If min_degrees is greater than max_degrees.
+
+        """
+        if self.min_degrees > self.max_degrees:
+            raise ValueError("min_degrees must not exceed max_degrees")
+        return self
 
 
 class BoneReach(_StrictModel):
@@ -333,6 +380,7 @@ class BoneReach(_StrictModel):
     pole_angle_degrees: float = 0.0
     use_stretch: bool = False
     iterations: Annotated[int, Field(ge=1, le=1000)] = 500
+    hinge: ReachHinge | None = None
 
     @model_validator(mode="after")
     def validate_reach(self) -> "BoneReach":
@@ -358,6 +406,7 @@ async def solve_bone_reach(
     ctx: Context,
     armature_object_name: str,
     reaches: Annotated[list[BoneReach], Field(min_length=1, max_length=8)],
+    tolerance_m: Annotated[float, Field(gt=0)] = 1e-4,
     detail: bool = False,
 ) -> dict:
     """
@@ -375,20 +424,30 @@ async def solve_bone_reach(
     Two reaches in the same call may not claim the same bone - solving it to two different
     targets is ambiguous, so it is refused rather than letting the later reach silently win.
 
+    Every reach that misses tolerance_m also raises one warning saying whether the target was
+    beyond the chain's reach or the solve stalled short of a reachable target.
+
     Args:
         ctx: MCP request context.
         armature_object_name: An existing object of type ARMATURE with pose_position='POSE'.
         reaches: One to eight independent chains to solve, applied together as one pose.
+        tolerance_m: How close tip_bone's tail must land to the target, in metres, for the
+            reach to report converged=True. The default 0.1 mm suits a character contact
+            (a handshake, a hand on a prop); widen it for a gesture nobody measures, tighten
+            it when two rigs must share an exact point.
         detail: Also report each bone's pre-call pose matrix, and report both matrices at
             Blender's own precision instead of rounded to six decimal places.
 
     Returns:
-        armature_object, changed_bones naming every bone any reach posed, and reaches with
-        one entry per requested reach: tip_bone, chain_bones (tip first), chain_length,
-        chain_length_source ("explicit" or "resolved"), pole_source ("explicit" or
-        "resolved"), target_world, head_world, tail_world, achieved_error_m (the distance
-        between tail_world and the target after the solve - a large value means the target
-        was out of the chain's reach), and bones, the same per-bone records
+        armature_object, the tolerance_m the solve was judged against, changed_bones naming
+        every bone any reach posed, and reaches with one entry per requested reach: tip_bone,
+        chain_bones (tip first), chain_length, chain_length_source ("explicit" or
+        "resolved"), pole_source ("explicit" or "resolved"), target_world, head_world,
+        tail_world, achieved_error_m (the distance between tail_world and the target after
+        the solve), converged (achieved_error_m within tolerance_m), chain_reach_m (the
+        chain's maximum straight-line extension), target_distance_m (from the chain root
+        bone's head to the target), out_of_reach (target_distance_m beyond chain_reach_m -
+        no pose of this chain can reach that point), and bones, the same per-bone records
         set_character_pose returns for this chain.
 
     """
@@ -398,6 +457,158 @@ async def solve_bone_reach(
         {
             "armature_object_name": armature_object_name,
             "reaches": [reach.model_dump(exclude_none=True) for reach in reaches],
+            "tolerance_m": tolerance_m,
+            "detail": detail,
+        },
+        [armature_object_name],
+    )
+
+
+class ReachKey(_StrictModel):
+    """One frame of one reach: where the tip bone's tail must be at that frame."""
+
+    frame: float
+    target: tuple[float, float, float] | None = None
+    target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
+
+    @model_validator(mode="after")
+    def validate_key(self) -> "ReachKey":
+        """
+        Reject a key that names no target or two targets.
+
+        Returns:
+            ReachKey: This model, unchanged.
+
+        Raises:
+            ValueError: If neither or both target forms are given.
+
+        """
+        if (self.target is None) == (self.target_object is None):
+            raise ValueError("Supply exactly one of target or target_object")
+        return self
+
+
+class KeyedBoneReach(_StrictModel):
+    """One chain solved and keyed at several frames."""
+
+    tip_bone: str = Field(min_length=1, max_length=63)
+    keys: Annotated[list[ReachKey], Field(min_length=1, max_length=250)]
+    chain_length: Annotated[int, Field(ge=1, le=32)] | None = None
+    pole_target: tuple[float, float, float] | None = None
+    pole_target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
+    pole_angle_degrees: float = 0.0
+    hinge: ReachHinge | None = None
+    use_stretch: bool = False
+    iterations: Annotated[int, Field(ge=1, le=1000)] = 500
+
+    @model_validator(mode="after")
+    def validate_keyed_reach(self) -> "KeyedBoneReach":
+        """
+        Reject two pole forms, or the same frame keyed twice in one reach.
+
+        Returns:
+            KeyedBoneReach: This model, unchanged.
+
+        Raises:
+            ValueError: If both pole forms are given, or two keys name the same frame.
+
+        """
+        if self.pole_target is not None and self.pole_target_object is not None:
+            raise ValueError("Supply at most one of pole_target or pole_target_object")
+        frames = [key.frame for key in self.keys]
+        if len(set(frames)) != len(frames):
+            raise ValueError("Each frame may appear at most once in one reach's keys")
+        return self
+
+
+@mcp.tool()
+async def keyframe_bone_reach(
+    ctx: Context,
+    armature_object_name: str,
+    action_name: Annotated[str, Field(min_length=1, max_length=63)],
+    reaches: Annotated[list[KeyedBoneReach], Field(min_length=1, max_length=8)],
+    tolerance_m: Annotated[float, Field(gt=0)] = 1e-4,
+    keying_policy: Literal["INSERT", "REPLACE"] = "REPLACE",
+    interpolation: Interpolation = "BEZIER",
+    handle_left: HandleType = "AUTO_CLAMPED",
+    handle_right: HandleType = "AUTO_CLAMPED",
+    easing: Easing | None = None,
+    action_policy: Literal["ENSURE", "CREATE", "REUSE"] = "ENSURE",
+    confirm_displace_action: bool = False,
+    action_slot_identifier: str | None = None,
+    detail: bool = False,
+) -> dict:
+    """
+    Solve an IK reach at many frames and key every one of them in a single call.
+
+    This is how a foot is planted. Give the same world target at each contact frame and the
+    foot stays on that point while the hips travel over it, because every frame is solved
+    against the parents' evaluated pose at that frame. Repeating an FK rotation instead
+    slides the foot, and rotating a thigh never bends a knee.
+
+    Two preconditions, neither guessable:
+
+    1. Body and root motion must ALREADY be keyed in action_name before this call. Each
+       frame is solved after the playhead moves there, so the chain's parents - hips, root -
+       hold whatever the action says at that frame. Key the travel with
+       keyframe_object_transform(action_name=<same name>) and the body with
+       keyframe_character_pose(action_name=<same name>) first.
+    2. A planted foot is the same target repeated across the contact frames. A target that
+       moves during contact is a foot that slides; interpolation cannot fix that.
+
+    keying_policy defaults to REPLACE here, unlike keyframe_character_pose, because a
+    multi-frame solve is normally re-run after the body pose changes. REMOVE is not offered:
+    there is nothing to solve when removing keys - use
+    keyframe_character_pose(keying_policy="REMOVE").
+
+    Args:
+        ctx: MCP request context.
+        armature_object_name: An existing object of type ARMATURE with pose_position='POSE'.
+        action_name: The action every key lands in - the same one holding the root motion.
+        reaches: One to eight chains, each with its own frames. Two reaches may not claim the
+            same bone. Each reach takes the same chain_length/pole/iterations fields as
+            solve_bone_reach, plus hinge: a temporary one-axis IK limit (e.g. the shin,
+            axis="X", 0 to 150 degrees) that stops a knee or elbow inverting during the
+            solve. The limit is removed again before the call returns.
+        tolerance_m: How close the tail must land to count as converged, per frame.
+        keying_policy: REPLACE overwrites a frame's existing keys; INSERT adds to them.
+        handle_left: Left Bézier handle type, applied only under interpolation="BEZIER".
+        handle_right: Right Bézier handle type, applied only under interpolation="BEZIER".
+        easing: Easing direction, meaningful for the SINE..ELASTIC interpolations.
+        action_policy: ENSURE keys into action_name whether or not it exists; CREATE
+            requires it to be new, REUSE requires it to exist.
+        confirm_displace_action: Required to displace a different action that holds keys.
+        action_slot_identifier: Which of the action's slots to key, when several qualify.
+        interpolation: Applied to every key this call writes. A contact key usually wants
+            handle_left/handle_right="VECTOR" so the foot does not ease through the floor.
+        detail: Also report each bone's pre-call pose matrix at Blender's own precision.
+
+    Returns:
+        armature_object, action, action_slot, assigned_action, unassigned_action (only when
+        one was displaced), tolerance_m, keying_policy, changed_bones (complete),
+        keyed_frames, changed_keys, and reaches with one record per requested reach:
+        tip_bone, chain_bones, chain_length, chain_length_source, pole_source, and keys -
+        per frame the frame, target_world, tail_world, achieved_error_m, converged,
+        chain_reach_m, target_distance_m and out_of_reach. Check converged on every frame
+        before moving on; each miss also raises a warning naming its frame.
+
+    """
+    return await asyncio.to_thread(
+        _call,
+        "keyframe_bone_reach",
+        {
+            "armature_object_name": armature_object_name,
+            "action_name": action_name,
+            "reaches": [reach.model_dump(exclude_none=True) for reach in reaches],
+            "tolerance_m": tolerance_m,
+            "keying_policy": keying_policy,
+            "interpolation": interpolation,
+            "handle_left": handle_left,
+            "handle_right": handle_right,
+            "easing": easing,
+            "action_policy": action_policy,
+            "confirm_displace_action": confirm_displace_action,
+            "action_slot_identifier": action_slot_identifier,
             "detail": detail,
         },
         [armature_object_name],

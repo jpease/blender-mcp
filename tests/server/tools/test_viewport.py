@@ -11,6 +11,7 @@ wiring: which branch runs, what gets created and removed, and that a temporary s
 override always restores itself.
 """
 
+import contextlib
 import sys
 import types
 
@@ -250,3 +251,105 @@ def test_shading_override_restores_even_when_the_capture_raises(monkeypatch: pyt
         raise RuntimeError("capture failed")
 
     assert space.shading.type == "SOLID"
+
+
+class _FakeImage:
+    """Image datablock whose save() can be made to fail, as an unwritable filepath makes it."""
+
+    def __init__(self, name, *, failing=False) -> None:
+        self.name = name
+        self.size = (1600, 900)
+        self.filepath_raw = None
+        self.file_format = None
+        self.pixels = types.SimpleNamespace(foreach_set=lambda _values: None)
+        self._failing = failing
+
+    def scale(self, width, height) -> None:
+        self.size = (width, height)
+
+    def save(self) -> None:
+        if self._failing:
+            raise RuntimeError("cannot write image")
+
+
+class _RecordingImages(_RecordingCollection):
+    """bpy.data.images: .new() for the offscreen path, .load() for the window grab."""
+
+    def load(self, filepath):
+        return self.new(filepath)
+
+
+def _images_module(monkeypatch: pytest.MonkeyPatch, *, failing: bool):
+    images = _RecordingImages(lambda name, *_args, **_kwargs: _FakeImage(name, failing=failing))
+    addon, bpy = _load_addon(monkeypatch, data={"images": images})
+    bpy.context.view_layer = types.SimpleNamespace(update=lambda: None)
+    return sys.modules[f"{addon.__name__}.handlers.viewport"], bpy, images
+
+
+def _install_offscreen_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Stand in for the gpu/numpy modules _render_offscreen imports inside itself.
+
+    Neither exists outside Blender (numpy is not even a test dependency here), and neither is
+    what these two tests are about: the capture's own datablock bookkeeping is.
+    """
+
+    class _FakeOffScreen:
+        def __init__(self, width, height) -> None:
+            self.freed = False
+
+        def draw_view3d(self, *_args, **_kwargs) -> None:
+            return None
+
+        @property
+        def texture_color(self):
+            return types.SimpleNamespace(read=lambda: types.SimpleNamespace(dimensions=0))
+
+        def free(self) -> None:
+            self.freed = True
+
+    class _FakePixelArray:
+        """Only the two operations _render_offscreen performs on the read buffer."""
+
+        def __truediv__(self, _divisor):
+            return self
+
+        def ravel(self):
+            return "PIXELS"
+
+    gpu = types.ModuleType("gpu")
+    gpu.types = types.SimpleNamespace(GPUOffScreen=_FakeOffScreen)
+    numpy = types.ModuleType("numpy")
+    numpy.float32 = "float32"
+    numpy.asarray = lambda _buf, dtype=None: _FakePixelArray()
+    monkeypatch.setitem(sys.modules, "gpu", gpu)
+    monkeypatch.setitem(sys.modules, "numpy", numpy)
+
+
+def test_offscreen_capture_removes_its_image_datablock_when_the_save_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed save must not leave an orphan "mcp_viewport" image in the user's file."""
+    module, _bpy, images = _images_module(monkeypatch, failing=True)
+    _install_offscreen_stubs(monkeypatch)
+    region = types.SimpleNamespace(width=320, height=240)
+
+    with pytest.raises(RuntimeError, match="cannot write image"):
+        module._render_offscreen(None, region, "VIEW", "WINDOW", 800, "/tmp/shot.png", "png")
+
+    assert images.removed == images.created
+    assert len(images.created) == 1
+
+
+def test_window_grab_removes_the_loaded_screenshot_when_the_rescale_save_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, bpy, images = _images_module(monkeypatch, failing=True)
+    bpy.context.temp_override = lambda **_kwargs: contextlib.nullcontext()
+    bpy.ops.screen = types.SimpleNamespace(screenshot_area=lambda filepath: None)
+
+    with pytest.raises(RuntimeError, match="cannot write image"):
+        module._window_grab_fallback(None, 800, "/tmp/shot.png", "png")
+
+    assert images.removed == images.created
+    assert len(images.created) == 1

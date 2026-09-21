@@ -93,7 +93,27 @@ def asset_creation_strategy() -> str:
           bounded preview render, use render_lighting_preview or render_pbr_material_preview
           instead (a disposable staging scene, not the real one).
 
-    6. Stop-and-check gates - do not continue past these without addressing them:
+    6. When two characters must touch, solve the contact, don't hand-build it.
+        - Read the real positions first: get_character_rig_info(armature_object_name=...,
+          bone_names=["Hand.R", "Shoulder.R", ...]) returns each named pose bone's world-space
+          matrix, so you never have to guess FK rotations or chain forward from bone lengths.
+          The bone_names filter is there so naming three bones off a 187-bone rig costs one
+          call per character, not a paginated crawl.
+        - Pick ONE world point for the contact and give that same point to both characters.
+          Two separately-eyeballed points are two different points, and the hands will miss.
+        - Drive each character to it with solve_bone_reach(armature_object_name=...,
+          reaches=[{"tip_bone": <wrist-class bone>, "target": <the shared point>}]) - one call
+          per armature. tip_bone is the bone whose POSITION must be exact, so it is the wrist,
+          not the hand or a fingertip; pose the hand's own orientation and grip separately with
+          set_character_pose. Check each reach's converged/out_of_reach before moving on.
+        - Watch the geometry that catches everyone: two characters facing each other along one
+          axis who each reach straight forward do not meet - their right shoulders sit on
+          opposite sides of the line between them, so the hands pass by roughly the shoulder
+          offset apart. Put the shared point where both arms can actually reach it (typically
+          offset toward each character's reaching side), rather than nudging rotations until it
+          looks closer.
+
+    7. Stop-and-check gates - do not continue past these without addressing them:
         - "ok": false means the request reached Blender but nothing changed - this includes an
           ND operator the user cancelled (Esc): "error" stays null, "changed_objects" is
           empty, and the scene is unchanged. Don't retry the same call expecting a different
@@ -109,4 +129,69 @@ def asset_creation_strategy() -> str:
     "changed_resources" from the tool responses, not just "done" - and disclose any
     irreversible action taken (apply=True, a cleanup tool) plus any limitation you hit
     (e.g. couldn't get world-space mesh coordinates, a provider was disabled).
+    """
+
+
+@mcp.prompt()
+def character_animation_strategy() -> str:
+    """
+    Define the staged workflow agents should follow when animating a character.
+
+    Returns:
+        str: Result produced by the operation.
+
+    """
+    return """Animate a character in these stages. A walk cycle authored by guessing FK rotations
+    comes out stiff, with straight knees and a planted foot that slides - each of those is a
+    specific tool being skipped, not a matter of taste.
+
+    1. Read the rig before posing it.
+        - list_character_bones(armature_object_name=..., bone_names=[...], rest_axes=True) for
+          the bones you intend to drive. Which way a bone's local X/Y/Z point is rig-specific
+          and not guessable from its name.
+        - get_character_rig_info(armature_object_name=..., bone_names=[...]) for world-space
+          pose-bone matrices. Never chain FK forward from bone lengths by hand.
+
+    2. Key the body first, the feet second, into ONE action.
+        - Root and hip travel: keyframe_object_transform(action_name="<shot>") and
+          keyframe_character_pose(action_name="<shot>"). Give both the same action_name: an ID
+          holds one action, so a pose keyed into a second one stops the first driving the rig.
+        - Do this BEFORE the feet. keyframe_bone_reach solves each frame against the evaluated
+          parent pose at that frame, so the hips must already be travelling when it runs.
+
+    3. Plant the feet with keyframe_bone_reach, not with repeated FK rotation.
+        - One entry per foot, with the SAME world target repeated across every contact frame,
+          and targets that move across the swing frames. A foot slides because its target moved
+          during contact - interpolation cannot fix that, and no amount of easing will.
+        - The foot stays put while the hips travel over it because the IK re-solves the leg at
+          each frame. That is the whole trick.
+
+    4. Bend the knee on purpose.
+        - Pass a pole_target roughly one leg-length in front of the knee. A straight-legged rest
+          pose makes automatic pole inference refuse, by design - there is no bend to infer from.
+        - Pass a hinge on the shin bone (axis="X", min_degrees=0, max_degrees=150 or whatever
+          that rig's knee axis is) so the solver cannot invert the joint. The limit is temporary
+          and removed before the call returns.
+        - Check converged on every frame of every reach reply before moving on. out_of_reach
+          means no pose of that chain reaches that point: move the target, do not raise
+          iterations.
+
+    5. Break the machine feel deliberately.
+        - Do not key every bone on the same frames. Offset the spine, arms and head two to four
+          frames after the hips; simultaneous keys on everything is what reads as robotic.
+        - interpolation="SINE" with easing="EASE_IN_OUT" on weight shifts.
+        - handle_left="VECTOR"/handle_right="VECTOR" on a contact key, so the foot does not ease
+          through the floor on its way in.
+
+    6. Loop it.
+        - set_action_cycle(..., mode_after="REPEAT_OFFSET") so each repeat starts where the last
+          ended and the character keeps travelling. Plain REPEAT teleports it back to the origin.
+        - data_path_prefix scopes the cycle to one limb or to the root's travel alone.
+
+    7. Verify by looking, frame by frame.
+        - set_scene_frame(frame=N) then get_viewport_screenshot. Every inspection tool reports
+          the current frame, so without this you are looking at frame 1 and nothing else.
+        - At minimum check the contact, down, passing and up frames of each step.
+        - Pair the screenshot with get_character_rig_info at that frame: a screenshot cannot
+          tell you a foot moved by three millimetres, and world positions can.
     """

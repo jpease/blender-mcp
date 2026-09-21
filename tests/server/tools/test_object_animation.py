@@ -13,10 +13,10 @@ from blender_mcp.server.tools import object_animation
 OBJECT_ANIMATION_COMMANDS = {"keyframe_object_transform"}
 
 
-class _RollbackObject:
-    """Fake object whose keyframe_insert fails on a later channel in the same record."""
+class _KeyedObject:
+    """Fake object recording every key inserted on it; `fails_on` makes one channel refuse insertion."""
 
-    def __init__(self, name, *, fails_on) -> None:
+    def __init__(self, name, *, fails_on=None) -> None:
         self.name = name
         self.data = None
         self.matrix_basis = FakeMatrix()
@@ -123,7 +123,7 @@ def test_keyframe_object_transform_rolls_back_partial_channel_failure(monkeypatc
     """A record's later channel refusing keyframe_insert must undo that record's earlier inserts."""
     data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
     addon, bpy = _load_addon(monkeypatch, data=data)
-    obj = _RollbackObject("Cube", fails_on="scale")
+    obj = _KeyedObject("Cube", fails_on="scale")
     bpy.data.objects["Cube"] = obj
 
     server = addon.BlenderMCPServer()
@@ -152,3 +152,34 @@ def test_keyframe_object_transform_rolls_back_partial_channel_failure(monkeypatc
     assert "Cube:scale" in response["message"]
     assert obj.inserted == [("location", 5.0), ("scale", 5.0)]
     assert obj.deleted == [("location", 5.0)]
+
+
+def test_keyframe_object_transform_refuses_one_action_for_several_objects(monkeypatch) -> None:
+    """An object holds one action, so a batch naming two would leave one of them keyed elsewhere."""
+    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
+    addon, bpy = _load_addon(monkeypatch, data=data)
+    hero = _KeyedObject("Hero")
+    prop = _KeyedObject("Prop")
+    bpy.data.objects["Hero"] = hero
+    bpy.data.objects["Prop"] = prop
+
+    server = addon.BlenderMCPServer()
+    response = server.execute_command_internal(
+        {
+            "type": "keyframe_object_transform",
+            "params": {
+                "keyframes": [
+                    {"object_name": "Hero", "frame": 1.0, "space": "LOCAL", "location": [0.0, 0.0, 0.0]},
+                    {"object_name": "Prop", "frame": 1.0, "space": "LOCAL", "location": [1.0, 0.0, 0.0]},
+                ],
+                "action_name": "SH030_motion",
+            },
+        }
+    )
+
+    assert response["status"] == "error"
+    assert "once per object" in response["message"]
+    # Refused before anything was keyed, and without leaving the action it would have made.
+    assert hero.inserted == []
+    assert prop.inserted == []
+    assert bpy.data.actions.get("SH030_motion") is None

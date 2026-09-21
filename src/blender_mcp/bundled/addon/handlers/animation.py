@@ -7,6 +7,8 @@ import re
 
 import bpy
 
+from .key_style import style_point, validate_key_style
+
 _TARGET_COLLECTIONS = {
     "OBJECT": "objects",
     "SCENE": "scenes",
@@ -20,7 +22,10 @@ _TARGET_COLLECTIONS = {
     "SHAPE_KEYS": "shape_keys",
     "NODE_GROUP": "node_groups",
 }
-_INTERPOLATIONS = {"CONSTANT", "LINEAR", "BEZIER"}
+# Blender's `FModifierCycles.mode_before`/`mode_after` enum. REPEAT_OFFSET accumulates the
+# curve's own start-to-end delta each repeat, which is what keeps a walking character walking
+# instead of teleporting back to where the cycle started.
+_CYCLE_MODES = frozenset({"NONE", "REPEAT", "REPEAT_OFFSET", "MIRROR"})
 _NLA_TRACK_PROPERTIES = {"mute", "solo", "lock"}
 _NLA_STRIP_PROPERTIES = {
     "frame_start",
@@ -116,6 +121,33 @@ def _action_slot(action, owner, *, create=False):
     if not create:
         return None
     return action.slots.new(owner.id_type, owner.name)
+
+
+def _cycle_slot_handle(action, owner, slot_identifier):
+    """
+    Pick which of an action's slots a cycle operation applies to.
+
+    Args:
+        action: The action being made cyclic.
+        owner: The ID the action drives.
+        slot_identifier: An explicit slot `identifier`, or None to resolve one.
+
+    Returns:
+        tuple: The slot's handle, and its identifier for the reply.
+
+    Raises:
+        ValueError: If the named slot is not in this action, or none can be resolved.
+
+    """
+    if slot_identifier is not None:
+        slot = next((item for item in action.slots if item.identifier == slot_identifier), None)
+        if slot is None:
+            raise ValueError(f"Action {action.name} has no slot with identifier {slot_identifier}")
+        return slot.handle, slot.identifier
+    slot = _action_slot(action, owner)
+    if slot is None:
+        raise ValueError(f"Action {action.name} has no slot for {owner.name}; assign it before making it cyclic")
+    return slot.handle, slot.identifier
 
 
 def _assign_action(owner, action, *, replace_active):
@@ -352,9 +384,13 @@ def _expanded_edit(owner, edit):
     index = edit.get("array_index", -1)
     if isinstance(index, bool) or not isinstance(index, int) or not -1 <= index <= 63:
         raise ValueError("array_index must be an integer from -1 to 63")
-    interpolation = str(edit.get("interpolation", "BEZIER")).upper()
-    if interpolation not in _INTERPOLATIONS:
-        raise ValueError(f"Unsupported interpolation: {interpolation}")
+    style = {
+        "interpolation": str(edit.get("interpolation", "BEZIER")).upper(),
+        "handle_left": str(edit.get("handle_left", "AUTO_CLAMPED")).upper(),
+        "handle_right": str(edit.get("handle_right", "AUTO_CLAMPED")).upper(),
+        "easing": str(edit["easing"]).upper() if edit.get("easing") is not None else None,
+    }
+    validate_key_style(**style)
     array_length, _current = _resolve_property(owner, data_path)
     if index >= 0 and (not array_length or index >= array_length):
         raise ValueError(f"array_index {index} is invalid for {data_path} (length {array_length})")
@@ -363,7 +399,7 @@ def _expanded_edit(owner, edit):
         if value is not None:
             raise ValueError("REMOVE does not accept value")
         indices = range(array_length) if index == -1 and array_length else [0 if index == -1 else index]
-        return [(operation, data_path, item, float(frame), None, interpolation, edit.get("group")) for item in indices]
+        return [(operation, data_path, item, float(frame), None, style, edit.get("group")) for item in indices]
     if value is None:
         raise ValueError("UPSERT requires value")
     if index == -1 and array_length:
@@ -383,9 +419,7 @@ def _expanded_edit(owner, edit):
         channel_value = float(channel_value)
         if not math.isfinite(channel_value):
             raise ValueError("Keyframe values must be finite")
-        expanded.append(
-            (operation, data_path, channel_index, float(frame), channel_value, interpolation, edit.get("group"))
-        )
+        expanded.append((operation, data_path, channel_index, float(frame), channel_value, style, edit.get("group")))
     return expanded
 
 
@@ -535,6 +569,151 @@ def _patch_nla(owner, patch, mapping=None):
     return previous
 
 
+def _sampled_bake_channels(obj, target, frames, transforms, bone_names):
+    """
+    Walk the frame range once, reading the evaluated values the bake will key.
+
+    Every sample comes from the dependency graph, so constraints, drivers and parenting are
+    already resolved into the numbers recorded here.
+
+    Args:
+        obj: The object being baked.
+        target: The bake target record, read for `space` and `properties`.
+        frames: The frames to sample, in order.
+        transforms: LOCATION/ROTATION/SCALE channels to record, if any.
+        bone_names: Pose bones to record instead of the object itself, if any.
+
+    Returns:
+        tuple: `{(data_path, array_index): [(frame, value), ...]}` and the per-channel
+        tolerances the caller's reduction should use.
+
+    Raises:
+        ValueError: If a property channel names array indices the property does not have.
+
+    """
+    scene = bpy.context.scene
+    channels = {}
+    channel_tolerances = {}
+    for frame in frames:
+        scene.frame_set(frame)
+        evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        if transforms and not bone_names:
+            matrix = evaluated.matrix_world if target.get("space") == "WORLD" else evaluated.matrix_basis
+            _append_transform_samples(channels, obj, matrix, transforms, frame)
+        for bone_name in bone_names:
+            evaluated_bone = evaluated.pose.bones[bone_name]
+            matrix = evaluated_bone.matrix if target.get("space") in {"WORLD", "POSE"} else evaluated_bone.matrix_basis
+            pose_bone = obj.pose.bones[bone_name]
+            _append_transform_samples(channels, pose_bone, matrix, transforms, frame, f"{pose_bone.path_from_id()}.")
+        for channel in target.get("properties", []):
+            array_length, value = _resolve_property(evaluated, channel["data_path"])
+            indices = channel.get("array_indices")
+            if array_length:
+                indices = indices or list(range(array_length))
+                invalid = [index for index in indices if index < 0 or index >= array_length]
+                if invalid:
+                    raise ValueError(f"Invalid array indices for {channel['data_path']}: {invalid}")
+                for index in indices:
+                    channels.setdefault((channel["data_path"], index), []).append((frame, float(value[index])))
+                    channel_tolerances[channel["data_path"], index] = channel.get("tolerance", 0.0)
+            else:
+                channels.setdefault((channel["data_path"], 0), []).append((frame, float(value)))
+                channel_tolerances[channel["data_path"], 0] = channel.get("tolerance", 0.0)
+    return channels, channel_tolerances
+
+
+def _write_baked_curves(bag, channels, channel_tolerances, transform_tolerance, style):
+    """
+    Reduce each sampled channel and write it as one styled F-Curve.
+
+    Args:
+        bag: The channelbag the curves are created in.
+        channels: `_sampled_bake_channels`' samples.
+        channel_tolerances: Per-channel reduction tolerances.
+        transform_tolerance: The tolerance for channels with none of their own.
+        style: `(interpolation, handle_left, handle_right, easing)` applied to every key.
+
+    Returns:
+        dict: key_count, curves (one record per channel) and max_reconstruction_error - the
+        worst distance between a reduced curve and the samples it replaced.
+
+    """
+    interpolation, handle_left, handle_right, easing = style
+    key_count = 0
+    maximum_error = 0.0
+    curve_records = []
+    for (data_path, index), samples in channels.items():
+        reduced, error = _reduce_samples(samples, channel_tolerances.get((data_path, index), transform_tolerance))
+        maximum_error = max(maximum_error, error)
+        fcurve = bag.fcurves.new(data_path, index=index)
+        for key_frame, value in reduced:
+            key = fcurve.keyframe_points.insert(key_frame, value, options={"FAST"})
+            style_point(key, interpolation, handle_left=handle_left, handle_right=handle_right, easing=easing)
+        fcurve.update()
+        key_count += len(reduced)
+        curve_records.append(
+            {
+                "data_path": data_path,
+                "array_index": index,
+                "sample_count": len(samples),
+                "key_count": len(reduced),
+                "max_reconstruction_error": error,
+            }
+        )
+    return {"key_count": key_count, "curves": curve_records, "max_reconstruction_error": maximum_error}
+
+
+def _resolved_edit_action(owner, action_name, replace_active, allow_shared):
+    """
+    Pick, create or reuse the layered Action one keyframe edit writes into.
+
+    An Action this call creates is removed again on every refusal below it, because a
+    refused edit that leaves a new empty Action assigned to the target reads, at save time,
+    exactly like the animation the caller asked for.
+
+    Args:
+        owner: The ID being keyed.
+        action_name: The Action to create or reuse, or None to edit whatever drives `owner`.
+        replace_active: Whether assigning may displace the Action already there.
+        allow_shared: Whether an Action with other users may be edited in place.
+
+    Returns:
+        tuple: The Action and the slot within it this owner's keys belong to.
+
+    Raises:
+        ValueError: If no Action is named and none is active, if the Action is shared and
+            `allow_shared` is not set, or if it is a legacy (non-layered) Action.
+
+    """
+    data = _animation_data(owner, create=True)
+    current = data.action
+    created_action = False
+    if action_name:
+        action_name = _required_name(action_name, "action_name")
+        selected = bpy.data.actions.get(action_name)
+        if selected is None:
+            selected = bpy.data.actions.new(action_name)
+            created_action = True
+    elif current is not None:
+        selected = current
+    else:
+        raise ValueError("Target has no active Action; provide action_name to create or assign one")
+    try:
+        if selected.users - (1 if current == selected else 0) > 0 and not allow_shared:
+            raise ValueError(
+                f"Action {selected.name} has {selected.users} users; set allow_shared_action=True to edit it in place"
+            )
+        if not selected.is_action_layered:
+            raise ValueError(f"Action {selected.name} is legacy; convert or duplicate it to a layered Action first")
+        if action_name:
+            return selected, _assign_action(owner, selected, replace_active=replace_active)
+        return selected, _action_slot(selected, owner, create=True)
+    except Exception:
+        if created_action:
+            bpy.data.actions.remove(selected)
+        raise
+
+
 class AnimationHandlersMixin:
     """Expose generic animation inspection, Actions, and keyframes."""
 
@@ -644,42 +823,10 @@ class AnimationHandlersMixin:
         if not isinstance(edits, list) or not 1 <= len(edits) <= 1000:
             raise ValueError("edits must contain between 1 and 1000 records")
         expanded = [item for edit in edits for item in _expanded_edit(owner, edit)]
-        data = _animation_data(owner, create=True)
-        current = data.action
-        created_action = False
-        if action_name:
-            action_name = _required_name(action_name, "action_name")
-            selected = bpy.data.actions.get(action_name)
-            if selected is None:
-                selected = bpy.data.actions.new(action_name)
-                created_action = True
-        elif current is not None:
-            selected = current
-        else:
-            raise ValueError("Target has no active Action; provide action_name to create or assign one")
-        other_users = selected.users - (1 if current == selected else 0)
-        if other_users > 0 and not allow_shared_action:
-            if created_action:
-                bpy.data.actions.remove(selected)
-            raise ValueError(
-                f"Action {selected.name} has {selected.users} users; set allow_shared_action=True to edit it in place"
-            )
-        if not selected.is_action_layered:
-            if created_action:
-                bpy.data.actions.remove(selected)
-            raise ValueError(f"Action {selected.name} is legacy; convert or duplicate it to a layered Action first")
-        if action_name:
-            try:
-                slot = _assign_action(owner, selected, replace_active=replace_active_action)
-            except Exception:
-                if created_action:
-                    bpy.data.actions.remove(selected)
-                raise
-        else:
-            slot = _action_slot(selected, owner, create=True)
+        selected, slot = _resolved_edit_action(owner, action_name, replace_active_action, allow_shared_action)
         bag = _channelbag(selected, slot, create=True)
         changed = []
-        for operation, data_path, index, frame, value, interpolation, group in expanded:
+        for operation, data_path, index, frame, value, style, group in expanded:
             fcurve = bag.fcurves.find(data_path, index=index)
             key = _find_key(fcurve, frame) if fcurve else None
             if operation == "REMOVE":
@@ -698,7 +845,13 @@ class AnimationHandlersMixin:
                 key = fcurve.keyframe_points.insert(frame, value, options={"FAST"})
             else:
                 key.co[1] = value
-            key.interpolation = interpolation
+            style_point(
+                key,
+                style["interpolation"],
+                handle_left=style["handle_left"],
+                handle_right=style["handle_right"],
+                easing=style["easing"],
+            )
             fcurve.update()
             changed.append(
                 {
@@ -725,11 +878,15 @@ class AnimationHandlersMixin:
         frame_step=1,
         action_name="Evaluated Bake",
         interpolation="LINEAR",
+        handle_left="AUTO_CLAMPED",
+        handle_right="AUTO_CLAMPED",
+        easing=None,
         transform_tolerance=0.0,
         confirm_bake=False,
     ):
         if not confirm_bake:
             raise ValueError("confirm_bake=True is required")
+        validate_key_style(interpolation, handle_left, handle_right, easing)
         object_name = _required_name(target.get("object_name"), "target.object_name")
         obj = bpy.data.objects.get(object_name)
         if obj is None:
@@ -753,76 +910,21 @@ class AnimationHandlersMixin:
 
         scene = bpy.context.scene
         original_frame = scene.frame_current
-        channels = {}
-        channel_tolerances = {}
         try:
-            for frame in frames:
-                scene.frame_set(frame)
-                depsgraph = bpy.context.evaluated_depsgraph_get()
-                evaluated = obj.evaluated_get(depsgraph)
-                if transforms and not bone_names:
-                    matrix = evaluated.matrix_world if target.get("space") == "WORLD" else evaluated.matrix_basis
-                    _append_transform_samples(channels, obj, matrix, transforms, frame)
-                for bone_name in bone_names:
-                    evaluated_bone = evaluated.pose.bones[bone_name]
-                    matrix = (
-                        evaluated_bone.matrix
-                        if target.get("space") in {"WORLD", "POSE"}
-                        else evaluated_bone.matrix_basis
-                    )
-                    prefix = f"{obj.pose.bones[bone_name].path_from_id()}."
-                    _append_transform_samples(
-                        channels,
-                        obj.pose.bones[bone_name],
-                        matrix,
-                        transforms,
-                        frame,
-                        prefix,
-                    )
-                for channel in target.get("properties", []):
-                    array_length, value = _resolve_property(evaluated, channel["data_path"])
-                    indices = channel.get("array_indices")
-                    if array_length:
-                        indices = indices or list(range(array_length))
-                        invalid = [index for index in indices if index < 0 or index >= array_length]
-                        if invalid:
-                            raise ValueError(f"Invalid array indices for {channel['data_path']}: {invalid}")
-                        for index in indices:
-                            channels.setdefault((channel["data_path"], index), []).append((frame, float(value[index])))
-                            channel_tolerances[channel["data_path"], index] = channel.get("tolerance", 0.0)
-                    else:
-                        channels.setdefault((channel["data_path"], 0), []).append((frame, float(value)))
-                        channel_tolerances[channel["data_path"], 0] = channel.get("tolerance", 0.0)
+            channels, channel_tolerances = _sampled_bake_channels(obj, target, frames, transforms, bone_names)
         finally:
             scene.frame_set(original_frame)
 
         action = bpy.data.actions.new(_required_name(action_name, "action_name"))
         try:
             slot = _assign_action(obj, action, replace_active=True)
-            bag = _channelbag(action, slot, create=True)
-            key_count = 0
-            sampled_key_count = sum(len(samples) for samples in channels.values())
-            maximum_error = 0.0
-            curve_records = []
-            for (data_path, index), samples in channels.items():
-                tolerance = channel_tolerances.get((data_path, index), transform_tolerance)
-                reduced, error = _reduce_samples(samples, tolerance)
-                maximum_error = max(maximum_error, error)
-                fcurve = bag.fcurves.new(data_path, index=index)
-                for key_frame, value in reduced:
-                    key = fcurve.keyframe_points.insert(key_frame, value, options={"FAST"})
-                    key.interpolation = interpolation
-                fcurve.update()
-                key_count += len(reduced)
-                curve_records.append(
-                    {
-                        "data_path": data_path,
-                        "array_index": index,
-                        "sample_count": len(samples),
-                        "key_count": len(reduced),
-                        "max_reconstruction_error": error,
-                    }
-                )
+            written = _write_baked_curves(
+                _channelbag(action, slot, create=True),
+                channels,
+                channel_tolerances,
+                transform_tolerance,
+                (interpolation, handle_left, handle_right, easing),
+            )
         except Exception:
             bpy.data.actions.remove(action)
             raise
@@ -831,10 +933,10 @@ class AnimationHandlersMixin:
             "action": action.name,
             "slot": slot.identifier,
             "frame_range": [frame_start, frame_end, frame_step],
-            "sampled_key_count": sampled_key_count,
-            "key_count": key_count,
-            "curves": curve_records,
-            "max_reconstruction_error": maximum_error,
+            "sampled_key_count": sum(len(samples) for samples in channels.values()),
+            "key_count": written["key_count"],
+            "curves": written["curves"],
+            "max_reconstruction_error": written["max_reconstruction_error"],
             "sample_space": target.get("space", "LOCAL"),
             "new_non_shared_action": action.users <= 1,
             "warnings": [
@@ -843,6 +945,67 @@ class AnimationHandlersMixin:
             if transforms
             else [],
             "changed_objects": [obj.name],
+            "changed_resources": [action.name],
+        }
+
+    def set_action_cycle(
+        self,
+        target,
+        action_name,
+        operation="SET",
+        mode_before="REPEAT_OFFSET",
+        mode_after="REPEAT_OFFSET",
+        cycles_before=0,
+        cycles_after=0,
+        data_path_prefix=None,
+        action_slot_identifier=None,
+    ):
+        """Add, update or remove the Cycles F-Modifier on an action slot's curves."""
+        owner, _target_type = _target(target)
+        operation = str(operation).upper()
+        if operation not in {"SET", "REMOVE"}:
+            raise ValueError("operation must be SET or REMOVE")
+        for label, mode in (("mode_before", mode_before), ("mode_after", mode_after)):
+            if mode not in _CYCLE_MODES:
+                raise ValueError(f"{label} must be one of {sorted(_CYCLE_MODES)}")
+        action = bpy.data.actions.get(_required_name(action_name, "action_name"))
+        if action is None:
+            raise ValueError(f"Action not found: {action_name}")
+        slot_handle, slot_identifier = _cycle_slot_handle(action, owner, action_slot_identifier)
+        curves = [curve for _bag, curve in _iter_fcurves(action, slot_handle)]
+        if not curves:
+            raise ValueError(f"Action {action.name} has no F-Curves in slot {slot_identifier}")
+        records = []
+        for curve in curves:
+            if data_path_prefix is not None and not curve.data_path.startswith(data_path_prefix):
+                continue
+            modifier = next((item for item in curve.modifiers if item.type == "CYCLES"), None)
+            if operation == "REMOVE":
+                if modifier is None:
+                    continue
+                curve.modifiers.remove(modifier)
+            else:
+                if modifier is None:
+                    modifier = curve.modifiers.new(type="CYCLES")
+                modifier.mode_before = mode_before
+                modifier.mode_after = mode_after
+                # Blender spells "forever" as zero cycles, in both directions.
+                modifier.cycles_before = int(cycles_before)
+                modifier.cycles_after = int(cycles_after)
+            records.append(
+                {
+                    "data_path": curve.data_path,
+                    "array_index": curve.array_index,
+                    "mode_before": mode_before if operation == "SET" else None,
+                    "mode_after": mode_after if operation == "SET" else None,
+                }
+            )
+        return {
+            "action": action.name,
+            "action_slot": slot_identifier,
+            "operation": operation,
+            "curve_count": len(records),
+            "modifiers": records,
             "changed_resources": [action.name],
         }
 

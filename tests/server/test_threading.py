@@ -339,6 +339,60 @@ def test_command_is_queued_not_executed_on_client_thread() -> None:
         server.stop()
 
 
+def test_a_command_makes_the_next_drain_follow_within_the_active_poll() -> None:
+    """
+    A session's next command must not wait out the idle poll.
+
+    `bpy.app.timers` is the only thread-safe way into Blender's main thread, so the
+    interval this callback returns is the latency floor under every command: a client that
+    sends again as soon as it reads a reply always misses the tick that just ran. At the
+    flat 50 ms this used to return, that measured as 54.86 ms per frame of pure protocol
+    cost on a 240-frame orchestrated animation - 13.2 s a shot
+    (`scripts/rig_scenarios/scenario_render_overhead.py`).
+    """
+    server = _make_server()
+    server.start()
+    try:
+        with socket.create_connection(("localhost", server.port), timeout=5) as client:
+            client.sendall(json.dumps({"type": "ping"}).encode() + b"\n")
+            deadline = time.time() + 2.0
+            while time.time() < deadline and server.command_queue.empty():
+                time.sleep(0.01)
+
+            interval = server.drain_command_queue()
+
+            client.settimeout(5)
+            assert json.loads(client.recv(8192).decode())["status"] == "success"
+        assert interval == server._ACTIVE_POLL_SECONDS
+        assert interval < server._IDLE_POLL_SECONDS
+    finally:
+        server.stop()
+
+
+def test_the_drain_poll_relaxes_once_the_session_goes_quiet() -> None:
+    """
+    An idle Blender must go back to polling an empty queue twenty times a second.
+
+    The fast poll is what a live session buys; leaving it on afterwards would spend a
+    desktop's main thread on a queue nobody is filling.
+    """
+    server = _make_server()
+    # Running, but never started: `drain_command_queue` only needs the flag, and binding a
+    # socket would say nothing about the interval.
+    server.running = True
+    server._last_command_at = time.monotonic() - (server._ACTIVE_WINDOW_SECONDS + 1.0)
+
+    assert server.drain_command_queue() == server._IDLE_POLL_SECONDS
+
+
+def test_a_server_that_has_served_nothing_polls_at_the_idle_rate() -> None:
+    """A freshly constructed server has no traffic to chase, whatever the clock reads."""
+    server = _make_server()
+    server.running = True
+
+    assert server.drain_command_queue() == server._IDLE_POLL_SECONDS
+
+
 def test_stop_releases_client_threads() -> None:
     """
     stop() must unblock handlers so they cannot outlive a restart.

@@ -45,7 +45,10 @@ AXIS_ROUNDING = 5e-4
 # solved reach lands micrometres from its target where a matrix round-trip lands nanometres
 # from it. Measured at 3.3e-5 m for the head/neck/spine chain below, Blender 5.2.2, 500
 # iterations; POSITION_TOLERANCE is what the exact-arithmetic checks use and stays at 1e-6.
-REACH_TOLERANCE = 1e-4
+# This is the precision this shot asks for and is passed to the handler as `tolerance_m`:
+# the handler judges convergence, and the assertions below read the flag it reported rather
+# than re-deciding here what "close enough" means.
+REACH_TOLERANCE_M = 1e-4
 
 
 class CharacterPosingSmokeHarness(CharacterRiggingHandlersMixin):
@@ -252,9 +255,15 @@ for space in ("POSE", "WORLD", "LOCAL_WITH_PARENT"):
         f"{space}: playback is {divergence[space]} m from the pose that was set"
     )
 
-# Authoring a second action moves the rig onto it, and the reply says what it displaced.
+# Authoring a second action moves the rig onto it, which is destructive once the first holds
+# keys - it stops driving the rig and the next save drops it - so the call has to confirm that
+# on purpose, and the reply says what it displaced.
 displaced = handler.keyframe_character_pose(
-    rig.name, "SMOKE_displacer", 1.0, [{"bone_name": "spine", "rotation_euler": (0.0, 0.0, 0.0)}]
+    rig.name,
+    "SMOKE_displacer",
+    1.0,
+    [{"bone_name": "spine", "rotation_euler": (0.0, 0.0, 0.0)}],
+    confirm_displace_action=True,
 )
 assert displaced["unassigned_action"] == "SMOKE_local_with_parent"
 assert displaced["assigned_action"] == "SMOKE_displacer"
@@ -482,13 +491,22 @@ target_point = root_world + reopened_rig.matrix_world.to_3x3() @ Vector((0.25, 0
 reach_target = tuple(target_point)
 reach_pole = tuple(root_world + reopened_rig.matrix_world.to_3x3() @ Vector((0.5, 0.0, 0.0)))
 reach = handler.solve_bone_reach(
-    reopened_rig.name, [{"tip_bone": "head", "target": reach_target, "pole_target": reach_pole}]
+    reopened_rig.name,
+    [{"tip_bone": "head", "target": reach_target, "pole_target": reach_pole}],
+    tolerance_m=REACH_TOLERANCE_M,
 )
-reach_error = reach["reaches"][0]["achieved_error_m"]
-assert reach_error < REACH_TOLERANCE, f"solve_bone_reach missed its target by {reach_error} m"
-assert reach["reaches"][0]["chain_length_source"] == "resolved"
-assert reach["reaches"][0]["chain_bones"] == ["head", "neck", "spine"]
-assert reach["reaches"][0]["pole_source"] == "explicit"
+solved = reach["reaches"][0]
+reach_error = solved["achieved_error_m"]
+assert reach["tolerance_m"] == REACH_TOLERANCE_M, f"the reply echoed tolerance_m {reach['tolerance_m']}"
+assert solved["converged"] is True, f"solve_bone_reach reported no convergence, off by {reach_error} m"
+assert solved["out_of_reach"] is False, "a target inside the chain's reach was reported out of reach"
+assert solved["target_distance_m"] < solved["chain_reach_m"], (
+    f"target {solved['target_distance_m']} m out, chain reaches {solved['chain_reach_m']} m"
+)
+assert reach["warnings"] == [], f"a converged reach warned anyway: {reach['warnings']}"
+assert solved["chain_length_source"] == "resolved"
+assert solved["chain_bones"] == ["head", "neck", "spine"]
+assert solved["pole_source"] == "explicit"
 assert list(reopened_rig.pose.bones["head"].constraints) == [], "a temporary IK constraint was left on head"
 assert list(reopened_rig.pose.bones["neck"].constraints) == [], "a temporary IK constraint was left on neck"
 assert list(reopened_rig.pose.bones["spine"].constraints) == [], "a temporary IK constraint was left on spine"
@@ -500,14 +518,35 @@ assert not any(obj.name.startswith("__solve_bone_reach__") for obj in bpy.data.o
 # captured pose reapplied after it was removed, so measure the rig itself.
 bpy.context.view_layer.update()
 applied_error = (reopened_rig.matrix_world @ reopened_rig.pose.bones["head"].tail - target_point).length
-assert applied_error < REACH_TOLERANCE, f"the reapplied pose sits {applied_error} m from the target"
+assert applied_error < reach["tolerance_m"], f"the reapplied pose sits {applied_error} m from the target"
 
 # Omitting the pole synthesizes one from the chain's rest bend, and it has to solve just as well.
 rest_pose(reopened_rig)
-synthesized = handler.solve_bone_reach(reopened_rig.name, [{"tip_bone": "head", "target": reach_target}])
+synthesized = handler.solve_bone_reach(
+    reopened_rig.name, [{"tip_bone": "head", "target": reach_target}], tolerance_m=REACH_TOLERANCE_M
+)
 assert synthesized["reaches"][0]["pole_source"] == "resolved"
 synthesized_error = synthesized["reaches"][0]["achieved_error_m"]
-assert synthesized_error < REACH_TOLERANCE, f"the synthesized pole missed its target by {synthesized_error} m"
+assert synthesized["reaches"][0]["converged"] is True, (
+    f"the synthesized pole missed its target by {synthesized_error} m"
+)
+
+# A target no pose of this chain can reach is reported as out of reach, not as a near miss:
+# retrying it with more iterations or a different pole would never close the gap.
+rest_pose(reopened_rig)
+unreachable_point = root_world + reopened_rig.matrix_world.to_3x3() @ Vector((5.0, 0.0, 0.0))
+unreachable = handler.solve_bone_reach(
+    reopened_rig.name,
+    [{"tip_bone": "head", "target": tuple(unreachable_point), "pole_target": reach_pole}],
+    tolerance_m=REACH_TOLERANCE_M,
+)
+missed = unreachable["reaches"][0]
+assert missed["converged"] is False, "a 5 m target was reported as converged"
+assert missed["out_of_reach"] is True, (
+    f"target {missed['target_distance_m']} m out was not flagged against a {missed['chain_reach_m']} m chain"
+)
+assert any("out of reach" in warning for warning in unreachable["warnings"]), unreachable["warnings"]
+assert any("head" in warning for warning in unreachable["warnings"]), unreachable["warnings"]
 
 # This rig's spine/neck rest chain is dead straight; omitting pole_target has no bend to infer.
 rest_pose(reopened_rig)
@@ -535,7 +574,11 @@ assert not any(obj.name.startswith("__solve_bone_reach__") for obj in bpy.data.o
 )
 assert list(reopened_rig.pose.bones["head"].constraints) == [], "a refused reach left an IK constraint on head"
 
-print(f"solve_bone_reach: achieved_error_m {reach_error:.9f}, reapplied {applied_error:.9f}")
+print(
+    f"solve_bone_reach: achieved_error_m {reach_error:.9f}, reapplied {applied_error:.9f}, "
+    f"chain_reach_m {solved['chain_reach_m']:.6f}, target_distance_m {solved['target_distance_m']:.6f}, "
+    f"out-of-reach target missed by {missed['achieved_error_m']:.6f}"
+)
 
 print(f"aim error: object {object_error:.12f} deg, world point {point_error:.12f} deg")
 print(f"keyed playback error: frame 1 {first_frame_error:.12f} deg, frame 24 {playback_error:.12f} deg")
