@@ -510,7 +510,7 @@ NEW_NODES_IN_EXISTING_FILES = (
     # --- the rest axes carry their own conclusion, in the vocabulary an aim takes ---
     f"{POSET}::test_the_rest_axes_are_also_named_in_the_vocabulary_an_aim_takes",
     f"{POSET}::test_the_up_axis_follows_the_rig_into_the_scene_where_the_nine_numbers_cannot",
-    f"{POSET}::test_a_rig_scaled_to_nothing_names_no_up_axis_rather_than_guessing_one",
+    f"{POSET}::test_a_rig_scaled_to_nothing_names_no_axis_for_any_direction",
     f"{POSET}::test_aim_points_the_named_axis_at_an_object_and_leaves_position_and_scale_alone",
     f"{POSET}::test_aim_at_a_world_point_resolves_through_the_rig_transform",
     f"{POSET}::test_aim_rejects_every_direction_it_cannot_define",
@@ -1820,8 +1820,10 @@ REVERTS: list[Revert] = [
     Revert(
         "text hygiene: the library summary publishes an absolute filepath, mapping the asset library out",
         ADDON_BLEND_FILES,
-        '        "filepath": whole if whole is not None else client_safe_leaf(filepath),',
-        '        "filepath": filepath,',
+        "        **published_path_fields(filepath),",
+        '        "filepath": filepath,\n'
+        '        "filepath_redacted": False,\n'
+        '        "filepath_redaction_reason": None,',
         (f"{SESSIONT}::test_the_library_summary_reports_identity_without_the_asset_library_layout",),
     ),
     Revert(
@@ -2287,8 +2289,8 @@ REVERTS: list[Revert] = [
     Revert(
         "text hygiene: the gate admits one string and the publisher returns another, manufacturing what it rejected",
         ADDON_BLEND_FILES,
-        '        "filepath": whole if whole is not None else client_safe_leaf(filepath),',
-        '        "filepath": filepath if whole is not None else client_safe_leaf(filepath),',
+        '        return {key: whole, f"{key}_redacted": False, f"{key}_redaction_reason": None}',
+        '        return {key: text, f"{key}_redacted": False, f"{key}_redaction_reason": None}',
         (
             f"{SESSIONT}::test_a_whole_published_link_is_the_string_the_gate_looked_at",
             f"{HOSTILE_LIB}[format character inside a component-//libs/\\u200bcanon.blend-forbidden12]",
@@ -2297,14 +2299,70 @@ REVERTS: list[Revert] = [
     Revert(
         "text hygiene: the library summary loses the hygiene its sibling field has, on both branches",
         ADDON_BLEND_FILES,
-        '        "filepath": whole if whole is not None else client_safe_leaf(filepath),',
-        '        "filepath": filepath,',
+        "        **published_path_fields(filepath),",
+        '        "filepath": filepath,\n'
+        '        "filepath_redacted": False,\n'
+        '        "filepath_redaction_reason": None,',
         (
             f"{HOSTILE_LIB}[ANSI escape, relative branch-//shots/\\x1b[31mx.blend-forbidden1]",
             f"{HOSTILE_LIB}[ANSI escape, absolute branch-/mnt/studio/\\x1b[31mx.blend-forbidden2]",
             f"{HOSTILE_LIB}[500 characters, relative branch-//{'a' * 500}.blend-forbidden3]",
             f"{HOSTILE_LIB}[500 characters, absolute branch-/mnt/{'b' * 500}.blend-forbidden4]",
         ),
+    ),
+    # --- a reduced path says so, and says which rule reduced it ---
+    #
+    # `published_path_fields` is the one publisher every reply reports a path through, and it
+    # returns three fields rather than one because `"canon.blend"` alone is indistinguishable
+    # from a broken link. The flag is only worth its bytes while it tracks the publisher on
+    # both branches, the reason codes only while each refusal keeps its own, and neither may
+    # take over what `is_missing` alone reports.
+    Revert(
+        "text hygiene: a path published exactly as it came is flagged as a redaction, so the flag is constant",
+        ADDON_BLEND_FILES,
+        '        return {key: whole, f"{key}_redacted": False, f"{key}_redaction_reason": None}',
+        '        return {key: whole, f"{key}_redacted": True, f"{key}_redaction_reason": None}',
+        (f"{SESSIONT}::test_a_library_inside_the_project_tree_is_published_whole_and_says_it_was_not_reduced",),
+    ),
+    Revert(
+        "text hygiene: a leaf is published unflagged, so a deliberate reduction reads as a broken link again",
+        ADDON_BLEND_FILES,
+        '        f"{key}_redacted": True,',
+        '        f"{key}_redacted": False,',
+        (
+            f"{SESSIONT}::test_a_library_outside_the_project_tree_reports_its_leaf_as_a_redaction_not_as_a_defect",
+            f"{SESSIONT}::test_every_reduced_library_filepath_is_flagged_with_a_stable_reason",
+        ),
+    ),
+    Revert(
+        "text hygiene: breakage is reported only for the libraries whose path was publishable",
+        ADDON_BLEND_FILES,
+        '        "is_missing": bool(getattr(library, "is_missing", False)),',
+        '        "is_missing": bool(getattr(library, "is_missing", False))\n'
+        "        and safe_relative_link(filepath, MAX_REPORTED_LINK_CHARS) is not None,",
+        (f"{SESSIONT}::test_a_missing_link_reports_is_missing_whether_or_not_its_path_was_redacted",),
+    ),
+    Revert(
+        "text hygiene: every refusal reports one reason code, so `too long` reads as `not yours to see`",
+        ADDON_BLEND_FILES,
+        "    if is_directory:\n"
+        "        return REDACTION_DIRECTORY\n"
+        "    stripped = strip_unsafe(text)\n"
+        "    if len(stripped) > MAX_REPORTED_LINK_CHARS:\n"
+        "        return REDACTION_TOO_LONG\n"
+        "    if relative_link_body(stripped) is None:\n"
+        "        return REDACTION_NOT_RELATIVE\n"
+        "    return REDACTION_UNSAFE_COMPONENT\n",
+        "    return REDACTION_NOT_RELATIVE\n",
+        (f"{SESSIONT}::test_each_refusal_the_publisher_makes_has_its_own_reason_code",),
+    ),
+    Revert(
+        "text hygiene: an unset path is reduced like any other, so `nothing is set here` reads as a hidden one",
+        ADDON_BLEND_FILES,
+        "    if blank_is_unset and not text.strip():\n"
+        '        return {key: "", f"{key}_redacted": False, f"{key}_redaction_reason": None}\n',
+        "",
+        (f"{SESSIONT}::test_an_unset_path_is_published_empty_and_is_not_a_redaction",),
     ),
     Revert(
         "get_addon_status: get_addon_status publishes the epoch without the id it is only comparable within",
@@ -5409,18 +5467,18 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 236_000",
-        # One byte below the *measured* payload (235,043), not below the ceiling: the ceiling has
-        # headroom by design, so reverting it to 235_999 would still pass and prove nothing.
-        "SHOT_MODE_BYTE_CEILING = 235_042",
+        "SHOT_MODE_BYTE_CEILING = 245_500",
+        # One byte below the *measured* payload (244,468), not below the ceiling: the ceiling has
+        # headroom by design, so reverting it to 245_499 would still pass and prove nothing.
+        "SHOT_MODE_BYTE_CEILING = 244_467",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
         "server tools: the default ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 80_500",
-        # Same rule: one byte below the measured core payload (80,158), not below the ceiling.
-        "DEFAULT_MODE_BYTE_CEILING = 80_157",
+        "DEFAULT_MODE_BYTE_CEILING = 84_000",
+        # Same rule: one byte below the measured core payload (83,532), not below the ceiling.
+        "DEFAULT_MODE_BYTE_CEILING = 83_531",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
@@ -5510,22 +5568,22 @@ REVERTS: list[Revert] = [
     Revert(
         "animation: a cycled curve reports no period, the way it did when a shot's arms stopped striding",
         ADDON_ANIMATION,
-        '    record["period_frames"] = period\n',
-        '    record["period_frames"] = None\n',
+        '        "period_frames": period,\n',
+        '        "period_frames": None,\n',
         (f"{ANIMT}::test_a_cycle_reports_the_period_each_curve_will_actually_repeat",),
     ),
     Revert(
         "animation: a finite cycle count stops the repeat without saying at which frame",
         ADDON_ANIMATION,
-        "        if cycles_after:\n",
-        "        if False:\n",
+        '    if cycles_after and mode_after != "NONE":\n',
+        "    if False:\n",
         (f"{ANIMT}::test_a_finite_cycle_count_says_where_the_repeat_stops",),
     ),
     Revert(
         "pose: a key landing past an existing cycle stretches its period silently again",
         ADDON_POSING,
-        "else _cycle_extension_warnings(action, prepared, frame)\n",
-        "else []\n",
+        "            per_frame_warnings.append(_cycle_extension_warnings(action, prepared, frame))\n",
+        "            per_frame_warnings.append([])\n",
         (f"{POSET}::test_keying_past_a_cycle_says_the_period_it_just_changed",),
     ),
     Revert(
@@ -5788,13 +5846,15 @@ REVERTS: list[Revert] = [
         # action, the playhead is movable, and a held contact is IK rather than repeated FK.
         "server instructions: the animation paragraph is deleted from the instructions",
         SERVER_APP,
-        "\n\nAnimation is authored one frame at a time into one named action: pass the same `action_name` to\n"
+        "\n\nAnimation is authored into one named action: pass the same `action_name` to\n"
         "`keyframe_object_transform` and the pose tools, because an ID holds one action and a second one\n"
-        "silently stops the first driving the rig. `set_scene_frame` is how any inspection tool or\n"
-        "screenshot is pointed at another frame - they all report the current frame, so without it you\n"
-        "are reviewing frame 1 forever. A contact that must hold still while the body moves over it -\n"
-        "a planted foot, a hand on a prop - is held by `keyframe_bone_reach`, which re-solves the IK\n"
-        "against the evaluated body pose at each frame; repeated FK rotation slides it instead.",
+        "silently stops the first driving the rig. The pose and transform keyers take many frames per call\n"
+        '(`keyframe_character_pose(keys=[{"frame": ..., "poses": [...]}, ...])`), so a stride is one call.\n'
+        "`set_scene_frame` is how any inspection tool or screenshot is pointed at another frame - they all\n"
+        "report the current frame, so without it you are reviewing frame 1 forever. A contact that must hold\n"
+        "still while the body moves over it - a planted foot, a hand on a prop - is held by\n"
+        "`keyframe_bone_reach`, which re-solves the IK against the evaluated body pose at each frame;\n"
+        "repeated FK rotation slides it instead.",
         "",
         (
             f"{SIT}::test_the_instructions_state_that_one_shot_is_one_action",
@@ -6122,11 +6182,11 @@ REVERTS: list[Revert] = [
     Revert(
         "pose: a keyframed pose reports every bone's matrices whether or not they were asked for",
         ADDON_POSING,
-        "    if pose_records is not None:\n"
+        "    if detail:\n"
         "        # The pose is restored before this returns, so these matrices describe what was keyed at\n"
-        "        # the requested frame, not what the rig is holding now.\n"
-        '        reply["bones"] = pose_records\n',
-        '    reply["bones"] = pose_records\n',
+        "        # each requested frame, not what the rig is holding now.\n"
+        '        reply["bones"] = keyed["records"]\n',
+        '    reply["bones"] = keyed["records"]\n',
         (f"{CTRLT}::test_keyframed_pose_names_every_bone_and_reports_no_matrices_by_default",),
     ),
     Revert(
@@ -6219,12 +6279,8 @@ REVERTS: list[Revert] = [
     Revert(
         "pose: rest axes are withheld even when the caller asks for them",
         ADDON_POSING,
-        "            if rest_axes:\n"
-        '                item["rest_axes"] = _rest_axes(bone)\n'
-        "                # The conclusion the nine numbers leave to the reader, and the one the reply\n"
-        "                # cannot otherwise support: it turns on the rig's object matrix, not on them.\n"
-        '                item["up_axis"] = _rest_up_axis(armature, bone)\n',
-        "",
+        "            if rest_axes:",
+        "            if False:",
         (f"{POSET}::test_rest_axes_are_reported_only_when_asked_for",),
     ),
     # --- the nine numbers carry their own conclusion ---
@@ -6239,7 +6295,9 @@ REVERTS: list[Revert] = [
     Revert(
         "pose: rest axes are handed back as nine numbers with the up axis left to be derived",
         ADDON_POSING,
-        '                item["up_axis"] = _rest_up_axis(armature, bone)\n',
+        "                aim_axes = _rest_aim_axes(armature, bone)\n"
+        '                item["up_axis"] = aim_axes["+Z"]\n'
+        '                item["aim_axis_for_world"] = aim_axes\n',
         "",
         (f"{POSET}::test_the_rest_axes_are_also_named_in_the_vocabulary_an_aim_takes",),
     ),
@@ -6260,9 +6318,11 @@ REVERTS: list[Revert] = [
     Revert(
         "pose: a rig with no direction left in it still has an up axis guessed for it",
         ADDON_POSING,
-        "    if not alignments:\n        return None\n",
-        "    if not alignments:\n        return _LENGTH_AXIS\n",
-        (f"{POSET}::test_a_rig_scaled_to_nothing_names_no_up_axis_rather_than_guessing_one",),
+        "    if not units:\n        return None\n",
+        "    if not units:\n        return _LENGTH_AXIS\n",
+        # The derivation that guessed is `_nearest_rest_axis`, which every world direction -
+        # `up_axis` among them - is answered from, so the node making the claim widened with it.
+        (f"{POSET}::test_a_rig_scaled_to_nothing_names_no_axis_for_any_direction",),
     ),
     Revert(
         "pose: an aim's up axis is not made perpendicular, so the basis shears",
@@ -6757,11 +6817,10 @@ REVERTS: list[Revert] = [
     Revert(
         "delivery: a path outside the shot is published whole instead of by leaf",
         ADDON_DELIVERY,
-        (
-            "    whole = safe_relative_link(text, MAX_REPORTED_LINK_CHARS)\n"
-            "    return whole if whole is not None else client_safe_leaf(text, is_directory=is_directory)"
-        ),
-        "    return text",
+        # `_entry` is the one publisher every non-library reference goes through; the library
+        # entries build their own, so this anchor is the image/font/sound/cache/output path.
+        '        **published_path_fields(raw, key="path", is_directory=is_directory, blank_is_unset=True),',
+        '        "path": str(raw or ""),\n        "path_redacted": False,\n        "path_redaction_reason": None,',
         (
             f"{FLT}::test_inspect_delivery_reports_an_absolute_image_by_leaf_not_by_directory",
             f"{FLT}::test_inspect_delivery_does_not_mistake_a_rooted_triple_slash_path_for_a_relative_one",
@@ -7409,8 +7468,8 @@ REVERTS: list[Revert] = [
         # surface moved and the number did not - has to be re-pointed at the new pair.
         "addon surface: the dispatch table moved while the protocol number stayed where it was",
         ADDON_MANAGER,
+        "EXPECTED_ADDON_PROTOCOL_VERSION = 35",
         "EXPECTED_ADDON_PROTOCOL_VERSION = 34",
-        "EXPECTED_ADDON_PROTOCOL_VERSION = 33",
         (
             f"{SURFT}::test_snapshot_records_the_protocol_version_the_server_expects",
             f"{SURFT}::test_both_protocol_constants_agree",

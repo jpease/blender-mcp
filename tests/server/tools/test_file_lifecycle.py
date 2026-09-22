@@ -18,6 +18,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import TypeAdapter, ValidationError
 from test_mutation_transaction import _load_addon
 
+from blender_mcp.server.connection import BlenderOperationError
 from blender_mcp.server.tools import _dispatch, _documentation, file_lifecycle
 from blender_mcp.server.tools.envelope import CHANGED_OBJECTS_LIMIT
 
@@ -384,14 +385,19 @@ def test_save_shot_destructive_hint_is_explicit_not_schema_derived() -> None:
 @pytest.mark.parametrize("tool_name", sorted(FILE_LIFECYCLE_COMMANDS))
 def test_addon_failure_reaches_the_client_as_a_tool_error_unchanged(monkeypatch, tool_name) -> None:
     """
-    An addon-raised failure reaches the client as `ToolError`, unmodified.
+    An addon-raised refusal reaches the client as `ToolError`, unmodified.
 
     It propagates through the shared dispatch untouched: the addon has already removed paths
     from the message, so nothing on the way out may add to it. The test runs FastMCP's own
     `Tool.run` conversion.
+
+    The raised type is `BlenderOperationError` on purpose. A plain `ValueError` also surfaces as
+    `ToolError` - FastMCP converts anything a tool raises - so it cannot tell the dispatch's own
+    conversion from FastMCP's, and the revert-matrix row for that conversion survived being
+    reverted while this test kept passing.
     """
     message = f"{tool_name} failed: a sanitized reason with no filesystem path"
-    connection = _FailingConnection(ValueError(message))
+    connection = _FailingConnection(BlenderOperationError(message))
     monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
     tool = file_lifecycle.mcp._tool_manager._tools[tool_name]
