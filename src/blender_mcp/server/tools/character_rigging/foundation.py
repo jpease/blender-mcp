@@ -1,15 +1,14 @@
 """Typed tools for armature foundations, skinning, constraints, and rig validation."""
 
-from collections.abc import Sequence
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
-from pydantic import BaseModel, Field, TypeAdapter, model_validator
+from pydantic import Field, TypeAdapter, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _StrictModel
+from .._inputs import StrictModel, dump_inputs
 
 Vector3 = tuple[float, float, float]
 Quaternion = tuple[float, float, float, float]
@@ -17,7 +16,7 @@ ConstraintSpace = Literal["WORLD", "CUSTOM", "POSE", "LOCAL_WITH_PARENT", "LOCAL
 ExistingPolicy = Literal["ERROR", "UPDATE"]
 
 
-class RigWorldTransform(_StrictModel):
+class RigWorldTransform(StrictModel):
     """An explicit world transform; quaternion order is [w, x, y, z]."""
 
     location: Vector3 = (0.0, 0.0, 0.0)
@@ -33,7 +32,9 @@ class RigWorldTransform(_StrictModel):
         return self
 
 
-class ArmatureDisplaySettings(_StrictModel):
+class ArmatureDisplaySettings(StrictModel):
+    """Viewport display state for an armature, independent of its bones."""
+
     pose_position: Literal["POSE", "REST"] = "POSE"
     display_type: Literal["OCTAHEDRAL", "STICK", "BBONE", "ENVELOPE", "WIRE"] = "OCTAHEDRAL"
     show_axes: bool = False
@@ -45,7 +46,7 @@ class ArmatureDisplaySettings(_StrictModel):
     show_bone_colors: bool = True
 
 
-class InitialBone(_StrictModel):
+class InitialBone(StrictModel):
     """One rest bone in armature-local space."""
 
     name: str = Field(min_length=1, max_length=63)
@@ -67,14 +68,18 @@ class CreateBoneOperation(InitialBone):
     operation: Literal["CREATE"] = "CREATE"
 
 
-class RenameBoneOperation(_StrictModel):
+class RenameBoneOperation(StrictModel):
+    """Rename one bone, choosing whether existing references follow it."""
+
     operation: Literal["RENAME"] = "RENAME"
     bone_name: str = Field(min_length=1, max_length=63)
     new_name: str = Field(min_length=1, max_length=63)
     reference_policy: Literal["UPDATE", "ERROR"]
 
 
-class UpdateBoneOperation(_StrictModel):
+class UpdateBoneOperation(StrictModel):
+    """Patch one existing rest bone; unsupplied fields keep their current value."""
+
     operation: Literal["UPDATE"] = "UPDATE"
     bone_name: str = Field(min_length=1, max_length=63)
     head: Vector3 | None = None
@@ -101,7 +106,9 @@ class UpdateBoneOperation(_StrictModel):
         return self
 
 
-class DeleteBoneOperation(_StrictModel):
+class DeleteBoneOperation(StrictModel):
+    """Delete one bone, choosing whether references to it are an error or removed."""
+
     operation: Literal["DELETE"] = "DELETE"
     bone_name: str = Field(min_length=1, max_length=63)
     reference_policy: Literal["ERROR", "REMOVE_REFERENCES"]
@@ -113,7 +120,9 @@ BoneOperation = Annotated[
 ]
 
 
-class CollectionCreate(_StrictModel):
+class CollectionCreate(StrictModel):
+    """Create one bone collection, optionally nested under an existing parent."""
+
     operation: Literal["CREATE"] = "CREATE"
     name: str = Field(min_length=1, max_length=63)
     parent: str | None = None
@@ -122,13 +131,17 @@ class CollectionCreate(_StrictModel):
     existing_policy: ExistingPolicy = "ERROR"
 
 
-class CollectionRename(_StrictModel):
+class CollectionRename(StrictModel):
+    """Rename one bone collection, keeping its memberships."""
+
     operation: Literal["RENAME"] = "RENAME"
     name: str = Field(min_length=1, max_length=63)
     new_name: str = Field(min_length=1, max_length=63)
 
 
-class CollectionConfigure(_StrictModel):
+class CollectionConfigure(StrictModel):
+    """Patch one bone collection's parent, visibility, or position in the list."""
+
     operation: Literal["CONFIGURE"] = "CONFIGURE"
     name: str = Field(min_length=1, max_length=63)
     parent: str | None = None
@@ -144,7 +157,9 @@ class CollectionConfigure(_StrictModel):
         return self
 
 
-class CollectionAssign(_StrictModel):
+class CollectionAssign(StrictModel):
+    """Add bones to one collection, optionally replacing their other memberships."""
+
     operation: Literal["ASSIGN"] = "ASSIGN"
     name: str = Field(min_length=1, max_length=63)
     bone_names: Annotated[list[str], Field(min_length=1, max_length=500)]
@@ -158,7 +173,9 @@ class CollectionAssign(_StrictModel):
         return self
 
 
-class CollectionUnassign(_StrictModel):
+class CollectionUnassign(StrictModel):
+    """Remove bones from one collection; always a confirmed destructive edit."""
+
     operation: Literal["UNASSIGN"] = "UNASSIGN"
     name: str = Field(min_length=1, max_length=63)
     bone_names: Annotated[list[str], Field(min_length=1, max_length=500)]
@@ -171,7 +188,9 @@ class CollectionUnassign(_StrictModel):
         return self
 
 
-class CollectionRemove(_StrictModel):
+class CollectionRemove(StrictModel):
+    """Remove one bone collection; always a confirmed destructive edit."""
+
     operation: Literal["REMOVE"] = "REMOVE"
     name: str = Field(min_length=1, max_length=63)
     confirm_destructive: bool = False
@@ -194,7 +213,9 @@ CollectionOperation = Annotated[
 ]
 
 
-class BoneBehaviorPatch(_StrictModel):
+class BoneBehaviorPatch(StrictModel):
+    """Allowlisted rest-bone deform, inheritance, and envelope settings."""
+
     bone_name: str = Field(min_length=1, max_length=63)
     use_deform: bool | None = None
     use_inherit_rotation: bool | None = None
@@ -208,7 +229,9 @@ class BoneBehaviorPatch(_StrictModel):
     tail_radius: float | None = Field(default=None, ge=0.0)
 
 
-class PoseBoneBehaviorPatch(_StrictModel):
+class PoseBoneBehaviorPatch(StrictModel):
+    """Allowlisted pose-bone rotation mode, transform locks, IK limits, and custom properties."""
+
     bone_name: str = Field(min_length=1, max_length=63)
     rotation_mode: Literal["QUATERNION", "XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX", "AXIS_ANGLE"] | None = None
     lock_location: tuple[bool, bool, bool] | None = None
@@ -244,7 +267,9 @@ class PoseBoneBehaviorPatch(_StrictModel):
         return self
 
 
-class SkinWeightAssignment(_StrictModel):
+class SkinWeightAssignment(StrictModel):
+    """One weight applied to an explicit list of vertices in one vertex group."""
+
     mesh_object_name: str = Field(min_length=1)
     group_name: str = Field(min_length=1, max_length=63)
     vertex_indices: Annotated[list[int], Field(min_length=1, max_length=100_000)]
@@ -261,7 +286,9 @@ class SkinWeightAssignment(_StrictModel):
         return self
 
 
-class NormalizedVertexWeights(_StrictModel):
+class NormalizedVertexWeights(StrictModel):
+    """The complete, normalized group-to-weight map for one vertex."""
+
     mesh_object_name: str = Field(min_length=1)
     vertex_index: int = Field(ge=0)
     weights: dict[str, float] = Field(min_length=1, max_length=256)
@@ -278,7 +305,9 @@ class NormalizedVertexWeights(_StrictModel):
         return self
 
 
-class ConstraintBase(_StrictModel):
+class ConstraintBase(StrictModel):
+    """Fields every bone constraint carries, whatever its type does with them."""
+
     name: str = Field(min_length=1, max_length=63)
     target_object_name: str | None = None
     subtarget: str | None = None
@@ -490,10 +519,6 @@ PoseConstraintSpec = Annotated[
 _pose_constraint_adapter = TypeAdapter(PoseConstraintSpec)
 
 
-def _models(items: Sequence[BaseModel]) -> list[dict]:
-    return [item.model_dump(exclude_none=True) for item in items]
-
-
 @mcp.tool()
 async def get_character_rig_info(
     ctx: Context,
@@ -574,7 +599,7 @@ async def create_armature(
         {
             "name": name,
             "collection_name": collection_name,
-            "bones": _models(bones or []),
+            "bones": dump_inputs(bones or []),
             "world_transform": (world_transform or RigWorldTransform()).model_dump(),
             "display": (display or ArmatureDisplaySettings()).model_dump(),
         },
@@ -594,7 +619,7 @@ async def patch_armature_bones(
         "patch_armature_bones",
         {
             "armature_object_name": armature_object_name,
-            "operations": _models(operations),
+            "operations": dump_inputs(operations),
             "confirm_animated_rest_changes": confirm_animated_rest_changes,
         },
         changed_objects=[armature_object_name],
@@ -635,7 +660,7 @@ async def manage_bone_collections(
     """Batch-manage Blender 5.1 bone collections while preserving multi-collection membership by default."""
     return await call_blender(
         "manage_bone_collections",
-        {"armature_object_name": armature_object_name, "operations": _models(operations)},
+        {"armature_object_name": armature_object_name, "operations": dump_inputs(operations)},
         changed_objects=[armature_object_name],
     )
 
@@ -662,8 +687,8 @@ async def configure_armature_bones(
         "configure_armature_bones",
         {
             "armature_object_name": armature_object_name,
-            "bone_patches": _models(bone_patches or []),
-            "pose_bone_patches": _models(pose_bone_patches or []),
+            "bone_patches": dump_inputs(bone_patches or []),
+            "pose_bone_patches": dump_inputs(pose_bone_patches or []),
         },
         changed_objects=[armature_object_name],
     )
@@ -720,7 +745,7 @@ async def set_skin_weights(
     changed = sorted({item.mesh_object_name for item in [*(assignments or []), *(normalized_vertices or [])]})
     return await call_blender(
         "set_skin_weights",
-        {"assignments": _models(assignments or []), "normalized_vertices": _models(normalized_vertices or [])},
+        {"assignments": dump_inputs(assignments or []), "normalized_vertices": dump_inputs(normalized_vertices or [])},
         changed_objects=changed,
     )
 

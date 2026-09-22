@@ -184,7 +184,7 @@ for label, target in (
         rest_pose(rig)
         handler.set_character_pose(
             rig.name,
-            [{"bone_name": BONE, "aim_at": {"target": tuple(target), "track_axis": TRACK, "up_axis": up_axis}}],
+            [{"bone_name": BONE, "aim_at": {"target_point": tuple(target), "track_axis": TRACK, "up_axis": up_axis}}],
         )
         tracked = signed_axis_world(rig, BONE, TRACK)
         to_target = (target - (rig.matrix_world @ rig.pose.bones[BONE].matrix).translation).normalized()
@@ -209,7 +209,7 @@ for up_axis in (REST_UP, "Z", "-Z"):
     rest_pose(rig)
     handler.set_character_pose(
         rig.name,
-        [{"bone_name": BONE, "aim_at": {"target": tuple(target), "track_axis": "Y", "up_axis": up_axis}}],
+        [{"bone_name": BONE, "aim_at": {"target_point": tuple(target), "track_axis": "Y", "up_axis": up_axis}}],
     )
     rest_up_now = signed_axis_world(rig, BONE, REST_UP)
     print(

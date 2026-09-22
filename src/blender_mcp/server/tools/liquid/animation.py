@@ -7,13 +7,15 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _StrictModel
+from .._inputs import StrictModel, dump_inputs
 
 Interpolation = Literal["CONSTANT", "LINEAR", "BEZIER"]
 AnimationPolicy = Literal["INSERT_ONLY", "REPLACE_EXISTING"]
 
 
-class LiquidFlowKeyframe(_StrictModel):
+class LiquidFlowKeyframe(StrictModel):
+    """One flow property keyed at one exact frame; each record keys exactly one."""
+
     frame: float = Field(ge=-1_000_000.0, le=1_000_000.0)
     use_inflow: bool | None = None
     use_initial_velocity: bool | None = None
@@ -47,7 +49,7 @@ async def animate_liquid_flow(
             "object_name": object_name,
             "modifier_name": modifier_name,
             "domain_object_name": domain_object_name,
-            "keyframes": [item.model_dump(exclude_none=True) for item in keyframes],
+            "keyframes": dump_inputs(keyframes),
             "policy": policy,
             "subframes": subframes,
         },

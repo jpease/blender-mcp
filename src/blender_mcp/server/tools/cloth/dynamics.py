@@ -8,17 +8,17 @@ from typing import Annotated
 
 from pydantic import Field
 
-from ._shared import _StrictModel
+from .._inputs import StrictModel
 
 
-class SewingPair(_StrictModel):
+class SewingPair(StrictModel):
     """One explicit cross-panel sewing spring between two base-mesh vertices."""
 
     source_vertex: int = Field(ge=0)
     target_vertex: int = Field(ge=0)
 
 
-class ClothPressurePatch(_StrictModel):
+class ClothPressurePatch(StrictModel):
     """Allowlisted Blender 5.1 pressure properties."""
 
     use_pressure: bool | None = None
@@ -30,7 +30,7 @@ class ClothPressurePatch(_StrictModel):
     vertex_group_pressure: Annotated[str, Field(min_length=1)] | None = None
 
 
-class ClothInternalSpringsPatch(_StrictModel):
+class ClothInternalSpringsPatch(StrictModel):
     """Allowlisted Blender 5.1 internal-spring properties."""
 
     use_internal_springs: bool | None = None
@@ -45,7 +45,7 @@ class ClothInternalSpringsPatch(_StrictModel):
     vertex_group_intern: Annotated[str, Field(min_length=1)] | None = None
 
 
-class ClothFieldWeightsPatch(_StrictModel):
+class ClothFieldWeightsPatch(StrictModel):
     """Allowlisted Blender 5.1 EffectorWeights values and collection scope."""
 
     all: float | None = None

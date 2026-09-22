@@ -7,10 +7,11 @@ from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from ..app import mcp
 from ._dispatch import call_blender
+from ._inputs import StrictModel
 from .key_style import Easing, HandleType, Interpolation
 
 AnimationTargetType = Literal[
@@ -57,19 +58,15 @@ _SAFE_EXPRESSION_NODES = (
 )
 
 
-class AnimationTarget(BaseModel):
+class AnimationTarget(StrictModel):
     """Exact Blender ID datablock that owns animation data."""
-
-    model_config = ConfigDict(extra="forbid")
 
     type: AnimationTargetType
     name: Annotated[str, Field(min_length=1)]
 
 
-class KeyframeEdit(BaseModel):
+class KeyframeEdit(StrictModel):
     """One key insertion/update or removal on an RNA property."""
-
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     operation: Literal["UPSERT", "REMOVE"] = "UPSERT"
     data_path: Annotated[str, Field(min_length=1, max_length=512)]
@@ -92,19 +89,17 @@ class KeyframeEdit(BaseModel):
         return self
 
 
-class BakePropertyChannel(BaseModel):
+class BakePropertyChannel(StrictModel):
     """One scalar or array RNA property sampled from the evaluated target."""
 
-    model_config = ConfigDict(extra="forbid")
     data_path: Annotated[str, Field(min_length=1, max_length=512)]
     array_indices: Annotated[list[int] | None, Field(min_length=1, max_length=64)] = None
     tolerance: Annotated[float, Field(ge=0)] = 0.0
 
 
-class EvaluatedBakeTarget(BaseModel):
+class EvaluatedBakeTarget(StrictModel):
     """One object or armature and the evaluated channels to bake."""
 
-    model_config = ConfigDict(extra="forbid")
     object_name: Annotated[str, Field(min_length=1)]
     transforms: Annotated[list[Literal["LOCATION", "ROTATION", "SCALE"]], Field(max_length=3)] = Field(
         default_factory=list
@@ -123,10 +118,8 @@ class EvaluatedBakeTarget(BaseModel):
         return self
 
 
-class NlaTrackPatch(BaseModel):
+class NlaTrackPatch(StrictModel):
     """Validated NLA track-state patch."""
-
-    model_config = ConfigDict(extra="forbid")
 
     mute: bool | None = None
     solo: bool | None = None
@@ -140,10 +133,8 @@ class NlaTrackPatch(BaseModel):
         return self
 
 
-class NlaStripPatch(BaseModel):
+class NlaStripPatch(StrictModel):
     """Validated NLA strip timing and blending patch."""
-
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     frame_start: float | None = None
     frame_end: float | None = None
@@ -172,10 +163,8 @@ class NlaStripPatch(BaseModel):
         return self
 
 
-class DriverVariable(BaseModel):
+class DriverVariable(StrictModel):
     """One safe driver input sourced from a property or object transform."""
-
-    model_config = ConfigDict(extra="forbid")
 
     name: Annotated[str, Field(min_length=1, max_length=64)]
     type: Literal["SINGLE_PROP", "TRANSFORMS"]

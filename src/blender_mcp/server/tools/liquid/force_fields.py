@@ -7,14 +7,16 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _dump, _StrictModel
+from .._inputs import StrictModel, dump_input
 
 FieldType = Literal["FORCE", "WIND", "VORTEX", "TURBULENCE", "DRAG"]
 FieldShape = Literal["POINT", "LINE", "PLANE", "SURFACE", "POINTS"]
 FalloffType = Literal["CONE", "SPHERE", "TUBE"]
 
 
-class EffectorWeightsPatch(_StrictModel):
+class EffectorWeightsPatch(StrictModel):
+    """Per-field-type effector weights the domain applies to incoming forces."""
+
     all: float | None = Field(default=None, ge=-200.0, le=200.0)
     gravity: float | None = Field(default=None, ge=-200.0, le=200.0)
     force: float | None = Field(default=None, ge=-200.0, le=200.0)
@@ -32,7 +34,9 @@ class EffectorWeightsPatch(_StrictModel):
     smokeflow: float | None = Field(default=None, ge=-200.0, le=200.0)
 
 
-class LiquidForceFieldSpec(_StrictModel):
+class LiquidForceFieldSpec(StrictModel):
+    """One force field acting on the domain, placed and shaped explicitly."""
+
     object_name: str
     field_type: FieldType
     create_if_missing: bool = False
@@ -76,7 +80,7 @@ async def configure_liquid_force_fields(
             "fields": [item.model_dump() for item in fields],
             "force_collection_name": force_collection_name,
             "create_collection": create_collection,
-            "weights": _dump(weights),
+            "weights": dump_input(weights),
         },
         changed_objects=[domain_object_name, *[item.object_name for item in fields]],
     )

@@ -8,7 +8,7 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _dump, _StrictModel
+from .._inputs import StrictModel, dump_input
 from .inspection_and_setup import FluidDomainType, FluidSolverPatch
 from .mesh_and_materials import CacheMeshFormat
 
@@ -55,7 +55,9 @@ FluidCacheAction = Literal[
 ]
 
 
-class LiquidCachePatch(_StrictModel):
+class LiquidCachePatch(StrictModel):
+    """Allowlisted Blender 5.1 fluid cache directory, formats, and frame range."""
+
     cache_directory: str | None = None
     cache_type: LiquidCacheType | None = None
     cache_data_format: Literal["UNI", "OPENVDB", "RAW"] | None = None
@@ -167,7 +169,7 @@ async def manage_liquid_cache(
             "domain_object_name": domain_object_name,
             "modifier_name": modifier_name,
             "action": action,
-            "patch": _dump(patch),
+            "patch": dump_input(patch),
             "stage": stage,
             "confirm_bake": confirm_bake,
             "confirm_free": confirm_free,
@@ -195,7 +197,7 @@ async def configure_fluid_solver(
             "domain_type": domain_type,
             "domain_object_name": domain_object_name,
             "modifier_name": modifier_name,
-            "patch": _dump(patch),
+            "patch": dump_input(patch),
         },
         changed_objects=[domain_object_name],
     )
@@ -224,7 +226,7 @@ async def manage_fluid_cache(
             "domain_object_name": domain_object_name,
             "modifier_name": modifier_name,
             "action": action,
-            "patch": _dump(patch),
+            "patch": dump_input(patch),
             "stage": stage,
             "confirm_bake": confirm_bake,
             "confirm_free": confirm_free,

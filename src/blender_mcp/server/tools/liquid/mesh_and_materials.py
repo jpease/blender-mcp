@@ -7,7 +7,7 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _dump, _StrictModel
+from .._inputs import StrictModel, dump_input
 from .inspection_and_setup import ExistingPolicy
 
 MeshGenerator = Literal["IMPROVED", "UNION"]
@@ -20,7 +20,9 @@ LiquidMaterialAssignment = Literal["APPEND", "REPLACE_SLOT"]
 ParticleRepresentation = Literal["OBJECT"]
 
 
-class LiquidMeshPatch(_StrictModel):
+class LiquidMeshPatch(StrictModel):
+    """Allowlisted Blender 5.1 liquid mesh-generation properties."""
+
     use_mesh: bool | None = None
     mesh_scale: int | None = Field(default=None, ge=1, le=8)
     mesh_particle_radius: float | None = Field(default=None, gt=0.0, le=10.0)
@@ -43,7 +45,9 @@ class LiquidMeshPatch(_StrictModel):
         return self
 
 
-class LiquidSecondaryParticlePatch(_StrictModel):
+class LiquidSecondaryParticlePatch(StrictModel):
+    """Allowlisted spray, foam, bubble, and tracer particle properties."""
+
     use_spray_particles: bool | None = None
     use_foam_particles: bool | None = None
     use_bubble_particles: bool | None = None
@@ -89,7 +93,9 @@ class LiquidSecondaryParticlePatch(_StrictModel):
         return self
 
 
-class LiquidDiffusionConfig(_StrictModel):
+class LiquidDiffusionConfig(StrictModel):
+    """Viscosity and surface tension from exactly one source: preset, physical units, or base/exponent."""
+
     preset: ViscosityPreset | None = None
     use_diffusion: bool | None = None
     viscosity_base: float | None = Field(default=None, ge=0.0, le=10.0)
@@ -111,7 +117,9 @@ class LiquidDiffusionConfig(_StrictModel):
         return self
 
 
-class LiquidMaterialConfig(_StrictModel):
+class LiquidMaterialConfig(StrictModel):
+    """Shader settings for the liquid surface material, starting from a preset."""
+
     preset: MaterialPreset = "WATER"
     base_color: tuple[float, float, float, float] | None = None
     transmission_weight: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -133,7 +141,7 @@ async def configure_liquid_mesh(
     """
     return await call_blender(
         "configure_liquid_mesh",
-        {"domain_object_name": domain_object_name, "modifier_name": modifier_name, "patch": _dump(patch)},
+        {"domain_object_name": domain_object_name, "modifier_name": modifier_name, "patch": dump_input(patch)},
         changed_objects=[domain_object_name],
     )
 
@@ -145,7 +153,7 @@ async def configure_liquid_secondary_particles(
     """Patch spray, foam, bubble, and tracer generation on an unbaked liquid domain."""
     return await call_blender(
         "configure_liquid_secondary_particles",
-        {"domain_object_name": domain_object_name, "modifier_name": modifier_name, "patch": _dump(patch)},
+        {"domain_object_name": domain_object_name, "modifier_name": modifier_name, "patch": dump_input(patch)},
         changed_objects=[domain_object_name],
     )
 
@@ -157,7 +165,7 @@ async def configure_liquid_diffusion(
     """Configure viscosity and surface tension from direct values, a versioned preset, or SI inputs."""
     return await call_blender(
         "configure_liquid_diffusion",
-        {"domain_object_name": domain_object_name, "modifier_name": modifier_name, "config": _dump(config)},
+        {"domain_object_name": domain_object_name, "modifier_name": modifier_name, "config": dump_input(config)},
         changed_objects=[domain_object_name],
     )
 

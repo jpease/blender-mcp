@@ -9,10 +9,11 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import StrictLightingInput, TargetEngine, dump_input
+from .._inputs import StrictModel, dump_input
+from ._shared import TargetEngine
 
 
-class ProceduralSkySettings(StrictLightingInput):
+class ProceduralSkySettings(StrictModel):
     """Physical controls supported by Blender's Sky Texture node."""
 
     sky_type: Literal["MULTIPLE_SCATTERING", "SINGLE_SCATTERING", "PREETHAM", "HOSEK_WILKIE"] = "MULTIPLE_SCATTERING"

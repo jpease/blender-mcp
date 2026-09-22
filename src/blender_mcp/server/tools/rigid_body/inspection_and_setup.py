@@ -1,14 +1,14 @@
 """Typed tools for rigid-body inspection, setup, constraints, and validation."""
 
-from collections.abc import Sequence
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import Field, TypeAdapter, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
+from .._inputs import StrictModel, dump_input, dump_inputs
 
 Vector3 = tuple[float, float, float]
 Quaternion = tuple[float, float, float, float]
@@ -18,11 +18,9 @@ MeshSource = Literal["BASE", "DEFORM", "FINAL"]
 ConstraintType = Literal["FIXED", "POINT", "HINGE", "SLIDER", "PISTON", "GENERIC", "GENERIC_SPRING", "MOTOR"]
 
 
-class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+class RigidBodyWorldPatch(StrictModel):
+    """Allowlisted settings on one scene's rigid-body world."""
 
-
-class RigidBodyWorldPatch(_StrictModel):
     enabled: bool | None = None
     time_scale: float | None = Field(default=None, ge=0.0, le=100.0)
     substeps_per_frame: int | None = Field(default=None, ge=1, le=32767)
@@ -30,7 +28,9 @@ class RigidBodyWorldPatch(_StrictModel):
     use_split_impulse: bool | None = None
 
 
-class RigidBodyCachePatch(_StrictModel):
+class RigidBodyCachePatch(StrictModel):
+    """Frame range and step of the rigid-body world's point cache."""
+
     frame_start: int | None = Field(default=None, ge=-1_000_000, le=1_000_000)
     frame_end: int | None = Field(default=None, ge=-1_000_000, le=1_000_000)
     frame_step: int | None = Field(default=None, ge=1, le=1000)
@@ -44,7 +44,9 @@ class RigidBodyCachePatch(_StrictModel):
         return self
 
 
-class RigidBodyEffectorWeightsPatch(_StrictModel):
+class RigidBodyEffectorWeightsPatch(StrictModel):
+    """Per-force-type effector weights, and the collection the world reads fields from."""
+
     all: float | None = Field(default=None, ge=0.0, le=1.0)
     gravity: float | None = Field(default=None, ge=0.0, le=1.0)
     force: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -70,7 +72,9 @@ class RigidBodyEffectorWeightsPatch(_StrictModel):
         return self
 
 
-class RigidBodySettingsPatch(_StrictModel):
+class RigidBodySettingsPatch(StrictModel):
+    """Allowlisted rigid-body settings for one object; omitted fields stay unchanged."""
+
     type: BodyType | None = None
     enabled: bool | None = None
     kinematic: bool | None = None
@@ -90,12 +94,16 @@ class RigidBodySettingsPatch(_StrictModel):
     deactivate_angular_velocity: float | None = Field(default=None, ge=0.0)
 
 
-class RigidBodyTarget(_StrictModel):
+class RigidBodyTarget(StrictModel):
+    """One object and the rigid-body settings to apply to it."""
+
     object_name: str = Field(min_length=1)
     settings: RigidBodySettingsPatch
 
 
-class RigidBodyMassTarget(_StrictModel):
+class RigidBodyMassTarget(StrictModel):
+    """One object's mass, given directly or derived from a density."""
+
     object_name: str = Field(min_length=1)
     mass: float | None = Field(default=None, ge=0.001)
     density: float | None = Field(default=None, gt=0.0)
@@ -110,7 +118,9 @@ class RigidBodyMassTarget(_StrictModel):
 LayerProfile = Literal["ENVIRONMENT", "HERO", "DEBRIS", "RAGDOLL"]
 
 
-class RigidBodyLayerTarget(_StrictModel):
+class RigidBodyLayerTarget(StrictModel):
+    """One object's collision layers, given explicitly or by named profile."""
+
     object_name: str = Field(min_length=1)
     layers: list[Annotated[int, Field(ge=1, le=20)]] | None = Field(default=None, max_length=20)
     profile: LayerProfile | None = None
@@ -124,7 +134,9 @@ class RigidBodyLayerTarget(_StrictModel):
         return self
 
 
-class ConstraintCommon(_StrictModel):
+class ConstraintCommon(StrictModel):
+    """The typed fields every rigid-body constraint carries, whatever its type."""
+
     type: ConstraintType
     enabled: bool | None = None
     disable_collisions: bool | None = None
@@ -134,7 +146,9 @@ class ConstraintCommon(_StrictModel):
     solver_iterations: int | None = Field(default=None, ge=1, le=1000)
 
 
-class LimitAxis(_StrictModel):
+class LimitAxis(StrictModel):
+    """One constrained axis and its inclusive lower/upper limit."""
+
     use_limit: bool | None = None
     lower: float | None = None
     upper: float | None = None
@@ -152,7 +166,9 @@ class SpringAxis(LimitAxis):
     damping: float | None = Field(default=None, ge=0.0)
 
 
-class MotorAxis(_StrictModel):
+class MotorAxis(StrictModel):
+    """One motor-driven axis: its target velocity and impulse ceiling."""
+
     enabled: bool | None = None
     target_velocity: float | None = None
     max_impulse: float | None = Field(default=None, ge=0.0)
@@ -229,7 +245,7 @@ RigidBodyConstraintSpec = Annotated[
 rigid_body_constraint_adapter = TypeAdapter(RigidBodyConstraintSpec)
 
 
-class ConstraintTransform(_StrictModel):
+class ConstraintTransform(StrictModel):
     """World-space constraint transform; quaternion order is [w, x, y, z]."""
 
     location: Vector3
@@ -245,14 +261,6 @@ class ConstraintTransform(_StrictModel):
         if self.axis is not None and sum(v * v for v in self.axis) <= 1e-16:
             raise ValueError("axis must be non-zero")
         return self
-
-
-def _dump(model: BaseModel | None) -> dict | None:
-    return model.model_dump(exclude_none=True, exclude_unset=True) if model is not None else None
-
-
-def _models(items: Sequence[BaseModel]) -> list[dict]:
-    return [item.model_dump(exclude_none=True, exclude_unset=True) for item in items]
 
 
 @mcp.tool()
@@ -327,11 +335,11 @@ async def configure_rigid_body_world(
             "scene_name": scene_name,
             "body_collection_name": body_collection_name,
             "constraint_collection_name": constraint_collection_name,
-            "world": _dump(world) or {},
+            "world": dump_input(world) or {},
             "gravity": gravity,
             "use_gravity": use_gravity,
-            "cache": _dump(cache) or {},
-            "effector_weights": _dump(effector_weights) or {},
+            "cache": dump_input(cache) or {},
+            "effector_weights": dump_input(effector_weights) or {},
             "confirm_reassign_populated_collections": confirm_reassign_populated_collections,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
@@ -364,7 +372,7 @@ async def add_rigid_bodies(
             "scene_name": scene_name,
             "object_names": object_names,
             "body_type": body_type,
-            "settings": _dump(settings) or {},
+            "settings": dump_input(settings) or {},
             "source_settings_object_name": source_settings_object_name,
             "world_collection_name": world_collection_name,
             "existing_policy": existing_policy,
@@ -393,7 +401,7 @@ async def configure_rigid_bodies(
         "configure_rigid_bodies",
         {
             "scene_name": scene_name,
-            "targets": _models(targets),
+            "targets": dump_inputs(targets),
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
         changed_objects=[target.object_name for target in targets],
@@ -419,7 +427,7 @@ async def set_rigid_body_mass(
         "set_rigid_body_mass",
         {
             "scene_name": scene_name,
-            "assignments": _models(assignments),
+            "assignments": dump_inputs(assignments),
             "target_total_mass": target_total_mass,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
@@ -440,7 +448,7 @@ async def set_rigid_body_collision_layers(
         "set_rigid_body_collision_layers",
         {
             "scene_name": scene_name,
-            "targets": _models(targets),
+            "targets": dump_inputs(targets),
             "policy": policy,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
@@ -487,7 +495,7 @@ async def create_rigid_body_collision_proxy(
             "low_resolution_source_name": low_resolution_source_name,
             "drive_render_object": drive_render_object,
             "hide_from_render": hide_from_render,
-            "settings": _dump(settings) or {},
+            "settings": dump_input(settings) or {},
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
         changed_objects=[source_object_name, proxy_name],
@@ -522,7 +530,7 @@ async def create_rigid_body_constraint(
             "object1_name": object1_name,
             "object2_name": object2_name,
             "transform": transform.model_dump(exclude_none=True),
-            "configuration": validated_configuration.model_dump(exclude_none=True, exclude_unset=True),
+            "configuration": dump_input(validated_configuration),
             "collection_name": collection_name,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,
         },
@@ -555,7 +563,7 @@ async def configure_rigid_body_constraint(
         {
             "scene_name": scene_name,
             "constraint_object_name": constraint_object_name,
-            "configuration": validated_configuration.model_dump(exclude_none=True, exclude_unset=True),
+            "configuration": dump_input(validated_configuration),
             "object1_name": object1_name,
             "object2_name": object2_name,
             "confirm_delete_baked_cache": confirm_delete_baked_cache,

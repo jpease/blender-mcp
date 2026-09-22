@@ -4,8 +4,8 @@ Typed scene composition, hierarchy, constraint, modifier and validation tools.
 
 Registers the seven core-surface scene tools, including the cross-domain
 `validate_scene` preflight. Geometry authoring and destructive scene operations live in
-`scene_authoring.py` (bundle: `scene-authoring`); the shared input base and Blender
-dispatch helper live in `_scene_shared.py`.
+`scene_authoring.py` (bundle: `scene-authoring`); the shared input base lives in `_inputs.py`
+and the Blender dispatch helper in `_dispatch.py`.
 """
 
 import functools
@@ -18,11 +18,11 @@ from pydantic import Field, TypeAdapter, create_model, model_validator
 
 from ..app import mcp
 from ._dispatch import call_blender
-from ._scene_shared import _StrictModel
+from ._inputs import StrictModel
 from .envelope import STALE_INDEX_WARNING
 
 
-class TransformPatch(_StrictModel):
+class TransformPatch(StrictModel):
     """Partial transform channels or a complete 4x4 matrix."""
 
     location: tuple[float, float, float] | None = None
@@ -50,7 +50,7 @@ class TransformPatch(_StrictModel):
         return self
 
 
-class InstanceTransform(_StrictModel):
+class InstanceTransform(StrictModel):
     """Local transform assigned to one generated duplicate or instance."""
 
     location: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -65,7 +65,7 @@ class InstanceTransform(_StrictModel):
         return self
 
 
-class HierarchyAssignment(_StrictModel):
+class HierarchyAssignment(StrictModel):
     """One explicit object-parent or bone-parent assignment."""
 
     child_object_name: str = Field(min_length=1)
@@ -73,7 +73,7 @@ class HierarchyAssignment(_StrictModel):
     parent_bone_name: str | None = None
 
 
-class ConstraintSpec(_StrictModel):
+class ConstraintSpec(StrictModel):
     """Allowlisted object constraint and settings patch."""
 
     name: str = Field(min_length=1)
@@ -101,7 +101,7 @@ class ConstraintSpec(_StrictModel):
     settings: dict[str, Any] = Field(default_factory=dict)
 
 
-class ModifierIdReference(_StrictModel):
+class ModifierIdReference(StrictModel):
     """Explicit Blender ID pointer used by modifier settings."""
 
     id_type: Literal["OBJECT", "COLLECTION", "TEXTURE"]
@@ -271,7 +271,7 @@ def _modifier_field_type(name: str):
     return float | None
 
 
-class ModifierSpec(_StrictModel):
+class ModifierSpec(StrictModel):
     """Compatibility base for the public ``{name, type, settings}`` shape."""
 
     name: Annotated[str, Field(min_length=1)]
@@ -283,7 +283,7 @@ _modifier_variants = []
 for _modifier_type, _setting_names in _MODIFIER_SETTING_NAMES.items():
     _settings_model = create_model(
         f"{_modifier_type.title().replace('_', '')}ModifierSettings",
-        __base__=_StrictModel,
+        __base__=StrictModel,
         # pydantic matches `**fields` against create_model's reserved dunder
         # keywords before it sees them as field definitions.
         **{name: (_modifier_field_type(name), None) for name in _setting_names.split()},  # pyright: ignore[reportArgumentType]

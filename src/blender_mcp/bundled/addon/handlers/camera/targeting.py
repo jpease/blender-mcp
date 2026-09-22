@@ -177,6 +177,58 @@ def _bone_target_points(specs, depsgraph):
     return points, records
 
 
+def _deformed_by(mesh, armature):
+    """Whether this mesh takes its shape from that armature, by modifier or by parenting."""
+    # The two ways Blender actually binds a mesh to a rig. Parent-type ARMATURE is the older
+    # route and is still what `Ctrl+P > With Automatic Weights` leaves behind on a proxy, so
+    # checking only the modifier stack would silently drop half a character.
+    if mesh.parent == armature and mesh.parent_type == "ARMATURE":
+        return True
+    return any(modifier.type == "ARMATURE" and modifier.object == armature for modifier in mesh.modifiers)
+
+
+def _armature_mesh_specs(armature_names, scene):
+    """
+    Resolve each armature name to the scene meshes it deforms, before anything is moved.
+
+    Framing an armature object by name is not the same request: an armature's bound box is its
+    bones, not the silhouette the camera sees, so a full-body frame has to expand to the deformed
+    geometry. Every refusal that expansion can earn - a missing object, an object that is not an
+    armature, a rig that deforms nothing in this scene - is raised here, because a silently empty
+    expansion is a frame on whatever else the caller happened to name.
+    """
+    names = [_required_name(name, f"armature_names[{index}]") for index, name in enumerate(armature_names or [])]
+    if len(set(names)) != len(names):
+        raise ValueError("armature_names must not contain duplicates")
+    specs = []
+    for index, name in enumerate(names):
+        label = f"armature_names[{index}]"
+        armature = _object(name, scene=scene)
+        if armature.type != "ARMATURE":
+            raise ValueError(f"{label} object '{name}' is not an armature (type={armature.type})")
+        meshes = [obj for obj in scene.objects if obj.type == "MESH" and _deformed_by(obj, armature)]
+        if not meshes:
+            raise ValueError(
+                f"{label} armature '{armature.name}' deforms no mesh in scene '{scene.name}'; "
+                f"name the meshes in object_names, or a bone of '{armature.name}' in bone_targets"
+            )
+        specs.append((armature.name, meshes))
+    return specs
+
+
+def _framing_objects(objects, armature_specs):
+    """List the explicitly named objects, then every armature-deformed mesh, each counted once."""
+    combined = list(objects)
+    seen = {obj.name for obj in combined}
+    for _armature_name, meshes in armature_specs:
+        for mesh in meshes:
+            if mesh.name in seen:
+                continue
+            seen.add(mesh.name)
+            combined.append(mesh)
+    return combined
+
+
 def _framing_points(objects, bone_specs):
     """Every world point a framing solve must contain, plus the bone records the reply echoes."""
     _update_view_layer()
@@ -255,17 +307,18 @@ def _binary_smallest_fit(predicate, low, high):
     return high
 
 
-def _validated_framing_request(scene_name, camera_name, object_names, bone_targets, margin, policy):
+def _validated_framing_request(scene_name, camera_name, object_names, bone_targets, armature_names, margin, policy):
     """Resolve and check every framing argument before the camera is touched."""
     scene = _scene(scene_name)
     camera = _camera(camera_name, scene=scene)
     object_names = list(object_names or [])
-    if not object_names and not bone_targets:
-        raise ValueError("Supply at least one of object_names or bone_targets; both were empty")
+    if not object_names and not bone_targets and not armature_names:
+        raise ValueError("Supply at least one of object_names, bone_targets or armature_names; all were empty")
     if len(set(object_names)) != len(object_names):
         raise ValueError("object_names must not contain duplicates")
     objects = [_object(name, scene=scene) for name in object_names]
     bone_specs = _bone_target_specs(bone_targets, scene)
+    armature_specs = _armature_mesh_specs(armature_names, scene)
     margin = _finite_number(margin, "margin")
     if not 0 <= margin < _MAXIMUM_MARGIN:
         raise ValueError(f"margin must be in [0, {_MAXIMUM_MARGIN})")
@@ -275,7 +328,7 @@ def _validated_framing_request(scene_name, camera_name, object_names, bone_targe
     required_type = _FRAMING_POLICY_TYPES[policy]
     if camera.data.type != required_type:
         raise ValueError(f"{policy} framing requires a {required_type} camera")
-    return scene, camera, objects, bone_specs, margin, policy
+    return scene, camera, objects, bone_specs, armature_specs, margin, policy
 
 
 def _solve_move_camera(camera, scene, points, center, rotation, scale, margin, span):
@@ -492,14 +545,16 @@ class _TargetingMixin:
         camera_name,
         object_names=None,
         bone_targets=None,
+        armature_names=None,
         margin=0.1,
         policy="MOVE_CAMERA",
         aim_at_center=True,
     ):
-        scene, camera, objects, bone_specs, margin, policy = _validated_framing_request(
-            scene_name, camera_name, object_names, bone_targets, margin, policy
+        scene, camera, objects, bone_specs, armature_specs, margin, policy = _validated_framing_request(
+            scene_name, camera_name, object_names, bone_targets, armature_names, margin, policy
         )
-        points, minimum, maximum, center, bone_records = _framing_points(objects, bone_specs)
+        framed = _framing_objects(objects, armature_specs)
+        points, minimum, maximum, center, bone_records = _framing_points(framed, bone_specs)
         restore = (camera.matrix_world.copy(), camera.data.lens, camera.data.ortho_scale)
         location, rotation, scale = restore[0].decompose()
         if aim_at_center:
@@ -520,6 +575,7 @@ class _TargetingMixin:
             "camera": camera.name,
             "objects": [obj.name for obj in objects],
             "bone_targets": bone_records,
+            "armature_meshes": {name: sorted(mesh.name for mesh in meshes) for name, meshes in armature_specs},
             "policy": policy,
             "margin": margin,
             "bounds_world": {"min": list(minimum), "max": list(maximum)},

@@ -8,15 +8,8 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import (
-    ConstraintSpace,
-    FollowForwardAxis,
-    LockAxis,
-    TrackAxis,
-    UpAxis,
-    _StrictModel,
-    _tool_params,
-)
+from .._inputs import StrictModel
+from ._shared import ConstraintSpace, FollowForwardAxis, LockAxis, TrackAxis, UpAxis, _tool_params
 
 TrackingConstraint = Literal["TRACK_TO", "DAMPED_TRACK", "LOCKED_TRACK"]
 FramePolicy = Literal["MOVE_CAMERA", "CHANGE_LENS", "CHANGE_ORTHO_SCALE"]
@@ -120,7 +113,7 @@ async def create_camera_target(
     )
 
 
-class BoneFrameTarget(_StrictModel):
+class BoneFrameTarget(StrictModel):
     """One posed bone whose head-tail segment must fit in frame."""
 
     object_name: Annotated[str, Field(min_length=1, max_length=63)]
@@ -135,6 +128,7 @@ async def frame_camera_on_objects(
     camera_name: str,
     object_names: list[str] | None = None,
     bone_targets: Annotated[list[BoneFrameTarget], Field(max_length=64)] | None = None,
+    armature_names: Annotated[list[str], Field(max_length=16)] | None = None,
     margin: Annotated[float, Field(ge=0, lt=0.9)] = 0.1,
     policy: FramePolicy = "MOVE_CAMERA",
     aim_at_center: bool = True,
@@ -147,19 +141,28 @@ async def frame_camera_on_objects(
     bounds, target point, solved distance or optical value, and limiting frame axis are returned.
     The margin is the fractional inset on each side of the render frame.
 
-    Supply ``object_names``, ``bone_targets``, or both; both together frame their union. A bone
-    target contributes its head-tail segment alone, read from the evaluated armature in world
-    space at the current frame, so constraints and animation are respected. That segment is a
-    line with no thickness, so ``radius_m`` pads it on every axis and is how the geometry
-    *around* a bone is included: ``{"object_name": "my_rig", "bone_name": "thigh.L",
-    "radius_m": 0.12}`` frames that bone plus 12 cm of limb. Naming a bone is how a region of a
-    rig is framed without guessing which meshes cover it; the reply echoes each resolved
-    ``head_world`` and ``tail_world``.
+    Supply ``object_names``, ``bone_targets``, ``armature_names``, or any combination; together
+    they frame their union, and an object reached twice is counted once. A bone target
+    contributes its head-tail segment alone, read from the evaluated armature in world space at
+    the current frame, so constraints and animation are respected. That segment is a line with no
+    thickness, so ``radius_m`` pads it on every axis and is how the geometry *around* a bone is
+    included: ``{"object_name": "my_rig", "bone_name": "thigh.L", "radius_m": 0.12}`` frames that
+    bone plus 12 cm of limb. Naming a bone is how a region of a rig is framed without guessing
+    which meshes cover it; the reply echoes each resolved ``head_world`` and ``tail_world``.
+
+    ``armature_names`` is the whole-character counterpart: each named armature expands to every
+    evaluated mesh in that scene it deforms — through an ``ARMATURE`` modifier or ``ARMATURE``
+    parenting — so a full-body frame is one rig name rather than a hand-enumerated list of body,
+    hair and clothing meshes. It frames the silhouette the camera sees, which naming the armature
+    object in ``object_names`` does not: an armature's own bounds are its bones. The reply's
+    ``armature_meshes`` names what each rig resolved to, and an armature that deforms no mesh in
+    the scene is refused rather than silently framing nothing.
     """
     object_names = object_names or []
     bone_targets = bone_targets or []
-    if not object_names and not bone_targets:
-        raise ToolError("Supply at least one of object_names or bone_targets; both were empty")
+    armature_names = armature_names or []
+    if not object_names and not bone_targets and not armature_names:
+        raise ToolError("Supply at least one of object_names, bone_targets or armature_names; all were empty")
     seen: set[tuple[str, str]] = set()
     for target in bone_targets:
         key = (target.object_name, target.bone_name)
@@ -173,6 +176,7 @@ async def frame_camera_on_objects(
             "camera_name": camera_name,
             "object_names": object_names,
             "bone_targets": [target.model_dump() for target in bone_targets],
+            "armature_names": armature_names,
             "margin": margin,
             "policy": policy,
             "aim_at_center": aim_at_center,

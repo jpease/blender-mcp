@@ -9,11 +9,11 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _dump, _StrictModel
+from .._inputs import StrictModel, dump_input
 from .inspection_and_setup import ExistingPolicy
 
 
-class CorrectiveSmoothPatch(_StrictModel):
+class CorrectiveSmoothPatch(StrictModel):
     """Allowlisted post-cloth Corrective Smooth controls."""
 
     factor: float | None = None
@@ -26,7 +26,7 @@ class CorrectiveSmoothPatch(_StrictModel):
     vertex_group: Annotated[str, Field(min_length=1)] | None = None
 
 
-class ClothSubdivisionPatch(_StrictModel):
+class ClothSubdivisionPatch(StrictModel):
     """Allowlisted post-cloth Subdivision Surface controls."""
 
     levels: Annotated[int, Field(ge=0, le=6)] | None = None
@@ -47,7 +47,7 @@ class ClothSubdivisionPatch(_StrictModel):
     use_creases: bool | None = None
 
 
-class ClothSolidifyPatch(_StrictModel):
+class ClothSolidifyPatch(StrictModel):
     """Allowlisted post-cloth Solidify controls."""
 
     thickness: float | None = None
@@ -59,7 +59,7 @@ class ClothSolidifyPatch(_StrictModel):
     use_rim: bool | None = None
 
 
-class ClothWeightedNormalPatch(_StrictModel):
+class ClothWeightedNormalPatch(StrictModel):
     """Allowlisted Blender 5.1 Weighted Normal controls."""
 
     weight: Annotated[int, Field(ge=1, le=100)] | None = None
@@ -97,10 +97,10 @@ async def prepare_cloth_render_surface(
         {
             "object_name": object_name,
             "cloth_modifier_name": cloth_modifier_name,
-            "corrective_smooth": _dump(corrective_smooth),
-            "subdivision": _dump(subdivision),
-            "solidify": _dump(solidify),
-            "weighted_normal": _dump(weighted_normal),
+            "corrective_smooth": dump_input(corrective_smooth),
+            "subdivision": dump_input(subdivision),
+            "solidify": dump_input(solidify),
+            "weighted_normal": dump_input(weighted_normal),
             "corrective_smooth_name": corrective_smooth_name,
             "subdivision_name": subdivision_name,
             "solidify_name": solidify_name,

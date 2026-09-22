@@ -4,24 +4,23 @@ from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from .._dispatch import call_blender
+from .._inputs import StrictModel, dump_input
 from .inspection_and_setup import RigidBodySettingsPatch, Vector3, mcp
 
 
-class DebrisSourceSpec(BaseModel):
+class DebrisSourceSpec(StrictModel):
     """A reusable mesh source and its relative selection weight."""
 
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     object_name: str = Field(min_length=1)
     weight: float = Field(default=1.0, gt=0.0)
 
 
-class DebrisRegion(BaseModel):
+class DebrisRegion(StrictModel):
     """A bounded world-space region used to place debris."""
 
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     shape: Literal["BOX", "SPHERE", "COLLECTION_BOUNDS"]
     minimum: Vector3 | None = None
     maximum: Vector3 | None = None
@@ -56,10 +55,9 @@ class DebrisRegion(BaseModel):
         return self
 
 
-class DebrisTransformRange(BaseModel):
+class DebrisTransformRange(StrictModel):
     """Validated random rotation and uniform-scale bounds."""
 
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     rotation_min_radians: Vector3 = (0.0, 0.0, 0.0)
     rotation_max_radians: Vector3 = (0.0, 0.0, 0.0)
     uniform_scale_min: float = Field(default=1.0, gt=0.0)
@@ -115,7 +113,7 @@ async def create_rigid_body_debris_field(
         raise ToolError("settings.mass is incompatible with density-derived debris mass")
     if settings is not None and settings.type not in {None, "ACTIVE"}:
         raise ToolError("Debris settings.type must be ACTIVE when supplied")
-    payload = settings.model_dump(exclude_none=True, exclude_unset=True) if settings else {}
+    payload = dump_input(settings) or {}
     return await call_blender(
         "create_rigid_body_debris_field",
         {

@@ -85,6 +85,32 @@ def test_handshake_missing_command_on_old_addon() -> None:
     assert "install-addon" in (result.warning or "").lower() or "restart" in (result.warning or "").lower()
 
 
+def test_handshake_re_raises_a_transport_failure_instead_of_reporting_a_version() -> None:
+    """
+    A round trip that never completed says nothing about the installed addon.
+
+    Rendering it as a handshake published `up_to_date=False` with no protocol and no
+    capabilities - the same shape a genuinely missing addon produces - so `get_addon_status`
+    told agents to reinstall a current addon whenever one socket went away.
+    """
+    blender = MagicMock()
+    blender.send_command.side_effect = connection.BlenderPeerClosedError("Connection closed before receiving any data")
+
+    with pytest.raises(connection.BlenderTransportError):
+        handshake_addon(blender)
+
+
+def test_handshake_still_answers_when_the_addon_itself_refuses_the_command() -> None:
+    """An addon that replies with a refusal is a finding about the addon, not about the socket."""
+    blender = MagicMock()
+    blender.send_command.side_effect = Exception("Blender error: could not build the capability list")
+
+    result = handshake_addon(blender)
+
+    assert result.source == "error"
+    assert result.up_to_date is False
+
+
 def test_handshake_outdated_protocol() -> None:
     blender = MagicMock()
     blender.send_command.return_value = {

@@ -160,8 +160,8 @@ root_keys = [
 handler.keyframe_object_transform(root_keys, interpolation="LINEAR", action_name="WalkTest")
 
 # --- one call plants one foot for twelve frames and swings it for twelve more ------------------
-keys = [{"frame": float(frame), "target": list(PLANT_POINT)} for frame in CONTACT_FRAMES]
-keys += [{"frame": float(frame), "target": list(swing_target(frame))} for frame in SWING_FRAMES]
+keys = [{"frame": float(frame), "target_point": list(PLANT_POINT)} for frame in CONTACT_FRAMES]
+keys += [{"frame": float(frame), "target_point": list(swing_target(frame))} for frame in SWING_FRAMES]
 reply = handler.keyframe_bone_reach(
     rig.name,
     "WalkTest",
@@ -172,7 +172,7 @@ reply = handler.keyframe_bone_reach(
             # Explicit, because the unbranched run above foot.L reaches the root: letting IK
             # move the hips would undo the travel just keyed into the same action.
             "chain_length": 3,
-            "pole_target": [0.1, 1.0, 0.55],
+            "pole_target_point": [0.1, 1.0, 0.55],
             # A knee folds one way only, and which way is rig-specific: on this rig the fold is
             # NEGATIVE about the shin's local X, measured against real Blender rather than
             # assumed. The 0 ceiling is the anti-inversion guard - the joint may straighten to
@@ -210,9 +210,9 @@ clamped = handler.keyframe_bone_reach(
     [
         {
             "tip_bone": "foot.L",
-            "keys": [{"frame": float(frame), "target": list(swing_target(frame))} for frame in SWING_FRAMES],
+            "keys": [{"frame": float(frame), "target_point": list(swing_target(frame))} for frame in SWING_FRAMES],
             "chain_length": 3,
-            "pole_target": [0.1, 1.0, 0.55],
+            "pole_target_point": [0.1, 1.0, 0.55],
             "hinge": {"bone_name": "shin.L", "axis": "X", "min_degrees": -5.0, "max_degrees": 0.0},
         }
     ],
@@ -232,7 +232,7 @@ handler.keyframe_bone_reach(
             "tip_bone": "foot.L",
             "keys": keys,
             "chain_length": 3,
-            "pole_target": [0.1, 1.0, 0.55],
+            "pole_target_point": [0.1, 1.0, 0.55],
             "hinge": {"bone_name": "shin.L", "axis": "X", "min_degrees": -150.0, "max_degrees": 0.0},
         }
     ],

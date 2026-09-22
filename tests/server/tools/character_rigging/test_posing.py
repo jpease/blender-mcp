@@ -592,7 +592,7 @@ def test_aim_points_the_named_axis_at_an_object_and_leaves_position_and_scale_al
     aim = posing._validated_aim(
         rig,
         head,
-        {"target_object": "SH030_cam", "track_axis": "Z", "up_axis": "-X", "up_reference": (0, 0, 1)},
+        {"target_object_name": "SH030_cam", "track_axis": "Z", "up_axis": "-X", "up_reference": (0, 0, 1)},
     )
     matrix = posing._aim_pose_matrix(rig, head, aim)
 
@@ -611,7 +611,7 @@ def test_aim_points_the_named_axis_at_an_object_and_leaves_position_and_scale_al
 def test_aim_at_a_world_point_resolves_through_the_rig_transform(monkeypatch) -> None:
     _server, rig, _animation, posing, _spine, head = _head_rig(monkeypatch)
 
-    aim = posing._validated_aim(rig, head, {"target": (0.0, -2.0, 0.75), "track_axis": "Z"})
+    aim = posing._validated_aim(rig, head, {"target_point": (0.0, -2.0, 0.75), "track_axis": "Z"})
     matrix = posing._aim_pose_matrix(rig, head, aim)
 
     direction = ((rig.matrix_world.inverted() @ _Vector((0.0, -2.0, 0.75))) - head.matrix.translation).normalized()
@@ -624,7 +624,7 @@ def test_aim_rejects_every_direction_it_cannot_define(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="at the head of 'CHAR1_head_jnt'"):
         posing._aim_pose_matrix(
-            rig, head, posing._validated_aim(rig, head, {"target": tuple(head_world), "track_axis": "Z"})
+            rig, head, posing._validated_aim(rig, head, {"target_point": tuple(head_world), "track_axis": "Z"})
         )
     forward = tuple(rig.matrix_world @ (head.matrix.translation + _Vector((0.0, 0.0, 0.5))))
     with pytest.raises(ValueError, match="parallel to the aim direction"):
@@ -632,21 +632,23 @@ def test_aim_rejects_every_direction_it_cannot_define(monkeypatch) -> None:
             rig,
             head,
             posing._validated_aim(
-                rig, head, {"target": forward, "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 1)}
+                rig, head, {"target_point": forward, "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 1)}
             ),
         )
     with pytest.raises(ValueError, match="is a zero vector"):
         posing._validated_aim(
-            rig, head, {"target": (0, -2, 0.75), "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 0)}
+            rig, head, {"target_point": (0, -2, 0.75), "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 0)}
         )
     with pytest.raises(ValueError, match="different bone axis than track_axis"):
-        posing._validated_aim(rig, head, {"target": (0, -2, 0.75), "track_axis": "Z", "up_axis": "-Z"})
+        posing._validated_aim(rig, head, {"target_point": (0, -2, 0.75), "track_axis": "Z", "up_axis": "-Z"})
     with pytest.raises(ValueError, match="must be one of X, -X, Y, -Y, Z, -Z"):
-        posing._validated_aim(rig, head, {"target": (0, -2, 0.75), "track_axis": "W"})
-    with pytest.raises(ValueError, match="exactly one of target or target_object"):
-        posing._validated_aim(rig, head, {"target": (0, -2, 0.75), "target_object": "SH030_cam", "track_axis": "Z"})
-    with pytest.raises(ValueError, match=r"aim_at\.target_object not found: SH030_cam"):
-        posing._validated_aim(rig, head, {"target_object": "SH030_cam", "track_axis": "Z"})
+        posing._validated_aim(rig, head, {"target_point": (0, -2, 0.75), "track_axis": "W"})
+    with pytest.raises(ValueError, match="exactly one of target_point or target_object_name"):
+        posing._validated_aim(
+            rig, head, {"target_point": (0, -2, 0.75), "target_object_name": "SH030_cam", "track_axis": "Z"}
+        )
+    with pytest.raises(ValueError, match=r"aim_at\.target_object_name not found: SH030_cam"):
+        posing._validated_aim(rig, head, {"target_object_name": "SH030_cam", "track_axis": "Z"})
 
 
 def _target_armature(name, location, bone_name, head, tail) -> types.SimpleNamespace:
@@ -694,7 +696,7 @@ def test_an_aim_at_a_bone_looks_at_the_bone_and_not_at_the_rigs_origin(monkeypat
     _server, rig, _animation, posing, _spine, head = _head_rig(monkeypatch, objects={"OtherRig": other})
 
     aim = posing._validated_aim(
-        rig, head, {"target_object": "OtherRig", "target_bone": "head", "track_axis": "Z", "up_axis": "-X"}
+        rig, head, {"target_object_name": "OtherRig", "target_bone_name": "head", "track_axis": "Z", "up_axis": "-X"}
     )
     matrix = posing._aim_pose_matrix(rig, head, aim)
 
@@ -713,8 +715,8 @@ def test_a_bone_target_can_name_the_tail_or_the_centre_of_the_bone(monkeypatch) 
             rig,
             head,
             {
-                "target_object": "OtherRig",
-                "target_bone": "head",
+                "target_object_name": "OtherRig",
+                "target_bone_name": "head",
                 "target_bone_position": position,
                 "track_axis": "Z",
                 "up_axis": "-X",
@@ -731,13 +733,17 @@ def test_a_bone_target_the_scene_cannot_supply_is_refused_by_name(monkeypatch) -
         monkeypatch, objects={"OtherRig": other, "SH030_cam": camera}
     )
 
-    with pytest.raises(ValueError, match=r"aim_at\.target_bone not found on 'OtherRig': neck"):
-        posing._validated_aim(rig, head, {"target_object": "OtherRig", "target_bone": "neck", "track_axis": "Z"})
+    with pytest.raises(ValueError, match=r"aim_at\.target_bone_name not found on 'OtherRig': neck"):
+        posing._validated_aim(
+            rig, head, {"target_object_name": "OtherRig", "target_bone_name": "neck", "track_axis": "Z"}
+        )
     with pytest.raises(ValueError, match="needs an armature to live on"):
-        posing._validated_aim(rig, head, {"target_object": "SH030_cam", "target_bone": "head", "track_axis": "Z"})
+        posing._validated_aim(
+            rig, head, {"target_object_name": "SH030_cam", "target_bone_name": "head", "track_axis": "Z"}
+        )
     with pytest.raises(ValueError, match="names a point on a bone"):
         posing._validated_aim(
-            rig, head, {"target_object": "OtherRig", "target_bone_position": "TAIL", "track_axis": "Z"}
+            rig, head, {"target_object_name": "OtherRig", "target_bone_position": "TAIL", "track_axis": "Z"}
         )
 
 
@@ -752,7 +758,7 @@ def test_one_axis_named_twice_is_refused_with_the_axes_that_are_still_free(monke
     _server, rig, _animation, posing, _spine, head = _head_rig(monkeypatch)
 
     with pytest.raises(ValueError) as refusal:
-        posing._validated_aim(rig, head, {"target": (0.0, -2.0, 0.75), "track_axis": "Y", "up_axis": "Y"})
+        posing._validated_aim(rig, head, {"target_point": (0.0, -2.0, 0.75), "track_axis": "Y", "up_axis": "Y"})
 
     message = str(refusal.value)
     assert "both the Y axis" in message
@@ -770,7 +776,7 @@ def test_posing_an_aim_lands_it_on_the_target_after_the_parent_has_moved(monkeyp
         "CHAR1_rig",
         [
             {"bone_name": spine.name, "rotation_euler": (0.0, 0.4, 0.0)},
-            {"bone_name": head.name, "aim_at": {"target_object": "SH030_cam", "track_axis": "Z", "up_axis": "-X"}},
+            {"bone_name": head.name, "aim_at": {"target_object_name": "SH030_cam", "track_axis": "Z", "up_axis": "-X"}},
         ],
     )
 
@@ -786,13 +792,14 @@ def test_a_minimal_arc_aim_past_the_flip_angle_is_refused_rather_than_rolled_arb
     behind = tuple(rig.matrix_world @ (head.matrix.translation + _Vector((0.0, 2.0, 0.0))))
 
     with pytest.raises(ValueError, match="without an up reference"):
-        posing._aim_pose_matrix(rig, head, posing._validated_aim(rig, head, {"target": behind, "track_axis": "Z"}))
+        aim = posing._validated_aim(rig, head, {"target_point": behind, "track_axis": "Z"})
+        posing._aim_pose_matrix(rig, head, aim)
 
     # The same swing is well defined once the roll is pinned.
     matrix = posing._aim_pose_matrix(
         rig,
         head,
-        posing._validated_aim(rig, head, {"target": behind, "track_axis": "Z", "up_axis": "Y"}),
+        posing._validated_aim(rig, head, {"target_point": behind, "track_axis": "Z", "up_axis": "Y"}),
     )
     direction = ((rig.matrix_world.inverted() @ _Vector(behind)) - head.matrix.translation).normalized()
     assert matrix.to_3x3().col[2].dot(direction) == pytest.approx(1.0, abs=1e-12)
@@ -829,6 +836,62 @@ def test_relative_rotate_composes_while_the_default_replaces(monkeypatch) -> Non
 
     assert 2.0 * math.acos(min(1.0, abs(replaced[0]))) == pytest.approx(math.radians(30.0), abs=1e-9)
     assert 2.0 * math.acos(min(1.0, abs(composed[0]))) == pytest.approx(math.radians(60.0), abs=1e-9)
+
+
+def test_a_rotation_about_the_bones_own_length_axis_says_the_bone_will_not_move(monkeypatch) -> None:
+    """
+    The silent failure the runbook hit twice: the call succeeds, the keys land, nothing bends.
+
+    Blender builds every bone along its own +Y, so a LOCAL rotation about Y turns the bone
+    about the line through its head and tail. The evidence is in the same assertion: the
+    bone's length direction and its origin come out of the roll unchanged, so its tail - and
+    every child bone's head, which sits on it - is exactly where it started.
+    """
+    server, _rig, _animation, _posing, _spine, head = _head_rig(monkeypatch)
+    rest_direction = head.matrix.to_3x3().col[1].copy()
+    rest_origin = head.matrix.translation.copy()
+
+    rolled = server.set_character_pose("CHAR1_rig", [{"bone_name": head.name, "rotate": {"axis": "-Y", "degrees": 60.0}}])
+    rolled_direction = head.matrix.to_3x3().col[1].copy()
+    rolled_origin = head.matrix.translation.copy()
+    bent = server.set_character_pose("CHAR1_rig", [{"bone_name": head.name, "rotate": {"axis": "Z", "degrees": 60.0}}])
+
+    assert rolled_direction.dot(rest_direction) == pytest.approx(1.0, abs=1e-12)
+    assert (rolled_origin - rest_origin).length == pytest.approx(0.0, abs=1e-12)
+    assert len(rolled["warnings"]) == 1
+    assert "length axis" in rolled["warnings"][0]
+    assert head.name in rolled["warnings"][0]
+    # The same call about a perpendicular axis does move the bone, and says nothing.
+    assert head.matrix.to_3x3().col[1].dot(rest_direction) == pytest.approx(math.cos(math.radians(60.0)), abs=1e-12)
+    assert bent["warnings"] == []
+
+
+@pytest.mark.parametrize(
+    ("spec", "space", "warns"),
+    [
+        ({"rotation_euler": (0.0, -1.05, 0.0)}, "LOCAL", True),
+        ({"rotation_axis_angle": (1.05, 0.0, 1.0, 0.0)}, "LOCAL", True),
+        ({"rotation_quaternion": (math.cos(0.525), 0.0, math.sin(0.525), 0.0)}, "LOCAL", True),
+        ({"rotate": {"axis": (0.0, -2.0, 0.0), "degrees": 60.0}}, "LOCAL", True),
+        ({"rotate": {"axis": "-Y", "degrees": 60.0}}, "LOCAL_WITH_PARENT", True),
+        # Two Euler components compose into an axis this cannot read off, so it stays quiet.
+        ({"rotation_euler": (0.3, -1.05, 0.0)}, "LOCAL", False),
+        # Under POSE the letter names the armature's axis, which says nothing about this bone.
+        ({"rotate": {"axis": "-Y", "degrees": 60.0}}, "POSE", False),
+        # Too small to be a roll anyone meant; re-applying a pose must not accuse the caller.
+        ({"rotate": {"axis": "Y", "degrees": 0.1}}, "LOCAL", False),
+        ({"rotate": {"axis": "Z", "degrees": 60.0}}, "LOCAL", False),
+    ],
+)
+def test_the_inert_rotation_notice_reads_every_spelling_of_one_axis_and_only_bone_local_space(
+    monkeypatch, spec, space, warns
+) -> None:
+    server, _rig, _animation, _posing, _spine, head = _head_rig(monkeypatch, rotation_mode="XYZ")
+
+    reply = server.set_character_pose("CHAR1_rig", [{"bone_name": head.name, **spec}], space=space)
+
+    named = [warning for warning in reply["warnings"] if "length axis" in warning]
+    assert bool(named) is warns
 
 
 @pytest.mark.parametrize(
@@ -933,7 +996,7 @@ def test_keying_an_aim_without_an_up_reference_is_refused(monkeypatch) -> None:
             "CHAR1_rig",
             "CHAR1_sh030_motion",
             1.0,
-            [{"bone_name": head.name, "aim_at": {"target_object": "SH030_cam", "track_axis": "Z"}}],
+            [{"bone_name": head.name, "aim_at": {"target_object_name": "SH030_cam", "track_axis": "Z"}}],
         )
 
     assert animation.action is None
@@ -944,7 +1007,7 @@ def _aim_key(server, head, frame, target, mode="QUATERNION"):
         "CHAR1_rig",
         "CHAR1_sh030_motion",
         frame,
-        [{"bone_name": head.name, "aim_at": {"target": target, "track_axis": "Z", "up_axis": "-X"}}],
+        [{"bone_name": head.name, "aim_at": {"target_point": target, "track_axis": "Z", "up_axis": "-X"}}],
         action_policy="REUSE",
     )
 
@@ -953,7 +1016,7 @@ def test_a_keyed_aim_takes_the_short_way_round_from_the_previous_key(monkeypatch
     server, rig, animation, posing, _spine, head = _head_rig(monkeypatch)
     action = _Action("CHAR1_sh030_motion")
     sys.modules["bpy"].data.actions["CHAR1_sh030_motion"] = action
-    aim = posing._validated_aim(rig, head, {"target": (0.0, -2.0, 0.75), "track_axis": "Z", "up_axis": "-X"})
+    aim = posing._validated_aim(rig, head, {"target_point": (0.0, -2.0, 0.75), "track_axis": "Z", "up_axis": "-X"})
     head.matrix = posing._aim_pose_matrix(rig, head, aim)
     reached = list(head.rotation_quaternion)
     head.matrix_basis = _Matrix.Identity(4)
@@ -979,7 +1042,7 @@ def test_a_keyed_euler_aim_stays_on_the_previous_keys_branch(monkeypatch) -> Non
     )
     action = _Action("CHAR1_sh030_motion")
     sys.modules["bpy"].data.actions["CHAR1_sh030_motion"] = action
-    aim = posing._validated_aim(rig, head, {"target_object": "SH030_cam", "track_axis": "Z", "up_axis": "-X"})
+    aim = posing._validated_aim(rig, head, {"target_object_name": "SH030_cam", "track_axis": "Z", "up_axis": "-X"})
     head.matrix = posing._aim_pose_matrix(rig, head, aim)
     natural = list(head.rotation_euler)
     head.matrix_basis = _Matrix.Identity(4)
@@ -994,7 +1057,7 @@ def test_a_keyed_euler_aim_stays_on_the_previous_keys_branch(monkeypatch) -> Non
         "CHAR1_rig",
         "CHAR1_sh030_motion",
         13.0,
-        [{"bone_name": head.name, "aim_at": {"target_object": "SH030_cam", "track_axis": "Z", "up_axis": "-X"}}],
+        [{"bone_name": head.name, "aim_at": {"target_object_name": "SH030_cam", "track_axis": "Z", "up_axis": "-X"}}],
         action_policy="REUSE",
     )
 
@@ -1039,7 +1102,7 @@ def test_keying_past_a_cycle_says_the_period_it_just_changed(monkeypatch) -> Non
         "CHAR1_rig",
         "CHAR1_sh030_motion",
         162.0,
-        [{"bone_name": head.name, "rotation_euler": (0.0, 0.44, 0.0)}],
+        [{"bone_name": head.name, "rotation_euler": (0.44, 0.0, 0.0)}],
         action_policy="REUSE",
     )
 
@@ -1064,7 +1127,7 @@ def test_keying_inside_an_existing_cycle_warns_about_nothing(monkeypatch) -> Non
         "CHAR1_rig",
         "CHAR1_sh030_motion",
         12.0,
-        [{"bone_name": head.name, "rotation_euler": (0.0, 0.44, 0.0)}],
+        [{"bone_name": head.name, "rotation_euler": (0.44, 0.0, 0.0)}],
         action_policy="REUSE",
     )
 
@@ -1086,7 +1149,7 @@ def test_a_whole_rig_keyed_past_its_cycles_counts_the_bones_it_cannot_name(monke
         "CHAR1_rig",
         "CHAR1_sh030_motion",
         162.0,
-        [{"bone_name": bone.name, "rotation_euler": (0.0, 0.44, 0.0)} for bone in bones],
+        [{"bone_name": bone.name, "rotation_euler": (0.44, 0.0, 0.0)} for bone in bones],
         action_policy="REUSE",
     )
 
@@ -1123,7 +1186,7 @@ def _batched_aim_rig(monkeypatch):
 
 
 def _aim_pose(bone_name):
-    return {"bone_name": bone_name, "aim_at": {"target_object": "SH030_cam", "track_axis": "Z", "up_axis": "-X"}}
+    return {"bone_name": bone_name, "aim_at": {"target_object_name": "SH030_cam", "track_axis": "Z", "up_axis": "-X"}}
 
 
 def test_a_batched_call_keys_every_frame_at_the_target_that_frame_holds(monkeypatch) -> None:
@@ -1269,10 +1332,10 @@ def test_the_tool_refuses_both_call_shapes_and_a_repeated_frame() -> None:
 
 
 def test_a_bone_position_without_a_bone_is_refused_by_the_schema() -> None:
-    with pytest.raises(ValidationError, match="target_bone_position names a point on target_bone"):
-        character_rigging.BoneAim(target_object="OtherRig", target_bone_position="TAIL", track_axis="Z")
-    with pytest.raises(ValidationError, match="target_bone names a bone on target_object"):
-        character_rigging.BoneAim(target=(1.0, 0.0, 0.0), target_bone="head", track_axis="Z")
+    with pytest.raises(ValidationError, match="target_bone_position names a point on target_bone_name"):
+        character_rigging.BoneAim(target_object_name="OtherRig", target_bone_position="TAIL", track_axis="Z")
+    with pytest.raises(ValidationError, match="target_bone_name names a bone on target_object_name"):
+        character_rigging.BoneAim(target_point=(1.0, 0.0, 0.0), target_bone_name="head", track_axis="Z")
 
 
 def _override_rig(monkeypatch, *, overridden):
@@ -1710,8 +1773,8 @@ def test_resolved_reach_target_refuses_an_unknown_object_name(monkeypatch) -> No
     addon, _bpy = _load_addon(monkeypatch, data={"objects": {}})
     posing = sys.modules[f"{addon.__name__}.handlers.character_rigging.posing"]
 
-    with pytest.raises(ValueError, match="target object not found: SH030_cam"):
-        posing._resolved_reach_target(None, "SH030_cam", "target")
+    with pytest.raises(ValueError, match="target_point object not found: SH030_cam"):
+        posing._resolved_reach_target(None, "SH030_cam", "target_point")
 
 
 class _FakeObjects(dict):
@@ -1736,10 +1799,10 @@ def test_a_reach_whose_pole_cannot_be_resolved_removes_the_targets_scratch_empty
     objects = _FakeObjects()
     posing = _reach_geometry_module(monkeypatch, objects)
 
-    with pytest.raises(ValueError, match="pole_target object not found: elbow_pole"):
+    with pytest.raises(ValueError, match="pole_target_point object not found: elbow_pole"):
         posing._resolve_reach_geometry(
             types.SimpleNamespace(),
-            {"target": (0.6, -0.1, 1.1), "pole_target_object": "elbow_pole"},
+            {"target_point": (0.6, -0.1, 1.1), "pole_target_object_name": "elbow_pole"},
             [],
         )
 
@@ -1773,19 +1836,19 @@ def test_a_constraint_value_blender_refuses_removes_the_constraint_it_already_ad
 
 
 def test_bone_reach_requires_exactly_one_target_form() -> None:
-    with pytest.raises(ValidationError, match="Supply exactly one of target or target_object"):
+    with pytest.raises(ValidationError, match="Supply exactly one of target_point or target_object_name"):
         character_rigging.BoneReach(tip_bone="forearm.L")
-    with pytest.raises(ValidationError, match="Supply exactly one of target or target_object"):
-        character_rigging.BoneReach(tip_bone="forearm.L", target=(1, 2, 3), target_object="SH030_cam")
+    with pytest.raises(ValidationError, match="Supply exactly one of target_point or target_object_name"):
+        character_rigging.BoneReach(tip_bone="forearm.L", target_point=(1, 2, 3), target_object_name="SH030_cam")
 
 
 def test_bone_reach_allows_at_most_one_pole_form() -> None:
-    with pytest.raises(ValidationError, match="Supply at most one of pole_target or pole_target_object"):
+    with pytest.raises(ValidationError, match="Supply at most one of pole_target_point or pole_target_object_name"):
         character_rigging.BoneReach(
             tip_bone="forearm.L",
-            target=(1, 2, 3),
-            pole_target=(0, 0, 0),
-            pole_target_object="elbow_pole",
+            target_point=(1, 2, 3),
+            pole_target_point=(0, 0, 0),
+            pole_target_object_name="elbow_pole",
         )
 
 
@@ -1796,7 +1859,7 @@ def test_solve_bone_reach_forwards_reaches_and_omits_unset_optional_fields(monke
         "send_command",
         lambda command, params=None: calls.append((command, params)) or {"ok": True},
     )
-    reach = character_rigging.BoneReach(tip_bone="forearm.L", target=(0.6, -0.1, 1.1))
+    reach = character_rigging.BoneReach(tip_bone="forearm.L", target_point=(0.6, -0.1, 1.1))
 
     asyncio.run(character_rigging.solve_bone_reach(ctx=None, armature_object_name="CHAR1_rig", reaches=[reach]))
 
@@ -1806,7 +1869,7 @@ def test_solve_bone_reach_forwards_reaches_and_omits_unset_optional_fields(monke
     assert params["reaches"] == [
         {
             "tip_bone": "forearm.L",
-            "target": (0.6, -0.1, 1.1),
+            "target_point": (0.6, -0.1, 1.1),
             "pole_angle_degrees": 0.0,
             "use_stretch": False,
             "iterations": 500,
@@ -1905,7 +1968,7 @@ def _reach_rig(monkeypatch, *, solved_tail=_ARM_WRIST, matrix_world=None):
 
 def _solve(server, target, **kwargs):
     """Solve the two-bone arm's one reach at a world target, with an explicit pole."""
-    reach = {"tip_bone": "forearm", "target": target, "pole_target": _ARM_POLE}
+    reach = {"tip_bone": "forearm", "target_point": target, "pole_target_point": _ARM_POLE}
     return server.solve_bone_reach("CHAR1_rig", [reach], **kwargs)
 
 
@@ -2046,7 +2109,7 @@ def test_a_missed_reach_still_warns_after_the_envelope_has_shortened_the_reply(m
     """
     server, tip = _long_reach_rig(monkeypatch, 32)
     payload = server.solve_bone_reach(
-        "CHAR1_rig", [{"tip_bone": tip, "target": (9.0, 0.0, 0.0), "pole_target": _ARM_POLE}], detail=True
+        "CHAR1_rig", [{"tip_bone": tip, "target_point": (9.0, 0.0, 0.0), "pole_target_point": _ARM_POLE}], detail=True
     )
 
     reply = envelope_for(payload, changed_objects=[])
@@ -2096,8 +2159,8 @@ def _plant(frames, target=_ARM_WRIST):
     """One reach planting the wrist on a fixed world point across several frames."""
     return {
         "tip_bone": "forearm",
-        "pole_target": _ARM_POLE,
-        "keys": [{"frame": float(frame), "target": list(target)} for frame in frames],
+        "pole_target_point": _ARM_POLE,
+        "keys": [{"frame": float(frame), "target_point": list(target)} for frame in frames],
     }
 
 

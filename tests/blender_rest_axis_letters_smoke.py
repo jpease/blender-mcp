@@ -144,7 +144,7 @@ for rig in (level, tilted):
     target = head + Vector((1.4, -0.9, 0.0))
     handler.set_character_pose(
         rig.name,
-        [{"bone_name": BONE, "aim_at": {"target": tuple(target), "track_axis": track_axis, "up_axis": up_axis}}],
+        [{"bone_name": BONE, "aim_at": {"target_point": tuple(target), "track_axis": track_axis, "up_axis": up_axis}}],
     )
     head = (rig.matrix_world @ rig.pose.bones[BONE].matrix).translation
     aim_error = degrees_between(signed_axis_world(rig, BONE, track_axis), (target - head).normalized())
@@ -161,7 +161,16 @@ for rig in (level, tilted):
         rest_pose(rig)
         handler.set_character_pose(
             rig.name,
-            [{"bone_name": BONE, "aim_at": {"target": tuple(target), "track_axis": track_axis, "up_axis": candidate}}],
+            [
+                {
+                    "bone_name": BONE,
+                    "aim_at": {
+                        "target_point": tuple(target),
+                        "track_axis": track_axis,
+                        "up_axis": candidate,
+                    },
+                }
+            ],
         )
         wrong = degrees_between(signed_axis_world(rig, BONE, up_axis), WORLD_UP)
         assert wrong > WRONG_LETTER_DEGREES, f"{rig.name}: up_axis={candidate!r} was only {wrong} degrees off"
@@ -194,7 +203,7 @@ refuses(
         [
             {
                 "bone_name": "CHAR1_spine_jnt",
-                "aim_at": {"target": (2.0, 0.0, 0.0), "track_axis": "Y", "up_axis": spine["up_axis"]},
+                "aim_at": {"target_point": (2.0, 0.0, 0.0), "track_axis": "Y", "up_axis": spine["up_axis"]},
             }
         ],
     ),
@@ -210,7 +219,7 @@ refuses(
         [
             {
                 "bone_name": "CHAR1_spine_jnt",
-                "aim_at": {"target": (2.0, 0.0, 0.0), "track_axis": "Y", "up_axis": "Y"},
+                "aim_at": {"target_point": (2.0, 0.0, 0.0), "track_axis": "Y", "up_axis": "Y"},
             }
         ],
     ),
@@ -231,7 +240,7 @@ for direction, offset in (("+X", Vector((2.0, 0.0, 0.0))), ("-Y", Vector((0.0, -
         [
             {
                 "bone_name": "CHAR1_spine_jnt",
-                "aim_at": {"target": tuple(target), "track_axis": track_axis, "up_axis": spine["up_axis"]},
+                "aim_at": {"target_point": tuple(target), "track_axis": track_axis, "up_axis": spine["up_axis"]},
             }
         ],
     )

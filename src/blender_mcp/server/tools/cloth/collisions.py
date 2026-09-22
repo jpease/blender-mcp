@@ -9,12 +9,12 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _dump, _StrictModel
+from .._inputs import StrictModel, dump_input
 
 ExistingPolicy = Literal["ERROR", "REUSE"]
 
 
-class ClothCollisionPatch(_StrictModel):
+class ClothCollisionPatch(StrictModel):
     """Allowlisted cloth-side object and self-collision controls."""
 
     use_collision: bool | None = None
@@ -33,7 +33,7 @@ class ClothCollisionPatch(_StrictModel):
     vertex_group_self_collisions: Annotated[str, Field(min_length=1)] | None = None
 
 
-class ClothColliderPatch(_StrictModel):
+class ClothColliderPatch(StrictModel):
     """CollisionSettings fields documented as cloth-relevant in Blender 5.1."""
 
     use: bool | None = None
@@ -44,7 +44,7 @@ class ClothColliderPatch(_StrictModel):
     use_normal: bool | None = None
 
 
-class ClothColliderRegistration(_StrictModel):
+class ClothColliderRegistration(StrictModel):
     """Register one collider through an explicit cloth and collection relationship."""
 
     cloth_object_name: Annotated[str, Field(min_length=1)]
@@ -74,7 +74,7 @@ async def add_cloth_collider(
             "object_name": object_name,
             "modifier_name": modifier_name,
             "existing_policy": existing_policy,
-            "settings": _dump(settings),
+            "settings": dump_input(settings),
             "registrations": [item.model_dump() for item in registrations or []],
         },
         changed_objects=[object_name],

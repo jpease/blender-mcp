@@ -8,11 +8,12 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import LightType, StrictLightingInput, StudioLightingMood, dump_input
+from .._inputs import StrictModel, dump_input
+from ._shared import LightType, StudioLightingMood
 from .rendering import render_lighting_preview
 
 
-class LightSettings(StrictLightingInput):
+class LightSettings(StrictModel):
     """Allowlisted shared and type-specific settings for a Blender light datablock."""
 
     energy: float = Field(default=1000.0, gt=0)
@@ -50,7 +51,7 @@ class LightSettings(StrictLightingInput):
         return self
 
 
-class LightPatch(StrictLightingInput):
+class LightPatch(StrictModel):
     """Allowlisted partial update for one existing light; omitted fields remain unchanged."""
 
     energy: float | None = Field(default=None, gt=0)

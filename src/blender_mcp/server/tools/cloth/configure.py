@@ -8,8 +8,8 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
+from .._inputs import StrictModel, dump_input
 from ..envelope import ok
-from ._shared import _dump, _StrictModel
 from .collisions import ClothColliderPatch, ClothCollisionPatch
 from .dynamics import (
     ClothFieldWeightsPatch,
@@ -21,21 +21,21 @@ from .material_and_solver import ClothMaterialPatch, ClothSolverPatch, MaterialP
 from .pinning import ClothPinningPatch
 
 
-class ClothMaterialSection(_StrictModel):
+class ClothMaterialSection(StrictModel):
     """Everything ``configure_cloth_material`` accepted: an optional preset plus patch."""
 
     patch: ClothMaterialPatch | None = None
     preset: MaterialPreset | None = None
 
 
-class ClothPinningSection(_StrictModel):
+class ClothPinningSection(StrictModel):
     """Everything ``configure_cloth_pinning`` accepted: the pin group and its goal patch."""
 
     group_name: Annotated[str, Field(min_length=1)]
     patch: ClothPinningPatch
 
 
-class ClothSewingSection(_StrictModel):
+class ClothSewingSection(StrictModel):
     """Everything ``configure_cloth_sewing`` accepted, dry-run-first by default."""
 
     seam_pairs: Annotated[list[SewingPair], Field(min_length=1)]
@@ -45,14 +45,14 @@ class ClothSewingSection(_StrictModel):
     max_pair_distance: Annotated[float, Field(gt=0)] | None = None
 
 
-class ClothInternalSpringsSection(_StrictModel):
+class ClothInternalSpringsSection(StrictModel):
     """Everything ``configure_cloth_internal_springs`` accepted, including its cost bound."""
 
     patch: ClothInternalSpringsPatch
     max_estimated_springs: Annotated[int, Field(ge=1)] = 2_000_000
 
 
-class ClothRestShapeSection(_StrictModel):
+class ClothRestShapeSection(StrictModel):
     """Everything ``configure_cloth_rest_shape`` accepted; every field was required before."""
 
     shape_key_name: str
@@ -64,7 +64,7 @@ class ClothRestShapeSection(_StrictModel):
 def _solver_call(object_name: str, modifier_name: str, patch: ClothSolverPatch) -> tuple[str, dict, list[str]]:
     return (
         "configure_cloth_solver",
-        {"object_name": object_name, "modifier_name": modifier_name, "patch": _dump(patch)},
+        {"object_name": object_name, "modifier_name": modifier_name, "patch": dump_input(patch)},
         [object_name],
     )
 
@@ -75,7 +75,7 @@ def _material_call(object_name: str, modifier_name: str, section: ClothMaterialS
         {
             "object_name": object_name,
             "modifier_name": modifier_name,
-            "patch": _dump(section.patch),
+            "patch": dump_input(section.patch),
             "preset": section.preset,
         },
         [object_name],
@@ -89,7 +89,7 @@ def _pinning_call(object_name: str, modifier_name: str, section: ClothPinningSec
             "object_name": object_name,
             "modifier_name": modifier_name,
             "group_name": section.group_name,
-            "patch": _dump(section.patch),
+            "patch": dump_input(section.patch),
         },
         [object_name],
     )
@@ -98,7 +98,7 @@ def _pinning_call(object_name: str, modifier_name: str, section: ClothPinningSec
 def _collisions_call(object_name: str, modifier_name: str, patch: ClothCollisionPatch) -> tuple[str, dict, list[str]]:
     return (
         "configure_cloth_collisions",
-        {"object_name": object_name, "modifier_name": modifier_name, "patch": _dump(patch)},
+        {"object_name": object_name, "modifier_name": modifier_name, "patch": dump_input(patch)},
         [object_name],
     )
 
@@ -106,7 +106,7 @@ def _collisions_call(object_name: str, modifier_name: str, patch: ClothCollision
 def _collider_call(object_name: str, modifier_name: str, patch: ClothColliderPatch) -> tuple[str, dict, list[str]]:
     return (
         "configure_cloth_collider",
-        {"object_name": object_name, "modifier_name": modifier_name, "patch": _dump(patch)},
+        {"object_name": object_name, "modifier_name": modifier_name, "patch": dump_input(patch)},
         [object_name],
     )
 
@@ -130,7 +130,7 @@ def _sewing_call(object_name: str, modifier_name: str, section: ClothSewingSecti
 def _pressure_call(object_name: str, modifier_name: str, patch: ClothPressurePatch) -> tuple[str, dict, list[str]]:
     return (
         "configure_cloth_pressure",
-        {"object_name": object_name, "modifier_name": modifier_name, "patch": _dump(patch)},
+        {"object_name": object_name, "modifier_name": modifier_name, "patch": dump_input(patch)},
         [object_name],
     )
 
@@ -143,7 +143,7 @@ def _internal_springs_call(
         {
             "object_name": object_name,
             "modifier_name": modifier_name,
-            "patch": _dump(section.patch),
+            "patch": dump_input(section.patch),
             "max_estimated_springs": section.max_estimated_springs,
         },
         [object_name],
@@ -172,7 +172,7 @@ def _field_weights_call(
 ) -> tuple[str, dict, list[str]]:
     return (
         "configure_cloth_field_weights",
-        {"object_name": object_name, "modifier_name": modifier_name, "patch": _dump(patch)},
+        {"object_name": object_name, "modifier_name": modifier_name, "patch": dump_input(patch)},
         [object_name],
     )
 
@@ -191,7 +191,7 @@ _SECTION_BUILDERS: dict[str, Callable[[str, str, Any], tuple[str, dict, list[str
 }
 
 
-class ClothPatch(_StrictModel):
+class ClothPatch(StrictModel):
     """One optional section per cloth-solver concern; only populated sections are applied."""
 
     solver: ClothSolverPatch | None = None

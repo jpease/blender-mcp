@@ -239,14 +239,14 @@ def _free_axis_advice(armature, pose_bone, track_letter):
 
 def _aim_target_bone(target_object, aim, bone_name):
     """
-    Resolve `aim_at.target_bone` to a pose bone on the object the aim names.
+    Resolve `aim_at.target_bone_name` to a pose bone on the object the aim names.
 
     Aiming at an object aims at its origin, which on a character rig is the floor under it;
     "look at that character" means a bone on it, and which point on that bone is the caller's
     to choose.
 
     Args:
-        target_object: The object `aim_at.target_object` named, or None when the aim names a
+        target_object: The object `aim_at.target_object_name` named, or None when the aim names a
             world point instead.
         aim: The raw `aim_at` record.
         bone_name: The bone being aimed, for error messages.
@@ -260,7 +260,7 @@ def _aim_target_bone(target_object, aim, bone_name):
             not one of `_BONE_POSITIONS`.
 
     """
-    name = aim.get("target_bone")
+    name = aim.get("target_bone_name")
     position = aim.get("target_bone_position")
     if name is None:
         if position is not None:
@@ -269,10 +269,10 @@ def _aim_target_bone(target_object, aim, bone_name):
                 "target_bone; target_object on its own aims at the object's own origin"
             )
         return None, "HEAD"
-    required = _required_name(name, "aim_at.target_bone")
+    required = _required_name(name, "aim_at.target_bone_name")
     if target_object is None:
         raise ValueError(
-            f"aim_at.target_bone '{required}' for '{bone_name}' requires aim_at.target_object to name the "
+            f"aim_at.target_bone_name '{required}' for '{bone_name}' requires aim_at.target_object_name to name the "
             "armature carrying it"
         )
     position = "HEAD" if position is None else position
@@ -283,12 +283,12 @@ def _aim_target_bone(target_object, aim, bone_name):
         )
     if target_object.type != "ARMATURE":
         raise ValueError(
-            f"aim_at.target_bone '{required}' needs an armature to live on, and aim_at.target_object "
+            f"aim_at.target_bone_name '{required}' needs an armature to live on, and aim_at.target_object_name "
             f"'{target_object.name}' is type={target_object.type}"
         )
     target_bone = target_object.pose.bones.get(required)
     if target_bone is None:
-        raise ValueError(f"aim_at.target_bone not found on '{target_object.name}': {required}")
+        raise ValueError(f"aim_at.target_bone_name not found on '{target_object.name}': {required}")
     return target_bone, position
 
 
@@ -311,7 +311,7 @@ def _validated_aim(armature, pose_bone, aim):
         aim: The raw `aim_at` record from a pose entry.
 
     Returns:
-        dict: `target` (a world-space vector or None), `target_object` (an object or None),
+        dict: `target_point` (a world-space vector or None), `target_object` (an object or None),
         `target_bone` (a pose bone on that object, or None) with `target_bone_position`,
         `track` from `_signed_axis`, and `up` as `(axis letter, sign, world reference)` or None
         for a minimal-arc aim.
@@ -325,18 +325,18 @@ def _validated_aim(armature, pose_bone, aim):
     bone_name = pose_bone.name
     if not isinstance(aim, dict):
         raise ValueError(f"aim_at for '{bone_name}' must be an object")
-    target = aim.get("target")
-    target_name = aim.get("target_object")
+    target = aim.get("target_point")
+    target_name = aim.get("target_object_name")
     if (target is None) == (target_name is None):
-        raise ValueError(f"aim_at for '{bone_name}' requires exactly one of target or target_object")
+        raise ValueError(f"aim_at for '{bone_name}' requires exactly one of target_point or target_object_name")
     target_object = None
     point = None
     if target_name is not None:
-        target_object = bpy.data.objects.get(_required_name(target_name, "aim_at.target_object"))
+        target_object = bpy.data.objects.get(_required_name(target_name, "aim_at.target_object_name"))
         if target_object is None:
-            raise ValueError(f"aim_at.target_object not found: {target_name}")
+            raise ValueError(f"aim_at.target_object_name not found: {target_name}")
     else:
-        point = _vector(target, f"aim_at.target for '{bone_name}'")
+        point = _vector(target, f"aim_at.target_point for '{bone_name}'")
     target_bone, position = _aim_target_bone(target_object, aim, bone_name)
     track_letter, track_sign = _signed_axis(aim.get("track_axis"), f"aim_at.track_axis for '{bone_name}'")
     up = None
@@ -353,7 +353,7 @@ def _validated_aim(armature, pose_bone, aim):
             raise ValueError(f"aim_at.up_reference for '{bone_name}' is a zero vector; roll is undefined")
         up = (up_letter, up_sign, reference)
     return {
-        "target": point,
+        "target_point": point,
         "target_object": target_object,
         "target_bone": target_bone,
         "target_bone_position": position,
@@ -454,7 +454,7 @@ def _aim_target_point(aim):
         return aim["target_object"].matrix_world @ mathutils.Vector(local)
     if aim["target_object"] is not None:
         return aim["target_object"].matrix_world.translation
-    return aim["target"]
+    return aim["target_point"]
 
 
 def _aim_pose_matrix(armature, pose_bone, aim):
@@ -697,6 +697,130 @@ def _changed_channels(spec):
     channels = [name for name in _POSE_CHANNELS if name in spec]
     channels.extend(f'["{name}"]' for name in sorted(spec.get("custom_properties", {})))
     return channels
+
+
+# The three unit axes, as plain tuples: a `mathutils.Vector` is built from one rather than
+# zeroed and indexed into, because that keeps this free of in-place mutation.
+_BASIS_VECTORS = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+# How far off the bone's length axis a rotation may sit and still be reported as a twist.
+# Two degrees: an agent reading an axis off `list_character_bones` gets an exact basis vector,
+# so anything this close was meant to be that axis.
+_LENGTH_AXIS_TOLERANCE_DEGREES = 2.0
+# Below this the rotation is too small for "it did not move" to mean anything - a zero
+# rotation is a no-op, not a roll, and re-applying a pose must not accuse the caller.
+_INERT_ROTATION_MINIMUM_DEGREES = 0.5
+# The spaces whose axis letters resolve to the bone's own rest basis, and so the only two in
+# which "Y" names this bone's length rather than the armature's or the scene's axis.
+_BONE_LOCAL_SPACES = frozenset({"LOCAL", "LOCAL_WITH_PARENT"})
+
+
+def _unit_axis_and_angle(axis, angle):
+    """Normalize a rotation's axis, or report that it names no direction at all."""
+    return (axis.normalized(), angle) if axis.length > _AIM_MIN_LENGTH else None
+
+
+def _rotation_axis_angle(spec):
+    """
+    Read one pose entry's rotation back as a single axis and angle in the call's space.
+
+    Only the representations that name one rotation outright are readable this way. A Euler
+    triple with two or more non-zero components is a composition, not an axis, and an `aim_at`
+    or an explicit `matrix` is stated against the scene rather than the bone - all three return
+    None rather than a guess.
+
+    Args:
+        spec: One validated pose entry.
+
+    Returns:
+        tuple | None: `(axis, radians)` with axis a unit `mathutils.Vector` in the call's pose
+        space, or None when this entry states no single-axis rotation.
+
+    """
+    if "rotate" in spec:
+        record = spec["rotate"]
+        return mathutils.Vector(record["axis"]), record["angle"]
+    if "rotation_axis_angle" in spec:
+        angle, x, y, z = spec["rotation_axis_angle"]
+        return _unit_axis_and_angle(mathutils.Vector((x, y, z)), angle)
+    if "rotation_quaternion" in spec:
+        w, x, y, z = tuple(mathutils.Quaternion(spec["rotation_quaternion"]).normalized())
+        return _unit_axis_and_angle(mathutils.Vector((x, y, z)), 2.0 * math.acos(max(-1.0, min(1.0, float(w)))))
+    if "rotation_euler" in spec:
+        turning = [(index, value) for index, value in enumerate(spec["rotation_euler"]) if value]
+        if len(turning) == 1:
+            index, value = turning[0]
+            return mathutils.Vector(_BASIS_VECTORS[index]), value
+    return None
+
+
+def _length_axis_twist_degrees(spec):
+    """
+    Measure how far one pose entry turns a bone about its own length, if that is what it does.
+
+    Pure: the decision is the arithmetic on the entry alone, so the rule can be read, tested
+    and changed without a bone, a rig or a Blender session in hand.
+
+    Args:
+        spec: One validated pose entry, whose rotation is read in the call's pose space.
+
+    Returns:
+        float | None: The turn in degrees when the entry rotates about the length axis by
+        enough to mean something, otherwise None - which covers a rotation about another
+        axis, a rotation too small to be deliberate, and an entry stating no single-axis
+        rotation at all.
+
+    """
+    resolved = _rotation_axis_angle(spec)
+    if resolved is None:
+        return None
+    axis, angle = resolved
+    if abs(angle) < math.radians(_INERT_ROTATION_MINIMUM_DEGREES):
+        return None
+    length_axis = mathutils.Vector(_BASIS_VECTORS[_AXIS_INDEX[_LENGTH_AXIS]])
+    if abs(axis.dot(length_axis)) < math.cos(math.radians(_LENGTH_AXIS_TOLERANCE_DEGREES)):
+        return None
+    return math.degrees(abs(angle))
+
+
+def _twist_notice(bone_name, degrees, space):
+    """Word the notice for one bone whose rotation cannot move it."""
+    return (
+        f"Bone '{bone_name}': {degrees:.4g} degrees about the bone's own length axis "
+        f"({_LENGTH_AXIS} in {space} space, the axis running head to tail) is a twist. It rolls the bone and "
+        "whatever is parented to it, but the bone's tail - and every child bone's head, which sits on it - "
+        "stay exactly where they are, so this joint does not bend and nothing swings. If a bend was intended, "
+        "rotate about one of the bone's other two axes; list_character_bones(rest_axes=True) reports where "
+        "each one points."
+    )
+
+
+def _inert_rotation_warnings(prepared, space):
+    """
+    Say which of this call's rotations turn a bone about its own length, moving nothing.
+
+    A bone's own +Y runs head to tail (`_LENGTH_AXIS`), so a rotation about it rolls the bone
+    where it stands: the call succeeds, the keys land, the bone's tail and every child's head
+    stay exactly put, and the render shows no bend. That failure is silent in every other
+    channel this handler reports - the pose matrix genuinely changed - which is why it is worth
+    a warning rather than leaving the caller to measure the tail themselves.
+
+    Only LOCAL and LOCAL_WITH_PARENT are judged: in those spaces the axis letters resolve to
+    the bone's own rest basis, so `Y` is the bone's length. Under POSE and WORLD the same letter
+    names the armature's or the scene's axis, which says nothing about this bone.
+
+    Args:
+        prepared: `(pose_bone, spec, matrix or None)` triples from `_validate_pose_specs`.
+        space: The call's pose space.
+
+    Returns:
+        list[str]: One notice per bone whose rotation is a twist about its own length, in the
+        order posed.
+
+    """
+    if space not in _BONE_LOCAL_SPACES:
+        return []
+    turns = ((pose_bone.name, _length_axis_twist_degrees(spec)) for pose_bone, spec, _matrix in prepared)
+    return [_twist_notice(name, degrees, space) for name, degrees in turns if degrees is not None]
 
 
 def _resolved_target(armature, pose_bone, spec, space, prepared_matrix):
@@ -1374,7 +1498,9 @@ def _key_pose_frames(armature, action, prepared_frames, space, keying_policy, st
             # Measured before the write: afterwards this frame is inside the extent it widened,
             # and the stretched cycle is invisible again. REMOVE narrows an extent rather than
             # widening one, and has no key landing outside anything.
-            per_frame_warnings.append(_cycle_extension_warnings(action, prepared, frame))
+            per_frame_warnings.append(
+                _cycle_extension_warnings(action, prepared, frame) + _inert_rotation_warnings(prepared, space)
+            )
         written = _write_pose_keys(action, prepared, frame, keying_policy)
         if keying_policy != "REMOVE":
             styled += _style_written_keys(action, written, style)
@@ -1596,7 +1722,7 @@ def _synthesize_pole(armature, chain):
     tip_tail = chain[0].tail_local
     axis = tip_tail - root_head
     if axis.length <= _AIM_MIN_LENGTH:
-        raise ValueError(f"'{chain[0].name}' chain root and tip coincide; supply pole_target explicitly")
+        raise ValueError(f"'{chain[0].name}' chain root and tip coincide; supply pole_target_point explicitly")
     axis = axis.normalized()
     joints = [tip_tail, *(bone.head_local for bone in chain)]
     mid = joints[len(joints) // 2]
@@ -1605,7 +1731,7 @@ def _synthesize_pole(armature, chain):
     if projected.length <= _AIM_MIN_RESIDUAL:
         raise ValueError(
             f"'{chain[0].name}' chain's rest pose is straight; no natural pole direction can "
-            "be inferred - supply pole_target or pole_target_object"
+            "be inferred - supply pole_target_point or pole_target_object_name"
         )
     projected = projected.normalized()
     pole_local = mid + projected * sum(bone.length for bone in chain)
@@ -1628,8 +1754,8 @@ def _resolved_reach_target(point, object_name, label):
         point: A raw world-space point, or None.
         object_name: An existing object's name, or None. Exactly one of point/object_name is
             non-None; the caller has already enforced that (BoneReach's own validator, for
-            target/target_object, and solve_bone_reach's own pole handling, for pole_target/
-            pole_target_object).
+            target_point/target_object_name, and solve_bone_reach's own pole handling, for
+            pole_target_point/pole_target_object_name).
         label: What this target is, for the not-found message.
 
     Returns:
@@ -1696,17 +1822,19 @@ def _resolve_reach_chain(armature, reach, captured):
 
 def _resolved_reach_pole(armature, reach, rest_chain):
     """Resolve the reach's pole object, synthesizing one from the rest bend when none is named."""
-    pole_point = reach.get("pole_target")
-    pole_object_name = reach.get("pole_target_object")
+    pole_point = reach.get("pole_target_point")
+    pole_object_name = reach.get("pole_target_object_name")
     if pole_object_name is not None or pole_point is not None:
-        pole_obj, pole_is_temp = _resolved_reach_target(pole_point, pole_object_name, "pole_target")
+        pole_obj, pole_is_temp = _resolved_reach_target(pole_point, pole_object_name, "pole_target_point")
         return pole_obj, pole_is_temp, "explicit"
     return _reach_helper_object(tuple(_synthesize_pole(armature, rest_chain))), True, "resolved"
 
 
 def _resolve_reach_geometry(armature, reach, rest_chain):
     """Resolve the reach's target and pole objects, and where the pole came from."""
-    target_obj, target_is_temp = _resolved_reach_target(reach.get("target"), reach.get("target_object"), "target")
+    target_obj, target_is_temp = _resolved_reach_target(
+        reach.get("target_point"), reach.get("target_object_name"), "target_point"
+    )
     try:
         pole_obj, pole_is_temp, pole_source = _resolved_reach_pole(armature, reach, rest_chain)
     except Exception:
@@ -1766,7 +1894,7 @@ def _reach_convergence_warning(solution, tolerance_m):
     return (
         f"{missed}. The target is within the chain's range (target_distance_m "
         f"{measured['target_distance_m']:.6g} of chain_reach_m {measured['chain_reach_m']:.6g}), so the "
-        "solve stalled short of it: raise iterations, supply a pole_target, or loosen tolerance_m."
+        "solve stalled short of it: raise iterations, supply a pole_target_point, or loosen tolerance_m."
     )
 
 
@@ -2035,12 +2163,14 @@ def _prepared_keyed_reaches(armature, reaches):
             frame = _finite(key.get("frame"), f"{label}.frame")
             if frame in frames:
                 raise ValueError(f"{label}: frame {frame} is keyed twice in one reach")
-            target_object = key.get("target_object")
+            target_object = key.get("target_object_name")
             if target_object is not None and bpy.data.objects.get(target_object) is None:
                 raise ValueError(f"{label}: target object not found: {target_object}")
-            if target_object is None and key.get("target") is None:
-                raise ValueError(f"{label} must supply exactly one of target or target_object")
-            frames[frame] = {key_name: key[key_name] for key_name in ("target", "target_object") if key_name in key}
+            if target_object is None and key.get("target_point") is None:
+                raise ValueError(f"{label} must supply exactly one of target_point or target_object_name")
+            frames[frame] = {
+                key_name: key[key_name] for key_name in ("target_point", "target_object_name") if key_name in key
+            }
         spec = {name: value for name, value in reach.items() if name != "keys"}
         prepared.append(
             {
@@ -2351,7 +2481,7 @@ class PoseAnimationHandlersMixin:
             # reply budget shortens, so this is what still names every bone the call posed.
             "changed_bones": [record["bone"] for record in records],
             "bones": records,
-            "warnings": _bare_write_warnings(armature, custom_properties),
+            "warnings": _bare_write_warnings(armature, custom_properties) + _inert_rotation_warnings(prepared, space),
             "changed_objects": [armature.name],
         }
 

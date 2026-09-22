@@ -1,36 +1,13 @@
 """Shared strict request records for transactional node-graph patches."""
 
-import math
-
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field
+
+from ._inputs import OpenPayloadModel
 
 
-class NodeGraphRequest(BaseModel):
-    """Reject unknown fields and non-finite values nested in open JSON data."""
-
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
-
-    @model_validator(mode="after")
-    def reject_nested_nonfinite_values(self) -> "NodeGraphRequest":
-        """Reject NaN and infinities inside property and socket-value payloads."""
-
-        def validate(value: Any) -> None:
-            if isinstance(value, float) and not math.isfinite(value):
-                raise ValueError("numeric values must be finite")
-            if isinstance(value, dict):
-                for nested in value.values():
-                    validate(nested)
-            elif isinstance(value, (list, tuple)):
-                for nested in value:
-                    validate(nested)
-
-        validate(self.model_dump())
-        return self
-
-
-class NodeGraphEdit(NodeGraphRequest):
+class NodeGraphEdit(OpenPayloadModel):
     """One ordered, stable-name node-graph mutation."""
 
     operation: Literal[

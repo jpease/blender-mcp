@@ -198,6 +198,7 @@ AUTHT = "tests/test_authored_ledger.py"
 QBT = "tests/test_quiet_box.py"
 THREADT = "tests/server/test_threading.py"
 CONNT = "tests/server/test_connection_framing.py"
+CONNFAILT = "tests/server/test_connection_failure_detection.py"
 CAPT = "tests/test_capability_introspection.py"
 KEYSTYLET = "tests/test_key_style.py"
 DISPT = "tests/server/tools/test_dispatch.py"
@@ -586,6 +587,15 @@ NEW_NODES_IN_EXISTING_FILES = (
     # --- one camera marker binds every frame before it, and both marker paths say so ---
     f"{CAMT}::test_camera_markers_warn_that_the_earliest_marker_claims_every_frame_before_it",
     f"{CAMT}::test_setting_the_scene_camera_reports_the_retroactive_binding_in_the_same_words",
+    # --- a socket the peer already retired is reconnected, and only for a read-only command ---
+    f"{CONNFAILT}::test_a_side_effect_free_command_is_resent_once_on_a_reconnected_socket",
+    f"{CONNFAILT}::test_a_mutating_command_is_never_resent_after_the_peer_closed",
+    f"{CONNFAILT}::test_a_reply_cut_off_mid_message_is_not_resent_even_for_a_read_only_command",
+    # --- a rotation about a bone's own length axis says so, because nothing else can ---
+    f"{POSET}::test_a_rotation_about_the_bones_own_length_axis_says_the_bone_will_not_move",
+    # --- a whole character frames on the meshes its rig deforms, not on the bones ---
+    f"{CAMT}::test_handler_framing_expands_an_armature_to_the_meshes_it_deforms",
+    f"{CAMT}::test_handler_framing_refuses_every_unresolvable_armature_name_before_touching_the_camera",
 )
 
 # Nodes no single revert can break, each with the reason, so the gap check skips them.
@@ -5467,10 +5477,10 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 245_500",
-        # One byte below the *measured* payload (244,468), not below the ceiling: the ceiling has
-        # headroom by design, so reverting it to 245_499 would still pass and prove nothing.
-        "SHOT_MODE_BYTE_CEILING = 244_467",
+        "SHOT_MODE_BYTE_CEILING = 247_000",
+        # One byte below the *measured* payload (246,535), not below the ceiling: the ceiling has
+        # headroom by design, so reverting it to 246_999 would still pass and prove nothing.
+        "SHOT_MODE_BYTE_CEILING = 246_534",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
@@ -5582,8 +5592,9 @@ REVERTS: list[Revert] = [
     Revert(
         "pose: a key landing past an existing cycle stretches its period silently again",
         ADDON_POSING,
-        "            per_frame_warnings.append(_cycle_extension_warnings(action, prepared, frame))\n",
-        "            per_frame_warnings.append([])\n",
+        "                _cycle_extension_warnings(action, prepared, frame) + "
+        "_inert_rotation_warnings(prepared, space)\n",
+        "                [] + _inert_rotation_warnings(prepared, space)\n",
         (f"{POSET}::test_keying_past_a_cycle_says_the_period_it_just_changed",),
     ),
     Revert(
@@ -6650,8 +6661,8 @@ REVERTS: list[Revert] = [
         "            ValueError: If neither or both target forms are given.\n"
         "\n"
         '        """\n'
-        "        if (self.target is None) == (self.target_object is None):\n"
-        '            raise ValueError("Supply exactly one of target or target_object")\n',
+        "        if (self.target_point is None) == (self.target_object_name is None):\n"
+        '            raise ValueError("Supply exactly one of target_point or target_object_name")\n',
         "            BoneReach: This model, unchanged.\n"
         "\n"
         "        Raises:\n"
@@ -6663,8 +6674,8 @@ REVERTS: list[Revert] = [
     Revert(
         "pose: a reach naming two pole targets is accepted by the schema",
         SERVER_POSING_TOOL,
-        "        if self.pole_target is not None and self.pole_target_object is not None:\n"
-        '            raise ValueError("Supply at most one of pole_target or pole_target_object")\n',
+        "        if self.pole_target_point is not None and self.pole_target_object_name is not None:\n"
+        '            raise ValueError("Supply at most one of pole_target_point or pole_target_object_name")\n',
         "",
         (f"{POSET}::test_bone_reach_allows_at_most_one_pole_form",),
     ),
@@ -6674,7 +6685,7 @@ REVERTS: list[Revert] = [
         # synthesis from ever running.
         "pose: a reach sends every optional field as null instead of omitting it",
         SERVER_POSING_TOOL,
-        '            "reaches": [reach.model_dump(exclude_none=True) for reach in reaches],\n'
+        '            "reaches": dump_inputs(reaches),\n'
         '            "tolerance_m": tolerance_m,\n'
         '            "detail": detail,\n',
         '            "reaches": [reach.model_dump() for reach in reaches],\n'
@@ -7468,8 +7479,8 @@ REVERTS: list[Revert] = [
         # surface moved and the number did not - has to be re-pointed at the new pair.
         "addon surface: the dispatch table moved while the protocol number stayed where it was",
         ADDON_MANAGER,
+        "EXPECTED_ADDON_PROTOCOL_VERSION = 36",
         "EXPECTED_ADDON_PROTOCOL_VERSION = 35",
-        "EXPECTED_ADDON_PROTOCOL_VERSION = 34",
         (
             f"{SURFT}::test_snapshot_records_the_protocol_version_the_server_expects",
             f"{SURFT}::test_both_protocol_constants_agree",
@@ -7626,6 +7637,90 @@ REVERTS: list[Revert] = [
         '            "warnings": _retroactive_cut_warnings(scene.frame_start, _camera_cut_map(scene)),',
         '            "warnings": [],',
         (f"{CAMT}::test_setting_the_scene_camera_reports_the_retroactive_binding_in_the_same_words",),
+    ),
+    # --- what a socket the peer already retired, and a handshake that never ran, may claim ----
+    Revert(
+        # Emptying the set is the honest revert: the retry stays, and nothing qualifies for it.
+        # Widening it instead would be the dangerous direction, which the mutating-command node
+        # beside this one is what catches.
+        "transport: no command is worth resending, so a retired socket fails the call that found it",
+        SERVER_CONNECTION,
+        '_SIDE_EFFECT_FREE_COMMANDS = frozenset({"get_addon_info", "ping"})',
+        "_SIDE_EFFECT_FREE_COMMANDS = frozenset()",
+        (f"{CONNFAILT}::test_a_side_effect_free_command_is_resent_once_on_a_reconnected_socket",),
+    ),
+    Revert(
+        # The zero-byte branch is the whole distinction: bytes arriving means the command was
+        # serviced, so only a reply that never started is a candidate for a resend.
+        "transport: a peer that closed before answering is indistinguishable from a cut-off reply",
+        SERVER_CONNECTION,
+        '                    raise BlenderPeerClosedError("Connection closed before receiving any data")',
+        '                    raise Exception("Connection closed before receiving any data")',
+        (f"{CONNFAILT}::test_a_side_effect_free_command_is_resent_once_on_a_reconnected_socket",),
+    ),
+    Revert(
+        # Swallowing it again is what put `up_to_date=False`, `protocol_version=None` and an
+        # empty capability list in front of an agent whose socket had simply gone away.
+        "transport: a handshake that never completed is reported as an outdated add-on",
+        ADDON_MANAGER,
+        "        if _is_transport_failure(e):\n",
+        "        if False:\n",
+        (f"{AMT}::test_handshake_re_raises_a_transport_failure_instead_of_reporting_a_version",),
+    ),
+    # --- a rotation that cannot move the bone it names, and a rig framed on its silhouette ----
+    Revert(
+        # The notice is the only channel that can say it: the pose matrix genuinely changed, the
+        # keys genuinely landed, and every other field in the reply reports a success.
+        "pose: a rotation about the bone's own length axis is reported as if it moved something",
+        ADDON_POSING,
+        "    if space not in _BONE_LOCAL_SPACES:\n        return []\n",
+        "    if True:\n        return []\n",
+        (f"{POSET}::test_a_rotation_about_the_bones_own_length_axis_says_the_bone_will_not_move",),
+    ),
+    Revert(
+        # Dropping the expansion leaves the armature's own bounds, which are its bones and not
+        # the silhouette the camera sees - the exact frame this parameter exists to replace.
+        "camera: an armature frames on its bones instead of the meshes it deforms",
+        ADDON_CAMERA_TARGETING,
+        "    combined = list(objects)\n",
+        "    combined = list(objects)\n    return combined\n",
+        (f"{CAMT}::test_handler_framing_expands_an_armature_to_the_meshes_it_deforms",),
+    ),
+    Revert(
+        # The status tool is the last place the distinction can be drawn: past this point the
+        # agent has a payload and no way to tell "nothing was learned" from "the add-on is old".
+        "transport: a status call renders a dead socket as a version verdict again",
+        SERVER_CORE_TOOL,
+        "    except (BlenderTransportError, ConnectionError) as exc:\n",
+        "    except (BlenderTransportError, ConnectionError) as exc:\n        raise ToolError(str(exc)) from exc\n",
+        (f"{CORET}::test_get_addon_status_reports_a_dead_socket_as_a_transport_failure",),
+    ),
+    Revert(
+        # Widening the set is the dangerous direction: a mutating command resent blind doubles
+        # an edit to the user's scene, and nothing downstream can tell that it did.
+        "transport: a mutating command joins the resend set and is sent twice",
+        SERVER_CONNECTION,
+        '_SIDE_EFFECT_FREE_COMMANDS = frozenset({"get_addon_info", "ping"})',
+        '_SIDE_EFFECT_FREE_COMMANDS = frozenset({"get_addon_info", "ping", "set_object_transform"})',
+        (f"{CONNFAILT}::test_a_mutating_command_is_never_resent_after_the_peer_closed",),
+    ),
+    Revert(
+        # A reply that started and stopped means Blender ran the command; resending it is the
+        # same double-apply, arrived at from the other side.
+        "transport: a reply cut off mid-message is treated as one that never started",
+        SERVER_CONNECTION,
+        '                raise Exception("Connection closed mid-message")',
+        '                raise BlenderPeerClosedError("Connection closed mid-message")',
+        (f"{CONNFAILT}::test_a_reply_cut_off_mid_message_is_not_resent_even_for_a_read_only_command",),
+    ),
+    Revert(
+        # A rig that deforms nothing in this scene is the silent case: without the refusal the
+        # expansion contributes no points and the camera frames whatever else was named.
+        "camera: an armature that deforms nothing is expanded to an empty frame instead of refused",
+        ADDON_CAMERA_TARGETING,
+        "        if not meshes:\n",
+        "        if False:\n",
+        (f"{CAMT}::test_handler_framing_refuses_every_unresolvable_armature_name_before_touching_the_camera",),
     ),
 ]
 

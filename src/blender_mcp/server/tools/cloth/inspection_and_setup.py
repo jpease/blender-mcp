@@ -9,7 +9,7 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _dump
+from .._inputs import dump_input
 from .collisions import ClothCollisionPatch
 from .material_and_solver import ClothMaterialPatch, ClothSolverPatch, MaterialPreset
 
@@ -103,9 +103,9 @@ async def add_cloth_simulation(
             "cache_frame_end": cache_frame_end,
             "collision_collection_name": collision_collection_name,
             "preset": preset,
-            "material": _dump(material),
-            "solver": _dump(solver),
-            "collisions": _dump(collisions),
+            "material": dump_input(material),
+            "solver": dump_input(solver),
+            "collisions": dump_input(collisions),
         },
         changed_objects=[object_name],
     )

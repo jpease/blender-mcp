@@ -9,7 +9,7 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _dump, _StrictModel
+from .._inputs import StrictModel, dump_input
 
 CacheAction = Literal["INSPECT", "CONFIGURE", "BAKE", "BAKE_FROM_CACHE", "FREE"]
 ClothComponentType = Literal[
@@ -20,7 +20,7 @@ ClothComponentType = Literal[
 ]
 
 
-class PointCachePatch(_StrictModel):
+class PointCachePatch(StrictModel):
     """Writable PointCache configuration fields."""
 
     frame_start: Annotated[int, Field(ge=0)] | None = None
@@ -60,7 +60,7 @@ async def manage_cloth_cache(
             "object_name": object_name,
             "modifier_name": modifier_name,
             "action": action,
-            "patch": _dump(patch),
+            "patch": dump_input(patch),
             "confirm_bake": confirm_bake,
             "confirm_free_bake": confirm_free_bake,
             "confirm_external_overwrite": confirm_external_overwrite,

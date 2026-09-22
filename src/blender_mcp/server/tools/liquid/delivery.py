@@ -9,7 +9,7 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _dump, _StrictModel
+from .._inputs import StrictModel, dump_input
 from .inspection_and_setup import ExistingPolicy, FlowBehavior
 
 ProxyGeometry = Literal["BOX", "CAPSULE", "CONVEX_HULL", "DECIMATED", "HOLLOW_CONTAINER", "SUPPLIED"]
@@ -26,7 +26,7 @@ ExportUnits = Literal["SCENE", "METERS", "CENTIMETERS", "MILLIMETERS"]
 ExportAxis = Literal["X", "Y", "Z", "NEGATIVE_X", "NEGATIVE_Y", "NEGATIVE_Z"]
 
 
-class ProxyFlowSettings(_StrictModel):
+class ProxyFlowSettings(StrictModel):
     """Constrained settings for a proxy liquid flow."""
 
     behavior: FlowBehavior = "GEOMETRY"
@@ -37,7 +37,7 @@ class ProxyFlowSettings(_StrictModel):
     velocity_factor: float = Field(default=1.0, ge=-100.0, le=100.0)
 
 
-class ProxyEffectorSettings(_StrictModel):
+class ProxyEffectorSettings(StrictModel):
     """Constrained settings for a proxy collision effector."""
 
     subframes: int = Field(default=0, ge=0, le=200)
@@ -45,7 +45,7 @@ class ProxyEffectorSettings(_StrictModel):
     use_plane_init: bool = False
 
 
-class LiquidRenderFinish(_StrictModel):
+class LiquidRenderFinish(StrictModel):
     """Optional reversible modifiers applied after the fluid modifier."""
 
     smooth_shading: bool = True
@@ -118,8 +118,8 @@ async def create_liquid_proxy_rig(
             "bottom_thickness": bottom_thickness,
             "rim_axis": rim_axis,
             "allow_deforming_proxy": allow_deforming_proxy,
-            "flow_settings": _dump(flow_settings),
-            "effector_settings": _dump(effector_settings),
+            "flow_settings": dump_input(flow_settings),
+            "effector_settings": dump_input(effector_settings),
             "validation_frames": validation_frames or [],
         },
         changed_objects=[source_object_name, domain_object_name],

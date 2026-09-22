@@ -68,6 +68,15 @@ Use an add-on only after confirming it is enabled and that its operator is avail
 - Keep commands narrowly scoped and idempotent where practical. Favor dedicated, validated tools over opaque arbitrary-code paths.
 - Treat all client input as untrusted: validate schemas, enums, paths, object names, numeric bounds, and optional fields at the server boundary.
 - Use a consistent response shape. Successful responses should state what changed; failures should identify the operation, safe input context, and remediation without leaking secrets or large tracebacks to clients.
+- One concept, one field name, across every domain. A schema is read by an agent that has just
+  read a different tool's schema, so a synonym costs a failed call and a re-read: an aim written
+  as `aim_at: {target_point: ...}` by analogy with `point_camera_at` was rejected by a pose tool
+  that spelled the same thing `target`. The settled spellings are `target_point` for a
+  world-space point, `target_object_name` for an object, and `target_bone_name` for a bone, with
+  a role prefix where there are two (`pole_target_point`). `subtarget` is the exception: it is
+  Blender's own RNA field name on a constraint, and a tool that writes that field uses it. Before
+  adding a field, grep the tool surface for the concept and reuse the name you find; renaming one
+  later is a protocol bump.
 - Separate transport failures from Blender operation failures. A valid command that Blender rejects should not unnecessarily drop a healthy socket connection.
 - Frame and decode socket messages defensively. Preserve UTF-8 boundaries, enforce maximum message sizes, and ensure start/stop/restart releases sockets and worker resources cleanly.
 - Never log credentials, tokens, full client payloads containing secrets, or arbitrary untrusted code. Use structured, actionable logs with operation and object identifiers.

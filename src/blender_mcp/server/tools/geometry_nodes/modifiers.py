@@ -7,10 +7,10 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import GeometryNodesRequest, model_records
+from .._inputs import OpenPayloadModel, dump_inputs
 
 
-class ModifierInputValue(GeometryNodesRequest):
+class ModifierInputValue(OpenPayloadModel):
     """Set one exposed input by stable interface identifier."""
 
     identifier: str = Field(min_length=1)
@@ -19,7 +19,7 @@ class ModifierInputValue(GeometryNodesRequest):
     attribute_name: str | None = None
 
 
-class ModifierInputTarget(GeometryNodesRequest):
+class ModifierInputTarget(OpenPayloadModel):
     """Apply validated exposed-input values to one exact modifier instance."""
 
     object_name: str = Field(min_length=1)
@@ -27,7 +27,7 @@ class ModifierInputTarget(GeometryNodesRequest):
     inputs: Annotated[list[ModifierInputValue], Field(min_length=1, max_length=200)]
 
 
-class ModifierReassignment(GeometryNodesRequest):
+class ModifierReassignment(OpenPayloadModel):
     """Identify one exact modifier instance that should use a copied group."""
 
     object_name: str = Field(min_length=1)
@@ -64,7 +64,7 @@ async def attach_geometry_nodes_modifier(
         "show_viewport": show_viewport,
         "show_render": show_render,
         "single_user": single_user,
-        "input_values": model_records(input_values or []),
+        "input_values": dump_inputs(input_values or []),
     }
     resources = [name for name in [node_group_name, new_group_name] if name]
     return await call_blender(
@@ -85,7 +85,7 @@ async def set_geometry_nodes_inputs(
     """
     object_names = list(dict.fromkeys(target.object_name for target in targets))
     return await call_blender(
-        "set_geometry_nodes_inputs", {"targets": model_records(targets)}, changed_objects=object_names
+        "set_geometry_nodes_inputs", {"targets": dump_inputs(targets)}, changed_objects=object_names
     )
 
 
@@ -158,7 +158,7 @@ async def copy_geometry_node_group(
         {
             "node_group_name": node_group_name,
             "new_name": new_name,
-            "reassign_modifiers": model_records(reassign_modifiers or []),
+            "reassign_modifiers": dump_inputs(reassign_modifiers or []),
             "duplicate_object_name": duplicate_object_name,
             "duplicated_object_name": duplicated_object_name,
             "copy_object_data": copy_object_data,

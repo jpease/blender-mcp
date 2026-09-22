@@ -4,7 +4,10 @@ import asyncio
 
 import pytest
 
+from mcp.server.fastmcp.exceptions import ToolError
+
 from blender_mcp.addon_manager import EXPECTED_ADDON_PROTOCOL_VERSION, AddonHandshake
+from blender_mcp.server.connection import BlenderTransportError
 from blender_mcp.server.tools import core
 
 
@@ -219,3 +222,28 @@ def test_get_addon_status_reports_an_addon_with_no_optional_integrations(monkeyp
 
     assert payload["capability_count"] == 0
     assert payload["integrations_available"] == {"polyhaven": False, "sketchfab": False, "nd": False}
+
+
+def test_get_addon_status_reports_a_dead_socket_as_a_transport_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    A handshake that never completed raises instead of being reported as a version verdict.
+
+    The live incident: the first call after connecting hit a socket Blender had already
+    closed and came back `up_to_date: false`, `capability_count: 0`,
+    `protocol_version: null` - every field an agent reads saying "the add-on is missing or
+    outdated, reinstall it" when nothing whatsoever had been learned about it.
+    """
+    monkeypatch.setattr(core, "get_blender_connection", object)
+
+    def _never_answered(_blender: object) -> AddonHandshake:
+        raise BlenderTransportError("Connection closed before receiving any data")
+
+    monkeypatch.setattr(core, "force_addon_handshake", _never_answered)
+
+    with pytest.raises(ToolError) as failure:
+        asyncio.run(core.get_addon_status(ctx=None))  # pyright: ignore[reportArgumentType]
+
+    message = str(failure.value)
+    assert "transport failure" in message, f"the failure must not read as a version verdict: {message}"
+    assert "do not reinstall" in message
+    assert "Connection closed before receiving any data" in message, "the underlying fault is not named"

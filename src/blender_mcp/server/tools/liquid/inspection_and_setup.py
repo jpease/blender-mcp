@@ -12,7 +12,7 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _dump, _StrictModel
+from .._inputs import StrictModel, dump_input
 
 CacheType = Literal["REPLAY", "MODULAR", "ALL"]
 ExistingPolicy = Literal["ERROR", "REUSE"]
@@ -23,7 +23,7 @@ SimulationMethod = Literal["FLIP", "APIC"]
 BoundaryFace = Literal["FRONT", "BACK", "LEFT", "RIGHT", "TOP", "BOTTOM"]
 
 
-class LiquidSolverPatch(_StrictModel):
+class LiquidSolverPatch(StrictModel):
     """Allowlisted Blender 5.1 liquid solver properties."""
 
     resolution_max: int | None = Field(default=None, ge=6, le=10_000)
@@ -60,7 +60,7 @@ class LiquidSolverPatch(_StrictModel):
         return self
 
 
-class LiquidFlowPatch(_StrictModel):
+class LiquidFlowPatch(StrictModel):
     """Allowlisted liquid-applicable FluidFlowSettings properties.
 
     Flows managed by these tools always have ``flow_type == "LIQUID"``. ``use_particle_size`` and
@@ -96,7 +96,7 @@ class LiquidFlowPatch(_StrictModel):
         return self
 
 
-class LiquidEffectorPatch(_StrictModel):
+class LiquidEffectorPatch(StrictModel):
     """Allowlisted FluidEffectorSettings properties."""
 
     use_effector: bool | None = None
@@ -108,7 +108,7 @@ class LiquidEffectorPatch(_StrictModel):
     velocity_factor: float | None = None
 
 
-class LiquidBoundaryPatch(_StrictModel):
+class LiquidBoundaryPatch(StrictModel):
     """Collision state for domain-local faces."""
 
     front: bool | None = None
@@ -122,7 +122,7 @@ class LiquidBoundaryPatch(_StrictModel):
 FluidDomainType = Literal["LIQUID", "GAS"]
 
 
-class FluidSolverPatch(_StrictModel):
+class FluidSolverPatch(StrictModel):
     """Common and gas-specific Mantaflow solver settings for both LIQUID and GAS domains."""
 
     resolution_max: int | None = Field(default=None, ge=6, le=10_000)
@@ -151,7 +151,7 @@ class FluidSolverPatch(_StrictModel):
         return self
 
 
-class FluidFlowPatch(_StrictModel):
+class FluidFlowPatch(StrictModel):
     """Common liquid or gas flow settings."""
 
     flow_behavior: FlowBehavior | None = None
@@ -343,7 +343,7 @@ async def configure_liquid_solver(
     """
     return await call_blender(
         "configure_liquid_solver",
-        {"domain_object_name": domain_object_name, "modifier_name": modifier_name, "patch": _dump(patch)},
+        {"domain_object_name": domain_object_name, "modifier_name": modifier_name, "patch": dump_input(patch)},
         changed_objects=[domain_object_name],
     )
 
@@ -373,7 +373,7 @@ async def add_liquid_flow(
             "modifier_name": modifier_name,
             "existing_policy": existing_policy,
             "behavior": behavior,
-            "settings": _dump(settings),
+            "settings": dump_input(settings),
         },
         changed_objects=[object_name, domain_object_name],
     )
@@ -399,7 +399,7 @@ async def configure_liquid_flow(
             "object_name": object_name,
             "modifier_name": modifier_name,
             "domain_object_name": domain_object_name,
-            "patch": _dump(patch),
+            "patch": dump_input(patch),
         },
         changed_objects=[object_name, domain_object_name],
     )
@@ -429,7 +429,7 @@ async def add_liquid_effector(
             "modifier_name": modifier_name,
             "existing_policy": existing_policy,
             "effector_type": effector_type,
-            "settings": _dump(settings),
+            "settings": dump_input(settings),
         },
         changed_objects=[object_name, domain_object_name],
     )
@@ -453,7 +453,7 @@ async def configure_liquid_effector(
             "object_name": object_name,
             "modifier_name": modifier_name,
             "domain_object_name": domain_object_name,
-            "patch": _dump(patch),
+            "patch": dump_input(patch),
         },
         changed_objects=[object_name, domain_object_name],
     )
@@ -493,7 +493,7 @@ async def configure_liquid_scope_and_boundaries(
             "clear_effector_collection": clear_effector_collection,
             "clear_force_collection": clear_force_collection,
             "create_missing_collections": create_missing_collections,
-            "boundaries": _dump(boundaries),
+            "boundaries": dump_input(boundaries),
         },
         changed_objects=[domain_object_name],
     )
@@ -604,7 +604,7 @@ async def add_fluid_flow(
             "existing_policy": existing_policy,
             "behavior": behavior,
             "gas_flow_type": gas_flow_type,
-            "settings": _dump(settings),
+            "settings": dump_input(settings),
         },
         changed_objects=[object_name, domain_object_name],
     )
@@ -631,7 +631,7 @@ async def add_fluid_effector(
             "modifier_name": modifier_name,
             "existing_policy": existing_policy,
             "effector_type": effector_type,
-            "settings": _dump(settings),
+            "settings": dump_input(settings),
         },
         changed_objects=[object_name, domain_object_name],
     )

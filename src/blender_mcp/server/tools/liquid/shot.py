@@ -9,7 +9,7 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _dump, _StrictModel
+from .._inputs import StrictModel, dump_input
 from .delivery import ProxyEffectorSettings
 from .inspection_and_setup import (
     CacheType,
@@ -25,7 +25,7 @@ RimAxis = Literal["X", "Y", "Z", "NEGATIVE_X", "NEGATIVE_Y", "NEGATIVE_Z"]
 _MAX_SHOT_OBJECTS = 16
 
 
-class ShotContainer(_StrictModel):
+class ShotContainer(StrictModel):
     """A vessel the liquid has to stay inside, plus how its collider should be built."""
 
     object_name: str
@@ -45,7 +45,7 @@ class ShotContainer(_StrictModel):
         return self
 
 
-class ShotSource(_StrictModel):
+class ShotSource(StrictModel):
     """An object that emits or removes liquid, optionally only during a window of shot time."""
 
     object_name: str
@@ -122,7 +122,7 @@ async def setup_liquid_shot(
         {
             "scene_name": scene_name,
             "cache_directory": cache_directory,
-            "containers": [_dump(container) for container in containers],
+            "containers": [dump_input(container) for container in containers],
             "sources": [_shot_source_payload(source) for source in sources],
             "domain_object_name": domain_object_name,
             "new_domain_name": new_domain_name,
@@ -159,7 +159,7 @@ def _changed_objects(
 
 def _shot_source_payload(source: ShotSource) -> dict:
     """Flatten one source record, keeping enabled_seconds JSON-serializable as a list."""
-    payload = _dump(source) or {}
+    payload = dump_input(source) or {}
     if source.enabled_seconds is not None:
         payload["enabled_seconds"] = list(source.enabled_seconds)
     return payload

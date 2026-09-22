@@ -7,7 +7,7 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _StrictModel
+from .._inputs import StrictModel
 
 WeightOperation = Literal["REPLACE", "ADD", "SUBTRACT"]
 WeightRole = Literal[
@@ -23,14 +23,14 @@ WeightRole = Literal[
 ]
 
 
-class VertexWeightAssignment(_StrictModel):
+class VertexWeightAssignment(StrictModel):
     """Assign one exact base-mesh vertex index a normalized weight."""
 
     vertex_index: int = Field(ge=0)
     weight: float = Field(ge=0.0, le=1.0)
 
 
-class ClothPinningPatch(_StrictModel):
+class ClothPinningPatch(StrictModel):
     """Pin goal controls applied to an existing vertex group."""
 
     pin_stiffness: Annotated[float, Field(ge=0)] | None = None

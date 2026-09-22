@@ -8,8 +8,8 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
+from .._inputs import StrictModel, dump_inputs
 from ..key_style import Easing, HandleType, Interpolation
-from ._shared import _StrictModel
 
 _SignedAxis = Literal["X", "-X", "Y", "-Y", "Z", "-Z"]
 # A direction is a direction at any length, so only a vector that is zero to float noise is
@@ -17,7 +17,7 @@ _SignedAxis = Literal["X", "-X", "Y", "-Y", "Z", "-Z"]
 _MINIMUM_SQUARED_LENGTH = 1e-18
 
 
-class BoneAim(_StrictModel):
+class BoneAim(StrictModel):
     """
     Point one of a bone's own axes at a world point, at an object, or at a bone on that object.
 
@@ -26,14 +26,14 @@ class BoneAim(_StrictModel):
     bone should point along is track_axis, and up_axis is that reply's up_axis (the "+Z" entry)
     unless track_axis already took that axis, in which case name another entry. The reply's
     length_axis is the axis along the bone - "Y" on every bone Blender builds - and is almost
-    never the axis that should look anywhere. target, target_object and up_reference are
-    world-space; target_object alone aims at the object's origin, which on a character rig is
-    the floor under it, so name target_bone to aim at a bone on it.
+    never the axis that should look anywhere. target_point, target_object_name and up_reference are
+    world-space; target_object_name alone aims at the object's origin, which on a character rig is
+    the floor under it, so name target_bone_name to aim at a bone on it.
     """
 
-    target: tuple[float, float, float] | None = None
-    target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
-    target_bone: Annotated[str, Field(min_length=1, max_length=63)] | None = None
+    target_point: tuple[float, float, float] | None = None
+    target_object_name: Annotated[str, Field(min_length=1, max_length=63)] | None = None
+    target_bone_name: Annotated[str, Field(min_length=1, max_length=63)] | None = None
     target_bone_position: Literal["HEAD", "TAIL", "CENTER"] = "HEAD"
     track_axis: _SignedAxis
     up_axis: _SignedAxis | None = None
@@ -48,17 +48,17 @@ class BoneAim(_StrictModel):
             BoneAim: This model, unchanged.
 
         Raises:
-            ValueError: If neither or both target forms are given, if target_bone names no
+            ValueError: If neither or both target forms are given, if target_bone_name names no
                 object to find it on, if a position is named without a bone, if up_axis repeats
                 the tracked axis, or if up_reference is a zero vector.
 
         """
-        if (self.target is None) == (self.target_object is None):
-            raise ValueError("Supply exactly one of target or target_object")
-        if self.target_bone is not None and self.target_object is None:
-            raise ValueError("target_bone names a bone on target_object, so target_object is required")
-        if self.target_bone is None and "target_bone_position" in self.model_fields_set:
-            raise ValueError("target_bone_position names a point on target_bone, which this aim does not name")
+        if (self.target_point is None) == (self.target_object_name is None):
+            raise ValueError("Supply exactly one of target_point or target_object_name")
+        if self.target_bone_name is not None and self.target_object_name is None:
+            raise ValueError("target_bone_name names a bone on target_object_name, so target_object_name is required")
+        if self.target_bone_name is None and "target_bone_position" in self.model_fields_set:
+            raise ValueError("target_bone_position names a point on target_bone_name, which this aim does not name")
         if self.up_axis is not None and self.up_axis.lstrip("-") == self.track_axis.lstrip("-"):
             raise ValueError("up_axis must name a different bone axis than track_axis")
         if sum(value * value for value in self.up_reference) <= _MINIMUM_SQUARED_LENGTH:
@@ -66,7 +66,7 @@ class BoneAim(_StrictModel):
         return self
 
 
-class BoneRotation(_StrictModel):
+class BoneRotation(StrictModel):
     """A rotation in degrees about a named bone axis or an explicit axis vector."""
 
     axis: _SignedAxis | tuple[float, float, float]
@@ -90,7 +90,7 @@ class BoneRotation(_StrictModel):
         return self
 
 
-class BonePose(_StrictModel):
+class BonePose(StrictModel):
     """One bone transform represented in an explicitly selected coordinate space."""
 
     bone_name: str = Field(min_length=1, max_length=63)
@@ -235,8 +235,8 @@ async def set_character_pose(
             Its letters name axes of space: under LOCAL and LOCAL_WITH_PARENT that is the
             bone's own rest basis, under POSE the armature's, under WORLD the scene's. It is
             sugar: rotation_axis_angle says the same thing in radians.
-            aim_at points the bone's track_axis at target (a world point), at target_object's
-            origin, or at target_bone's HEAD, TAIL or CENTER when target_object is an armature
+            aim_at points the bone's track_axis at target_point (a world point), at target_object_name's
+            origin, or at target_bone_name's HEAD, TAIL or CENTER when target_object_name is an armature
             carrying that bone, and leans up_axis toward up_reference (a world direction,
             default +Z) to fix the roll. Both letters name the bone's own axes whatever space
             is: take track_axis from list_character_bones(rest_axes=True)'s aim_axis_for_world
@@ -276,7 +276,7 @@ async def set_character_pose(
     )
 
 
-class PoseKeyframe(_StrictModel):
+class PoseKeyframe(StrictModel):
     """One frame of a batched pose keying call: the frame, and the bones posed at it."""
 
     frame: float
@@ -363,8 +363,8 @@ async def keyframe_character_pose(
     Pose entries take the same channels as set_character_pose, with one added rule: an aim_at
     must supply up_axis. A shortest-arc aim keeps whatever roll the bone already holds, so the
     same call at two frames would key two different rolls. A world-space aim is evaluated at the
-    frame being keyed, not at the frame the playhead happened to be on: target_object and
-    target_bone are read where they are at that frame, so aiming at an animated character keys
+    frame being keyed, not at the frame the playhead happened to be on: target_object_name and
+    target_bone_name are read where they are at that frame, so aiming at an animated character keys
     a look that follows it. A keyed aim is also re-spelled to interpolate the short way from the
     previous key in this action: the quaternion sign is flipped when it would take the long
     route, and an Euler triple is made compatible with the previous key.
@@ -440,7 +440,7 @@ async def keyframe_character_pose(
     )
 
 
-class ReachHinge(_StrictModel):
+class ReachHinge(StrictModel):
     """
     A temporary IK hinge applied to one chain bone for the duration of the solve.
 
@@ -472,7 +472,7 @@ class ReachHinge(_StrictModel):
         return self
 
 
-class _ReachChain(_StrictModel):
+class _ReachChain(StrictModel):
     """
     The chain, pole and solver settings every reach carries, whatever it does with them.
 
@@ -483,8 +483,8 @@ class _ReachChain(_StrictModel):
 
     tip_bone: str = Field(min_length=1, max_length=63)
     chain_length: Annotated[int, Field(ge=1, le=32)] | None = None
-    pole_target: tuple[float, float, float] | None = None
-    pole_target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
+    pole_target_point: tuple[float, float, float] | None = None
+    pole_target_object_name: Annotated[str, Field(min_length=1, max_length=63)] | None = None
     pole_angle_degrees: float = 0.0
     use_stretch: bool = False
     iterations: Annotated[int, Field(ge=1, le=1000)] = 500
@@ -502,8 +502,8 @@ class _ReachChain(_StrictModel):
             ValueError: If both pole forms are given.
 
         """
-        if self.pole_target is not None and self.pole_target_object is not None:
-            raise ValueError("Supply at most one of pole_target or pole_target_object")
+        if self.pole_target_point is not None and self.pole_target_object_name is not None:
+            raise ValueError("Supply at most one of pole_target_point or pole_target_object_name")
         return self
 
 
@@ -520,8 +520,8 @@ class BoneReach(_ReachChain):
     orientation is posed separately.
     """
 
-    target: tuple[float, float, float] | None = None
-    target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
+    target_point: tuple[float, float, float] | None = None
+    target_object_name: Annotated[str, Field(min_length=1, max_length=63)] | None = None
 
     @model_validator(mode="after")
     def validate_target(self) -> "BoneReach":
@@ -535,8 +535,8 @@ class BoneReach(_ReachChain):
             ValueError: If neither or both target forms are given.
 
         """
-        if (self.target is None) == (self.target_object is None):
-            raise ValueError("Supply exactly one of target or target_object")
+        if (self.target_point is None) == (self.target_object_name is None):
+            raise ValueError("Supply exactly one of target_point or target_object_name")
         return self
 
 
@@ -555,7 +555,7 @@ async def solve_bone_reach(
     every bone up to (not including) the first ancestor with more than one child, or a root.
     Always reported back, whether resolved or supplied explicitly.
 
-    pole_target/pole_target_object omitted: synthesized from the chain's REST pose - the
+    pole_target_point/pole_target_object_name omitted: synthesized from the chain's REST pose - the
     perpendicular offset of the chain's middle joint from the straight line between the
     chain's root-most head and tip_bone's rest tail. Refused when the rest pose is straight
     (no natural bend to infer a pole from); supply one explicitly then.
@@ -594,7 +594,7 @@ async def solve_bone_reach(
         "solve_bone_reach",
         {
             "armature_object_name": armature_object_name,
-            "reaches": [reach.model_dump(exclude_none=True) for reach in reaches],
+            "reaches": dump_inputs(reaches),
             "tolerance_m": tolerance_m,
             "detail": detail,
         },
@@ -602,12 +602,12 @@ async def solve_bone_reach(
     )
 
 
-class ReachKey(_StrictModel):
+class ReachKey(StrictModel):
     """One frame of one reach: where the tip bone's tail must be at that frame."""
 
     frame: float
-    target: tuple[float, float, float] | None = None
-    target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
+    target_point: tuple[float, float, float] | None = None
+    target_object_name: Annotated[str, Field(min_length=1, max_length=63)] | None = None
 
     @model_validator(mode="after")
     def validate_key(self) -> "ReachKey":
@@ -621,8 +621,8 @@ class ReachKey(_StrictModel):
             ValueError: If neither or both target forms are given.
 
         """
-        if (self.target is None) == (self.target_object is None):
-            raise ValueError("Supply exactly one of target or target_object")
+        if (self.target_point is None) == (self.target_object_name is None):
+            raise ValueError("Supply exactly one of target_point or target_object_name")
         return self
 
 
@@ -726,7 +726,7 @@ async def keyframe_bone_reach(
         {
             "armature_object_name": armature_object_name,
             "action_name": action_name,
-            "reaches": [reach.model_dump(exclude_none=True) for reach in reaches],
+            "reaches": dump_inputs(reaches),
             "tolerance_m": tolerance_m,
             "keying_policy": keying_policy,
             "interpolation": interpolation,

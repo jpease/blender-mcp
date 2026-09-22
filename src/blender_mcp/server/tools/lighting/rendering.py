@@ -12,10 +12,10 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import StrictLightingInput, dump_input
+from .._inputs import StrictModel, dump_input
 
 
-class CyclesLightingQuality(StrictLightingInput):
+class CyclesLightingQuality(StrictModel):
     """Allowlisted Cycles sampling and light-path quality controls."""
 
     samples: int | None = Field(default=None, ge=1, le=16384)
@@ -34,7 +34,7 @@ class CyclesLightingQuality(StrictLightingInput):
     device: Literal["CPU", "GPU"] | None = None
 
 
-class EeveeLightingQuality(StrictLightingInput):
+class EeveeLightingQuality(StrictModel):
     """Allowlisted EEVEE lighting, shadow, ray-tracing, GI, and volume controls."""
 
     render_samples: int | None = Field(default=None, ge=1, le=4096)

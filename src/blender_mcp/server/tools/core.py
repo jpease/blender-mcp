@@ -10,7 +10,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from ...addon_manager import EXPECTED_ADDON_PROTOCOL_VERSION, AddonHandshake
 from ..app import mcp
-from ..connection import force_addon_handshake, get_blender_connection
+from ..connection import BlenderTransportError, force_addon_handshake, get_blender_connection
 from ._dispatch import send_blender_command
 from .envelope import ok
 
@@ -120,11 +120,25 @@ def _collect_addon_status(*, detail: bool) -> dict[str, object]:
         dict[str, object]: The addon status payload.
 
     Raises:
-        ToolError: When the addon does not answer the handshake.
+        ToolError: When the handshake round trip never completed, or when no handshake
+            has ever been read.
 
     """
     blender = get_blender_connection()
-    result = force_addon_handshake(blender)
+    try:
+        result = force_addon_handshake(blender)
+    except (BlenderTransportError, ConnectionError) as exc:
+        # A dead socket used to arrive here as a handshake and be reported as a version
+        # verdict - `up_to_date: false`, `capability_count: 0`, `protocol_version: null` -
+        # so an agent whose first call landed on a connection Blender had already retired
+        # was told to reinstall a current add-on. Nothing was learned, and the payload
+        # must not pretend otherwise.
+        raise ToolError(
+            f"Blender did not answer the handshake ({exc}). This is a transport failure, not a "
+            "version verdict: the installed add-on's version is unknown, so do not reinstall on "
+            "this basis. Retry the call - a socket the add-on has already closed is reconnected "
+            "on the next command."
+        ) from exc
     if result is None:
         raise ToolError("Could not determine addon status.")
     return _status_payload(result, detail=detail)
@@ -167,6 +181,8 @@ async def get_addon_status(ctx: Context, detail: bool = False) -> dict:
             a command it does not, so the names only explain such a refusal.
 
     Returns:
+        Every field below is something the add-on reported about itself; a handshake that
+        never completed raises instead of being rendered as one.
         "up_to_date" (bool), "protocol_version"/"expected_protocol_version", "addon_version",
         "capability_count" and "integrations_available" (per-provider, whether the addon advertises that
         integration's commands), "capabilities" (the command names, only with detail), "blender_version",
@@ -179,7 +195,9 @@ async def get_addon_status(ctx: Context, detail: bool = False) -> dict:
         "source", "warning", "update_command", "after_install".
 
     Raises:
-        ToolError: If the operation cannot be completed.
+        ToolError: If Blender never answered the handshake, which is a transport failure and
+            says nothing about which add-on version is installed - retry rather than reinstall.
+            Also if the status could not be determined for any other reason.
 
     """
     try:

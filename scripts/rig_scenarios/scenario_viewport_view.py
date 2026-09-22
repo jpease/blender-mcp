@@ -332,7 +332,7 @@ def _build_scene(rig: Rig) -> str:
     if cube["status"] != "success":
         raise SystemExit(f"create_primitive failed: {cube}")
 
-    for name, look_at in (
+    for name, aim_point in (
         (_CAMERA_TOWARD, (0.0, 0.0, 0.0)),
         # Same position, aimed at a point twice as far away in the same direction, so the
         # cube is directly behind this camera and cannot appear in its frame.
@@ -345,7 +345,7 @@ def _build_scene(rig: Rig) -> str:
                 "collection_name": _COLLECTION,
                 "name": name,
                 "location": (0.0, -_CAMERA_DISTANCE, 0.0),
-                "look_at_point": look_at,
+                "target_point": aim_point,
             },
         )
         if created["status"] != "success":
@@ -405,17 +405,17 @@ def _check_eye_target_view(rig: Rig) -> None:
     side, side_result = _capture(
         rig,
         "eye_side",
-        {"view": {"eye": (_CAMERA_DISTANCE, 0.0, 0.0), "target": (0.0, 0.0, 0.0)}},
+        {"view": {"eye": (_CAMERA_DISTANCE, 0.0, 0.0), "target_point": (0.0, 0.0, 0.0)}},
     )
     side_away, side_away_result = _capture(
         rig,
         "eye_side_away",
-        {"view": {"eye": (_CAMERA_DISTANCE, 0.0, 0.0), "target": (2.0 * _CAMERA_DISTANCE, 0.0, 0.0)}},
+        {"view": {"eye": (_CAMERA_DISTANCE, 0.0, 0.0), "target_point": (2.0 * _CAMERA_DISTANCE, 0.0, 0.0)}},
     )
     above, _above_result = _capture(
         rig,
         "eye_above",
-        {"view": {"eye": (0.0, 0.0, _CAMERA_DISTANCE), "target": (0.0, 0.0, 0.0)}},
+        {"view": {"eye": (0.0, 0.0, _CAMERA_DISTANCE), "target_point": (0.0, 0.0, 0.0)}},
     )
 
     for result in (side_result, side_away_result):
@@ -433,7 +433,7 @@ def _check_eye_target_view(rig: Rig) -> None:
     )
 
     # A different eye must produce a different image. Identical bytes here would mean the
-    # eye/target fields were accepted and then ignored.
+    # eye/target_point fields were accepted and then ignored.
     changed, _fraction, _x, _y = _silhouette(above, side)
     assert changed > 0, "captures from +X and from +Z are byte-identical; the eye was ignored"
 

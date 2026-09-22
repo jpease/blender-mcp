@@ -30,7 +30,7 @@ from .text_hygiene import strip_unsafe
 logger = logging.getLogger("BlenderMCPServer")
 
 # Must match ADDON_PROTOCOL_VERSION in bundled/addon/__init__.py
-EXPECTED_ADDON_PROTOCOL_VERSION = 35
+EXPECTED_ADDON_PROTOCOL_VERSION = 36
 
 _ADDON_MARKER = 'bl_info = {\n    "name": "Blender MCP"'
 _INSTALLED_DIRNAME = "blender_mcp"
@@ -986,6 +986,29 @@ def _surface_gap_warning(missing_commands: list[str], missing_parameters: dict[s
     )
 
 
+def _is_transport_failure(error: BaseException) -> bool:
+    """
+    Report whether an exception means nothing was learned about the addon.
+
+    `blender_mcp.server.connection` imports this module, so this module cannot import
+    its exception classes back without an import cycle. `BlenderTransportError` therefore
+    carries the class attribute `is_transport_failure`, and that flag - plus the builtin
+    `ConnectionError` raised when there is no socket to send on at all - is the whole
+    protocol between the two layers.
+
+    Anything else reached the handshake because Blender answered and the answer was a
+    refusal, which is a real finding about the installed addon.
+
+    Args:
+        error: The exception the handshake round trip raised.
+
+    Returns:
+        bool: True when the round trip never completed.
+
+    """
+    return isinstance(error, ConnectionError) or getattr(error, "is_transport_failure", False) is True
+
+
 def handshake_addon(blender_connection) -> AddonHandshake:
     """
     Query a connected Blender addon for protocol version and dispatch surface.
@@ -998,11 +1021,18 @@ def handshake_addon(blender_connection) -> AddonHandshake:
     carries the same protocol number as one from after it, and that equality is
     exactly what once let a missing `solve_bone_reach` read as a missing feature.
 
+    Every handshake returned from here is something Blender said. A round trip that
+    never completed is raised, not rendered: see `_is_transport_failure`.
+
     Args:
         blender_connection: Value for blender connection.
 
     Returns:
-        AddonHandshake: Result produced by the operation.
+        AddonHandshake: What the addon reported about itself.
+
+    Raises:
+        Exception: If the round trip never completed - the transport's own error,
+            re-raised unchanged, because nothing at all was learned about the addon.
 
     """
     try:
@@ -1069,6 +1099,14 @@ def handshake_addon(blender_connection) -> AddonHandshake:
             missing_parameters=missing_parameters,
         )
     except Exception as e:
+        if _is_transport_failure(e):
+            # Not a version verdict: no protocol number, no capability list, not even
+            # evidence that an addon is installed. Rendering this as a handshake put
+            # `up_to_date=False`, `protocol_version=None` and an empty capability list
+            # in front of an agent, which reads as "reinstall the addon" - the wrong
+            # move when one socket simply went away. The caller reports the fault.
+            raise
+        # Everything below is Blender answering and refusing, which is a real finding.
         msg = str(e).lower()
         if "unknown command" in msg or "get_addon_info" in msg:
             warning = (

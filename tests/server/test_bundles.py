@@ -573,7 +573,18 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 #     world head, verified against real Blender rather than changed.
 # The `validate_scene` engine probe and the UV-layer staleness fix in the same pass cost nothing
 # here: both are handler-side only. Measured shot payload 244,468 bytes.
-SHOT_MODE_BYTE_CEILING = 245_500
+# Raised from 245,500 by the demo-report pass, measured at 246,535 - 2,067 bytes in two parts:
+#   906 `frame_camera_on_objects`: `armature_names`, the whole-character counterpart to
+#     `bone_targets`. Without it a full-body frame is the caller enumerating every mesh a rig
+#     deforms, which it can only do by listing the scene and guessing which objects belong to
+#     the character.
+#   1,161 the aim vocabulary collapsing onto one spelling across domains - `target_point`,
+#     `target_object_name`, `target_bone_name` in place of `target`/`target_object`/
+#     `target_bone` on the pose, aim and reach models and `look_at_point`/`look_at_object_name`
+#     on `create_camera`. Longer property names, on schemas that repeat them, bought against a
+#     live agent writing `target_point` into a pose call by analogy with the camera tools and
+#     having it rejected.
+SHOT_MODE_BYTE_CEILING = 247_000
 
 # The same rule for the default, core-only surface, and the same work: 166 bytes for
 # `validate_scene`'s `persistence` scope, 2,202 for `inspect_delivery`, 601 for `save_shot`'s

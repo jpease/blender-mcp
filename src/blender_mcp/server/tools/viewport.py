@@ -207,8 +207,8 @@ class _StrictModel(BaseModel):
 _DEFAULT_LENS_MM: float = 50.0
 
 # Mirrors _look_quaternion's own <= 1e-16 length_squared guard (camera/_shared.py) - this
-# check runs server-side, before any addon round trip, on the raw eye/target tuples only
-# (target_object's world position is not known here; _look_quaternion re-checks it live).
+# check runs server-side, before any addon round trip, on the raw eye/target_point tuples only
+# (target_object_name's world position is not known here; _look_quaternion re-checks it live).
 _DEGENERATE_LENGTH_SQUARED: float = 1e-16
 
 
@@ -217,35 +217,35 @@ class ViewSpec(_StrictModel):
     An ad hoc camera view for get_viewport_screenshot, independent of the live viewport.
 
     Supply exactly one source of view: camera_object (an existing camera already in the
-    scene, using that camera's own lens) or eye with exactly one of target/target_object (a
-    one-off look-at built from a world point and a camera position, never added to the
-    scene).
+    scene, using that camera's own lens) or eye with exactly one of target_point/
+    target_object_name (a one-off look-at built from a world point and a camera position,
+    never added to the scene).
 
     The look-at is world-Z-up, as `_look_quaternion` (the production aim used by
-    create_camera's look_at_point) builds it. There is no `up` field: a roll this model
+    create_camera's target_point) builds it. There is no `up` field: a roll this model
     accepted but that math ignores would be a lie in the schema.
     """
 
     camera_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
     eye: tuple[float, float, float] | None = None
-    target: tuple[float, float, float] | None = None
-    target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
+    target_point: tuple[float, float, float] | None = None
+    target_object_name: Annotated[str, Field(min_length=1, max_length=63)] | None = None
     lens_mm: Annotated[float, Field(gt=0.0)] = _DEFAULT_LENS_MM
 
     @model_validator(mode="after")
     def _validate_view(self) -> "ViewSpec":
-        ad_hoc = self.eye is not None or self.target is not None or self.target_object is not None
+        ad_hoc = self.eye is not None or self.target_point is not None or self.target_object_name is not None
         if (self.camera_object is not None) == ad_hoc:
-            raise ValueError("Supply exactly one of camera_object or eye (with target or target_object)")
+            raise ValueError("Supply exactly one of camera_object or eye (with target_point or target_object_name)")
         if ad_hoc:
             if self.eye is None:
-                raise ValueError("eye is required when target or target_object is given")
-            if (self.target is None) == (self.target_object is None):
-                raise ValueError("Supply exactly one of target or target_object")
-            if self.target is not None:
-                dx, dy, dz = (t - e for t, e in zip(self.target, self.eye, strict=True))
+                raise ValueError("eye is required when target_point or target_object_name is given")
+            if (self.target_point is None) == (self.target_object_name is None):
+                raise ValueError("Supply exactly one of target_point or target_object_name")
+            if self.target_point is not None:
+                dx, dy, dz = (t - e for t, e in zip(self.target_point, self.eye, strict=True))
                 if dx * dx + dy * dy + dz * dz <= _DEGENERATE_LENGTH_SQUARED:
-                    raise ValueError("eye and target cannot occupy the same point")
+                    raise ValueError("eye and target_point cannot occupy the same point")
         if self.camera_object is not None and self.lens_mm != _DEFAULT_LENS_MM:
             raise ValueError("lens_mm has no effect when camera_object is given - it uses that camera's own lens")
         return self

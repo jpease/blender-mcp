@@ -4,16 +4,16 @@ from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from .._dispatch import call_blender
+from .._inputs import StrictModel, dump_input, dump_inputs
 from .inspection_and_setup import RigidBodySettingsPatch, mcp
 
 
-class RigidBodyProxyMapping(BaseModel):
+class RigidBodyProxyMapping(StrictModel):
     """Map one preserved render object to an existing or generated proxy."""
 
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     render_object_name: str = Field(min_length=1)
     proxy_object_name: str | None = None
     approximation: Literal["BOX", "SPHERE", "CAPSULE", "CYLINDER", "CONVEX_HULL", "LOW_RES_SOURCE"] = "CONVEX_HULL"
@@ -69,7 +69,7 @@ async def create_rigid_body_proxy_rig(
         raise ToolError("verification_frames must be unique and ordered")
     if settings is not None and settings.type not in {None, "ACTIVE"}:
         raise ToolError("Proxy rig settings.type must be ACTIVE when supplied")
-    payload = settings.model_dump(exclude_none=True, exclude_unset=True) if settings else {}
+    payload = dump_input(settings) or {}
     changed = [
         *render_names,
         *explicit_proxy_names,
@@ -80,7 +80,7 @@ async def create_rigid_body_proxy_rig(
         {
             "scene_name": scene_name,
             "rig_name": rig_name,
-            "mappings": [mapping.model_dump(exclude_none=True) for mapping in mappings],
+            "mappings": dump_inputs(mappings),
             "proxy_collection_name": proxy_collection_name,
             "control_collection_name": control_collection_name,
             "render_collection_name": render_collection_name,

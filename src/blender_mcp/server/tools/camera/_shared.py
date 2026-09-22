@@ -1,8 +1,6 @@
-"""Shared validation models and cross-file types for the camera tool package."""
+"""Shared cross-file types for the camera tool package."""
 
 from typing import Literal
-
-from pydantic import BaseModel, ConfigDict
 
 TrackAxis = Literal[
     "TRACK_X",
@@ -23,14 +21,6 @@ FollowForwardAxis = Literal[
     "TRACK_NEGATIVE_Y",
     "TRACK_NEGATIVE_Z",
 ]
-
-
-class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
-
-
-def _dump(model: BaseModel | None) -> dict | None:
-    return model.model_dump(exclude_none=True, exclude_unset=True) if model is not None else None
 
 
 def _tool_params(values: dict) -> dict:

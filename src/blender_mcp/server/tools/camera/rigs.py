@@ -8,7 +8,8 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import FollowForwardAxis, UpAxis, _dump, _StrictModel, _tool_params
+from .._inputs import StrictModel, dump_input
+from ._shared import FollowForwardAxis, UpAxis, _tool_params
 
 SplineType = Literal["BEZIER", "NURBS"]
 DataPolicy = Literal["COPY", "LINK"]
@@ -17,7 +18,7 @@ ExternalTargetPolicy = Literal["SHARE", "REJECT"]
 MatchPolicy = Literal["TRANSFORM_ONLY", "OPTICS_ONLY", "FULL"]
 
 
-class WorldTransform(_StrictModel):
+class WorldTransform(StrictModel):
     """Complete world transform using a [w, x, y, z] quaternion."""
 
     location: tuple[float, float, float]
@@ -151,7 +152,7 @@ async def match_camera_transform(
             "destination_name": destination_name,
             "policy": policy,
             "source_object_name": source_object_name,
-            "world_transform": _dump(world_transform),
+            "world_transform": dump_input(world_transform),
         },
         changed_objects=[destination_name],
     )

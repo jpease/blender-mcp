@@ -7,14 +7,14 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
+from .._inputs import OpenPayloadModel, dump_inputs
 from .._node_graph import NodeGraphEdit
-from ._shared import GeometryNodesRequest, model_records
 
 SocketDirection = Literal["INPUT", "OUTPUT"]
 CollisionPolicy = Literal["ERROR", "REUSE", "UNIQUE"]
 
 
-class InterfaceSocketSpec(GeometryNodesRequest):
+class InterfaceSocketSpec(OpenPayloadModel):
     """Describe one public node-group socket and its agent-visible contract."""
 
     name: str = Field(min_length=1, max_length=128)
@@ -38,7 +38,7 @@ class InterfaceSocketSpec(GeometryNodesRequest):
         return self
 
 
-class InterfacePanelSpec(GeometryNodesRequest):
+class InterfacePanelSpec(OpenPayloadModel):
     """Describe one interface panel that groups related exposed controls."""
 
     name: str = Field(min_length=1, max_length=128)
@@ -47,7 +47,7 @@ class InterfacePanelSpec(GeometryNodesRequest):
     parent_panel: str | None = None
 
 
-class InterfaceEdit(GeometryNodesRequest):
+class InterfaceEdit(OpenPayloadModel):
     """Describe one stable-identifier interface mutation."""
 
     operation: Literal["ADD_SOCKET", "ADD_PANEL", "UPDATE", "MOVE", "REMOVE"]
@@ -88,8 +88,8 @@ async def create_geometry_node_group(
         "execution_role": execution_role,
         "geometry_types": geometry_types,
         "tool_modes": tool_modes,
-        "sockets": model_records(sockets or []),
-        "panels": model_records(panels or []),
+        "sockets": dump_inputs(sockets or []),
+        "panels": dump_inputs(panels or []),
         "description": description,
         "color_tag": color_tag,
         "collision_policy": collision_policy,
@@ -115,7 +115,7 @@ async def edit_node_group_interface(
         "edit_node_group_interface",
         {
             "node_group_name": node_group_name,
-            "edits": model_records(edits),
+            "edits": dump_inputs(edits),
             "migration_policy": migration_policy,
         },
         changed_resources=[node_group_name],
@@ -137,6 +137,6 @@ async def patch_geometry_node_graph(
     """
     return await call_blender(
         "patch_geometry_node_graph",
-        {"node_group_name": node_group_name, "operations": model_records(operations)},
+        {"node_group_name": node_group_name, "operations": dump_inputs(operations)},
         changed_resources=[node_group_name],
     )

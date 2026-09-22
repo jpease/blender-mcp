@@ -4,16 +4,16 @@ from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from .._dispatch import call_blender
+from .._inputs import StrictModel, dump_input, dump_inputs
 from .inspection_and_setup import Vector3, mcp, rigid_body_constraint_adapter
 
 
-class RagdollBodySpec(BaseModel):
+class RagdollBodySpec(StrictModel):
     """Collision shape and mass weighting for one mapped armature bone."""
 
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     bone_name: str = Field(min_length=1)
     proxy_name: str | None = None
     shape: Literal["CAPSULE", "BOX", "CONVEX_HULL"] = "CAPSULE"
@@ -29,10 +29,9 @@ class RagdollBodySpec(BaseModel):
         return self
 
 
-class RagdollJointSpec(BaseModel):
+class RagdollJointSpec(StrictModel):
     """An explicit anatomical joint with reviewed rigid-body limits."""
 
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     parent_bone_name: str = Field(min_length=1)
     child_bone_name: str = Field(min_length=1)
     # Untyped and validated below, so the whole constraint union stays out of
@@ -59,14 +58,13 @@ class RagdollJointSpec(BaseModel):
 
         """
         validated = rigid_body_constraint_adapter.validate_python(self.configuration)
-        self.configuration = validated.model_dump(exclude_none=True, exclude_unset=True)
+        self.configuration = dump_input(validated) or {}
         return self
 
 
-class RagdollBakeMapping(BaseModel):
+class RagdollBakeMapping(StrictModel):
     """Map one simulated proxy back to one pose bone."""
 
-    model_config = ConfigDict(extra="forbid")
     bone_name: str = Field(min_length=1)
     proxy_object_name: str = Field(min_length=1)
 
@@ -124,8 +122,8 @@ async def create_ragdoll_rig(
             "scene_name": scene_name,
             "armature_object_name": armature_object_name,
             "rig_name": rig_name,
-            "bodies": [body.model_dump(exclude_none=True) for body in bodies],
-            "joints": [joint.model_dump(exclude_none=True) for joint in joints],
+            "bodies": dump_inputs(bodies),
+            "joints": dump_inputs(joints),
             "total_mass": total_mass,
             "proxy_collection_name": proxy_collection_name,
             "constraint_collection_name": constraint_collection_name,

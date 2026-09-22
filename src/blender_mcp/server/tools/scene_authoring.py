@@ -20,7 +20,7 @@ from pydantic import Field, model_validator
 
 from ..app import mcp
 from ._dispatch import call_blender
-from ._scene_shared import _StrictModel
+from ._inputs import StrictModel
 
 
 def _require_one_value_per(name: str, values: list | None, expected: int, domain: str) -> None:
@@ -41,7 +41,7 @@ def _require_one_value_per(name: str, values: list | None, expected: int, domain
         raise ValueError(f"{name} must contain one value per {domain}")
 
 
-class MeshGeometry(_StrictModel):
+class MeshGeometry(StrictModel):
     """Declarative mesh topology in object-local coordinates."""
 
     kind: Literal["MESH"] = "MESH"
@@ -50,7 +50,7 @@ class MeshGeometry(_StrictModel):
     faces: Annotated[list[list[int]], Field(max_length=1_000_000)] = Field(default_factory=list)
 
 
-class CurvePoint(_StrictModel):
+class CurvePoint(StrictModel):
     """One editable legacy Curve/Surface control point."""
 
     co: tuple[float, float, float]
@@ -63,7 +63,7 @@ class CurvePoint(_StrictModel):
     handle_right_type: Literal["FREE", "VECTOR", "ALIGNED", "AUTO"] = "AUTO"
 
 
-class SplineRecord(_StrictModel):
+class SplineRecord(StrictModel):
     """One curve or surface spline and its interpolation settings."""
 
     type: Literal["POLY", "BEZIER", "NURBS"] = "POLY"
@@ -86,7 +86,7 @@ class SplineRecord(_StrictModel):
         return self
 
 
-class SplineGeometry(_StrictModel):
+class SplineGeometry(StrictModel):
     """Curve or surface data composed from one or more splines."""
 
     kind: Literal["CURVE", "SURFACE"]
@@ -98,7 +98,7 @@ class SplineGeometry(_StrictModel):
     extrude: Annotated[float, Field(ge=0)] = 0.0
 
 
-class TextGeometry(_StrictModel):
+class TextGeometry(StrictModel):
     """Editable Blender font geometry."""
 
     kind: Literal["TEXT"] = "TEXT"
@@ -110,7 +110,7 @@ class TextGeometry(_StrictModel):
     align_y: Literal["TOP_BASELINE", "TOP", "CENTER", "BOTTOM", "BOTTOM_BASELINE"] = "TOP_BASELINE"
 
 
-class MetaElement(_StrictModel):
+class MetaElement(StrictModel):
     """One metaball family element."""
 
     co: tuple[float, float, float]
@@ -119,7 +119,7 @@ class MetaElement(_StrictModel):
     type: Literal["BALL", "CAPSULE", "PLANE", "ELLIPSOID", "CUBE"] = "BALL"
 
 
-class MetaGeometry(_StrictModel):
+class MetaGeometry(StrictModel):
     """Editable metaball data containing explicit elements."""
 
     kind: Literal["META"] = "META"
@@ -129,7 +129,7 @@ class MetaGeometry(_StrictModel):
     threshold: Annotated[float, Field(gt=0)] = 0.6
 
 
-class LatticeGeometry(_StrictModel):
+class LatticeGeometry(StrictModel):
     """Lattice resolution specification."""
 
     kind: Literal["LATTICE"] = "LATTICE"
@@ -138,7 +138,7 @@ class LatticeGeometry(_StrictModel):
     points_w: Annotated[int, Field(ge=2, le=64)] = 2
 
 
-class PointCloudGeometry(_StrictModel):
+class PointCloudGeometry(StrictModel):
     """Native point-cloud positions and optional point radii."""
 
     kind: Literal["POINTCLOUD"] = "POINTCLOUD"
@@ -147,14 +147,14 @@ class PointCloudGeometry(_StrictModel):
 
     @model_validator(mode="after")
     def validate_radii(self) -> "PointCloudGeometry":
-        """Require one non-negative radius per point when supplied; finiteness comes from _StrictModel."""
+        """Require one non-negative radius per point when supplied; finiteness comes from StrictModel."""
         _require_one_value_per("radii", self.radii, len(self.points), "point")
         if self.radii is not None and any(radius < 0 for radius in self.radii):
             raise ValueError("radii must be non-negative")
         return self
 
 
-class GeometryAttribute(_StrictModel):
+class GeometryAttribute(StrictModel):
     """One native geometry attribute with values in domain order."""
 
     name: Annotated[str, Field(min_length=1, max_length=128)]
@@ -193,7 +193,7 @@ def _validate_attributes(attributes: list[GeometryAttribute], counts: dict[str, 
             )
 
 
-class CurvesGeometry(_StrictModel):
+class CurvesGeometry(StrictModel):
     """Modern Curves/hair geometry with per-curve point counts and attributes."""
 
     kind: Literal["CURVES"] = "CURVES"
@@ -217,7 +217,7 @@ class CurvesGeometry(_StrictModel):
         return self
 
 
-class GreasePencilStroke(_StrictModel):
+class GreasePencilStroke(StrictModel):
     """One editable Grease Pencil stroke."""
 
     points: Annotated[list[tuple[float, float, float]], Field(min_length=1, max_length=100_000)]
@@ -233,7 +233,7 @@ class GreasePencilStroke(_StrictModel):
         return self
 
 
-class GreasePencilFrame(_StrictModel):
+class GreasePencilFrame(StrictModel):
     """One Grease Pencil drawing at an integer frame."""
 
     frame_number: int
@@ -254,21 +254,21 @@ class GreasePencilFrame(_StrictModel):
         return self
 
 
-class GreasePencilLayer(_StrictModel):
+class GreasePencilLayer(StrictModel):
     """One named Grease Pencil layer and its drawings."""
 
     name: Annotated[str, Field(min_length=1, max_length=128)]
     frames: Annotated[list[GreasePencilFrame], Field(max_length=100_000)] = Field(default_factory=list)
 
 
-class GreasePencilGeometry(_StrictModel):
+class GreasePencilGeometry(StrictModel):
     """Blender 5.x Grease Pencil layers, frames, strokes, and attributes."""
 
     kind: Literal["GREASEPENCIL"] = "GREASEPENCIL"
     layers: Annotated[list[GreasePencilLayer], Field(min_length=1, max_length=10_000)]
 
 
-class VolumeGeometry(_StrictModel):
+class VolumeGeometry(StrictModel):
     """OpenVDB-backed volume data."""
 
     kind: Literal["VOLUME"] = "VOLUME"
@@ -292,7 +292,7 @@ GeometrySpec = Annotated[
 ]
 
 
-class ManagedRigSelector(_StrictModel):
+class ManagedRigSelector(StrictModel):
     """Select MCP-owned objects by a known rig ownership tag."""
 
     system: Literal["CAMERA", "RIGID_BODY"]

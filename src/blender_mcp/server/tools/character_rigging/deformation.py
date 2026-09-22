@@ -7,7 +7,7 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _StrictModel
+from .._inputs import StrictModel
 
 VertexMapping = Literal[
     "TOPOLOGY",
@@ -20,7 +20,7 @@ VertexMapping = Literal[
 ]
 
 
-class BendyBonePatch(_StrictModel):
+class BendyBonePatch(StrictModel):
     """Allowlisted rest and pose settings for one Blender B-Bone."""
 
     bone_name: str = Field(min_length=1, max_length=63)

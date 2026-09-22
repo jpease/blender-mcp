@@ -7,7 +7,7 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _StrictModel
+from .._inputs import StrictModel
 
 AnimationOwner = Literal[
     "CLOTH_SETTINGS",
@@ -22,7 +22,7 @@ KeyframePolicy = Literal["INSERT_ONLY", "REPLACE_EXISTING"]
 Interpolation = Literal["CONSTANT", "LINEAR", "BEZIER"]
 
 
-class ClothAnimationKeyframe(_StrictModel):
+class ClothAnimationKeyframe(StrictModel):
     """One curated RNA property value at an exact frame."""
 
     owner: AnimationOwner

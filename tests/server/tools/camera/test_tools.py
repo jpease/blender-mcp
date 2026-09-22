@@ -85,10 +85,39 @@ def test_create_camera_rejects_ambiguous_orientation_before_dispatch(monkeypatch
             collection_name="Cameras",
             name="Hero",
             rotation_euler=(0, 0, 0),
-            look_at_point=(0, 0, 0),
+            target_point=(0, 0, 0),
         )
 
     assert connection.calls == []
+
+
+def test_create_camera_forwards_its_aim_fields_under_the_shared_target_spelling(monkeypatch) -> None:
+    """The wire contract, not the signature: the addon reads target_point/target_object_name."""
+    connection = _StubConnection()
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+
+    _run(
+        camera.create_camera,
+        scene_name="Scene",
+        collection_name="Cameras",
+        name="Hero",
+        target_point=(1.0, 2.0, 3.0),
+    )
+    _run(
+        camera.create_camera,
+        scene_name="Scene",
+        collection_name="Cameras",
+        name="Hero2",
+        target_object_name="Subject",
+    )
+
+    command, by_point = connection.calls[0]
+    assert command == "create_camera"
+    assert by_point["target_point"] == (1.0, 2.0, 3.0)
+    assert by_point["target_object_name"] is None
+    _command, by_object = connection.calls[1]
+    assert by_object["target_object_name"] == "Subject"
+    assert by_object["target_point"] is None
 
 
 def test_point_camera_at_preflights_target_source_before_dispatch(monkeypatch) -> None:
@@ -459,7 +488,7 @@ def test_handler_point_camera_at_rejects_a_placement_on_the_aim_point(monkeypatc
         handler.point_camera_at("Scene", "Hero", target_point=(1.0, 2.0, 3.0), camera_location=(1.0, 2.0, 3.0))
 
 
-def test_frame_camera_on_objects_frames_bones_objects_or_their_union(monkeypatch) -> None:
+def test_frame_camera_on_objects_frames_bones_objects_armatures_or_their_union(monkeypatch) -> None:
     connection = _StubConnection({"camera": "Hero"})
     monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
@@ -473,24 +502,36 @@ def test_frame_camera_on_objects_frames_bones_objects_or_their_union(monkeypatch
         camera.frame_camera_on_objects,
         scene_name="Scene",
         camera_name="Hero",
+        armature_names=["my_rig"],
+    )
+    _run(
+        camera.frame_camera_on_objects,
+        scene_name="Scene",
+        camera_name="Hero",
         object_names=["Prop"],
         bone_targets=[camera.BoneFrameTarget(object_name="my_rig", bone_name="thigh.L")],
+        armature_names=["my_rig"],
     )
 
     command, bones_only = connection.calls[0]
     assert command == "frame_camera_on_objects"
     assert bones_only["object_names"] == []
+    assert bones_only["armature_names"] == []
     assert bones_only["bone_targets"] == [{"object_name": "my_rig", "bone_name": "thigh.L", "radius_m": 0.12}]
-    _command, union = connection.calls[1]
+    _command, rig_only = connection.calls[1]
+    assert rig_only["armature_names"] == ["my_rig"]
+    assert rig_only["object_names"] == [] and rig_only["bone_targets"] == []
+    _command, union = connection.calls[2]
     assert union["object_names"] == ["Prop"]
     assert union["bone_targets"] == [{"object_name": "my_rig", "bone_name": "thigh.L", "radius_m": 0.0}]
+    assert union["armature_names"] == ["my_rig"]
 
 
 def test_frame_camera_on_objects_refuses_an_empty_and_a_repeated_request(monkeypatch) -> None:
     connection = _StubConnection()
     monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
-    with pytest.raises(ToolError, match="at least one of object_names or bone_targets"):
+    with pytest.raises(ToolError, match="at least one of object_names, bone_targets or armature_names"):
         _run(camera.frame_camera_on_objects, scene_name="Scene", camera_name="Hero")
     with pytest.raises(ToolError, match=r"must not repeat bone 'thigh\.L'"):
         _run(
@@ -533,13 +574,26 @@ def _framing_handler(monkeypatch):
         def evaluated_get(self, _depsgraph):
             return self
 
+    class Collection(dict):
+        """bpy_prop_collection's split personality: membership by name, iteration by datablock."""
+
+        def __iter__(self):
+            return iter(self.values())
+
+    def mesh(name, offset, half, **binding):
+        return Evaluable(
+            name=name,
+            type="MESH",
+            matrix_world=Matrix(offset),
+            bound_box=[(x, y, z) for x in (-half, half) for y in (-half, half) for z in (0.0, 1.0)],
+            parent=None,
+            parent_type="OBJECT",
+            modifiers=[],
+            **binding,
+        )
+
     # A 20 x 20 x 1 m slab: wide enough that a union with it is visible on x and y alone.
-    wall = Evaluable(
-        name="Wall",
-        type="MESH",
-        matrix_world=Matrix((0.0, 0.0, 0.0)),
-        bound_box=[(x, y, z) for x in (-10.0, 10.0) for y in (-10.0, 10.0) for z in (0.0, 1.0)],
-    )
+    wall = mesh("Wall", (0.0, 0.0, 0.0), 10.0)
     rig = Evaluable(
         name="Rig",
         type="ARMATURE",
@@ -548,8 +602,18 @@ def _framing_handler(monkeypatch):
             bones={"segment": types.SimpleNamespace(head=Vector((0.0, 0.0, 1.5)), tail=Vector((0.0, 0.0, 1.7)))}
         ),
     )
+    # The two ways a mesh is bound to a rig, one each: a modifier, and ARMATURE parenting.
+    skin = mesh("Skin", (1.0, 0.0, 0.0), 0.5)
+    skin.modifiers = [types.SimpleNamespace(type="ARMATURE", object=rig)]
+    shirt = mesh("Shirt", (1.0, 0.0, 0.0), 0.6)
+    shirt.parent, shirt.parent_type = rig, "ARMATURE"
+    # Bound to nothing: an armature expansion must not sweep it up.
+    loose = mesh("Loose", (30.0, 0.0, 0.0), 1.0)
+    bare_rig = Evaluable(name="Bare Rig", type="ARMATURE", matrix_world=Matrix((0.0, 0.0, 0.0)))
     hero = types.SimpleNamespace(name="Hero", type="CAMERA", data=types.SimpleNamespace(type="PERSP"))
-    objects = {"Hero": hero, "Wall": wall, "Rig": rig}
+    objects = Collection(
+        {obj.name: obj for obj in (hero, wall, rig, skin, shirt, loose, bare_rig)},
+    )
     scene = types.SimpleNamespace(name="Scene", objects=objects)
     addon, bpy_stub = _load_addon(monkeypatch, data={"scenes": {"Scene": scene}, "objects": objects})
     bpy_stub.context.evaluated_depsgraph_get = lambda: None
@@ -561,7 +625,7 @@ def _framing_handler(monkeypatch):
 def test_handler_framing_refuses_every_unresolvable_bone_target_before_touching_the_camera(monkeypatch) -> None:
     _module, handler, _scene, _objects = _framing_handler(monkeypatch)
 
-    with pytest.raises(ValueError, match="at least one of object_names or bone_targets"):
+    with pytest.raises(ValueError, match="at least one of object_names, bone_targets or armature_names"):
         handler.frame_camera_on_objects("Scene", "Hero")
     with pytest.raises(ValueError, match="Object not found: Ghost"):
         handler.frame_camera_on_objects("Scene", "Hero", bone_targets=[{"object_name": "Ghost", "bone_name": "s"}])
@@ -607,6 +671,36 @@ def test_handler_framing_unions_object_bounds_with_bone_segments(monkeypatch) ->
     assert list(minimum) == pytest.approx([-10.0, -10.0, 0.0])
     assert list(maximum) == pytest.approx([10.0, 10.0, 1.7])
     assert [record["bone_name"] for record in records] == ["segment"]
+
+
+def test_handler_framing_refuses_every_unresolvable_armature_name_before_touching_the_camera(monkeypatch) -> None:
+    _module, handler, _scene, _objects = _framing_handler(monkeypatch)
+
+    with pytest.raises(ValueError, match="Object not found: Ghost"):
+        handler.frame_camera_on_objects("Scene", "Hero", armature_names=["Ghost"])
+    with pytest.raises(ValueError, match="'Wall' is not an armature"):
+        handler.frame_camera_on_objects("Scene", "Hero", armature_names=["Wall"])
+    with pytest.raises(ValueError, match="'Bare Rig' deforms no mesh in scene 'Scene'"):
+        handler.frame_camera_on_objects("Scene", "Hero", armature_names=["Bare Rig"])
+    with pytest.raises(ValueError, match="armature_names must not contain duplicates"):
+        handler.frame_camera_on_objects("Scene", "Hero", armature_names=["Rig", "Rig"])
+
+
+def test_handler_framing_expands_an_armature_to_the_meshes_it_deforms(monkeypatch) -> None:
+    module, _handler, scene, objects = _framing_handler(monkeypatch)
+
+    specs = module._armature_mesh_specs(["Rig"], scene)
+    framed = module._framing_objects([], specs)
+    _points, minimum, maximum, _center, _records = module._framing_points(framed, [])
+
+    # Both bindings are found, and neither the unbound mesh 30 m away nor the slab is swept in.
+    assert [(name, sorted(obj.name for obj in meshes)) for name, meshes in specs] == [("Rig", ["Shirt", "Skin"])]
+    assert list(minimum) == pytest.approx([0.4, -0.6, 0.0])
+    assert list(maximum) == pytest.approx([1.6, 0.6, 1.0])
+
+    # A mesh reached both explicitly and through the rig is framed once, not twice.
+    both_ways = module._framing_objects([objects["Skin"]], specs)
+    assert [obj.name for obj in both_ways] == ["Skin", "Shirt"]
 
 
 def test_camera_keyframe_requires_exactly_one_timing_source() -> None:

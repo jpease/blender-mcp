@@ -2129,7 +2129,7 @@ _ARGUMENTS: Mapping[str, Mapping[str, object]] = MappingProxyType(
         "set_viewport_overlay": {"toggle": "CAVITY", "enabled": True},
         "solve_bone_reach": {
             "armature_object_name": "Hero_Rig",
-            "reaches": [{"tip_bone": "hand.L", "target": [0.6, -0.1, 1.1]}],
+            "reaches": [{"tip_bone": "hand.L", "target_point": [0.6, -0.1, 1.1]}],
         },
         "keyframe_bone_reach": {
             "armature_object_name": "Hero_Rig",
@@ -2137,8 +2137,8 @@ _ARGUMENTS: Mapping[str, Mapping[str, object]] = MappingProxyType(
             "reaches": [
                 {
                     "tip_bone": "foot.L",
-                    "keys": [{"frame": float(frame), "target": [0.1, -0.2, 0.0]} for frame in range(1, 25)],
-                    "pole_target": [0.1, -0.8, 0.4],
+                    "keys": [{"frame": float(frame), "target_point": [0.1, -0.2, 0.0]} for frame in range(1, 25)],
+                    "pole_target_point": [0.1, -0.8, 0.4],
                     "hinge": {"bone_name": "shin.L", "axis": "X", "min_degrees": 0.0, "max_degrees": 150.0},
                 }
             ],
@@ -2262,8 +2262,8 @@ class _StubConnection:
     Stand-in for `BlenderConnection`, answering with the payload the real handler returns.
 
     The tests stub the same seam - `tests/conftest.py` patches
-    `tools/_scene_shared.get_blender_connection`, and each tool package's tests patch their
-    own `_shared` - so this reuses their mechanism across every module at once.
+    `tools/_dispatch.get_blender_connection`, the one module every tool package resolves the
+    socket through - so this reuses their mechanism across every module at once.
     """
 
     def __init__(self, scale: SceneScale) -> None:

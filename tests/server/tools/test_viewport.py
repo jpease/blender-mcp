@@ -27,26 +27,34 @@ def test_view_spec_requires_exactly_one_source() -> None:
     with pytest.raises(ValidationError, match=r"Supply exactly one of camera_object or eye"):
         ViewSpec()
     with pytest.raises(ValidationError, match=r"Supply exactly one of camera_object or eye"):
-        ViewSpec(camera_object="Hero", eye=(1.0, 2.0, 3.0), target=(0.0, 0.0, 0.0))
+        ViewSpec(camera_object="Hero", eye=(1.0, 2.0, 3.0), target_point=(0.0, 0.0, 0.0))
 
 
 def test_view_spec_eye_requires_exactly_one_target_source() -> None:
-    with pytest.raises(ValidationError, match=r"Supply exactly one of target or target_object"):
+    with pytest.raises(ValidationError, match=r"Supply exactly one of target_point or target_object_name"):
         ViewSpec(eye=(1.0, 2.0, 3.0))
-    with pytest.raises(ValidationError, match=r"Supply exactly one of target or target_object"):
-        ViewSpec(eye=(1.0, 2.0, 3.0), target=(4.0, 5.0, 6.0), target_object="Hero")
+    with pytest.raises(ValidationError, match=r"Supply exactly one of target_point or target_object_name"):
+        ViewSpec(eye=(1.0, 2.0, 3.0), target_point=(4.0, 5.0, 6.0), target_object_name="Hero")
 
 
 def test_view_spec_rejects_degenerate_eye_and_target() -> None:
     """Mirrors _look_quaternion's own <= 1e-16 length_squared guard, but on the raw tuples."""
-    with pytest.raises(ValidationError, match=r"eye and target cannot occupy the same point"):
-        ViewSpec(eye=(1.0, 2.0, 3.0), target=(1.0, 2.0, 3.0))
+    with pytest.raises(ValidationError, match=r"eye and target_point cannot occupy the same point"):
+        ViewSpec(eye=(1.0, 2.0, 3.0), target_point=(1.0, 2.0, 3.0))
 
 
 def test_view_spec_accepts_each_valid_source() -> None:
     assert ViewSpec(camera_object="Hero").camera_object == "Hero"
-    assert ViewSpec(eye=(1.0, 2.0, 3.0), target=(4.0, 5.0, 6.0)).target == (4.0, 5.0, 6.0)
-    assert ViewSpec(eye=(1.0, 2.0, 3.0), target_object="Hero").target_object == "Hero"
+    assert ViewSpec(eye=(1.0, 2.0, 3.0), target_point=(4.0, 5.0, 6.0)).target_point == (4.0, 5.0, 6.0)
+    assert ViewSpec(eye=(1.0, 2.0, 3.0), target_object_name="Hero").target_object_name == "Hero"
+
+
+def test_view_spec_dumps_the_shared_target_spelling_the_addon_reads() -> None:
+    """get_viewport_screenshot forwards model_dump() verbatim, so these keys are the wire contract."""
+    dumped = ViewSpec(eye=(1.0, 2.0, 3.0), target_point=(4.0, 5.0, 6.0)).model_dump()
+
+    assert dumped["target_point"] == (4.0, 5.0, 6.0)
+    assert dumped["target_object_name"] is None
 
 
 def test_view_spec_rejects_lens_mm_override_with_camera_object() -> None:
@@ -166,7 +174,7 @@ def test_eye_target_view_builds_and_cleans_up_a_temporary_camera(monkeypatch: py
     )
 
     view_matrix, window_matrix, view_source = module._synthetic_view_matrices(
-        {"eye": (1.0, 2.0, 3.0), "target": (4.0, 5.0, 6.0), "lens_mm": 35.0}, bpy.context.scene
+        {"eye": (1.0, 2.0, 3.0), "target_point": (4.0, 5.0, 6.0), "lens_mm": 35.0}, bpy.context.scene
     )
 
     assert view_source == "eye_target"
@@ -194,7 +202,7 @@ def test_eye_target_object_resolves_the_named_object_as_target(monkeypatch: pyte
         module, "_look_quaternion", lambda origin, target: quat_calls.append((origin, target)) or "QUAT"
     )
 
-    module._synthetic_view_matrices({"eye": (0.0, 0.0, 0.0), "target_object": "Prop"}, bpy.context.scene)
+    module._synthetic_view_matrices({"eye": (0.0, 0.0, 0.0), "target_object_name": "Prop"}, bpy.context.scene)
 
     assert quat_calls == [((0.0, 0.0, 0.0), (9.0, 9.0, 9.0))]
 
@@ -212,7 +220,7 @@ def test_eye_target_temporary_camera_is_removed_even_when_calc_matrix_camera_fai
     objects._factory = _FailingCameraObject
 
     with pytest.raises(RuntimeError, match="boom"):
-        module._synthetic_view_matrices({"eye": (1.0, 2.0, 3.0), "target": (4.0, 5.0, 6.0)}, bpy.context.scene)
+        module._synthetic_view_matrices({"eye": (1.0, 2.0, 3.0), "target_point": (4.0, 5.0, 6.0)}, bpy.context.scene)
 
     assert len(objects.removed) == 1
     assert len(cameras.removed) == 1

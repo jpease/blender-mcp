@@ -3,19 +3,18 @@
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from ..app import mcp
 from ._dispatch import call_blender
+from ._inputs import StrictModel
 
 UnitSystem = Literal["NONE", "METRIC", "IMPERIAL"]
 SyncMode = Literal["NONE", "FRAME_DROP", "AUDIO_SYNC"]
 
 
-class ScenePhysicsPatch(BaseModel):
+class ScenePhysicsPatch(StrictModel):
     """Validated patch for scene-wide unit, gravity, and playback-sync settings."""
-
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     system: UnitSystem | None = None
     scale_length: Annotated[float | None, Field(ge=0.001, le=100.0)] = None

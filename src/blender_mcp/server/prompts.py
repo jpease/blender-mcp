@@ -102,7 +102,7 @@ def asset_creation_strategy() -> str:
         - Pick ONE world point for the contact and give that same point to both characters.
           Two separately-eyeballed points are two different points, and the hands will miss.
         - Drive each character to it with solve_bone_reach(armature_object_name=...,
-          reaches=[{"tip_bone": <wrist-class bone>, "target": <the shared point>}]) - one call
+          reaches=[{"tip_bone": <wrist-class bone>, "target_point": <the shared point>}]) - one call
           per armature. tip_bone is the bone whose POSITION must be exact, so it is the wrist,
           not the hand or a fingertip; pose the hand's own orientation and grip separately with
           set_character_pose. Check each reach's converged/out_of_reach before moving on.
@@ -156,8 +156,8 @@ def character_animation_strategy() -> str:
           almost never the axis that looks anywhere; aim_at refuses one letter for both.
         - get_character_rig_info(armature_object_name=..., bone_names=[...]) for world-space
           pose-bone matrices. Never chain FK forward from bone lengths by hand.
-        - A bone can aim at another rig's bone: aim_at takes target_object plus target_bone
-          (target_bone_position="HEAD"/"TAIL"/"CENTER"), which is how two characters look at
+        - A bone can aim at another rig's bone: aim_at takes target_object_name plus
+          target_bone_name (target_bone_position="HEAD"/"TAIL"/"CENTER"), which is how two characters look at
           each other's heads instead of at each other's armature origins on the floor.
 
     2. Key the body first, the feet second, into ONE action.
@@ -178,7 +178,7 @@ def character_animation_strategy() -> str:
           each frame. That is the whole trick.
 
     4. Bend the knee on purpose.
-        - Pass a pole_target roughly one leg-length in front of the knee. A straight-legged rest
+        - Pass a pole_target_point roughly one leg-length in front of the knee. A straight-legged rest
           pose makes automatic pole inference refuse, by design - there is no bend to infer from.
         - Pass a hinge on the shin bone (axis="X", min_degrees=0, max_degrees=150 or whatever
           that rig's knee axis is) so the solver cannot invert the joint. The limit is temporary

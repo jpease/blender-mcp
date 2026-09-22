@@ -8,7 +8,7 @@ FastMCP builds one pydantic model per tool from the handler's signature
 proceeds as though the agent had never sent it. Everything else about this surface says the
 opposite. The documentation pass stamps `additionalProperties: false` onto every advertised tool
 schema (`_documentation._describe_schema`), and the project's own nested patch models are
-`extra="forbid"` (`camera._shared._StrictModel`). Only the SDK-generated top-level model was
+`extra="forbid"` (`_inputs.StrictModel`). Only the SDK-generated top-level model was
 permissive, which is the one place a client's whole argument dict arrives.
 
 The gap is expensive in practice, because the failure is silent and looks like success. An agent

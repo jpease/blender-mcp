@@ -10,13 +10,13 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _dump, _StrictModel
+from .._inputs import StrictModel, dump_input
 
 Projection = Literal["PERSP", "ORTHO", "PANO"]
 SensorFit = Literal["AUTO", "HORIZONTAL", "VERTICAL"]
 
 
-class CameraOpticsPatch(_StrictModel):
+class CameraOpticsPatch(StrictModel):
     """Allowlisted Blender 5.1 camera projection and optical fields."""
 
     projection: Projection | None = None
@@ -38,7 +38,7 @@ class CameraOpticsPatch(_StrictModel):
         return self
 
 
-class CameraDisplayPatch(_StrictModel):
+class CameraDisplayPatch(StrictModel):
     """Allowlisted Blender 5.1 camera viewport and composition-guide fields."""
 
     passepartout_alpha: float | None = Field(default=None, ge=0, le=1)
@@ -57,7 +57,7 @@ class CameraDisplayPatch(_StrictModel):
     show_composition_thirds: bool | None = None
 
 
-class CameraDofPatch(_StrictModel):
+class CameraDofPatch(StrictModel):
     """Photographic depth-of-field settings; focus intent is supplied separately."""
 
     use_dof: bool | None = None
@@ -77,8 +77,8 @@ async def create_camera(
     location: tuple[float, float, float] = (0.0, 0.0, 0.0),
     rotation_euler: tuple[float, float, float] | None = None,
     rotation_quaternion: tuple[float, float, float, float] | None = None,
-    look_at_object_name: str | None = None,
-    look_at_point: tuple[float, float, float] | None = None,
+    target_object_name: str | None = None,
+    target_point: tuple[float, float, float] | None = None,
     optics: CameraOpticsPatch | None = None,
     make_active: bool = False,
 ) -> dict:
@@ -86,13 +86,16 @@ async def create_camera(
     Create a collision-safe camera in an explicit scene collection.
 
     Coordinates are world-space; Euler angles are XYZ radians and quaternions are [w, x, y, z].
-    Supply at most one of Euler rotation, quaternion rotation, look-at object, or look-at point.
+    Supply at most one of rotation_euler, rotation_quaternion, target_object_name, or target_point.
     The camera is not selected and does not become the scene camera unless ``make_active`` is true.
     Panoramic settings are capability-checked against the running Blender build.
     """
-    orientations = [rotation_euler, rotation_quaternion, look_at_object_name, look_at_point]
+    orientations = [rotation_euler, rotation_quaternion, target_object_name, target_point]
     if sum(value is not None for value in orientations) > 1:
-        raise ToolError("Supply only one orientation source: Euler, quaternion, look-at object, or look-at point")
+        raise ToolError(
+            "Supply only one orientation source: rotation_euler, rotation_quaternion, "
+            "target_object_name, or target_point"
+        )
     if optics is not None and optics.projection is not None and optics.projection != projection:
         raise ToolError("projection conflicts with optics.projection; supply projection in only one place")
     return await call_blender(
@@ -105,9 +108,9 @@ async def create_camera(
             "location": location,
             "rotation_euler": rotation_euler,
             "rotation_quaternion": rotation_quaternion,
-            "look_at_object_name": look_at_object_name,
-            "look_at_point": look_at_point,
-            "optics": _dump(optics),
+            "target_object_name": target_object_name,
+            "target_point": target_point,
+            "optics": dump_input(optics),
             "make_active": make_active,
         },
     )
@@ -126,8 +129,8 @@ async def configure_camera(
     This does not change render resolution because the render gate belongs to the scene. The result
     reports old and new values. Use ``configure_camera_dof`` for focus and aperture controls.
     """
-    optics_payload = _dump(optics)
-    display_payload = _dump(display)
+    optics_payload = dump_input(optics)
+    display_payload = dump_input(display)
     if not optics_payload and not display_payload:
         raise ToolError("Provide at least one optics or display field to change")
     return await call_blender(
@@ -191,7 +194,7 @@ async def configure_camera_dof(
         raise ToolError("Supply at most one focus intent: focus object, focus distance, or focus point")
     if focus_point is not None and not focus_target_name:
         raise ToolError("focus_target_name is required when focus_point is supplied")
-    patch_payload = _dump(patch)
+    patch_payload = dump_input(patch)
     if not patch_payload and focus_object_name is None and focus_distance is None and focus_point is None:
         raise ToolError("Provide at least one depth-of-field or focus change")
     return await call_blender(

@@ -405,36 +405,35 @@ def test_a_refresh_that_learns_a_newer_session_than_the_one_observed_stops_retry
     )
 
 
-def test_a_refresh_that_fails_leaves_the_staleness_signal_standing(
+def test_a_refresh_whose_round_trip_dies_leaves_the_staleness_signal_standing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    A failed re-handshake leaves the staleness signal set.
+    A re-handshake that never completes leaves the staleness signal set.
 
-    The refresh clears the flag first, and a failure yields a degraded handshake
-    with no epoch. Left cleared, later commands would be gated on the capabilities
-    of a file no longer open.
+    Rewritten from a stubbed `source="error"` handshake: a transport failure no longer
+    produces a handshake at all, it raises, and the refresh must absorb that without
+    failing the command it is pre-flight for. The flag is cleared before the refresh, so
+    leaving it cleared would gate later commands on the capabilities of a file no longer
+    open.
     """
     _reset_handshake_state(monkeypatch, _cached())
-    degraded = AddonHandshake(
-        up_to_date=False,
-        protocol_version=None,
-        addon_version=None,
-        capabilities=[],
-        blender_version=None,
-        source="error",
-        warning="Addon handshake failed: connection reset",
-    )
-    monkeypatch.setattr(connection, "force_addon_handshake", lambda _blender: degraded)
+
+    def _never_answered(_blender: BlenderConnection) -> AddonHandshake:
+        raise connection.BlenderPeerClosedError("Connection closed before receiving any data")
+
+    monkeypatch.setattr(connection, "force_addon_handshake", _never_answered)
     blender = BlenderConnection(host="localhost", port=0)
 
     connection.note_session_marker({"status": "error", "session_id": "proc-b", "session_epoch": 1})
     assert connection._session_marker_stale.is_set() is True
 
-    connection.refresh_handshake_if_session_changed(blender)
+    assert connection.refresh_handshake_if_session_changed(blender) is connection._addon_handshake, (
+        "a failed refresh must answer with the handshake still cached, not raise into the command"
+    )
 
     assert connection._session_marker_stale.is_set() is True, (
-        "a refresh that never reported the observed session must leave the signal standing"
+        "a refresh that never reported a session must leave the signal standing"
     )
 
 

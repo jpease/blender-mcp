@@ -58,6 +58,18 @@ def _inside_frame(projection: mathutils.Vector) -> bool:
     return 0.0 <= projection.x <= 1.0 and 0.0 <= projection.y <= 1.0 and projection.z > 0.0
 
 
+def _evaluated_corners(obj: bpy.types.Object) -> list[mathutils.Vector]:
+    """Read the object's world-space bound-box corners, as the depsgraph evaluates it."""
+    bpy.context.view_layer.update()
+    evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    # bpy's stub types a bound_box entry as a float rather than the 3-component array it is,
+    # and `Matrix @ Vector` as a Matrix rather than the rotated Vector it returns.
+    return [
+        evaluated.matrix_world @ mathutils.Vector(corner)  # pyright: ignore[reportArgumentType]
+        for corner in evaluated.bound_box
+    ]
+
+
 scene = bpy.context.scene
 handler = CameraHandlersMixin()
 
@@ -154,6 +166,101 @@ for label, point in (("far corner", WALL_FAR_CORNER), ("bone tail", SEGMENT_TAIL
     projection = _projected(bone_camera, point)
     assert _inside_frame(projection), f"the union framing dropped the {label} at {list(projection)}"
 
+# ---------------------------------------------------------------------------------------------
+# Armature names: a whole-body frame is one rig name, not a hand-enumerated list of its meshes.
+# ---------------------------------------------------------------------------------------------
+
+CHARACTER_ORIGIN_X = -10.0
+
+character_rig_data = bpy.data.armatures.new("Character Rig Data")
+character_rig = _new_object("Character Rig", character_rig_data)
+character_rig.location = (CHARACTER_ORIGIN_X, 0.0, 0.0)
+bpy.context.view_layer.objects.active = character_rig
+bpy.ops.object.mode_set(mode="EDIT")
+spine = character_rig_data.edit_bones.new("spine")
+spine.head = (0.0, 0.0, 0.90)
+spine.tail = (0.0, 0.0, 1.70)
+bpy.ops.object.mode_set(mode="OBJECT")
+bpy.context.view_layer.update()
+
+# The body is bound by an ARMATURE modifier and weighted to the bone; the coat is bound by
+# ARMATURE parenting. Both are the shape the camera sees and neither is the shape of the bone:
+# the spine is a 0.8 m line with no width, while the character it deforms stands 1.8 m tall and
+# is 2.2 m across, exactly as a real rig's bones sit inside the silhouette rather than spanning it.
+character_body = _new_object("Character Body", _box_mesh("Character Body Mesh", 0.45, 0.25, 1.8))
+character_body.location = (CHARACTER_ORIGIN_X, 0.0, 0.0)
+spine_group = character_body.vertex_groups.new(name="spine")
+# bpy's stub types VertexGroup.add's index argument as a bpy_prop_array; it takes any int sequence.
+spine_group.add([vertex.index for vertex in character_body.data.vertices], 1.0, "REPLACE")  # pyright: ignore[reportArgumentType]
+body_skin = character_body.modifiers.new(name="Armature", type="ARMATURE")
+body_skin.object = character_rig
+
+character_coat = _new_object("Character Coat", _box_mesh("Character Coat Mesh", 1.1, 0.3, 1.2))
+character_coat.parent = character_rig
+character_coat.parent_type = "ARMATURE"
+character_coat.location = (0.0, 0.0, 0.3)
+
+# An unbound prop standing with the character: an expansion must frame the rig, not the scene.
+bystander = _new_object("Character Bystander", _box_mesh("Character Bystander Mesh", 0.4, 0.4, 2.4))
+bystander.location = (CHARACTER_ORIGIN_X + 6.0, 0.0, 0.0)
+bpy.context.view_layer.update()
+
+# Two cameras in the same place, so the two framings below start from identical state.
+character_camera = _new_object("Character Camera", bpy.data.cameras.new("Character Camera Data"))
+character_camera.location = (CHARACTER_ORIGIN_X, -5.0, 0.9)
+character_camera.rotation_euler = (1.5708, 0.0, 0.0)
+character_camera.data.lens = 50.0
+armature_only_camera = _new_object("Armature Only Camera", bpy.data.cameras.new("Armature Only Camera Data"))
+armature_only_camera.location = (CHARACTER_ORIGIN_X, -5.0, 0.9)
+armature_only_camera.rotation_euler = (1.5708, 0.0, 0.0)
+armature_only_camera.data.lens = 50.0
+bpy.context.view_layer.update()
+
+whole_character = handler.frame_camera_on_objects(
+    scene.name,
+    character_camera.name,
+    armature_names=[character_rig.name],
+    margin=0.05,
+    policy="CHANGE_LENS",
+)
+
+assert whole_character["objects"] == [], "an armature-only framing must not claim to have framed a named object"
+assert whole_character["armature_meshes"] == {character_rig.name: [character_body.name, character_coat.name]}, (
+    f"the rig resolved to {whole_character['armature_meshes']}, not to both of its deformed meshes"
+)
+
+# Every corner of every deformed mesh, evaluated, is in shot: the silhouette is what was framed.
+for mesh_object in (character_body, character_coat):
+    for corner in _evaluated_corners(mesh_object):
+        projection = _projected(character_camera, corner)
+        assert _inside_frame(projection), (
+            f"{mesh_object.name} has an evaluated corner outside the render frame at {list(projection)}"
+        )
+
+# ...and the bystander it does not deform stayed out of it.
+bystander_near_corner = min(_evaluated_corners(bystander), key=lambda corner: corner.x)
+assert not _inside_frame(_projected(character_camera, bystander_near_corner)), (
+    "the expansion swept in a mesh the armature does not deform"
+)
+
+# Framing the armature object itself is not the same request, which is the point of the argument:
+# its bounds are its bones, so it solves a longer lens and leaves the character's own coat out.
+armature_only = handler.frame_camera_on_objects(
+    scene.name,
+    armature_only_camera.name,
+    [character_rig.name],
+    margin=0.05,
+    policy="CHANGE_LENS",
+)
+assert whole_character["lens"] < armature_only["lens"], (
+    f"framing the rig's meshes solved {whole_character['lens']} mm, no wider than the armature's own "
+    f"{armature_only['lens']} mm"
+)
+coat_far_corner = max(_evaluated_corners(character_coat), key=lambda corner: corner.x)
+assert not _inside_frame(_projected(armature_only_camera, coat_far_corner)), (
+    "framing the armature object alone already contained the coat, so the comparison proves nothing"
+)
+
 # CHANGE_ORTHO_SCALE is the only policy an orthographic camera can be framed with.
 ortho_camera = _new_object("Ortho Camera", bpy.data.cameras.new("Ortho Camera Data"))
 ortho_camera.data.type = "ORTHO"
@@ -178,10 +285,13 @@ for corner in group.bound_box:
 before_matrix = bone_camera.matrix_world.copy()
 before_lens = bone_camera.data.lens
 refusals = [
-    ("neither objects nor bones", {}),
+    ("no subject of any kind", {}),
     ("a bone target on a mesh", {"bone_targets": [{"object_name": wall.name, "bone_name": "segment"}]}),
     ("a bone the armature lacks", {"bone_targets": [{"object_name": rig.name, "bone_name": "absent"}]}),
     ("a missing object", {"bone_targets": [{"object_name": "Nothing Here", "bone_name": "segment"}]}),
+    ("an armature that deforms no mesh", {"armature_names": [rig.name]}),
+    ("an armature name on a mesh", {"armature_names": [wall.name]}),
+    ("the same armature twice", {"armature_names": [character_rig.name, character_rig.name]}),
 ]
 for label, kwargs in refusals:
     try:

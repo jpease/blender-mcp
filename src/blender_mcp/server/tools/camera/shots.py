@@ -8,12 +8,12 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _dump, _StrictModel
+from .._inputs import StrictModel, dump_input, dump_inputs
 
 MarkerAction = Literal["LIST", "CREATE", "UPDATE", "REMOVE"]
 
 
-class MarkerEdit(_StrictModel):
+class MarkerEdit(StrictModel):
     """One exact marker edit; fields are interpreted by the requested action."""
 
     name: str = Field(min_length=1)
@@ -21,7 +21,9 @@ class MarkerEdit(_StrictModel):
     camera_name: str | None = None
 
 
-class RenderGatePatch(_StrictModel):
+class RenderGatePatch(StrictModel):
+    """Scene render-gate fields: output resolution, its percentage, and pixel aspect."""
+
     resolution_x: int | None = Field(default=None, ge=4, le=65_536)
     resolution_y: int | None = Field(default=None, ge=4, le=65_536)
     resolution_percentage: int | None = Field(default=None, ge=1, le=100)
@@ -29,7 +31,9 @@ class RenderGatePatch(_StrictModel):
     pixel_aspect_y: float | None = Field(default=None, gt=0, le=200)
 
 
-class RenderBorderPatch(_StrictModel):
+class RenderBorderPatch(StrictModel):
+    """Normalized render-region bounds and whether the region crops the output."""
+
     use_border: bool | None = None
     use_crop_to_border: bool | None = None
     min_x: float | None = Field(default=None, ge=0, le=1)
@@ -46,7 +50,7 @@ class RenderBorderPatch(_StrictModel):
         return self
 
 
-class SafeAreasPatch(_StrictModel):
+class SafeAreasPatch(StrictModel):
     """Normalized title/action safe-area margins."""
 
     title: tuple[float, float] | None = None
@@ -63,7 +67,7 @@ class SafeAreasPatch(_StrictModel):
         return self
 
 
-class CameraGuidesPatch(_StrictModel):
+class CameraGuidesPatch(StrictModel):
     """Camera guide fields relevant to shot framing."""
 
     show_safe_areas: bool | None = None
@@ -90,7 +94,7 @@ async def create_camera_markers(
         raise ToolError("markers must not be empty for a mutating action")
     if action == "LIST" and markers:
         raise ToolError("LIST does not accept marker edits")
-    payload = [item.model_dump(exclude_none=True) for item in markers or []]
+    payload = dump_inputs(markers or [])
     return await call_blender(
         "create_camera_markers",
         {"scene_name": scene_name, "action": action, "markers": payload, "replace_existing": replace_existing},
@@ -108,7 +112,7 @@ async def configure_camera_render_gate(
     guides: CameraGuidesPatch | None = None,
 ) -> dict:
     """Patch the scene render gate and optional camera guides, reporting each old and new value."""
-    payloads = [_dump(render), _dump(border), _dump(safe_areas), _dump(guides)]
+    payloads = [dump_input(render), dump_input(border), dump_input(safe_areas), dump_input(guides)]
     if not any(payloads):
         raise ToolError("Provide at least one render-gate field to change")
     if payloads[3] and camera_name is None:

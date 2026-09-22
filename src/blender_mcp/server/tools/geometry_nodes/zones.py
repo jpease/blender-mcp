@@ -8,7 +8,7 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import GeometryNodesRequest, model_records
+from .._inputs import OpenPayloadModel, dump_inputs
 from .authoring import GraphEdit
 
 ZoneSocketType = Literal["GEOMETRY", "FLOAT", "INT", "BOOLEAN", "VECTOR", "ROTATION", "RGBA"]
@@ -19,7 +19,7 @@ MAX_REPEAT_ITERATIONS = 256
 MAX_ZONE_GRAPH_OPERATIONS = 200
 
 
-class ZoneStateSpec(GeometryNodesRequest):
+class ZoneStateSpec(OpenPayloadModel):
     """Describe one value carried between Repeat or Simulation Zone steps."""
 
     name: str = Field(min_length=1, max_length=128)
@@ -73,11 +73,11 @@ async def create_repeat_zone(
             "node_group_name": node_group_name,
             "input_node_name": input_node_name,
             "output_node_name": output_node_name,
-            "state_items": model_records(items),
+            "state_items": dump_inputs(items),
             "iterations": iterations,
             "input_location": input_location,
             "output_location": output_location,
-            "graph_operations": model_records(operations),
+            "graph_operations": dump_inputs(operations),
         },
         changed_resources=[node_group_name],
     )
@@ -117,14 +117,14 @@ async def create_simulation_zone(
             "node_group_name": node_group_name,
             "input_node_name": input_node_name,
             "output_node_name": output_node_name,
-            "state_items": model_records(items),
+            "state_items": dump_inputs(items),
             "frame_start": frame_start,
             "frame_end": frame_end,
             "time_step_mode": time_step_mode,
             "skip_simulation": skip_simulation,
             "input_location": input_location,
             "output_location": output_location,
-            "graph_operations": model_records(operations),
+            "graph_operations": dump_inputs(operations),
         },
         changed_resources=[node_group_name],
     )

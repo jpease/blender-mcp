@@ -733,15 +733,15 @@
     "create_camera": [
       "collection_name",
       "location",
-      "look_at_object_name",
-      "look_at_point",
       "make_active",
       "name",
       "optics",
       "projection",
       "rotation_euler",
       "rotation_quaternion",
-      "scene_name"
+      "scene_name",
+      "target_object_name",
+      "target_point"
     ],
     "create_camera_markers": [
       "action",
@@ -1428,6 +1428,7 @@
     ],
     "frame_camera_on_objects": [
       "aim_at_center",
+      "armature_names",
       "bone_targets",
       "camera_name",
       "margin",
@@ -2550,5 +2551,5 @@
       "scope"
     ]
   },
-  "protocol_version": 35
+  "protocol_version": 36
 }

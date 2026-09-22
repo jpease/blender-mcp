@@ -9,10 +9,11 @@ from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context, Image
 from mcp.server.fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from ..app import mcp
 from ._dispatch import call_blender, send_blender_command, send_command
+from ._inputs import StrictModel
 from .envelope import envelope_for
 from .image_capture import capture_png
 
@@ -23,10 +24,8 @@ from .image_capture import capture_png
 _PROGRESS_ENTRY_LIMIT = 1000
 
 
-class RenderSettingsPatch(BaseModel):
+class RenderSettingsPatch(StrictModel):
     """Validated patch for common scene render settings."""
-
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     engine: Literal["BLENDER_EEVEE", "BLENDER_WORKBENCH", "CYCLES"] | None = None
     resolution_x: Annotated[int | None, Field(ge=4, le=65_536)] = None
@@ -65,28 +64,25 @@ class RenderSettingsPatch(BaseModel):
         return self
 
 
-class MotionBlurPatch(BaseModel):
+class MotionBlurPatch(StrictModel):
     """Engine-independent render motion-blur controls when exposed by Blender RNA."""
 
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     enabled: bool | None = None
     shutter: Annotated[float | None, Field(ge=0, le=10)] = None
     position: Literal["START", "CENTER", "END"] | None = None
 
 
-class FilmPatch(BaseModel):
+class FilmPatch(StrictModel):
     """Film/background controls."""
 
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     transparent: bool | None = None
     transparent_glass: bool | None = None
     transparent_roughness: Annotated[float | None, Field(ge=0, le=1)] = None
 
 
-class OutputPatch(BaseModel):
+class OutputPatch(StrictModel):
     """Output path and image-format controls; no render is started."""
 
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     filepath: str | None = None
     image_format: Literal["PNG", "JPEG", "OPEN_EXR", "OPEN_EXR_MULTILAYER", "TIFF", "WEBP"] | None = None
     color_mode: Literal["BW", "RGB", "RGBA"] | None = None
@@ -99,10 +95,9 @@ class OutputPatch(BaseModel):
     use_placeholder: bool | None = None
 
 
-class MetadataPatch(BaseModel):
+class MetadataPatch(StrictModel):
     """Render stamp/metadata controls."""
 
-    model_config = ConfigDict(extra="forbid")
     use_stamp: bool | None = None
     use_stamp_date: bool | None = None
     use_stamp_time: bool | None = None
@@ -115,19 +110,17 @@ class MetadataPatch(BaseModel):
     stamp_note_text: str | None = None
 
 
-class MultiviewPatch(BaseModel):
+class MultiviewPatch(StrictModel):
     """Stereo/multiview output controls."""
 
-    model_config = ConfigDict(extra="forbid")
     enabled: bool | None = None
     views_format: Literal["INDIVIDUAL", "STEREO_3D"] | None = None
     stereo_3d_format: Literal["ANAGLYPH", "INTERLACE", "TIMESEQUENTIAL", "SIDEBYSIDE", "TOPBOTTOM"] | None = None
 
 
-class CyclesPatch(BaseModel):
+class CyclesPatch(StrictModel):
     """Cycles-only sampling and denoising controls."""
 
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     samples: Annotated[int | None, Field(ge=1, le=1_000_000)] = None
     preview_samples: Annotated[int | None, Field(ge=1, le=1_000_000)] = None
     use_adaptive_sampling: bool | None = None
@@ -137,14 +130,13 @@ class CyclesPatch(BaseModel):
     denoiser: Literal["OPENIMAGEDENOISE", "OPTIX"] | None = None
 
 
-class EeveeRayTracingPatch(BaseModel):
+class EeveeRayTracingPatch(StrictModel):
     """
     EEVEE screen-trace controls, Blender 5.2's `scene.eevee.ray_tracing_options` (RaytraceEEVEE).
 
     Separate from EeveePatch because Blender keeps them on a nested struct, not on `scene.eevee`.
     """
 
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     resolution_scale: Literal["1", "2", "4", "8", "16"] | None = None
     screen_trace_quality: Annotated[float | None, Field(ge=0, le=1)] = None
     screen_trace_thickness: Annotated[float | None, Field(gt=0, le=10_000)] = None
@@ -152,7 +144,7 @@ class EeveeRayTracingPatch(BaseModel):
     use_denoise: bool | None = None
 
 
-class EeveePatch(BaseModel):
+class EeveePatch(StrictModel):
     """
     EEVEE-only sampling and ray-tracing controls, resolved against Blender 5.x RNA at runtime.
 
@@ -160,7 +152,6 @@ class EeveePatch(BaseModel):
     `use_raytracing` is the switch a scene with windows needs before anything else here matters.
     """
 
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     taa_samples: Annotated[int | None, Field(ge=1, le=1_000_000)] = None
     taa_render_samples: Annotated[int | None, Field(ge=1, le=1_000_000)] = None
     use_shadows: bool | None = None
@@ -172,10 +163,8 @@ class EeveePatch(BaseModel):
 RenderSettingsPatch.model_rebuild()
 
 
-class ViewLayerPatch(BaseModel):
+class ViewLayerPatch(StrictModel):
     """Validated view-layer visibility and render-pass patch."""
-
-    model_config = ConfigDict(extra="forbid")
 
     use: bool | None = None
     use_sky: bool | None = None

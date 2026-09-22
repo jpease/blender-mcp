@@ -8,13 +8,14 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
+from .._inputs import StrictModel, dump_input, dump_inputs
 from .._node_graph import NodeGraphEdit
-from ._shared import StrictTextureInput, TargetEngine, absolute_path, explicit_fields
+from ._shared import TargetEngine, absolute_path
 
 MaterialPreset = Literal["WATER", "GLASS", "OIL", "TINTED"]
 
 
-class ShaderGraphTarget(StrictTextureInput):
+class ShaderGraphTarget(StrictModel):
     """Exact Blender datablock that owns the shader graph."""
 
     type: Literal["MATERIAL", "WORLD", "LIGHT"]
@@ -25,7 +26,7 @@ class ShaderGraphEdit(NodeGraphEdit):
     """One ordered shader-graph edit using stable node and socket identities."""
 
 
-class PBRMaterialSettings(StrictTextureInput):
+class PBRMaterialSettings(StrictModel):
     """Allowlisted Principled BSDF and material surface settings."""
 
     base_color: tuple[float, float, float, float] | None = None
@@ -61,7 +62,7 @@ class PBRMaterialSettings(StrictTextureInput):
         return self
 
 
-class TextureMappingSettings(StrictTextureInput):
+class TextureMappingSettings(StrictModel):
     """Vector source and Image Texture sampling settings for a managed branch."""
 
     coordinate_source: Literal["UV", "OBJECT", "GENERATED", "CAMERA"] = "UV"
@@ -86,7 +87,7 @@ class TextureMappingSettings(StrictTextureInput):
         return self
 
 
-class TextureSetFiles(StrictTextureInput):
+class TextureSetFiles(StrictModel):
     """Explicit local files for semantic PBR channels."""
 
     base_color: str | None = None
@@ -105,7 +106,7 @@ class TextureSetFiles(StrictTextureInput):
 
     @model_validator(mode="after")
     def validate_channels(self) -> "TextureSetFiles":
-        values = explicit_fields(self)
+        values = dump_input(self)
         if not values:
             raise ValueError("Provide at least one texture channel")
         conflicts = [
@@ -206,7 +207,7 @@ async def patch_shader_graph(
         "patch_shader_graph",
         {
             "target": target.model_dump(),
-            "operations": [operation.model_dump(exclude_none=True) for operation in operations],
+            "operations": dump_inputs(operations),
             "enable_nodes": enable_nodes,
         },
     )
@@ -233,7 +234,8 @@ async def create_pbr_material(
         "material_name": material_name,
         "target_engine": target_engine,
         "preset": preset,
-        "settings": explicit_fields(settings),
+        # The handler reads a mapping here, so an absent patch stays `{}` rather than null.
+        "settings": dump_input(settings) or {},
         "reuse_existing": reuse_existing,
     }
     return await call_blender("create_pbr_material", params)
@@ -249,7 +251,7 @@ async def configure_pbr_material(
     Omitted values remain unchanged. `BOTH` retains a shared normal/bump workflow and reports
     features that cannot render equivalently; true displacement is accepted only for Cycles.
     """
-    values = explicit_fields(patch)
+    values = dump_input(patch)
     if not values:
         raise ToolError("Provide at least one material setting")
     return await call_blender(
@@ -299,7 +301,7 @@ async def configure_texture_mapping(
         {
             "material_name": material_name,
             "texture_node_names": texture_node_names,
-            "settings": explicit_fields(settings),
+            "settings": dump_input(settings),
         },
     )
 
@@ -323,7 +325,8 @@ async def apply_pbr_texture_set(
     corrected. Packed ORM/RMA channels are separated explicitly. AO is multiplied into base color
     only when `ao_display_strength` is non-zero. Existing user-authored branches are preserved.
     """
-    files = {channel: absolute_path(path, channel) for channel, path in explicit_fields(textures).items()}
+    supplied = dump_input(textures) or {}
+    files = {channel: absolute_path(path, channel) for channel, path in supplied.items()}
     params = {
         "material_name": material_name,
         "textures": files,

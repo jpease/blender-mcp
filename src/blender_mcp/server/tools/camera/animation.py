@@ -8,8 +8,9 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
+from .._inputs import StrictModel, dump_inputs
 from ..key_style import Easing, HandleType, Interpolation
-from ._shared import _StrictModel, _tool_params
+from ._shared import _tool_params
 
 AnimationOwner = Literal["OBJECT", "CAMERA_DATA", "CONSTRAINT", "DOF"]
 KeyPolicy = Literal["REPLACE", "INSERT_ONLY"]
@@ -17,7 +18,7 @@ FocusPullMode = Literal["DISTANCE", "FOCUS_CONTROL"]
 FramingAxis = Literal["HORIZONTAL", "VERTICAL"]
 
 
-class CameraKeyframe(_StrictModel):
+class CameraKeyframe(StrictModel):
     """One allowlisted camera-rig channel value at one frame or seconds offset."""
 
     object_name: str = Field(min_length=1)
@@ -57,7 +58,7 @@ async def keyframe_camera_rig(
     handle_right: HandleType = "AUTO_CLAMPED",
 ) -> dict:
     """Set coordinated allowlisted camera-rig channels without touching unrelated keys."""
-    payload = [item.model_dump(exclude_none=True) for item in keyframes]
+    payload = dump_inputs(keyframes)
     return await call_blender(
         "keyframe_camera_rig",
         {

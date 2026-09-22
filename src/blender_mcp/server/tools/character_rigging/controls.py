@@ -7,10 +7,10 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _StrictModel
+from .._inputs import StrictModel, dump_inputs
 
 
-class ControlBoneDefinition(_StrictModel):
+class ControlBoneDefinition(StrictModel):
     """A non-deforming control bone defined in armature-local space."""
 
     name: str = Field(min_length=1, max_length=63)
@@ -25,7 +25,7 @@ class PoleControlDefinition(ControlBoneDefinition):
     pole_angle: float = 0.0
 
 
-class CustomShapeAssignment(_StrictModel):
+class CustomShapeAssignment(StrictModel):
     """Display-shape settings for one pose bone."""
 
     bone_name: str = Field(min_length=1, max_length=63)
@@ -38,7 +38,7 @@ class CustomShapeAssignment(_StrictModel):
     use_bone_size: bool = True
 
 
-class DrivenChannel(_StrictModel):
+class DrivenChannel(StrictModel):
     """An allowlisted destination channel for a rig property driver."""
 
     owner: Literal["POSE_BONE", "CONSTRAINT", "SHAPE_KEY", "MODIFIER"]
@@ -81,7 +81,7 @@ class DrivenChannel(_StrictModel):
         return self
 
 
-class DirectShapeKeyControl(_StrictModel):
+class DirectShapeKeyControl(StrictModel):
     """Map one bounded rig property directly to one shape key."""
 
     mode: Literal["DIRECT"] = "DIRECT"
@@ -103,7 +103,7 @@ class DirectShapeKeyControl(_StrictModel):
         return self
 
 
-class SignedShapeKeyControl(_StrictModel):
+class SignedShapeKeyControl(StrictModel):
     """Split the positive and negative sides of one signed property across two shape keys."""
 
     mode: Literal["SIGNED"] = "SIGNED"
@@ -121,7 +121,7 @@ class SignedShapeKeyControl(_StrictModel):
         return self
 
 
-class CorrectivePropertyInput(_StrictModel):
+class CorrectivePropertyInput(StrictModel):
     """One bounded custom-property input to a corrective shape-key formula."""
 
     property_name: str = Field(min_length=1)
@@ -138,7 +138,7 @@ class CorrectivePropertyInput(_StrictModel):
         return self
 
 
-class CorrectiveShapeKeyControl(_StrictModel):
+class CorrectiveShapeKeyControl(StrictModel):
     """Drive one corrective shape from an allowlisted multi-property formula."""
 
     mode: Literal["CORRECTIVE"] = "CORRECTIVE"
@@ -336,7 +336,7 @@ async def create_rig_property_driver(
             "property_owner": property_owner,
             "property_bone_name": property_bone_name,
             "property_name": property_name,
-            "destinations": [item.model_dump(exclude_none=True) for item in destinations],
+            "destinations": dump_inputs(destinations),
             "default": default,
             "minimum": minimum,
             "maximum": maximum,
@@ -371,7 +371,7 @@ async def assign_bone_custom_shapes(
         "assign_bone_custom_shapes",
         {
             "armature_object_name": armature_object_name,
-            "assignments": [item.model_dump(exclude_none=True) for item in assignments],
+            "assignments": dump_inputs(assignments),
             "widget_collection_name": widget_collection_name,
             "hide_widgets_from_render": hide_widgets_from_render,
         },

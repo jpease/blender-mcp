@@ -55,7 +55,7 @@ def test_animation_prompt_requires_a_pole_and_a_hinge_for_a_knee() -> None:
     """Without both, the knee either stays straight or inverts - the two reported symptoms."""
     text = character_animation_strategy()
 
-    assert "pole_target" in text
+    assert "pole_target_point" in text
     assert "hinge" in text
     assert "invert the joint" in text
 

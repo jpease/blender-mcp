@@ -4,16 +4,16 @@ from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from .._dispatch import call_blender
+from .._inputs import StrictModel, dump_input
 from .inspection_and_setup import Vector3, mcp
 
 
-class SimulationFrameSelection(BaseModel):
+class SimulationFrameSelection(StrictModel):
     """A bounded explicit or ranged frame selection."""
 
-    model_config = ConfigDict(extra="forbid")
     frames: list[int] | None = Field(default=None, min_length=1, max_length=100)
     frame_start: int | None = None
     frame_end: int | None = None
@@ -36,10 +36,9 @@ class SimulationFrameSelection(BaseModel):
         return self
 
 
-class RigidBodyCacheSettings(BaseModel):
+class RigidBodyCacheSettings(StrictModel):
     """Editable PointCache settings supported by the rigid-body world."""
 
-    model_config = ConfigDict(extra="forbid")
     frame_start: int | None = None
     frame_end: int | None = None
     frame_step: int | None = Field(default=None, ge=1, le=1000)
@@ -122,7 +121,7 @@ async def manage_rigid_body_cache(
     cache file. max_frame_steps bounds how many frames a single call may evaluate before returning
     early.
     """
-    patch = settings.model_dump(exclude_none=True, exclude_unset=True) if settings else {}
+    patch = dump_input(settings) or {}
     if action == "CONFIGURE" and not patch:
         raise ToolError("CONFIGURE requires settings")
     if action != "CONFIGURE" and patch:

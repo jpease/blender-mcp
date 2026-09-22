@@ -6,7 +6,7 @@ from mcp.server.fastmcp import Context
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _dump
+from .._inputs import dump_input
 from .inspection_and_setup import LiquidSolverPatch
 from .mesh_and_materials import LiquidMeshPatch
 
@@ -99,8 +99,8 @@ def profile_patches(profile: str) -> tuple[dict, dict]:
         solver, mesh = QUALITY_PROFILES[profile]
     except KeyError:
         raise ValueError(f"Unknown quality profile: {profile}; choose one of {sorted(QUALITY_PROFILES)}") from None
-    solver_payload = _dump(solver)
-    mesh_payload = _dump(mesh)
+    solver_payload = dump_input(solver)
+    mesh_payload = dump_input(mesh)
     assert solver_payload is not None and mesh_payload is not None
     return solver_payload, mesh_payload
 

@@ -3,19 +3,18 @@
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from ..app import mcp
 from ._dispatch import call_blender
+from ._inputs import StrictModel, dump_inputs
 from .key_style import HandleType, Interpolation
 
 _MAX_FRAME = 1_048_574
 
 
-class ObjectTransformKeyframe(BaseModel):
+class ObjectTransformKeyframe(StrictModel):
     """One object's location/rotation/scale key at a single frame or seconds offset."""
-
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     object_name: Annotated[str, Field(min_length=1)]
     scene_name: Annotated[str | None, Field(min_length=1)] = None
@@ -85,7 +84,7 @@ async def keyframe_object_transform(
     return await call_blender(
         "keyframe_object_transform",
         {
-            "keyframes": [record.model_dump(exclude_none=True) for record in keyframes],
+            "keyframes": dump_inputs(keyframes),
             "policy": policy,
             "interpolation": interpolation,
             "handle_left": handle_left,

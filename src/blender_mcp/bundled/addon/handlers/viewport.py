@@ -23,7 +23,7 @@ def _throwaway_camera(lens_mm):
 
     Never added to a collection or the view layer: it exists only so the eye/target modes can
     reuse `Object.calc_matrix_camera` and `_look_quaternion` - the identical look-at math
-    `create_camera`'s look_at_point already uses in production - rather than respelling either.
+    `create_camera`'s target_point already uses in production - rather than respelling either.
 
     Args:
         lens_mm: Focal length the projection is built with.
@@ -89,7 +89,7 @@ def _synthetic_view_matrices(view, scene):
 
     Args:
         view: A ViewSpec's fields as a plain dict: exactly one of camera_object or eye (with
-            target or target_object), plus lens_mm.
+            target_point or target_object_name), plus lens_mm.
         scene: The scene to size the projection for (its render resolution sets the aspect
             ratio, the same source render_scene uses, so a synthetic screenshot's framing
             matches what an actual render from that view would show).
@@ -99,7 +99,7 @@ def _synthetic_view_matrices(view, scene):
         "camera_object" or "eye_target".
 
     Raises:
-        ValueError: If a named camera_object/target_object does not exist, or eye and the
+        ValueError: If a named camera_object/target_object_name does not exist, or eye and the
             resolved target coincide.
 
     """
@@ -107,8 +107,8 @@ def _synthetic_view_matrices(view, scene):
     width, height = scene.render.resolution_x, scene.render.resolution_y
     camera_object = view.get("camera_object")
     eye = view.get("eye")
-    target = view.get("target")
-    target_object = view.get("target_object")
+    target_point = view.get("target_point")
+    target_object_name = view.get("target_object_name")
     lens_mm = view.get("lens_mm", _DEFAULT_LENS_MM)
 
     if camera_object is not None:
@@ -118,9 +118,9 @@ def _synthetic_view_matrices(view, scene):
     with _throwaway_camera(lens_mm) as cam_obj:
         origin = _vector(eye, "view.eye")
         aim = (
-            _object(target_object).matrix_world.translation
-            if target_object is not None
-            else _vector(target, "view.target")
+            _object(target_object_name).matrix_world.translation
+            if target_object_name is not None
+            else _vector(target_point, "view.target_point")
         )
         cam_obj.location = origin
         cam_obj.rotation_mode = "QUATERNION"
@@ -354,9 +354,9 @@ class ViewportHandlersMixin:
             filepath: Path where to save the screenshot file
             format: Image format (png, jpg, etc.)
             view: Optional ViewSpec fields (dict) to capture from an ad hoc camera_object or
-                eye/target/target_object view instead of the live viewport's own navigation.
-                None captures exactly what the viewport is currently showing (unchanged
-                default behavior).
+                eye/target_point/target_object_name view instead of the live viewport's own
+                navigation. None captures exactly what the viewport is currently showing
+                (unchanged default behavior).
             shading_override: Optional "SOLID" or "MATERIAL" to force that viewport shading
                 for just this capture, restoring the live viewport's shading afterward.
 

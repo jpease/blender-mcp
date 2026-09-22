@@ -8,10 +8,12 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _StrictModel
+from .._inputs import StrictModel
 
 
-class FluidComponentTarget(_StrictModel):
+class FluidComponentTarget(StrictModel):
+    """One fluid modifier to remove, and whether its owned helper object goes with it."""
+
     object_name: str
     modifier_name: str
     remove_owned_helper_object: bool = False

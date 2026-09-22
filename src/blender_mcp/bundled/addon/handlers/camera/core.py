@@ -59,6 +59,90 @@ def _validate_optics(data, patch):
     return patch
 
 
+# A quaternion is four components, and one this short names no rotation: `normalize()` on it
+# divides by ~zero. Mirrors `_look_quaternion`'s own guard in `camera/_shared.py`.
+_QUATERNION_COMPONENTS = 4
+_DEGENERATE_QUATERNION_LENGTH_SQUARED = 1e-16
+
+
+def _validated_quaternion(values):
+    """
+    Turn a caller's `[w, x, y, z]` into a unit quaternion, or say why it is not one.
+
+    Args:
+        values: The four components as the client sent them.
+
+    Returns:
+        mathutils.Quaternion: The same rotation, normalized.
+
+    Raises:
+        ValueError: If there are not four finite components, or they name no rotation.
+
+    """
+    if len(values) != _QUATERNION_COMPONENTS:
+        raise ValueError("rotation_quaternion must contain [w, x, y, z]")
+    quaternion = mathutils.Quaternion(tuple(_finite_number(value, "rotation_quaternion") for value in values))
+    if quaternion.length_squared <= _DEGENERATE_QUATERNION_LENGTH_SQUARED:
+        raise ValueError("rotation_quaternion must not be zero-length")
+    quaternion.normalize()
+    return quaternion
+
+
+def _resolved_aim_target(scene, target_object_name, target_point):
+    """
+    Read where a new camera should look, from whichever of the two target forms was given.
+
+    Args:
+        scene: The scene a `target_object_name` is resolved in.
+        target_object_name: An object to look at, or None.
+        target_point: A world point to look at, or None.
+
+    Returns:
+        mathutils.Vector | None: The world point to aim at, or None when neither was given.
+
+    Raises:
+        ValueError: If the named object does not exist, or the point is not three finite numbers.
+
+    """
+    if target_object_name is not None:
+        # The object's evaluated world position, so a constrained or animated target aims at
+        # where it actually is rather than at its unevaluated origin.
+        _update_view_layer()
+        return _object(target_object_name, scene=scene).matrix_world.translation.copy()
+    if target_point is not None:
+        return _vector(target_point, "target_point")
+    return None
+
+
+def _resolved_camera_orientation(scene, rotation_euler, rotation_quaternion, target_object_name, target_point):
+    """
+    Reduce the four ways a new camera can be oriented to the values the write needs.
+
+    Args:
+        scene: The scene a `target_object_name` is resolved in.
+        rotation_euler: An explicit XYZ triple, or None.
+        rotation_quaternion: An explicit `[w, x, y, z]`, or None.
+        target_object_name: An object to look at, or None.
+        target_point: A world point to look at, or None.
+
+    Returns:
+        tuple: `(rotation_euler, quaternion, aim_target)`, each None unless the caller named
+        that source; at most one is ever set.
+
+    Raises:
+        ValueError: If more than one source is named, or a named one is unusable.
+
+    """
+    sources = (rotation_euler, rotation_quaternion, target_object_name, target_point)
+    if sum(value is not None for value in sources) > 1:
+        raise ValueError("Supply only one camera orientation source")
+    return (
+        None if rotation_euler is None else _vector(rotation_euler, "rotation_euler"),
+        None if rotation_quaternion is None else _validated_quaternion(rotation_quaternion),
+        _resolved_aim_target(scene, target_object_name, target_point),
+    )
+
+
 class _CoreMixin:
     """Provide camera creation, optics/display patching, scene-camera assignment, and DOF handlers."""
 
@@ -71,37 +155,17 @@ class _CoreMixin:
         location=(0.0, 0.0, 0.0),
         rotation_euler=None,
         rotation_quaternion=None,
-        look_at_object_name=None,
-        look_at_point=None,
+        target_object_name=None,
+        target_point=None,
         optics=None,
         make_active=False,
     ):
         scene = _scene(scene_name)
         _required_name(name, "name")
-        orientation_count = sum(
-            value is not None for value in (rotation_euler, rotation_quaternion, look_at_object_name, look_at_point)
-        )
-        if orientation_count > 1:
-            raise ValueError("Supply only one camera orientation source")
         world_location = _vector(location, "location")
-        look_target = None
-        if look_at_object_name is not None:
-            _update_view_layer()
-            look_target = _object(look_at_object_name, scene=scene).matrix_world.translation.copy()
-        elif look_at_point is not None:
-            look_target = _vector(look_at_point, "look_at_point")
-        if rotation_euler is not None:
-            rotation_euler = _vector(rotation_euler, "rotation_euler")
-        if rotation_quaternion is not None:
-            if len(rotation_quaternion) != 4:
-                raise ValueError("rotation_quaternion must contain [w, x, y, z]")
-            values = tuple(_finite_number(value, "rotation_quaternion") for value in rotation_quaternion)
-            quaternion = mathutils.Quaternion(values)
-            if quaternion.length_squared <= 1e-16:
-                raise ValueError("rotation_quaternion must not be zero-length")
-            quaternion.normalize()
-        else:
-            quaternion = None
+        rotation_euler, quaternion, aim_target = _resolved_camera_orientation(
+            scene, rotation_euler, rotation_quaternion, target_object_name, target_point
+        )
 
         if optics and optics.get("projection") not in {None, projection}:
             raise ValueError("projection conflicts with optics.projection; supply projection in only one place")
@@ -119,9 +183,9 @@ class _CoreMixin:
         elif quaternion is not None:
             obj.rotation_mode = "QUATERNION"
             obj.rotation_quaternion = quaternion
-        elif look_target is not None:
+        elif aim_target is not None:
             obj.rotation_mode = "QUATERNION"
-            obj.rotation_quaternion = _look_quaternion(world_location, look_target)
+            obj.rotation_quaternion = _look_quaternion(world_location, aim_target)
         if make_active:
             scene.camera = obj
         return {

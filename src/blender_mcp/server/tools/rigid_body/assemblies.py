@@ -4,16 +4,16 @@ from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from .._dispatch import call_blender
+from .._inputs import StrictModel, dump_input, dump_inputs
 from .inspection_and_setup import Vector3, mcp, rigid_body_constraint_adapter
 
 
-class ConstraintEdge(BaseModel):
+class ConstraintEdge(StrictModel):
     """One deterministic connection between two rigid bodies."""
 
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     object1_name: str = Field(min_length=1)
     object2_name: str = Field(min_length=1)
     name: str | None = None
@@ -106,8 +106,8 @@ async def create_rigid_body_constraint_network(
             "scene_name": scene_name,
             "network_name": network_name,
             "body_names": body_names,
-            "configuration": validated_configuration.model_dump(exclude_none=True, exclude_unset=True),
-            "edges": [edge.model_dump(exclude_none=True) for edge in edges] if edges else [],
+            "configuration": dump_input(validated_configuration),
+            "edges": dump_inputs(edges or []),
             "pairing": pairing,
             "radius": radius,
             "max_neighbors": max_neighbors,
@@ -191,7 +191,7 @@ async def create_rigid_body_chain(
             "scene_name": scene_name,
             "chain_name": chain_name,
             "body_names": body_names,
-            "configuration": validated_configuration.model_dump(exclude_none=True, exclude_unset=True),
+            "configuration": dump_input(validated_configuration),
             "axis": axis,
             "start_anchor_name": start_anchor_name,
             "end_anchor_name": end_anchor_name,

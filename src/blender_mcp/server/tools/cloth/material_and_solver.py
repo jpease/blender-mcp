@@ -4,12 +4,12 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from ._shared import _StrictModel
+from .._inputs import StrictModel
 
 MaterialPreset = Literal["COTTON", "SILK", "DENIM", "LEATHER", "RUBBER"]
 
 
-class ClothMaterialPatch(_StrictModel):
+class ClothMaterialPatch(StrictModel):
     """Allowlisted Blender 5.1 cloth material properties."""
 
     mass: Annotated[float, Field(gt=0)] | None = None
@@ -29,7 +29,7 @@ class ClothMaterialPatch(_StrictModel):
     bending_damping: Annotated[float, Field(ge=0)] | None = None
 
 
-class ClothSolverPatch(_StrictModel):
+class ClothSolverPatch(StrictModel):
     """Allowlisted solver controls, deliberately excluding material and collision settings."""
 
     quality: Annotated[int, Field(ge=1)] | None = None

@@ -9,7 +9,7 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import _dump
+from .._inputs import dump_input
 from .collisions import ClothColliderPatch, ClothCollisionPatch
 from .inspection_and_setup import ExistingPolicy
 from .material_and_solver import ClothMaterialPatch, ClothSolverPatch
@@ -63,10 +63,10 @@ async def create_character_cloth_setup(
             "subdivision_modifier_name": subdivision_modifier_name,
             "solidify_modifier_name": solidify_modifier_name,
             "existing_policy": existing_policy,
-            "material": _dump(material),
-            "solver": _dump(solver),
-            "collisions": _dump(collisions),
-            "collider_settings": _dump(collider_settings),
+            "material": dump_input(material),
+            "solver": dump_input(solver),
+            "collisions": dump_input(collisions),
+            "collider_settings": dump_input(collider_settings),
             "add_subdivision": add_subdivision,
             "subdivision_levels": subdivision_levels,
             "add_solidify": add_solidify,

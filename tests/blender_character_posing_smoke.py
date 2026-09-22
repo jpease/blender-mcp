@@ -140,7 +140,7 @@ aimed = handler.set_character_pose(
     [
         {
             "bone_name": "head",
-            "aim_at": {"target_object": camera.name, "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 1)},
+            "aim_at": {"target_object_name": camera.name, "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 1)},
         }
     ],
 )
@@ -156,7 +156,7 @@ assert scale_drift < 1e-9, f"a rotation-only aim scaled the bone by {scale_drift
 rest_pose(rig)
 handler.set_character_pose(
     rig.name,
-    [{"bone_name": "head", "aim_at": {"target": (0.0, -2.0, 0.75), "track_axis": "Z", "up_axis": "X"}}],
+    [{"bone_name": "head", "aim_at": {"target_point": (0.0, -2.0, 0.75), "track_axis": "Z", "up_axis": "X"}}],
 )
 point_error = aim_error_degrees(rig, "head", "Z", (0.0, -2.0, 0.75))
 assert point_error < AIM_TOLERANCE_DEGREES, f"aim at a world point missed by {point_error} degrees"
@@ -169,7 +169,7 @@ rest_pose(rig)
 head_world = world_matrix(rig, "head").translation
 refuses(
     lambda: handler.set_character_pose(
-        rig.name, [{"bone_name": "head", "aim_at": {"target": tuple(head_world), "track_axis": "Z"}}]
+        rig.name, [{"bone_name": "head", "aim_at": {"target_point": tuple(head_world), "track_axis": "Z"}}]
     ),
     "at the head of 'head'",
 )
@@ -180,7 +180,7 @@ refuses(
             {
                 "bone_name": "head",
                 "aim_at": {
-                    "target": tuple(head_world + Vector((0, 0, 1))),
+                    "target_point": tuple(head_world + Vector((0, 0, 1))),
                     "track_axis": "Z",
                     "up_axis": "X",
                     "up_reference": (0, 0, 1),
@@ -193,7 +193,7 @@ refuses(
 refuses(
     lambda: handler.set_character_pose(
         rig.name,
-        [{"bone_name": "head", "aim_at": {"target": (0, -2, 0.75), "track_axis": "Z", "up_axis": "-Z"}}],
+        [{"bone_name": "head", "aim_at": {"target_point": (0, -2, 0.75), "track_axis": "Z", "up_axis": "-Z"}}],
     ),
     "different bone axis than track_axis",
 )
@@ -203,7 +203,7 @@ refuses(
         [
             {
                 "bone_name": "head",
-                "aim_at": {"target": (0, -2, 0.75), "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 0)},
+                "aim_at": {"target_point": (0, -2, 0.75), "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 0)},
             }
         ],
     ),
@@ -214,7 +214,7 @@ tracked = world_matrix(rig, "head").to_3x3().col[2].normalized()
 behind = tuple(world_matrix(rig, "head").translation - tracked * 2.0)
 refuses(
     lambda: handler.set_character_pose(
-        rig.name, [{"bone_name": "head", "aim_at": {"target": behind, "track_axis": "Z"}}]
+        rig.name, [{"bone_name": "head", "aim_at": {"target_point": behind, "track_axis": "Z"}}]
     ),
     "without an up reference",
 )
@@ -365,7 +365,7 @@ for frame, target in ((1.0, LEFT), (25.0, RIGHT)):
         euler_rig.name,
         "SMOKE_euler",
         frame,
-        [{"bone_name": "head", "aim_at": {"target": target, "track_axis": "Z", "up_axis": "X"}}],
+        [{"bone_name": "head", "aim_at": {"target_point": target, "track_axis": "Z", "up_axis": "X"}}],
         space="LOCAL",
         action_policy="CREATE" if frame <= 1.0 else "REUSE",
     )
@@ -394,7 +394,7 @@ rest_pose(rig)
 rig.animation_data.action = None
 AIM_SPEC = {
     "bone_name": "head",
-    "aim_at": {"target_object": camera.name, "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 1)},
+    "aim_at": {"target_object_name": camera.name, "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 1)},
 }
 first = handler.keyframe_character_pose(rig.name, "SMOKE_motion", 1.0, [AIM_SPEC], space="LOCAL")
 motion = bpy.data.actions["SMOKE_motion"]
@@ -414,7 +414,7 @@ second = handler.keyframe_character_pose(
     [
         {
             "bone_name": "head",
-            "aim_at": {"target": (-3.0, 1.0, 0.9), "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 1)},
+            "aim_at": {"target_point": (-3.0, 1.0, 0.9), "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 1)},
         }
     ],
     space="LOCAL",
@@ -442,7 +442,7 @@ refuses(
         rig.name,
         "SMOKE_motion",
         36.0,
-        [{"bone_name": "head", "aim_at": {"target_object": camera.name, "track_axis": "Z"}}],
+        [{"bone_name": "head", "aim_at": {"target_object_name": camera.name, "track_axis": "Z"}}],
         action_policy="REUSE",
     ),
     "requires up_axis and up_reference when keying",
@@ -494,7 +494,7 @@ reach_target = tuple(target_point)
 reach_pole = tuple(root_world + reopened_rig.matrix_world.to_3x3() @ Vector((0.5, 0.0, 0.0)))
 reach = handler.solve_bone_reach(
     reopened_rig.name,
-    [{"tip_bone": "head", "target": reach_target, "pole_target": reach_pole}],
+    [{"tip_bone": "head", "target_point": reach_target, "pole_target_point": reach_pole}],
     tolerance_m=REACH_TOLERANCE_M,
 )
 solved = reach["reaches"][0]
@@ -525,7 +525,7 @@ assert applied_error < reach["tolerance_m"], f"the reapplied pose sits {applied_
 # Omitting the pole synthesizes one from the chain's rest bend, and it has to solve just as well.
 rest_pose(reopened_rig)
 synthesized = handler.solve_bone_reach(
-    reopened_rig.name, [{"tip_bone": "head", "target": reach_target}], tolerance_m=REACH_TOLERANCE_M
+    reopened_rig.name, [{"tip_bone": "head", "target_point": reach_target}], tolerance_m=REACH_TOLERANCE_M
 )
 assert synthesized["reaches"][0]["pole_source"] == "resolved"
 synthesized_error = synthesized["reaches"][0]["achieved_error_m"]
@@ -539,7 +539,7 @@ rest_pose(reopened_rig)
 unreachable_point = root_world + reopened_rig.matrix_world.to_3x3() @ Vector((5.0, 0.0, 0.0))
 unreachable = handler.solve_bone_reach(
     reopened_rig.name,
-    [{"tip_bone": "head", "target": tuple(unreachable_point), "pole_target": reach_pole}],
+    [{"tip_bone": "head", "target_point": tuple(unreachable_point), "pole_target_point": reach_pole}],
     tolerance_m=REACH_TOLERANCE_M,
 )
 missed = unreachable["reaches"][0]
@@ -553,7 +553,7 @@ assert any("head" in warning for warning in unreachable["warnings"]), unreachabl
 # This rig's spine/neck rest chain is dead straight; omitting pole_target has no bend to infer.
 rest_pose(reopened_rig)
 refuses(
-    lambda: handler.solve_bone_reach(reopened_rig.name, [{"tip_bone": "neck", "target": reach_target}]),
+    lambda: handler.solve_bone_reach(reopened_rig.name, [{"tip_bone": "neck", "target_point": reach_target}]),
     "rest pose is straight",
 )
 
@@ -562,8 +562,8 @@ refuses(
     lambda: handler.solve_bone_reach(
         reopened_rig.name,
         [
-            {"tip_bone": "head", "target": reach_target, "pole_target": reach_pole},
-            {"tip_bone": "spine", "target": reach_target},
+            {"tip_bone": "head", "target_point": reach_target, "pole_target_point": reach_pole},
+            {"tip_bone": "spine", "target_point": reach_target},
         ],
     ),
     "claimed by more than one reach",
@@ -596,8 +596,8 @@ handler.set_character_pose(
         {
             "bone_name": "head",
             "aim_at": {
-                "target_object": partner.name,
-                "target_bone": "head",
+                "target_object_name": partner.name,
+                "target_bone_name": "head",
                 "track_axis": "Z",
                 "up_axis": "X",
                 "up_reference": (0, 0, 1),
@@ -623,8 +623,8 @@ for position, expected in (("TAIL", partner_tail_world), ("HEAD", partner_head_w
             {
                 "bone_name": "head",
                 "aim_at": {
-                    "target_object": partner.name,
-                    "target_bone": "head",
+                    "target_object_name": partner.name,
+                    "target_bone_name": "head",
                     "target_bone_position": position,
                     "track_axis": "Z",
                     "up_axis": "X",
@@ -646,8 +646,8 @@ refuses(
             {
                 "bone_name": "head",
                 "aim_at": {
-                    "target_object": plain_target.name,
-                    "target_bone": "head",
+                    "target_object_name": plain_target.name,
+                    "target_bone_name": "head",
                     "track_axis": "Z",
                     "up_axis": "X",
                 },
@@ -663,15 +663,15 @@ refuses(
             {
                 "bone_name": "head",
                 "aim_at": {
-                    "target_object": partner.name,
-                    "target_bone": "jaw",
+                    "target_object_name": partner.name,
+                    "target_bone_name": "jaw",
                     "track_axis": "Z",
                     "up_axis": "X",
                 },
             }
         ],
     ),
-    "aim_at.target_bone not found on 'PartnerRig': jaw",
+    "aim_at.target_bone_name not found on 'PartnerRig': jaw",
 )
 
 # --- 10. One batched call keys a whole stride, each frame solved where that frame is ----------
@@ -722,7 +722,7 @@ batched = handler.keyframe_character_pose(
                 {
                     "bone_name": "head",
                     "aim_at": {
-                        "target_object": mover.name,
+                        "target_object_name": mover.name,
                         "track_axis": "Z",
                         "up_axis": "X",
                         "up_reference": (0, 0, 1),
@@ -820,7 +820,12 @@ for direction in usable:
     point = tuple(bone_head + Vector(WORLD_VECTORS[direction]) * 2.0)
     handler.set_character_pose(
         batch_rig.name,
-        [{"bone_name": "head", "aim_at": {"target": point, "track_axis": aim_axes[direction], "up_axis": up_axis}}],
+        [
+            {
+                "bone_name": "head",
+                "aim_at": {"target_point": point, "track_axis": aim_axes[direction], "up_axis": up_axis},
+            }
+        ],
     )
     tracked_error = aim_error_degrees(batch_rig, "head", aim_axes[direction], point)
     index = {"X": 0, "Y": 1, "Z": 2}[up_axis.lstrip("-")]
@@ -841,9 +846,50 @@ rest_pose(batch_rig)
 refuses(
     lambda: handler.set_character_pose(
         batch_rig.name,
-        [{"bone_name": "head", "aim_at": {"target": (0.0, -3.0, 0.55), "track_axis": "Y", "up_axis": "Y"}}],
+        [{"bone_name": "head", "aim_at": {"target_point": (0.0, -3.0, 0.55), "track_axis": "Y", "up_axis": "Y"}}],
     ),
     "The bone's other axes at rest:",
+)
+
+# --- A rotation about a bone's own length axis moves nothing, and the reply says so ----------
+#
+# The failure this covers is silent in every other channel: the call succeeds, the keys land,
+# the pose matrix genuinely changes, and the joint does not bend. Measured here against the
+# real API rather than trusted from the handler's arithmetic - the bone's own tail, in world
+# space, is what does or does not move.
+
+
+def tail_world(rig, bone_name):
+    return rig.matrix_world @ rig.pose.bones[bone_name].tail.copy()
+
+
+def twist_notices(reply):
+    return [warning for warning in reply["warnings"] if "length axis" in warning]
+
+
+rest_pose(batch_rig)
+rest_tail = tail_world(batch_rig, "neck")
+rest_child_head = batch_rig.matrix_world @ batch_rig.pose.bones["head"].head.copy()
+rolled = handler.set_character_pose(batch_rig.name, [{"bone_name": "neck", "rotate": {"axis": "-Y", "degrees": 60.0}}])
+roll_tail_travel = (tail_world(batch_rig, "neck") - rest_tail).length
+roll_child_travel = ((batch_rig.matrix_world @ batch_rig.pose.bones["head"].head.copy()) - rest_child_head).length
+rest_pose(batch_rig)
+bent = handler.set_character_pose(batch_rig.name, [{"bone_name": "neck", "rotate": {"axis": "X", "degrees": 60.0}}])
+bend_tail_travel = (tail_world(batch_rig, "neck") - rest_tail).length
+rest_pose(batch_rig)
+
+assert roll_tail_travel < POSITION_TOLERANCE, f"a length-axis roll moved the tail {roll_tail_travel} m"
+assert roll_child_travel < POSITION_TOLERANCE, f"a length-axis roll moved the child's head {roll_child_travel} m"
+assert bend_tail_travel > 0.1 * batch_rig.pose.bones["neck"].length, (
+    f"a perpendicular rotation barely moved the tail ({bend_tail_travel} m); the comparison proves nothing"
+)
+assert len(twist_notices(rolled)) == 1, f"the roll was not reported: {rolled['warnings']}"
+assert "neck" in twist_notices(rolled)[0]
+assert twist_notices(bent) == [], f"a rotation that bends the joint was called a twist: {bent['warnings']}"
+print(
+    f"length-axis roll: tail travelled {roll_tail_travel:.3e} m, child head {roll_child_travel:.3e} m, "
+    f"notices {len(twist_notices(rolled))}; the same angle about X travelled {bend_tail_travel:.6f} m "
+    f"with {len(twist_notices(bent))} notices"
 )
 print(
     f"solve_bone_reach: achieved_error_m {reach_error:.9f}, reapplied {applied_error:.9f}, "
