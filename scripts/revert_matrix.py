@@ -100,8 +100,10 @@ ADDON_LIGHTING_INSPECTION = ROOT / "src/blender_mcp/bundled/addon/handlers/light
 ADDON_LIGHTING_RENDERING = ROOT / "src/blender_mcp/bundled/addon/handlers/lighting/rendering.py"
 SERVER_LIGHTING_INSPECTION_TOOL = ROOT / "src/blender_mcp/server/tools/lighting/inspection.py"
 SERVER_LIGHTING_RENDERING_TOOL = ROOT / "src/blender_mcp/server/tools/lighting/rendering.py"
-ADDON_CR_FOUNDATION = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/foundation.py"
+ADDON_CR_PRIMITIVES = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/primitives.py"
 ADDON_POSING = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/posing.py"
+ADDON_AXES = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/axes.py"
+ADDON_REACH = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/reach.py"
 SERVER_POSING_TOOL = ROOT / "src/blender_mcp/server/tools/character_rigging/posing.py"
 # Camera aiming, on both sides of the socket: the server wrapper preflights a placement it can
 # resolve without a round trip, and the handler repeats the check against the resolved target.
@@ -170,6 +172,8 @@ STRICTT = "tests/server/test_strict_tool_args.py"
 LIGHTT = "tests/server/tools/lighting/test_tools.py"
 CTRLT = "tests/server/tools/character_rigging/test_controls.py"
 POSET = "tests/server/tools/character_rigging/test_posing.py"
+REACHT = "tests/server/tools/character_rigging/test_reach.py"
+LISTT = "tests/server/tools/character_rigging/test_bone_listing.py"
 CRFT = "tests/server/tools/character_rigging/test_foundation.py"
 RENDT = "tests/test_rendering_tools.py"
 VIEWT = "tests/server/tools/test_viewport.py"
@@ -6292,7 +6296,7 @@ REVERTS: list[Revert] = [
         ADDON_POSING,
         "            if rest_axes:",
         "            if False:",
-        (f"{POSET}::test_rest_axes_are_reported_only_when_asked_for",),
+        (f"{LISTT}::test_rest_axes_are_reported_only_when_asked_for",),
     ),
     # --- the nine numbers carry their own conclusion ---
     #
@@ -6310,41 +6314,41 @@ REVERTS: list[Revert] = [
         '                item["up_axis"] = aim_axes["+Z"]\n'
         '                item["aim_axis_for_world"] = aim_axes\n',
         "",
-        (f"{POSET}::test_the_rest_axes_are_also_named_in_the_vocabulary_an_aim_takes",),
+        (f"{LISTT}::test_the_rest_axes_are_also_named_in_the_vocabulary_an_aim_takes",),
     ),
     Revert(
         "pose: the bone's length axis is left unsaid, so which letter aims the bone is folklore",
         ADDON_POSING,
         '        if rest_axes:\n            reply["length_axis"] = _LENGTH_AXIS\n',
         "",
-        (f"{POSET}::test_the_rest_axes_are_also_named_in_the_vocabulary_an_aim_takes",),
+        (f"{LISTT}::test_the_rest_axes_are_also_named_in_the_vocabulary_an_aim_takes",),
     ),
     Revert(
         "pose: the up axis is read in armature space, ignoring where the rig sits in the scene",
-        ADDON_POSING,
+        ADDON_AXES,
         "    rest = armature.matrix_world.to_3x3() @ bone.matrix_local.to_3x3()\n",
         "    rest = bone.matrix_local.to_3x3()\n",
-        (f"{POSET}::test_the_up_axis_follows_the_rig_into_the_scene_where_the_nine_numbers_cannot",),
+        (f"{LISTT}::test_the_up_axis_follows_the_rig_into_the_scene_where_the_nine_numbers_cannot",),
     ),
     Revert(
         "pose: a rig with no direction left in it still has an up axis guessed for it",
-        ADDON_POSING,
+        ADDON_AXES,
         "    if not units:\n        return None\n",
         "    if not units:\n        return _LENGTH_AXIS\n",
         # The derivation that guessed is `_nearest_rest_axis`, which every world direction -
         # `up_axis` among them - is answered from, so the node making the claim widened with it.
-        (f"{POSET}::test_a_rig_scaled_to_nothing_names_no_axis_for_any_direction",),
+        (f"{LISTT}::test_a_rig_scaled_to_nothing_names_no_axis_for_any_direction",),
     ),
     Revert(
         "pose: an aim's up axis is not made perpendicular, so the basis shears",
-        ADDON_POSING,
+        ADDON_AXES,
         "    columns = {track_letter: direction * track_sign, up_letter: residual.normalized() * up_sign}\n",
         "    columns = {track_letter: direction * track_sign, up_letter: up_pose * up_sign}\n",
         (f"{POSET}::test_aim_points_the_named_axis_at_an_object_and_leaves_position_and_scale_alone",),
     ),
     Revert(
         "pose: an aim reads its world target as if the rig were at the origin",
-        ADDON_POSING,
+        ADDON_AXES,
         "    world_to_pose = armature.matrix_world.inverted()\n",
         "    world_to_pose = mathutils.Matrix.Identity(4)\n",
         (
@@ -6354,21 +6358,21 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "pose: an aim target on the bone head is normalised instead of refused",
-        ADDON_POSING,
+        ADDON_AXES,
         "    if distance <= _AIM_MIN_DISTANCE:\n",
         "    if False:\n",
         (f"{POSET}::test_aim_rejects_every_direction_it_cannot_define",),
     ),
     Revert(
         "pose: a minimal-arc aim accepts a half turn and rolls the bone arbitrarily",
-        ADDON_POSING,
+        ADDON_AXES,
         "        if swing > _AIM_MAX_MINIMAL_ARC:\n",
         "        if False:\n",
         (f"{POSET}::test_a_minimal_arc_aim_past_the_flip_angle_is_refused_rather_than_rolled_arbitrarily",),
     ),
     Revert(
         "pose: rotate reads its angle as radians, so a degree value under-rotates",
-        ADDON_POSING,
+        ADDON_AXES,
         '"angle": math.radians(degrees),',
         '"angle": degrees,',
         (f"{POSET}::test_rotate_resolves_named_axes_and_vectors_in_degrees",),
@@ -6410,34 +6414,34 @@ REVERTS: list[Revert] = [
     # --- solve_bone_reach says whether it converged, and why not ---
     Revert(
         "pose: a bone reach reports itself converged whatever it achieved",
-        ADDON_POSING,
+        ADDON_REACH,
         '        converged=measured["achieved_error_m"] <= tolerance_m,\n',
         "        converged=True,\n",
         (
-            f"{POSET}::test_a_tighter_tolerance_turns_the_same_solve_into_a_miss",
-            f"{POSET}::test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig",
-            f"{POSET}::test_a_target_beyond_the_chains_reach_is_reported_as_unreachable",
-            f"{POSET}::test_a_missed_reach_still_warns_after_the_envelope_has_shortened_the_reply",
+            f"{REACHT}::test_a_tighter_tolerance_turns_the_same_solve_into_a_miss",
+            f"{REACHT}::test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig",
+            f"{REACHT}::test_a_target_beyond_the_chains_reach_is_reported_as_unreachable",
+            f"{REACHT}::test_a_missed_reach_still_warns_after_the_envelope_has_shortened_the_reply",
         ),
     ),
     Revert(
         "pose: a bone reach cannot tell an unreachable target from a stalled solve",
-        ADDON_POSING,
+        ADDON_REACH,
         '        out_of_reach=measured["target_distance_m"] > measured["chain_reach_m"],\n',
         "        out_of_reach=False,\n",
-        (f"{POSET}::test_a_target_beyond_the_chains_reach_is_reported_as_unreachable",),
+        (f"{REACHT}::test_a_target_beyond_the_chains_reach_is_reported_as_unreachable",),
     ),
     Revert(
         "pose: a bone reach sums rest bone lengths, ignoring the rig's world scale",
-        ADDON_POSING,
+        ADDON_REACH,
         "    matrix = armature.matrix_world\n"
         "    return sum((matrix @ bone.tail_local - matrix @ bone.head_local).length for bone in rest_chain)\n",
         "    return sum(bone.length for bone in rest_chain)\n",
-        (f"{POSET}::test_the_chains_reach_is_measured_in_world_space_not_in_rest_bone_lengths",),
+        (f"{REACHT}::test_the_chains_reach_is_measured_in_world_space_not_in_rest_bone_lengths",),
     ),
     Revert(
         "pose: a missed bone reach reports its numbers but raises no warning",
-        ADDON_POSING,
+        ADDON_REACH,
         '            "warnings": [\n'
         "                warning\n"
         "                for warning in (_reach_convergence_warning(solution, tolerance_m) for solution in solutions)\n"
@@ -6445,14 +6449,14 @@ REVERTS: list[Revert] = [
         "            ],\n",
         '            "warnings": [],\n',
         (
-            f"{POSET}::test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig",
-            f"{POSET}::test_a_target_beyond_the_chains_reach_is_reported_as_unreachable",
-            f"{POSET}::test_a_missed_reach_still_warns_after_the_envelope_has_shortened_the_reply",
+            f"{REACHT}::test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig",
+            f"{REACHT}::test_a_target_beyond_the_chains_reach_is_reported_as_unreachable",
+            f"{REACHT}::test_a_missed_reach_still_warns_after_the_envelope_has_shortened_the_reply",
         ),
     ),
     Revert(
         "pose: a bone reach takes tolerance_m as given, so 0 or NaN reaches the solve",
-        ADDON_POSING,
+        ADDON_REACH,
         # Both reach tools read the tolerance through `_validated_tolerance`, so reverting the
         # one helper is what lets 0 or NaN reach either solve.
         '    tolerance_m = _finite(tolerance_m, "tolerance_m")\n'
@@ -6467,135 +6471,135 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "pose: a bone reach never says which tolerance it judged the solve against",
-        ADDON_POSING,
+        ADDON_REACH,
         '            "tolerance_m": tolerance_m,\n',
         "",
         (
-            f"{POSET}::test_a_reach_inside_its_tolerance_reports_converged_and_says_nothing_else",
-            f"{POSET}::test_a_tighter_tolerance_turns_the_same_solve_into_a_miss",
+            f"{REACHT}::test_a_reach_inside_its_tolerance_reports_converged_and_says_nothing_else",
+            f"{REACHT}::test_a_tighter_tolerance_turns_the_same_solve_into_a_miss",
         ),
     ),
     Revert(
         "pose: every missed bone reach is blamed on the target being out of reach",
-        ADDON_POSING,
+        ADDON_REACH,
         "    if solution.out_of_reach:\n",
         "    if True:\n",
-        (f"{POSET}::test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig",),
+        (f"{REACHT}::test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig",),
     ),
     Revert(
         "pose: a converged bone reach warns anyway, so every solve carries a notice",
-        ADDON_POSING,
+        ADDON_REACH,
         "    if solution.converged:\n        return None\n",
         "    if False:\n        return None\n",
-        (f"{POSET}::test_a_reach_inside_its_tolerance_reports_converged_and_says_nothing_else",),
+        (f"{REACHT}::test_a_reach_inside_its_tolerance_reports_converged_and_says_nothing_else",),
     ),
     # --- the chain, pole and target resolution both reach tools share ---
     Revert(
         # A chain that walks through a fork picks up a bone the IK solver will then drive
         # sideways: the reach bends the other arm as well as the one it was asked about.
         "pose: an auto-resolved chain walks straight through a fork",
-        ADDON_POSING,
+        ADDON_REACH,
         "        if parent is None or len(parent.children) > 1:\n",
         "        if parent is None:\n",
         (
-            f"{POSET}::test_unbranched_ancestor_chain_stops_before_a_mid_chain_fork",
-            f"{POSET}::test_unbranched_ancestor_chain_stops_before_a_root_level_fork",
+            f"{REACHT}::test_unbranched_ancestor_chain_stops_before_a_mid_chain_fork",
+            f"{REACHT}::test_unbranched_ancestor_chain_stops_before_a_root_level_fork",
         ),
     ),
     Revert(
         "pose: an auto-resolved chain ignores the cap and runs to the root",
-        ADDON_POSING,
+        ADDON_REACH,
         "    while len(chain) < max_length:\n",
         "    while True:\n",
-        (f"{POSET}::test_unbranched_ancestor_chain_respects_max_length",),
+        (f"{REACHT}::test_unbranched_ancestor_chain_respects_max_length",),
     ),
     Revert(
         # The deliberate opposite of the fork row: stopping one bone short of an unforked root
         # is equally wrong, and a leg rooted at the hips loses the hip bone that carries it.
         "pose control: an auto-resolved chain stops one short of an unforked root",
-        ADDON_POSING,
+        ADDON_REACH,
         "        chain.append(parent)\n",
         "        if parent.parent is None:\n            break\n        chain.append(parent)\n",
-        (f"{POSET}::test_unbranched_ancestor_chain_includes_an_unforked_root",),
+        (f"{REACHT}::test_unbranched_ancestor_chain_includes_an_unforked_root",),
     ),
     Revert(
         # The tip seeds its own chain, so a root bone still resolves to a one-bone reach
         # rather than to nothing the solver can drive.
         "pose: a resolved chain leaves out the tip bone it was asked to solve",
-        ADDON_POSING,
+        ADDON_REACH,
         "    chain = [tip]\n    bone = tip\n    while len(chain) < max_length:\n",
         "    chain = []\n    bone = tip\n    while len(chain) < max_length:\n",
-        (f"{POSET}::test_unbranched_ancestor_chain_of_a_root_bone_is_just_that_bone",),
+        (f"{REACHT}::test_unbranched_ancestor_chain_of_a_root_bone_is_just_that_bone",),
     ),
     Revert(
         # An explicit chain_length is an assertion about the rig, and it is the only way past a
         # fork the auto-resolve stops at; one bone short is a chain that cannot reach.
         "pose: an explicit chain_length resolves one bone short",
-        ADDON_POSING,
+        ADDON_REACH,
         "    for _step in range(length - 1):\n",
         "    for _step in range(length - 2):\n",
-        (f"{POSET}::test_rest_ancestor_chain_returns_the_exact_requested_length",),
+        (f"{REACHT}::test_rest_ancestor_chain_returns_the_exact_requested_length",),
     ),
     Revert(
         "pose: a chain_length past the root is silently shortened instead of refused",
-        ADDON_POSING,
+        ADDON_REACH,
         "        if bone.parent is None:\n"
         "            raise ValueError(f\"'{tip.name}' has only {len(chain)} ancestor(s); "
         'chain_length={length} exceeds them")\n',
         "        if bone.parent is None:\n            break\n",
-        (f"{POSET}::test_rest_ancestor_chain_refuses_a_length_past_the_root",),
+        (f"{REACHT}::test_rest_ancestor_chain_refuses_a_length_past_the_root",),
     ),
     Revert(
         # The round-2 draft this row pins: taking `chain[len(chain) // 2]` as the pole reference
         # is the ROOT bone on a two-bone chain, so offset-from-root is zero and every elbow and
         # knee is refused as "straight".
         "pose: pole synthesis takes the chain's root as its bend reference",
-        ADDON_POSING,
+        ADDON_REACH,
         "    joints = [tip_tail, *(bone.head_local for bone in chain)]\n    mid = joints[len(joints) // 2]\n",
         "    mid = chain[len(chain) // 2].head_local\n",
-        (f"{POSET}::test_synthesize_pole_finds_the_bend_side_of_a_bent_two_bone_chain",),
+        (f"{REACHT}::test_synthesize_pole_finds_the_bend_side_of_a_bent_two_bone_chain",),
     ),
     Revert(
         # A straight rest chain names no bend direction, so a synthesized pole would be noise
         # pointing wherever float error happened to land: refuse and say to supply one.
         "pose: a straight rest chain has a pole guessed from float noise instead of refusing",
-        ADDON_POSING,
+        ADDON_REACH,
         "    if projected.length <= _AIM_MIN_RESIDUAL:\n",
         "    if False:\n",
         (
-            f"{POSET}::test_synthesize_pole_refuses_a_straight_two_bone_rest_chain",
-            f"{POSET}::test_synthesize_pole_refuses_a_single_bone_chain",
+            f"{REACHT}::test_synthesize_pole_refuses_a_straight_two_bone_rest_chain",
+            f"{REACHT}::test_synthesize_pole_refuses_a_single_bone_chain",
         ),
     ),
     Revert(
         "pose: a chain whose root and tip coincide is normalised instead of refused",
-        ADDON_POSING,
+        ADDON_REACH,
         "    if axis.length <= _AIM_MIN_LENGTH:\n",
         "    if False:\n",
-        (f"{POSET}::test_synthesize_pole_refuses_a_chain_whose_root_and_tip_coincide",),
+        (f"{REACHT}::test_synthesize_pole_refuses_a_chain_whose_root_and_tip_coincide",),
     ),
     Revert(
         # Rest bones are armature-space; the pole is handed to an IK constraint as a world
         # point, so a rig anywhere but the origin bends towards a point beside the character.
         "pose: a synthesized pole is reported in armature space as if it were world space",
-        ADDON_POSING,
+        ADDON_REACH,
         "    return armature.matrix_world @ pole_local\n",
         "    return pole_local\n",
-        (f"{POSET}::test_synthesize_pole_converts_through_the_armatures_world_matrix",),
+        (f"{REACHT}::test_synthesize_pole_converts_through_the_armatures_world_matrix",),
     ),
     Revert(
         "pose: a reach on a bone the rig does not have is solved instead of refused",
-        ADDON_POSING,
+        ADDON_REACH,
         '    if rest_tip is None:\n        raise ValueError(f"Pose bone not found: {tip_name}")\n',
         '    if False:\n        raise ValueError(f"Pose bone not found: {tip_name}")\n',
-        (f"{POSET}::test_resolve_reach_chain_refuses_an_unknown_tip_bone",),
+        (f"{REACHT}::test_resolve_reach_chain_refuses_an_unknown_tip_bone",),
     ),
     Revert(
         # chain_length_source is how a caller learns whether the chain it got was the one it
         # asked for or one this handler inferred; swapping the two labels keeps both reports
         # present and makes both of them lies.
         "pose: a reach mislabels whether its chain length was inferred or given",
-        ADDON_POSING,
+        ADDON_REACH,
         '        chain_length_source = "resolved"\n'
         "    else:\n"
         "        rest_chain = _rest_ancestor_chain(rest_tip, requested_length)\n"
@@ -6605,41 +6609,41 @@ REVERTS: list[Revert] = [
         "        rest_chain = _rest_ancestor_chain(rest_tip, requested_length)\n"
         '        chain_length_source = "resolved"\n',
         (
-            f"{POSET}::test_resolve_reach_chain_reports_resolved_when_chain_length_is_omitted",
-            f"{POSET}::test_resolve_reach_chain_reports_explicit_when_chain_length_is_given",
+            f"{REACHT}::test_resolve_reach_chain_reports_resolved_when_chain_length_is_omitted",
+            f"{REACHT}::test_resolve_reach_chain_reports_explicit_when_chain_length_is_given",
         ),
     ),
     Revert(
         # Two reaches solving one bone to two targets is ambiguous; without the refusal the
         # later reach silently wins and the earlier one reports a pose it did not get.
         "pose: two reaches may claim the same bone, and the later one silently wins",
-        ADDON_POSING,
+        ADDON_REACH,
         '    if overlap:\n        raise ValueError(f"Bones claimed by more than one reach: {overlap}")\n',
         '    if False:\n        raise ValueError(f"Bones claimed by more than one reach: {overlap}")\n',
-        (f"{POSET}::test_resolve_reach_chain_refuses_a_bone_already_claimed_by_an_earlier_reach",),
+        (f"{REACHT}::test_resolve_reach_chain_refuses_a_bone_already_claimed_by_an_earlier_reach",),
     ),
     Revert(
         "pose: a reach target naming an object that is not there resolves to None",
-        ADDON_POSING,
+        ADDON_REACH,
         '        if obj is None:\n            raise ValueError(f"{label} object not found: {object_name}")\n',
         '        if False:\n            raise ValueError(f"{label} object not found: {object_name}")\n',
-        (f"{POSET}::test_resolved_reach_target_refuses_an_unknown_object_name",),
+        (f"{REACHT}::test_resolved_reach_target_refuses_an_unknown_object_name",),
     ),
     Revert(
         # The target's scratch Empty exists before the pole is resolved and before
         # `_solve_one_reach`'s own try/finally starts, so an unresolvable pole strands it in
         # the file under a `__solve_bone_reach__` name nobody will recognise.
         "pose: a reach refused over its pole strands the target's scratch Empty in the file",
-        ADDON_POSING,
+        ADDON_REACH,
         "        if target_is_temp:\n            bpy.data.objects.remove(target_obj, do_unlink=True)\n        raise\n",
         "        raise\n",
-        (f"{POSET}::test_a_reach_whose_pole_cannot_be_resolved_removes_the_targets_scratch_empty",),
+        (f"{REACHT}::test_a_reach_whose_pole_cannot_be_resolved_removes_the_targets_scratch_empty",),
     ),
     Revert(
         # `constraints.new` lands the constraint on the rig before any field is written, so a
         # value Blender's RNA refuses would leave a live IK constraint on the tip bone.
         "pose: a constraint value Blender refuses leaves the IK constraint live on the rig",
-        ADDON_POSING,
+        ADDON_REACH,
         "    except Exception:\n"
         "        # The constraint is on the rig from `new()` onwards, and the caller's own try/finally\n"
         "        # only covers a constraint this function returned. A value Blender's RNA refuses must\n"
@@ -6648,7 +6652,7 @@ REVERTS: list[Revert] = [
         "        tip_pose_bone.constraints.remove(constraint)\n"
         "        raise\n",
         "    except Exception:\n        raise\n",
-        (f"{POSET}::test_a_constraint_value_blender_refuses_removes_the_constraint_it_already_added",),
+        (f"{REACHT}::test_a_constraint_value_blender_refuses_removes_the_constraint_it_already_added",),
     ),
     Revert(
         # Neither form given is a reach with nowhere to go; both given is two answers to one
@@ -6705,7 +6709,7 @@ REVERTS: list[Revert] = [
         "        animation.action = previous_action\n"
         "        if previous_action is not None and previous_slot is not None:\n",
         "    except BaseException:\n        if False:\n",
-        (f"{POSET}::test_a_reach_that_fails_part_way_through_hands_back_the_action_it_arrived_on",),
+        (f"{REACHT}::test_a_reach_that_fails_part_way_through_hands_back_the_action_it_arrived_on",),
     ),
     # --- configure_render_settings answers with the paths it wrote, not the whole state ---
     Revert(
@@ -7342,7 +7346,7 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "posing: the bone filter is ignored, so naming three bones still reads the whole rig",
-        ADDON_CR_FOUNDATION,
+        ADDON_CR_PRIMITIVES,
         "    if bone_names is None:\n        return bones",
         "    if True:\n        return bones",
         (
@@ -7353,7 +7357,7 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "posing: a bone the rig does not have is dropped from the page instead of refused",
-        ADDON_CR_FOUNDATION,
+        ADDON_CR_PRIMITIVES,
         '    if missing:\n        raise ValueError(f"Bones not found in armature',
         '    if False:\n        raise ValueError(f"Bones not found in armature',
         (
@@ -7363,7 +7367,7 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "posing: the bone filter accepts a shape that is not a list of names",
-        ADDON_CR_FOUNDATION,
+        ADDON_CR_PRIMITIVES,
         "    if not isinstance(bone_names, list) or not 1 <= len(bone_names) <= _MAX_BONE_PAGE:",
         "    if False:",
         (
@@ -7373,7 +7377,7 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "posing: a blank or non-string bone name passes the filter",
-        ADDON_CR_FOUNDATION,
+        ADDON_CR_PRIMITIVES,
         "        if not isinstance(name, str) or not name.strip():",
         "        if False:",
         (
@@ -7383,7 +7387,7 @@ REVERTS: list[Revert] = [
     ),
     Revert(
         "posing: the list is narrowed even when no filter was asked for",
-        ADDON_CR_FOUNDATION,
+        ADDON_CR_PRIMITIVES,
         "    if bone_names is None:\n        return bones",
         "    if bone_names is None:\n        return bones[:1]",
         (

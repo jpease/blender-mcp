@@ -5,7 +5,8 @@ import contextlib
 import bpy
 
 from ...helpers import preserve_mode_and_selection, set_active, sync_from_editmode
-from .foundation import _armature_object, _finite, _mesh_object, _plain, _restore_groups, _snapshot_groups
+from .primitives import _armature_object, _finite, _mesh_object, _plain
+from .skinning import _restore_groups, _snapshot_groups
 
 _TRANSFER_MAPPINGS = {
     "TOPOLOGY",

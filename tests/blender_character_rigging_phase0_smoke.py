@@ -211,9 +211,10 @@ rollback_constraint = body.constraints.new(type="COPY_LOCATION")
 rollback_constraint.name = "Rollback Target"
 rollback_constraint.target = rig
 rollback_constraint.subtarget = "target.L"
-# `foundation`, not the package: `_rename_references` is defined there and called
-# from there, so patching the package attribute would not intercept anything.
-character_module = sys.modules[f"{package_name}.handlers.character_rigging.foundation"]
+# `structure`, not `references` and not the package: `_rename_references` is defined in
+# `references` but called through `structure`'s own module-global binding, so patching it
+# anywhere else would not intercept anything.
+character_module = sys.modules[f"{package_name}.handlers.character_rigging.structure"]
 rename_references = character_module._rename_references
 
 

@@ -689,7 +689,7 @@ def _bone_pose_entries(bones: int) -> list[dict[str, object]]:
 
 def _reach_records(bones: int) -> list[dict[str, object]]:
     """
-    Mirror `handlers/character_rigging/posing.py _solve_one_reach`, one entry per solved reach.
+    Mirror `handlers/character_rigging/reach.py _solve_one_reach`, one entry per solved reach.
 
     A reach reports the chain it resolved, where the tip's tail landed, whether that is inside
     the requested tolerance and how the target sits against the chain's own reach, and carries
@@ -731,7 +731,7 @@ def _reach_records(bones: int) -> list[dict[str, object]]:
 
 def _keyed_reach_records(frames: int) -> list[dict[str, object]]:
     """
-    Mirror `handlers/character_rigging/posing.py _keyed_reach_record`, for a two-foot walk.
+    Mirror `handlers/character_rigging/reach.py _keyed_reach_record`, for a two-foot walk.
 
     Two reaches, one per foot, each a three-bone leg keyed at every frame of the cycle. This
     is the tool's whole reason to exist, so the representative call is the representative
@@ -1703,7 +1703,7 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "changed_objects": ["Hero_Rig"],
             "changed_resources": [{"type": "ACTION", "name": "Hero_Action"}],
         },
-        # `handlers/character_rigging/posing.py solve_bone_reach`; per reach it adds the solver's
+        # `handlers/character_rigging/reach.py solve_bone_reach`; per reach it adds the solver's
         # own report to the same per-bone records set_character_pose returns for that chain.
         "solve_bone_reach": lambda scale: {
             "armature_object": "Hero_Rig",
@@ -1712,7 +1712,7 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "reaches": _reach_records(scale.bones),
             "changed_objects": ["Hero_Rig"],
         },
-        # `handlers/character_rigging/posing.py keyframe_bone_reach`; one call keys both feet
+        # `handlers/character_rigging/reach.py keyframe_bone_reach`; one call keys both feet
         # across the whole cycle, so its reply is per frame where solve_bone_reach's is per pose.
         "keyframe_bone_reach": lambda scale: {
             "armature_object": "Hero_Rig",

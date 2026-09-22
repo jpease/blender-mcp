@@ -15,16 +15,15 @@ import bpy
 import mathutils
 
 from ...helpers import preserve_mode_and_selection
-from .foundation import (
+from .primitives import (
     _armature_object,
     _ensure_object_collection,
-    _enter_armature_edit,
-    _exit_object_mode,
     _finite,
     _matrix_list,
     _mesh_object,
     _required_name,
 )
+from .structure import _enter_armature_edit, _exit_object_mode
 
 
 def _validate_contiguous_chain(armature, bone_names):
