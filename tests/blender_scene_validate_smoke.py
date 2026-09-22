@@ -37,6 +37,13 @@ for obj in list(scene.objects):
     bpy.data.objects.remove(obj, do_unlink=True)
 assert scene.camera is None
 
+# Cycles is registered as a bpy.types.RenderEngine subclass, never in the static
+# RenderSettings.engine enum, so probing only the enum reported an ERROR-severity
+# ENGINE_UNAVAILABLE for a scene that renders with Cycles right now - and that one
+# finding alone made `ready` unreachable in a stock Blender.
+scene.render.engine = "CYCLES"
+assert scene.render.engine == "CYCLES"
+
 # An empty scene has no camera, no lights, and a default frame range: every
 # scene-level check plus the camera/lighting domain checks should all fire on
 # the first pass, with no scope filter applied.
@@ -51,6 +58,7 @@ assert "MISSING_LIGHTS" in codes
 # scene-level dedup rule must suppress the "scene" domain's own duplicate.
 assert any(finding["domain"] == "camera" for finding in baseline["findings"])
 assert any(finding["domain"] == "lighting" and finding["code"] == "MISSING_CAMERA" for finding in baseline["findings"])
+assert "ENGINE_UNAVAILABLE" not in codes
 assert "MISSING_CAMERA" not in scene_domain_codes
 # Lighting's own MISSING_CAMERA finding is an ERROR, so the aggregate must not
 # be reported ready even though nothing else in the empty scene errors out.
@@ -102,6 +110,15 @@ scene.collection.objects.link(camera)
 scene.camera = camera
 light = bpy.data.objects.new("Smoke Light", bpy.data.lights.new("Smoke Light Data", type="POINT"))
 scene.collection.objects.link(light)
+
+# Nothing errors now: a camera, a light, no meshes, and both engines resolvable. This is the
+# whole point of the aggregator - a stock scene must be able to reach ready.
+ready_scene = server.validate_scene(scene.name)
+ready_codes = {finding["code"] for finding in ready_scene["findings"]}
+assert "ENGINE_UNAVAILABLE" not in ready_codes, sorted(ready_codes)
+errors = [finding for finding in ready_scene["findings"] if finding["severity"] == "ERROR"]
+assert errors == [], errors
+assert ready_scene["ready"] is True
 
 lit = server.validate_scene(scene.name, scope=["scene"])
 lit_codes = {finding["code"] for finding in lit["findings"]}

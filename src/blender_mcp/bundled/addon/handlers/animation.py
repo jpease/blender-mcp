@@ -26,9 +26,14 @@ _TARGET_COLLECTIONS = {
 # curve's own start-to-end delta each repeat, which is what keeps a walking character walking
 # instead of teleporting back to where the cycle started.
 _CYCLE_MODES = frozenset({"NONE", "REPEAT", "REPEAT_OFFSET", "MIRROR"})
-# How many distinct cycle periods one disagreement warning spells out before summarising the
-# rest: enough to name the limbs that disagree, few enough to stay inside the reply budget.
+# How many periods a disagreement warning spells out, and how many offending curves an
+# expected_period_frames refusal names, before each summarises the rest: enough to identify
+# what disagrees, few enough to stay inside the reply budget.
 _MAX_LISTED_PERIODS = 3
+# How close a curve's measured extent must sit to a caller's `expected_period_frames` to count
+# as the same period: the same absolute epsilon `_find_key` compares frames with, because a
+# period is the difference of two key frames and inherits their precision.
+_CYCLE_PERIOD_TOLERANCE = 1e-6
 _NLA_TRACK_PROPERTIES = {"mute", "solo", "lock"}
 _NLA_STRIP_PROPERTIES = {
     "frame_start",
@@ -866,7 +871,146 @@ def _curve_key_extent(curve):
     return (min(frames), max(frames)) if frames else None
 
 
-def _cycle_record(curve, operation, modes, cycles):
+def _curve_period(curve):
+    """
+    Measure the span one Cycles modifier on this curve would repeat.
+
+    Args:
+        curve: The F-Curve to measure.
+
+    Returns:
+        tuple: ((first_frame, last_frame) or None, period or None). One key is an extent of
+        zero: there is nothing between it and itself to repeat, so the honest answer is that
+        the curve has no period, not that its period is 0.
+
+    """
+    extent = _curve_key_extent(curve)
+    if extent is None or extent[1] <= extent[0]:
+        return extent, None
+    return extent, extent[1] - extent[0]
+
+
+def _cycle_restricted_range(frame_start, frame_end, blend_in, blend_out):
+    """
+    Validate the optional window a Cycles modifier is confined to, and return what to write.
+
+    The window bounds *where* the modifier applies, and changes no period: a curve keyed over
+    24 frames still repeats 24 frames, only inside this range. It is how one cycle occupies
+    part of a shot without the modifier extrapolating over the whole of it.
+
+    Args:
+        frame_start: First frame the modifier applies on, or None for no restriction.
+        frame_end: Last frame it applies on, or None.
+        blend_in: Frames to fade the modifier in over at frame_start.
+        blend_out: Frames to fade it out over at frame_end.
+
+    Returns:
+        dict | None: frame_start/frame_end/blend_in/blend_out as floats, or None when no
+        window was asked for.
+
+    Raises:
+        ValueError: If one bound is given without the other, the window is empty or
+            inverted, a blend is negative, or a blend is given with no window to blend.
+
+    """
+    for label, value in (("blend_in", blend_in), ("blend_out", blend_out)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            raise ValueError(f"{label} must be a finite number >= 0")
+    if frame_start is None and frame_end is None:
+        if blend_in or blend_out:
+            raise ValueError("blend_in/blend_out fade a restricted range; give frame_start and frame_end too")
+        return None
+    if frame_start is None or frame_end is None:
+        raise ValueError("frame_start and frame_end must be given together")
+    for label, value in (("frame_start", frame_start), ("frame_end", frame_end)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"{label} must be a finite number")
+    if frame_end <= frame_start:
+        raise ValueError(f"frame_end must be greater than frame_start; got {frame_start:g} to {frame_end:g}")
+    return {
+        "frame_start": float(frame_start),
+        "frame_end": float(frame_end),
+        "blend_in": float(blend_in),
+        "blend_out": float(blend_out),
+    }
+
+
+def _refuse_period_mismatch(curves, expected):
+    """
+    Refuse the call unless every selected curve already repeats the period the caller states.
+
+    The trap this closes cost a shot: the period is the curve's own first-to-last key extent,
+    so any key added outside the intended cycle redefines what that curve repeats - three
+    explicit strides keyed onto a curve cycled at 20 measured a 60-frame period - and the tool
+    reported success either way. A caller who names the period they authored is told which
+    curve disagrees and by how much, before a modifier exists to be wrong.
+
+    Args:
+        curves: Every curve this call selected, measured before anything is mutated.
+        expected: The period the caller says each of them carries, in frames.
+
+    Raises:
+        ValueError: If `expected` is not a positive finite number, or if any selected curve's
+            measured extent differs from it by more than `_CYCLE_PERIOD_TOLERANCE`.
+
+    """
+    if (
+        isinstance(expected, bool)
+        or not isinstance(expected, (int, float))
+        or not math.isfinite(expected)
+        or expected <= 0
+    ):
+        raise ValueError("expected_period_frames must be a finite number > 0")
+    offenders = []
+    for curve in curves:
+        extent, period = _curve_period(curve)
+        if period is None or abs(period - expected) > _CYCLE_PERIOD_TOLERANCE:
+            offenders.append((curve, extent, period))
+    if not offenders:
+        return
+    spelled = ", ".join(
+        f"{curve.data_path}[{curve.array_index}] keys {extent[0]:g}-{extent[1]:g}, a {period:g}-frame extent"
+        if period is not None
+        else f"{curve.data_path}[{curve.array_index}] has fewer than two distinct key frames"
+        for curve, extent, period in offenders[:_MAX_LISTED_PERIODS]
+    )
+    remainder = len(offenders) - len(offenders[:_MAX_LISTED_PERIODS])
+    if remainder:
+        spelled += f", and {remainder} further curve(s)"
+    raise ValueError(
+        f"expected_period_frames={expected:g} does not match {len(offenders)} of the {len(curves)} selected "
+        f"curves: {spelled}. A Cycles modifier repeats its own curve's first-to-last key extent, so any key "
+        "outside the intended cycle redefines the period. No modifier was created or changed. Remove the "
+        "out-of-cycle keys, or loop a bounded slice of the action with an NLA strip's repeat instead."
+    )
+
+
+def _apply_cycle_range(modifier, restricted):
+    """
+    Write one Cycles modifier's restricted range, or clear the one it already carries.
+
+    Measured on Blender 5.2: an F-Modifier keeps `frame_start <= frame_end` by moving whichever
+    bound was *not* assigned - setting `frame_start` past the current `frame_end` drags
+    `frame_end` up with it, whether or not the restriction is on. Both bounds are therefore
+    always written, never one. `use_restricted_range` is cleared first so a call that gives no
+    window widens the modifier back to the whole timeline instead of leaving the last one on.
+
+    Args:
+        modifier: The CYCLES F-Modifier being configured.
+        restricted: `_cycle_restricted_range`'s window, or None to apply no restriction.
+
+    """
+    modifier.use_restricted_range = False
+    if restricted is None:
+        return
+    modifier.frame_end = restricted["frame_end"]
+    modifier.frame_start = restricted["frame_start"]
+    modifier.blend_in = restricted["blend_in"]
+    modifier.blend_out = restricted["blend_out"]
+    modifier.use_restricted_range = True
+
+
+def _cycle_record(curve, operation, modes, cycles, restricted=None):
     """
     Describe one curve's cycle, including the period it will actually repeat at.
 
@@ -880,16 +1024,18 @@ def _cycle_record(curve, operation, modes, cycles):
         operation: SET or REMOVE; a removed cycle has no modes and no repeat bounds.
         modes: (mode_before, mode_after) as requested.
         cycles: (cycles_before, cycles_after) as requested; 0 is Blender's unlimited.
+        restricted: The window the modifier was confined to, or None for the whole timeline.
 
     Returns:
         dict: data_path, array_index, mode_before, mode_after, first_key_frame,
         last_key_frame, period_frames (None when the curve has fewer than two keys), plus
-        repeat_start_frame/repeat_end_frame when a finite count bounds the repeat.
+        restricted_range when one was given and repeat_start_frame/repeat_end_frame when a
+        finite count bounds a direction that extrapolates at all.
 
     """
     mode_before, mode_after = modes
     cycles_before, cycles_after = (int(count) for count in cycles)
-    extent = _curve_key_extent(curve)
+    extent, period = _curve_period(curve)
     record = {
         "data_path": curve.data_path,
         "array_index": curve.array_index,
@@ -897,22 +1043,20 @@ def _cycle_record(curve, operation, modes, cycles):
         "mode_after": mode_after if operation == "SET" else None,
         "first_key_frame": extent[0] if extent else None,
         "last_key_frame": extent[1] if extent else None,
-        "period_frames": None,
+        "period_frames": period,
     }
-    if extent is None:
+    if operation != "SET":
         return record
-    first, last = extent
-    # One key is an extent of zero: there is nothing between it and itself to repeat, so the
-    # honest answer is that this curve has no period, not that its period is 0.
-    if last <= first:
+    if restricted is not None:
+        record["restricted_range"] = dict(restricted)
+    if extent is None or period is None:
         return record
-    period = last - first
-    record["period_frames"] = period
-    if operation == "SET":
-        if cycles_before:
-            record["repeat_start_frame"] = first - cycles_before * period
-        if cycles_after:
-            record["repeat_end_frame"] = last + cycles_after * period
+    # A direction whose mode is NONE extrapolates nothing, so a count there bounds a repeat
+    # that never happens: there is no frame to report and nothing to warn about.
+    if cycles_before and mode_before != "NONE":
+        record["repeat_start_frame"] = extent[0] - cycles_before * period
+    if cycles_after and mode_after != "NONE":
+        record["repeat_end_frame"] = extent[1] + cycles_after * period
     return record
 
 
@@ -1005,15 +1149,42 @@ def _finite_repeat_warning(records, count, field, label, phrase):
     )
 
 
-def _cycle_warnings(records, operation, cycles_before, cycles_after):
+def _inert_count_warning(mode, count, mode_label, count_label):
+    """
+    Warn when a cycle count bounds repeats a NONE mode never makes.
+
+    `mode_before` defaults to NONE, so asking for two backward repeats and nothing else is a
+    request that quietly does nothing: the count is stored and the direction extrapolates no
+    cycle to count.
+
+    Args:
+        mode: The extrapolation mode requested for this direction.
+        count: The repeat count requested for it; 0 asks for nothing.
+        mode_label: The mode argument's name, to quote back.
+        count_label: The count argument's name, to quote back.
+
+    Returns:
+        str | None: One warning naming both arguments, or None when they agree.
+
+    """
+    if mode != "NONE" or not int(count):
+        return None
+    return (
+        f"{count_label}={int(count)} bounds nothing while {mode_label}=NONE: that direction extrapolates no "
+        f"cycle to repeat, so the count is inert. {mode_label} defaults to NONE - set it to REPEAT or "
+        "REPEAT_OFFSET for the repeats this count was meant to bound."
+    )
+
+
+def _cycle_warnings(records, operation, cycles, modes):
     """
     Every non-fatal notice one cycle call owes its caller.
 
     Args:
         records: The per-curve records this call built.
         operation: SET or REMOVE; a removal cycles nothing, so it warns about nothing.
-        cycles_before: The requested backward repeat count; 0 is unlimited.
-        cycles_after: The requested forward repeat count; 0 is unlimited.
+        cycles: (cycles_before, cycles_after) as requested; 0 is unlimited.
+        modes: (mode_before, mode_after) as requested.
 
     Returns:
         list[str]: The warnings, in the order a caller needs them.
@@ -1021,6 +1192,8 @@ def _cycle_warnings(records, operation, cycles_before, cycles_after):
     """
     if operation != "SET":
         return []
+    cycles_before, cycles_after = cycles
+    mode_before, mode_after = modes
     candidates = (
         _unrepeatable_warning(records),
         _period_disagreement_warning(records),
@@ -1028,6 +1201,8 @@ def _cycle_warnings(records, operation, cycles_before, cycles_after):
         _finite_repeat_warning(
             records, cycles_before, "repeat_start_frame", "cycles_before", "the first repeat starts at"
         ),
+        _inert_count_warning(mode_after, cycles_after, "mode_after", "cycles_after"),
+        _inert_count_warning(mode_before, cycles_before, "mode_before", "cycles_before"),
     )
     return [warning for warning in candidates if warning is not None]
 
@@ -1266,10 +1441,15 @@ class AnimationHandlersMixin:
         target,
         action_name,
         operation="SET",
-        mode_before="REPEAT_OFFSET",
+        mode_before="NONE",
         mode_after="REPEAT_OFFSET",
         cycles_before=0,
         cycles_after=0,
+        expected_period_frames=None,
+        frame_start=None,
+        frame_end=None,
+        blend_in=0.0,
+        blend_out=0.0,
         data_path_prefix=None,
         action_slot_identifier=None,
     ):
@@ -1281,6 +1461,12 @@ class AnimationHandlersMixin:
         for label, mode in (("mode_before", mode_before), ("mode_after", mode_after)):
             if mode not in _CYCLE_MODES:
                 raise ValueError(f"{label} must be one of {sorted(_CYCLE_MODES)}")
+        restricted = _cycle_restricted_range(frame_start, frame_end, blend_in, blend_out)
+        if operation == "REMOVE" and (restricted is not None or expected_period_frames is not None):
+            # Ignoring them would report a success that did none of what the call described.
+            raise ValueError(
+                "REMOVE deletes the Cycles modifier and applies no expected_period_frames and no restricted range"
+            )
         action = bpy.data.actions.get(_required_name(action_name, "action_name"))
         if action is None:
             raise ValueError(f"Action not found: {action_name}")
@@ -1300,6 +1486,10 @@ class AnimationHandlersMixin:
                 f"Action {action.name} has no F-Curve in slot {slot_identifier} whose data_path starts with "
                 f"{data_path_prefix!r}"
             )
+        # The whole selection is measured before one modifier is touched: a mismatch found on
+        # the third curve must not leave the first two cycled at a period nobody asked for.
+        if expected_period_frames is not None:
+            _refuse_period_mismatch(selected, expected_period_frames)
         records = []
         for curve in selected:
             modifier = next((item for item in curve.modifiers if item.type == "CYCLES"), None)
@@ -1315,7 +1505,10 @@ class AnimationHandlersMixin:
                 # Blender spells "forever" as zero cycles, in both directions.
                 modifier.cycles_before = int(cycles_before)
                 modifier.cycles_after = int(cycles_after)
-            records.append(_cycle_record(curve, operation, (mode_before, mode_after), (cycles_before, cycles_after)))
+                _apply_cycle_range(modifier, restricted)
+            records.append(
+                _cycle_record(curve, operation, (mode_before, mode_after), (cycles_before, cycles_after), restricted)
+            )
         return {
             "action": action.name,
             "action_slot": slot_identifier,
@@ -1324,7 +1517,7 @@ class AnimationHandlersMixin:
             "modifiers": records,
             # The envelope lifts these, so the period a curve will really repeat at, and the
             # frame a finite count stops at, reach a caller who read nothing but the warnings.
-            "warnings": _cycle_warnings(records, operation, cycles_before, cycles_after),
+            "warnings": _cycle_warnings(records, operation, (cycles_before, cycles_after), (mode_before, mode_after)),
             "changed_resources": [action.name],
         }
 

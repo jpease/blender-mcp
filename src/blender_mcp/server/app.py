@@ -117,17 +117,24 @@ rather than assuming which object is active or selected. Prefer non-destructive 
 server's perspective even though Blender's own undo history can still revert them
 locally.
 
-Animation is authored one frame at a time into one named action: pass the same `action_name` to
+Animation is authored into one named action: pass the same `action_name` to
 `keyframe_object_transform` and the pose tools, because an ID holds one action and a second one
-silently stops the first driving the rig. `set_scene_frame` is how any inspection tool or
-screenshot is pointed at another frame - they all report the current frame, so without it you
-are reviewing frame 1 forever. A contact that must hold still while the body moves over it -
-a planted foot, a hand on a prop - is held by `keyframe_bone_reach`, which re-solves the IK
-against the evaluated body pose at each frame; repeated FK rotation slides it instead.
+silently stops the first driving the rig. The pose and transform keyers take many frames per call
+(`keyframe_character_pose(keys=[{"frame": ..., "poses": [...]}, ...])`), so a stride is one call.
+`set_scene_frame` is how any inspection tool or screenshot is pointed at another frame - they all
+report the current frame, so without it you are reviewing frame 1 forever. A contact that must hold
+still while the body moves over it - a planted foot, a hand on a prop - is held by
+`keyframe_bone_reach`, which re-solves the IK against the evaluated body pose at each frame;
+repeated FK rotation slides it instead.
 
 Object names after a library override: a name shared with the linked original resolves to the
 editable override. A name linked from several libraries with no local object is refused with each
-library's session_uid - override one with create_override.
+library's session_uid - override one with create_override. On an overridden rig a bare custom-property
+write is not durable: Blender records an override for a pose bone's transform channels and nothing
+for a bare ID property write, so the value reverts to the library's on reopen even when the source
+file defines it. Keying the property instead survives, because the action is local data - a property
+the source rig does not define at all is lost either way. The pose tools warn when a call bare-writes
+one.
 
 Tool parameter naming follows three conventions, so a name is guessable rather than something to
 fail once and learn: a tool that creates a new object of some kind names that kind parameter

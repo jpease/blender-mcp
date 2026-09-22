@@ -320,10 +320,11 @@ print(
     f"rest_axes cost on {bone_count} bones: {plain_bytes} -> {axis_bytes} bytes "
     f"(+{axis_bytes - plain_bytes}, x{axis_bytes / plain_bytes:.2f}, {per_bone:.0f} per bone)"
 )
-# Nine rounded numbers one per line at the reply's indentation, plus the up_axis they resolve
-# to: about 205 bytes a bone. Twice that would mean the rounding or the flat shape had been
-# lost. `tests/blender_rest_axis_letters_smoke.py` measures the naming's own share.
-assert 100 < per_bone < 260, f"a rest-axis row costs {per_bone} bytes"
+# Nine rounded numbers one per line at the reply's indentation, the six-entry
+# aim_axis_for_world table, and the up_axis they resolve to: about 375 bytes a bone, measured.
+# Half of that would mean a bone had stopped saying which axis to aim with; twice it would mean
+# the rounding or the flat shape had been lost.
+assert 300 < per_bone < 420, f"a rest-axis row costs {per_bone} bytes"
 
 # Naming the bones is the difference between six paginated calls and one. Measured on this
 # 187-bone rig: an unfiltered rest_axes walk needs `ceil(total / page)` calls before the three
@@ -575,6 +576,275 @@ assert not any(obj.name.startswith("__solve_bone_reach__") for obj in bpy.data.o
 )
 assert list(reopened_rig.pose.bones["head"].constraints) == [], "a refused reach left an IK constraint on head"
 
+
+# --- 9. An aim can name a bone on another rig, not just that rig's origin ---------------------
+#
+# "Have A look at B" aimed at B's object origin, which on a character sits on the floor, so two
+# characters told to look at each other looked at each other's feet. The bone is 0.55 m above
+# that origin and 1.9 m away, so the two answers are about 16 degrees apart: enough that a
+# reply claiming success while aiming at the origin cannot pass this.
+
+rest_pose(reopened_rig)
+reopened_rig.animation_data.action = None
+partner = build_rig("PartnerRig", (2.0, 1.0, 0.0), 0.0)
+rest_pose(partner)
+partner_head_world = tuple(world_matrix(partner, "head").translation)
+partner_origin_world = tuple(partner.matrix_world.translation)
+handler.set_character_pose(
+    reopened_rig.name,
+    [
+        {
+            "bone_name": "head",
+            "aim_at": {
+                "target_object": partner.name,
+                "target_bone": "head",
+                "track_axis": "Z",
+                "up_axis": "X",
+                "up_reference": (0, 0, 1),
+            },
+        }
+    ],
+)
+bone_aim_error = aim_error_degrees(reopened_rig, "head", "Z", partner_head_world)
+origin_aim_error = aim_error_degrees(reopened_rig, "head", "Z", partner_origin_world)
+print(f"bone target: {bone_aim_error:.6f} deg off the bone, {origin_aim_error:.6f} deg off the rig's origin")
+assert bone_aim_error < 0.5, f"an aim at a bone missed it by {bone_aim_error} degrees"
+assert origin_aim_error > 5.0, (
+    f"aiming at the bone and at the rig's origin differ by only {origin_aim_error} degrees, so this proves nothing"
+)
+
+# TAIL and CENTER name the other two points on the same bone, and land on them.
+partner_tail_world = tuple(world_matrix(partner, "head") @ Vector((0.0, partner.pose.bones["head"].length, 0.0)))
+for position, expected in (("TAIL", partner_tail_world), ("HEAD", partner_head_world)):
+    rest_pose(reopened_rig)
+    handler.set_character_pose(
+        reopened_rig.name,
+        [
+            {
+                "bone_name": "head",
+                "aim_at": {
+                    "target_object": partner.name,
+                    "target_bone": "head",
+                    "target_bone_position": position,
+                    "track_axis": "Z",
+                    "up_axis": "X",
+                },
+            }
+        ],
+    )
+    placed = aim_error_degrees(reopened_rig, "head", "Z", expected)
+    assert placed < 0.5, f"target_bone_position={position} missed its point by {placed} degrees"
+
+# The rig reopened from disk in section 7, so the scene's earlier Empty is gone with it.
+plain_target = bpy.data.objects.new("PlainTarget", None)
+bpy.context.scene.collection.objects.link(plain_target)
+bpy.context.view_layer.update()
+refuses(
+    lambda: handler.set_character_pose(
+        reopened_rig.name,
+        [
+            {
+                "bone_name": "head",
+                "aim_at": {
+                    "target_object": plain_target.name,
+                    "target_bone": "head",
+                    "track_axis": "Z",
+                    "up_axis": "X",
+                },
+            }
+        ],
+    ),
+    "needs an armature to live on",
+)
+refuses(
+    lambda: handler.set_character_pose(
+        reopened_rig.name,
+        [
+            {
+                "bone_name": "head",
+                "aim_at": {
+                    "target_object": partner.name,
+                    "target_bone": "jaw",
+                    "track_axis": "Z",
+                    "up_axis": "X",
+                },
+            }
+        ],
+    ),
+    "aim_at.target_bone not found on 'PartnerRig': jaw",
+)
+
+# --- 10. One batched call keys a whole stride, each frame solved where that frame is ----------
+#
+# A thirteen-key stride was thirteen round trips, and every one of them solved its aim against
+# whatever frame the playhead happened to be on. One call keys them all, placing the playhead on
+# each frame first: the target below moves 6 m across the stride, so an aim evaluated once would
+# be tens of degrees off on four of the five frames.
+
+rest_pose(reopened_rig)
+batch_rig = build_rig("BatchRig", (0.0, -1.0, 0.0), 0.2)
+mover = bpy.data.objects.new("MovingTarget", None)
+bpy.context.scene.collection.objects.link(mover)
+BATCH_FRAMES = (1.0, 6.0, 11.0, 16.0, 21.0)
+for index, frame in enumerate(BATCH_FRAMES):
+    mover.location = (3.0 - 1.5 * index, -3.0, 0.55)
+    mover.keyframe_insert(data_path="location", frame=frame)
+bpy.context.view_layer.update()
+
+
+def mover_world(frame):
+    """Where the animated target sits at one frame, read from the scene rather than assumed."""
+    bpy.context.scene.frame_set(int(frame))
+    return tuple(mover.matrix_world.translation)
+
+
+MOVER_TRACK = {frame: mover_world(frame) for frame in BATCH_FRAMES}
+bpy.context.scene.frame_set(7)
+playhead_before = bpy.context.scene.frame_current
+
+
+def head_basis(rig):
+    """Read one bone's own channel values out as plain numbers, so a comparison is by value."""
+    return [list(row) for row in rig.pose.bones["head"].matrix_basis]
+
+
+def worst_difference(left, right):
+    return max(abs(a - b) for row_a, row_b in zip(left, right, strict=True) for a, b in zip(row_a, row_b, strict=True))
+
+
+batched = handler.keyframe_character_pose(
+    batch_rig.name,
+    "SMOKE_batch",
+    keys=[
+        {
+            "frame": frame,
+            "poses": [
+                {
+                    "bone_name": "head",
+                    "aim_at": {
+                        "target_object": mover.name,
+                        "track_axis": "Z",
+                        "up_axis": "X",
+                        "up_reference": (0, 0, 1),
+                    },
+                }
+            ],
+        }
+        # Out of order on purpose: the handler keys them ascending, and says so.
+        for frame in (11.0, 1.0, 21.0, 6.0, 16.0)
+    ],
+    action_policy="CREATE",
+)
+
+assert batched["keyed_frames"] == list(BATCH_FRAMES), batched["keyed_frames"]
+assert batched["changed_bones"] == ["head"], batched["changed_bones"]
+assert len(batched["changed_keys"]) == len(BATCH_FRAMES), batched["changed_keys"]
+assert batched["interpolation_updates"] == 4 * len(BATCH_FRAMES), batched["interpolation_updates"]
+assert bpy.context.scene.frame_current == playhead_before, "the batched call left the playhead where it stopped"
+# The rig is handed back to the action it just authored, not left holding the last frame it
+# solved: the playhead is on 7, so the pose the call leaves behind is the one the action
+# interpolates there - which is nothing like the pose keyed at 21.
+after_call = head_basis(batch_rig)
+bpy.context.scene.frame_set(playhead_before)
+bpy.context.view_layer.update()
+assert worst_difference(after_call, head_basis(batch_rig)) < POSITION_TOLERANCE, (
+    "the batched call left a pose the action does not evaluate to at the restored playhead"
+)
+bpy.context.scene.frame_set(int(BATCH_FRAMES[-1]))
+bpy.context.view_layer.update()
+assert worst_difference(after_call, head_basis(batch_rig)) > 0.05, (
+    "the rig was left holding the last frame this call solved"
+)
+bpy.context.scene.frame_set(playhead_before)
+
+batch_keys: dict[float, list[float]] = {}
+for curve in action_fcurves(bpy.data.actions["SMOKE_batch"]):
+    for point in curve.keyframe_points:
+        batch_keys.setdefault(point.co[0], [0.0] * 4)[curve.array_index] = point.co[1]
+assert set(batch_keys) == set(BATCH_FRAMES), sorted(batch_keys)
+distinct = {tuple(round(value, 6) for value in values) for values in batch_keys.values()}
+assert len(distinct) == len(BATCH_FRAMES), f"a moving target keyed only {len(distinct)} distinct poses"
+
+batch_errors = []
+for frame, target in MOVER_TRACK.items():
+    bpy.context.scene.frame_set(int(frame))
+    batch_errors.append(aim_error_degrees(batch_rig, "head", "Z", target))
+worst_batch_error = max(batch_errors)
+print(f"batched aim: worst frame off by {worst_batch_error:.9f} deg over {len(BATCH_FRAMES)} frames in 1 call")
+assert worst_batch_error < AIM_TOLERANCE_DEGREES, (
+    f"a batched frame was keyed aiming {worst_batch_error} degrees off, so the aim was not solved at that frame"
+)
+
+refuses(
+    lambda: handler.keyframe_character_pose(batch_rig.name, "SMOKE_batch", 4.0, [], action_policy="REUSE"),
+    "requires both frame and poses",
+)
+refuses(
+    lambda: handler.keyframe_character_pose(
+        batch_rig.name,
+        "SMOKE_batch",
+        4.0,
+        [{"bone_name": "head", "rotate": {"axis": "Z", "degrees": 5.0}}],
+        keys=[{"frame": 5.0, "poses": [{"bone_name": "head", "rotate": {"axis": "Z", "degrees": 5.0}}]}],
+        action_policy="REUSE",
+    ),
+    "exactly one of frame with poses",
+)
+
+# --- 11. The reply names the bone axis for each world direction, and an aim takes it ----------
+#
+# `length_axis` is `Y` on every bone Blender builds, and an upright bone's `up_axis` is `Y` too,
+# so the instruction to pass both through named one axis twice and was refused. The table below
+# is what a caller reads instead: one letter per world direction, already in aim_at's vocabulary.
+
+rest_pose(batch_rig)
+bpy.context.scene.frame_set(1)
+axis_record = handler.list_character_bones(batch_rig.name, rest_axes=True, bone_names=["head"])["bones"]["items"][0]
+aim_axes = axis_record["aim_axis_for_world"]
+print(f"aim_axis_for_world for 'head': {aim_axes}, up_axis={axis_record['up_axis']!r}")
+assert set(aim_axes) == {"+X", "-X", "+Y", "-Y", "+Z", "-Z"}
+assert aim_axes["+Z"] == axis_record["up_axis"], "up_axis and the +Z entry disagree"
+
+# A horizontal direction whose letter is free of the up axis: that pair is what an aim takes.
+WORLD_VECTORS = {"+X": (1.0, 0.0, 0.0), "-X": (-1.0, 0.0, 0.0), "+Y": (0.0, 1.0, 0.0), "-Y": (0.0, -1.0, 0.0)}
+up_axis = axis_record["up_axis"]
+usable = [
+    direction
+    for direction in WORLD_VECTORS
+    if aim_axes[direction] is not None and aim_axes[direction].lstrip("-") != up_axis.lstrip("-")
+]
+assert usable, f"no world direction gave a track_axis free of up_axis={up_axis!r}: {aim_axes}"
+for direction in usable:
+    rest_pose(batch_rig)
+    bone_head = world_matrix(batch_rig, "head").translation
+    point = tuple(bone_head + Vector(WORLD_VECTORS[direction]) * 2.0)
+    handler.set_character_pose(
+        batch_rig.name,
+        [{"bone_name": "head", "aim_at": {"target": point, "track_axis": aim_axes[direction], "up_axis": up_axis}}],
+    )
+    tracked_error = aim_error_degrees(batch_rig, "head", aim_axes[direction], point)
+    index = {"X": 0, "Y": 1, "Z": 2}[up_axis.lstrip("-")]
+    sign = -1.0 if up_axis.startswith("-") else 1.0
+    # bpy's stub types a matrix column as None rather than the Vector it is at runtime.
+    up_error = math.degrees(
+        (Vector(world_matrix(batch_rig, "head").to_3x3().col[index]) * sign)  # pyright: ignore[reportArgumentType]
+        .normalized()
+        .angle(Vector((0, 0, 1)), 0.0)
+    )
+    print(f"{direction}: track_axis={aim_axes[direction]!r} up_axis={up_axis!r} aim {tracked_error:.9f} deg")
+    assert tracked_error < 0.5, f"{direction}: the reply's own letter missed by {tracked_error} degrees"
+    assert up_error < 0.5, f"{direction}: the reply's up_axis left the bone {up_error} degrees off upright"
+
+# The rest-axes letters are the ones a caller has; the refusal for naming one twice says which
+# two are left and where each points, because the bone's own axes are not otherwise readable.
+rest_pose(batch_rig)
+refuses(
+    lambda: handler.set_character_pose(
+        batch_rig.name,
+        [{"bone_name": "head", "aim_at": {"target": (0.0, -3.0, 0.55), "track_axis": "Y", "up_axis": "Y"}}],
+    ),
+    "The bone's other axes at rest:",
+)
 print(
     f"solve_bone_reach: achieved_error_m {reach_error:.9f}, reapplied {applied_error:.9f}, "
     f"chain_reach_m {solved['chain_reach_m']:.6f}, target_distance_m {solved['target_distance_m']:.6f}, "

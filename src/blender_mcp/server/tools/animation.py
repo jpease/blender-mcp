@@ -303,32 +303,58 @@ async def set_action_cycle(
     target: AnimationTarget,
     action_name: Annotated[str, Field(min_length=1, max_length=128)],
     operation: Literal["SET", "REMOVE"] = "SET",
-    mode_before: Literal["NONE", "REPEAT", "REPEAT_OFFSET", "MIRROR"] = "REPEAT_OFFSET",
+    mode_before: Literal["NONE", "REPEAT", "REPEAT_OFFSET", "MIRROR"] = "NONE",
     mode_after: Literal["NONE", "REPEAT", "REPEAT_OFFSET", "MIRROR"] = "REPEAT_OFFSET",
     cycles_before: Annotated[int, Field(ge=0, le=10_000)] = 0,
     cycles_after: Annotated[int, Field(ge=0, le=10_000)] = 0,
+    expected_period_frames: Annotated[float, Field(gt=0)] | None = None,
+    frame_start: float | None = None,
+    frame_end: float | None = None,
+    blend_in: Annotated[float, Field(ge=0)] = 0.0,
+    blend_out: Annotated[float, Field(ge=0)] = 0.0,
     data_path_prefix: Annotated[str, Field(min_length=1, max_length=512)] | None = None,
     action_slot_identifier: str | None = None,
 ) -> dict:
     """
     Make an action's curves repeat outside their keyed range, which is what turns 24 keyed frames into a walk.
 
-    REPEAT_OFFSET, the default, adds the curve's start-to-end delta to each repeat, so a root
-    that travelled one metre across the cycle keeps travelling: repeat two starts where repeat
-    one ended. REPEAT restarts from the first key every cycle, which teleports a travelling
-    character back to the origin; use it for curves that return to where they began, and for
-    the rotations of a cycle authored in place. 0 cycles means unlimited, in both directions.
+    REPEAT_OFFSET adds the curve's start-to-end delta to each repeat, so a root that travelled
+    one metre across the cycle keeps travelling: repeat two starts where repeat one ended.
+    REPEAT restarts from the first key every cycle, which teleports a travelling character back
+    to the origin; use it for curves that return to where they began, and for the rotations of a
+    cycle authored in place. mode_after defaults to REPEAT_OFFSET because a forward loop is what
+    is nearly always being asked for; mode_before defaults to NONE because extrapolating the
+    same cycle backwards forever is not free - it fills every frame before the first key with
+    motion nobody requested, and on a travelling root it walks the character backwards out of
+    the set. Ask for it explicitly.
+
+    The period is structural and not a parameter: a Cycles modifier repeats its own curve's
+    first-to-last key extent. Keying anything on a cycled curve outside the intended cycle
+    therefore changes what that curve repeats - one gesture key at frame 60 turns a 20-frame
+    loop into a 59-frame one, on that curve alone. Pass expected_period_frames to be refused
+    instead of finding out at playback. To cycle part of a shot and still animate the same bone
+    elsewhere in it, the supported route is an NLA strip with repeat (manage_nla_tracks), which
+    loops a bounded slice of the action, not this tool.
 
     Args:
         ctx: MCP request context.
         target: The ID whose action is made cyclic.
         action_name: The action to modify. An action of that name must exist.
         operation: SET adds or updates the Cycles modifier; REMOVE deletes it, leaving a
-            curve that has none untouched.
+            curve that has none untouched. REMOVE accepts none of the arguments below that
+            describe a cycle, since it creates none.
         mode_before: Extrapolation before the first key.
         mode_after: Extrapolation after the last key.
         cycles_before: How many repeats before the range; 0 is unlimited.
         cycles_after: How many repeats after the range; 0 is unlimited.
+        expected_period_frames: The period every selected curve must already measure, in
+            frames. Any curve whose own key extent differs, or that has no extent at all, is
+            refused by name before a single modifier is created or changed.
+        frame_start: First frame the modifier applies on, given together with frame_end. Bounds
+            WHERE the modifier applies; it does not change the period.
+        frame_end: Last frame the modifier applies on, later than frame_start.
+        blend_in: Frames over which the modifier fades in at frame_start.
+        blend_out: Frames over which it fades out at frame_end.
         data_path_prefix: Only touch curves whose data_path starts with this - e.g.
             'pose.bones["thigh.L"]' for one limb, or "location" for root travel alone.
             Omitted, every curve in the slot is made cyclic.
@@ -338,11 +364,30 @@ async def set_action_cycle(
         action, action_slot, operation, curve_count, warnings, and modifiers - per curve:
         data_path, array_index, mode_before, mode_after, first_key_frame, last_key_frame,
         period_frames (what that curve repeats: its own key extent, null under two keys),
-        and, for a finite count, repeat_end_frame/repeat_start_frame - where repetition
-        stops and the curve's own extrapolation takes over, by default holding the end
-        key: a snap, then a freeze. modifiers shortens to fit the reply budget.
+        restricted_range (frame_start/frame_end/blend_in/blend_out, only when one was
+        given), and, for a finite count, repeat_end_frame/repeat_start_frame - where
+        repetition stops and the curve's own extrapolation takes over, by default holding
+        the end key: a snap, then a freeze. modifiers shortens to fit the reply budget.
 
     """
+    if (frame_start is None) != (frame_end is None):
+        raise ToolError("frame_start and frame_end must be given together")
+    if frame_start is not None and frame_end is not None and frame_end <= frame_start:
+        raise ToolError(f"frame_end must be greater than frame_start; got {frame_start} to {frame_end}")
+    if operation == "REMOVE":
+        # Accepting and ignoring them would report a success that did none of what was asked.
+        unusable = [
+            name
+            for name, given in (
+                ("expected_period_frames", expected_period_frames is not None),
+                ("frame_start", frame_start is not None),
+                ("blend_in", bool(blend_in)),
+                ("blend_out", bool(blend_out)),
+            )
+            if given
+        ]
+        if unusable:
+            raise ToolError(f"REMOVE deletes the Cycles modifier and cannot apply {', '.join(unusable)}")
     return await call_blender(
         "set_action_cycle",
         {
@@ -353,6 +398,11 @@ async def set_action_cycle(
             "mode_after": mode_after,
             "cycles_before": cycles_before,
             "cycles_after": cycles_after,
+            "expected_period_frames": expected_period_frames,
+            "frame_start": frame_start,
+            "frame_end": frame_end,
+            "blend_in": blend_in,
+            "blend_out": blend_out,
             "data_path_prefix": data_path_prefix,
             "action_slot_identifier": action_slot_identifier,
         },

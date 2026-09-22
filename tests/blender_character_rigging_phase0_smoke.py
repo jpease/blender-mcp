@@ -10,7 +10,9 @@ Run with::
 
 import importlib.util
 import json
+import math
 import sys
+import tempfile
 
 from pathlib import Path
 
@@ -150,6 +152,8 @@ configured = handler.configure_armature_bones(
     pose_bone_patches=[{"bone_name": "upper_arm.L", "lock_scale": (True, True, True)}],
 )
 assert configured["changes"][0]["new"] == [True, True, True]
+# A local rig's writes are durable, so nothing is warned about.
+assert configured["warnings"] == []
 
 collection_result = handler.manage_bone_collections(
     "HeroRig",
@@ -396,5 +400,48 @@ json.dumps(
         validation,
     ]
 )
+
+# A custom property written on a library override reads back correctly in-session and is gone
+# after save and reopen: Blender carries no ID property write into an override. Only a warning
+# can tell a caller that, so the warning is asserted against the reopened value that proves it.
+override_root = Path(tempfile.mkdtemp(prefix="blender_mcp_override_smoke_"))
+source_path = override_root / "source.blend"
+shot_path = override_root / "shot.blend"
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+handler.create_armature(
+    "LinkRig",
+    "LinkColl",
+    bones=[{"name": "bone", "head": (0, 0, 0), "tail": (0, 0, 1)}],
+)
+bpy.data.objects["LinkRig"].pose.bones["bone"]["grip"] = 0.1
+bpy.ops.wm.save_as_mainfile(filepath=str(source_path))
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+# `libraries.load` is a context manager at runtime; bpy's stub declares it returning None.
+with bpy.data.libraries.load(str(source_path), link=True) as (_source, target):  # pyright: ignore[reportGeneralTypeIssues]
+    target.collections = ["LinkColl"]
+bpy.data.collections["LinkColl"].override_hierarchy_create(
+    bpy.context.scene,
+    bpy.context.scene.view_layers[0],
+    do_fully_editable=True,
+)
+overridden = next(obj for obj in bpy.context.scene.objects if obj.type == "ARMATURE")
+assert overridden.override_library is not None
+override_result = handler.configure_armature_bones(
+    overridden.name,
+    pose_bone_patches=[{"bone_name": "bone", "custom_properties": {"grip": 0.75}}],
+)
+assert len(override_result["warnings"]) == 1
+assert "library override" in override_result["warnings"][0]
+# bpy's stub loses the ID-property protocol, so a custom property reads as None to the checker.
+assert math.isclose(float(overridden.pose.bones["bone"]["grip"]), 0.75, abs_tol=1e-6)  # pyright: ignore[reportArgumentType]
+
+bpy.ops.wm.save_as_mainfile(filepath=str(shot_path))
+bpy.ops.wm.open_mainfile(filepath=str(shot_path))
+reopened = next(obj for obj in bpy.context.scene.objects if obj.type == "ARMATURE")
+# The library's own value, not the 0.75 written: the bare write did not survive.
+assert math.isclose(float(reopened.pose.bones["bone"]["grip"]), 0.1, abs_tol=1e-6), reopened.pose.bones["bone"]["grip"]  # pyright: ignore[reportArgumentType]
+json.dumps(override_result)
 
 print("BLENDER_CHARACTER_RIGGING_PHASE0_SMOKE_OK")

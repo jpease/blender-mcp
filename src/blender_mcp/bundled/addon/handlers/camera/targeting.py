@@ -1,3 +1,7 @@
+# Four handlers here bind more than fifteen locals: a framing or constraint call resolves a scene,
+# a camera, a subject, a snapshot to restore and a solve result, and naming those is what makes
+# them readable. Declared per file as `handlers/rendering.py` and `handlers/animation.py` do.
+# ruff: file-ignore[too-many-locals]
 # pyright: reportGeneralTypeIssues=false, reportOptionalSubscript=false
 """Aiming, camera-target management, object framing, and generic camera constraints."""
 
@@ -20,6 +24,7 @@ from ._shared import (
     _matrix_list,
     _new_empty,
     _object,
+    _positive,
     _required_name,
     _restore_constraint,
     _scene,
@@ -30,6 +35,21 @@ from ._shared import (
 )
 
 _COPY_CONSTRAINTS = {"COPY_LOCATION", "COPY_ROTATION"}
+# The exact keys the server's BoneFrameTarget serialises. Anything else is a caller typo, and a
+# silently ignored typo in a framing request is a close-up on the wrong thing.
+_BONE_TARGET_FIELDS = {"object_name", "bone_name", "radius_m"}
+# The camera projection each framing policy can solve for. MOVE_CAMERA and CHANGE_LENS both
+# reason in perspective; only an orthographic camera has a scale to change.
+_FRAMING_POLICY_TYPES = {
+    "MOVE_CAMERA": "PERSP",
+    "CHANGE_LENS": "PERSP",
+    "CHANGE_ORTHO_SCALE": "ORTHO",
+}
+# Camera-local depth under which a point counts as being on or behind the camera plane, where a
+# perspective divide stops meaning anything.
+_MINIMUM_DEPTH_M = 1e-8
+# A margin insets every side of the render frame, so at 0.9 there is no frame left to fit into.
+_MAXIMUM_MARGIN = 0.9
 # Squared distance under which two world points count as the same point. It is deliberately the
 # same floor _look_quaternion applies to its aim direction, so a camera placement this handler
 # accepts can never be rejected a line later by the aim it was computed for.
@@ -61,19 +81,111 @@ def _set_world_location(obj, location):
     obj.matrix_world = mathutils.Matrix.LocRotScale(location, rotation, scale)
 
 
-def _evaluated_bounds(objects):
-    _update_view_layer()
-    depsgraph = bpy.context.evaluated_depsgraph_get()
+def _object_bound_points(objects, depsgraph):
+    """World-space bound-box corners of every object as the depsgraph evaluates it."""
     points = []
     for obj in objects:
         evaluated = obj.evaluated_get(depsgraph)
         matrix = evaluated.matrix_world
         points.extend(matrix @ mathutils.Vector(corner) for corner in evaluated.bound_box)
+    return points
+
+
+def _bounds_of(points):
     if not points:
         raise ValueError("The requested objects have no evaluable bounds")
     minimum = mathutils.Vector(tuple(min(point[index] for point in points) for index in range(3)))
     maximum = mathutils.Vector(tuple(max(point[index] for point in points) for index in range(3)))
-    return points, minimum, maximum, (minimum + maximum) * 0.5
+    return minimum, maximum, (minimum + maximum) * 0.5
+
+
+def _evaluated_bounds(objects):
+    _update_view_layer()
+    points = _object_bound_points(objects, bpy.context.evaluated_depsgraph_get())
+    minimum, maximum, center = _bounds_of(points)
+    return points, minimum, maximum, center
+
+
+def _bone_target_specs(bone_targets, scene):
+    """
+    Resolve bone targets to (armature object, bone name, radius) before anything is moved.
+
+    Every refusal a bone target can earn — a missing object, an object that is not an armature, a
+    bone the armature does not have — is raised here, so a bad target never reaches the solve and
+    the camera is never touched on its way to being rejected.
+    """
+    specs = []
+    for index, target in enumerate(bone_targets or []):
+        label = f"bone_targets[{index}]"
+        if not isinstance(target, dict):
+            raise ValueError(f"{label} must be an object with object_name and bone_name")
+        unsupported = set(target) - _BONE_TARGET_FIELDS
+        if unsupported:
+            raise ValueError(f"{label} has unsupported fields: {sorted(unsupported)}")
+        object_name = _required_name(target.get("object_name"), f"{label}.object_name")
+        bone_name = _required_name(target.get("bone_name"), f"{label}.bone_name")
+        radius = _positive(target.get("radius_m", 0.0) or 0.0, f"{label}.radius_m", allow_zero=True)
+        obj = _object(object_name, scene=scene)
+        if obj.type != "ARMATURE":
+            raise ValueError(f"{label} object '{object_name}' is not an armature (type={obj.type})")
+        if obj.pose is None or obj.pose.bones.get(bone_name) is None:
+            raise ValueError(f"{label} bone '{bone_name}' does not exist on armature '{object_name}'")
+        specs.append((obj, bone_name, radius))
+    if len({(obj.name, bone_name) for obj, bone_name, _radius in specs}) != len(specs):
+        raise ValueError("bone_targets must not name the same bone on the same armature twice")
+    return specs
+
+
+def _padded_points(point, radius):
+    """Expand a point into the corners of the axis-aligned cube of half-size radius around it."""
+    if radius <= 0.0:
+        return [point]
+    return [
+        point + mathutils.Vector((x, y, z))
+        for x in (-radius, radius)
+        for y in (-radius, radius)
+        for z in (-radius, radius)
+    ]
+
+
+def _bone_target_points(specs, depsgraph):
+    """
+    World head and tail of each resolved bone, padded by its radius, plus one reply record each.
+
+    The head and tail are read from the depsgraph-evaluated armature, so a bone driven by
+    constraints, drivers or an action reports where it actually is at the current frame rather
+    than where its rest pose would put it.
+    """
+    points, records = [], []
+    for obj, bone_name, radius in specs:
+        evaluated = obj.evaluated_get(depsgraph)
+        bone = evaluated.pose.bones[bone_name]
+        matrix = evaluated.matrix_world
+        head = matrix @ bone.head
+        tail = matrix @ bone.tail
+        points.extend(_padded_points(head, radius))
+        points.extend(_padded_points(tail, radius))
+        records.append(
+            {
+                "object_name": obj.name,
+                "bone_name": bone_name,
+                "radius_m": radius,
+                "head_world": list(head),
+                "tail_world": list(tail),
+            }
+        )
+    return points, records
+
+
+def _framing_points(objects, bone_specs):
+    """Every world point a framing solve must contain, plus the bone records the reply echoes."""
+    _update_view_layer()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    points = _object_bound_points(objects, depsgraph)
+    bone_points, bone_records = _bone_target_points(bone_specs, depsgraph)
+    points.extend(bone_points)
+    minimum, maximum, center = _bounds_of(points)
+    return points, minimum, maximum, center, bone_records
 
 
 def _margin_limits(camera_data, scene, margin):
@@ -103,7 +215,7 @@ def _frame_contains(local_points, limits, *, perspective):
     for point in local_points:
         if perspective:
             depth = -point.z
-            if depth <= 1e-8:
+            if depth <= _MINIMUM_DEPTH_M:
                 return False
             x, y = point.x / depth, point.y / depth
         else:
@@ -141,6 +253,105 @@ def _binary_smallest_fit(predicate, low, high):
         else:
             low = middle
     return high
+
+
+def _validated_framing_request(scene_name, camera_name, object_names, bone_targets, margin, policy):
+    """Resolve and check every framing argument before the camera is touched."""
+    scene = _scene(scene_name)
+    camera = _camera(camera_name, scene=scene)
+    object_names = list(object_names or [])
+    if not object_names and not bone_targets:
+        raise ValueError("Supply at least one of object_names or bone_targets; both were empty")
+    if len(set(object_names)) != len(object_names):
+        raise ValueError("object_names must not contain duplicates")
+    objects = [_object(name, scene=scene) for name in object_names]
+    bone_specs = _bone_target_specs(bone_targets, scene)
+    margin = _finite_number(margin, "margin")
+    if not 0 <= margin < _MAXIMUM_MARGIN:
+        raise ValueError(f"margin must be in [0, {_MAXIMUM_MARGIN})")
+    policy = str(policy).upper()
+    if policy not in _FRAMING_POLICY_TYPES:
+        raise ValueError(f"Unsupported framing policy: {policy}")
+    required_type = _FRAMING_POLICY_TYPES[policy]
+    if camera.data.type != required_type:
+        raise ValueError(f"{policy} framing requires a {required_type} camera")
+    return scene, camera, objects, bone_specs, margin, policy
+
+
+def _solve_move_camera(camera, scene, points, center, rotation, scale, margin, span):
+    """Slide the camera back along its aim until everything fits, leaving its optics alone."""
+    inverse_rotation = rotation.conjugated()
+    centered = [inverse_rotation @ (point - center) for point in points]
+    limits = _margin_limits(camera.data, scene, margin)
+
+    def distance_fits(distance):
+        local = [mathutils.Vector((point.x, point.y, point.z - distance)) for point in centered]
+        return _frame_contains(local, limits, perspective=True)
+
+    initial_high = max(span, camera.data.clip_start * 2, 1.0)
+    distance = _binary_smallest_fit(distance_fits, camera.data.clip_start, initial_high) * 1.00001
+    solved_location = center + (rotation @ mathutils.Vector((0.0, 0.0, distance)))
+    camera.matrix_world = mathutils.Matrix.LocRotScale(solved_location, rotation, scale)
+    return {"distance": distance, "lens": camera.data.lens}
+
+
+def _solve_change_lens(camera, scene, points, location, rotation, margin):
+    """Widen the lens to the longest focal length that still contains everything, in place."""
+    inverse_rotation = rotation.conjugated()
+    local_points = [inverse_rotation @ (point - location) for point in points]
+    if any(point.z >= -_MINIMUM_DEPTH_M for point in local_points):
+        raise ValueError("Cannot change lens because at least one bound is on or behind the camera plane")
+    minimum_lens = max(float(camera.data.bl_rna.properties["lens"].hard_min), 0.01)
+    camera.data.lens = minimum_lens
+    if not _frame_contains(local_points, _margin_limits(camera.data, scene, margin), perspective=True):
+        raise ValueError("Objects do not fit even at the camera's minimum supported lens")
+    # `hard_max` is the float maximum; 60 halvings from there never reach a real focal length.
+    low, high = minimum_lens, float(camera.data.bl_rna.properties["lens"].soft_max)
+    for _iteration in range(60):
+        middle = (low + high) * 0.5
+        camera.data.lens = middle
+        if _frame_contains(local_points, _margin_limits(camera.data, scene, margin), perspective=True):
+            low = middle
+        else:
+            high = middle
+    low = max(minimum_lens, low * 0.99999)
+    camera.data.lens = low
+    _set_world_rotation(camera, rotation)
+    return {"distance": -sum(point.z for point in local_points) / len(local_points), "lens": low}
+
+
+def _solve_ortho_scale(camera, scene, points, location, rotation, margin, span, original_ortho_scale):
+    """Shrink the orthographic width to the smallest that still contains everything."""
+    inverse_rotation = rotation.conjugated()
+    local_points = [inverse_rotation @ (point - location) for point in points]
+
+    def scale_fits(scale_value):
+        camera.data.ortho_scale = scale_value
+        return _frame_contains(local_points, _margin_limits(camera.data, scene, margin), perspective=False)
+
+    ortho_scale = _binary_smallest_fit(scale_fits, 1e-6, max(original_ortho_scale, span, 1.0)) * 1.00001
+    camera.data.ortho_scale = ortho_scale
+    _set_world_rotation(camera, rotation)
+    return {"ortho_scale": ortho_scale}
+
+
+def _verify_framing(camera, scene, points, margin):
+    """
+    Re-measure the camera state a solve assigned, and name the axis the fit is limited by.
+
+    The solve reasons about the camera it is about to write; this reads the camera Blender
+    actually evaluated, so a constraint that overrode the assignment is caught here rather than
+    reported as a successful framing.
+    """
+    _update_view_layer()
+    limits = _margin_limits(camera.data, scene, margin)
+    local_points = [camera.matrix_world.inverted() @ point for point in points]
+    perspective = camera.data.type == "PERSP"
+    if not _frame_contains(local_points, limits, perspective=perspective):
+        raise ValueError(
+            "The assigned camera state does not frame the request; active constraints may be overriding it"
+        )
+    return _limiting_axis(local_points, limits, perspective=perspective)
 
 
 class _TargetingMixin:
@@ -279,111 +490,36 @@ class _TargetingMixin:
         self,
         scene_name,
         camera_name,
-        object_names,
+        object_names=None,
+        bone_targets=None,
         margin=0.1,
         policy="MOVE_CAMERA",
         aim_at_center=True,
     ):
-        scene = _scene(scene_name)
-        camera = _camera(camera_name, scene=scene)
-        if not object_names:
-            raise ValueError("object_names must not be empty")
-        if len(set(object_names)) != len(object_names):
-            raise ValueError("object_names must not contain duplicates")
-        objects = [_object(name, scene=scene) for name in object_names]
-        margin = _finite_number(margin, "margin")
-        if not 0 <= margin < 0.9:
-            raise ValueError("margin must be in [0, 0.9)")
-        policy = str(policy).upper()
-        policy_types = {
-            "MOVE_CAMERA": "PERSP",
-            "CHANGE_LENS": "PERSP",
-            "CHANGE_ORTHO_SCALE": "ORTHO",
-        }
-        if policy not in policy_types:
-            raise ValueError(f"Unsupported framing policy: {policy}")
-        required_type = policy_types[policy]
-        if camera.data.type != required_type:
-            raise ValueError(f"{policy} framing requires a {required_type} camera")
-        points, minimum, maximum, center = _evaluated_bounds(objects)
-        original_matrix = camera.matrix_world.copy()
-        original_lens = camera.data.lens
-        original_ortho_scale = camera.data.ortho_scale
-        location, current_rotation, scale = original_matrix.decompose()
-        rotation = _look_quaternion(location, center) if aim_at_center else current_rotation
-        result = {}
+        scene, camera, objects, bone_specs, margin, policy = _validated_framing_request(
+            scene_name, camera_name, object_names, bone_targets, margin, policy
+        )
+        points, minimum, maximum, center, bone_records = _framing_points(objects, bone_specs)
+        restore = (camera.matrix_world.copy(), camera.data.lens, camera.data.ortho_scale)
+        location, rotation, scale = restore[0].decompose()
+        if aim_at_center:
+            rotation = _look_quaternion(location, center)
+        span = (maximum - minimum).length
         try:
             if policy == "MOVE_CAMERA":
-                inverse_rotation = rotation.conjugated()
-                centered = [inverse_rotation @ (point - center) for point in points]
-                limits = _margin_limits(camera.data, scene, margin)
-
-                def distance_fits(distance):
-                    local = [mathutils.Vector((point.x, point.y, point.z - distance)) for point in centered]
-                    return _frame_contains(local, limits, perspective=True)
-
-                initial_high = max((maximum - minimum).length, camera.data.clip_start * 2, 1.0)
-                distance = _binary_smallest_fit(distance_fits, camera.data.clip_start, initial_high) * 1.00001
-                solved_location = center + (rotation @ mathutils.Vector((0.0, 0.0, distance)))
-                camera.matrix_world = mathutils.Matrix.LocRotScale(solved_location, rotation, scale)
-                result = {"distance": distance, "lens": camera.data.lens}
+                result = _solve_move_camera(camera, scene, points, center, rotation, scale, margin, span)
             elif policy == "CHANGE_LENS":
-                inverse_rotation = rotation.conjugated()
-                local_points = [inverse_rotation @ (point - location) for point in points]
-                if any(point.z >= -1e-8 for point in local_points):
-                    raise ValueError("Cannot change lens because at least one bound is on or behind the camera plane")
-                minimum_lens = max(float(camera.data.bl_rna.properties["lens"].hard_min), 0.01)
-                camera.data.lens = minimum_lens
-                if not _frame_contains(local_points, _margin_limits(camera.data, scene, margin), perspective=True):
-                    raise ValueError("Objects do not fit even at the camera's minimum supported lens")
-                # `hard_max` is the float maximum; 60 halvings from there never reach a real focal length.
-                low, high = minimum_lens, float(camera.data.bl_rna.properties["lens"].soft_max)
-                for _iteration in range(60):
-                    middle = (low + high) * 0.5
-                    camera.data.lens = middle
-                    if _frame_contains(local_points, _margin_limits(camera.data, scene, margin), perspective=True):
-                        low = middle
-                    else:
-                        high = middle
-                low = max(minimum_lens, low * 0.99999)
-                camera.data.lens = low
-                _set_world_rotation(camera, rotation)
-                result = {"distance": -sum(point.z for point in local_points) / len(local_points), "lens": low}
+                result = _solve_change_lens(camera, scene, points, location, rotation, margin)
             else:
-                inverse_rotation = rotation.conjugated()
-                local_points = [inverse_rotation @ (point - location) for point in points]
-
-                def scale_fits(scale_value):
-                    camera.data.ortho_scale = scale_value
-                    return _frame_contains(local_points, _margin_limits(camera.data, scene, margin), perspective=False)
-
-                ortho_scale = (
-                    _binary_smallest_fit(
-                        scale_fits,
-                        1e-6,
-                        max(original_ortho_scale, (maximum - minimum).length, 1.0),
-                    )
-                    * 1.00001
-                )
-                camera.data.ortho_scale = ortho_scale
-                _set_world_rotation(camera, rotation)
-                result = {"ortho_scale": ortho_scale}
-            _update_view_layer()
-            limits = _margin_limits(camera.data, scene, margin)
-            local_points = [camera.matrix_world.inverted() @ point for point in points]
-            if not _frame_contains(local_points, limits, perspective=camera.data.type == "PERSP"):
-                raise ValueError(
-                    "The assigned camera state does not frame the objects; active constraints may be overriding it"
-                )
+                result = _solve_ortho_scale(camera, scene, points, location, rotation, margin, span, restore[2])
+            limiting_axis = _verify_framing(camera, scene, points, margin)
         except Exception:
-            camera.matrix_world = original_matrix
-            camera.data.lens = original_lens
-            camera.data.ortho_scale = original_ortho_scale
+            camera.matrix_world, camera.data.lens, camera.data.ortho_scale = restore
             raise
-        limiting_axis = _limiting_axis(local_points, limits, perspective=camera.data.type == "PERSP")
         return {
             "camera": camera.name,
             "objects": [obj.name for obj in objects],
+            "bone_targets": bone_records,
             "policy": policy,
             "margin": margin,
             "bounds_world": {"min": list(minimum), "max": list(maximum)},

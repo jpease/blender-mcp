@@ -7,11 +7,13 @@ render output template - and judges each reference by shape and by whether it
 exists here. `portable` is a proof, not a guess: it is true only when the file
 is saved, the scan was complete, and no reference is absolute or missing.
 
-Published paths follow `text_hygiene`: a `//`-relative path may be published
-whole, anything else is reduced to a leaf, so a reply never carries this host's
-directory layout. `blend_filepath` is the one exception, published absolute
-like `get_session_info.current_filepath`, because a client compares it against
-the configured file roots.
+Published paths follow `blend_files.published_path_fields`: a `//`-relative path
+may be published whole, anything else is reduced to a leaf and flagged
+`path_redacted` with a reason, so a reply never carries this host's directory
+layout and a client never mistakes a redaction for a broken link - `verdict`
+reports breakage. `blend_filepath` is the one exception, published absolute like
+`get_session_info.current_filepath`, because a client compares it against the
+configured file roots.
 
 `hash_libraries` reads linked `.blend` files on Blender's main thread, so it is
 opt-in, confined to the configured file roots (a `Library.filepath` comes out of
@@ -25,13 +27,11 @@ import bpy
 
 from ..library_digest import library_digests, require_digest_roots
 from ..text_hygiene import (
-    client_safe_leaf,
     client_safe_name_leaf,
     relative_link_body,
-    safe_relative_link,
     strip_unsafe,
 )
-from .blend_files import MAX_REPORTED_LINK_CHARS, is_indirect_library, library_summary
+from .blend_files import is_indirect_library, library_summary, published_path_fields
 from .provenance import read_provenance
 from .simulation_cache import point_cache_info
 from .texture._shared import image_path_missing
@@ -49,26 +49,6 @@ MAX_DELIVERY_ENTRIES = 2000
 _NON_FILE_IMAGE_SOURCES = frozenset({"GENERATED", "VIEWER"})
 # Blender's built-in font is not a file on this machine and cannot fail to ship.
 _BUILTIN_FONT_PATH = "<builtin>"
-
-
-def _published_path(raw: object, *, is_directory: bool = False) -> str:
-    """
-    Publish a path whole when it is a safe `//` link, else as a bare leaf.
-
-    Args:
-        raw: The path as Blender reported it.
-        is_directory: True when the caller knows the path names a directory;
-            its last component is then a directory name, routinely a username.
-
-    Returns:
-        str: The link, a leaf, or "" when there is no path at all.
-
-    """
-    text = str(raw or "")
-    if not text.strip():
-        return ""
-    whole = safe_relative_link(text, MAX_REPORTED_LINK_CHARS)
-    return whole if whole is not None else client_safe_leaf(text, is_directory=is_directory)
 
 
 def _is_relative(raw: object) -> bool:
@@ -142,16 +122,18 @@ def _entry(kind: str, name: str, raw: object, verdict: str, detail: dict, *, is_
         raw: The path as Blender reported it, published by the shared rule.
         verdict: The portability verdict.
         detail: Kind-specific fields.
-        is_directory: Passed through to `_published_path`.
+        is_directory: Passed through to `published_path_fields`.
 
     Returns:
-        dict: `kind`, `name`, `path`, `absolute`, `verdict`, `detail`.
+        dict: `kind`, `name`, `path`, `path_redacted`, `path_redaction_reason`,
+        `absolute`, `verdict`, `detail`. A path with nothing set is published as
+        `""` and is not a redaction; `verdict` reports that as `UNSET`.
 
     """
     return {
         "kind": kind,
         "name": name,
-        "path": _published_path(raw, is_directory=is_directory),
+        **published_path_fields(raw, key="path", is_directory=is_directory, blank_is_unset=True),
         "absolute": verdict not in {"PACKED", "UNSET"} and _absolute(raw),
         "verdict": verdict,
         "detail": detail,
@@ -207,7 +189,9 @@ def _library_entries(room: int) -> tuple[list[dict], dict[int, object], bool]:
         entry = {
             "kind": "LIBRARY",
             "name": summary["name"],
-            "path": summary["filepath"],
+            # The same publisher `library_summary` used, under this reply's own
+            # field name: one library reads identically here and in list_libraries.
+            **published_path_fields(raw, key="path"),
             "absolute": _absolute(raw),
             "verdict": verdict,
             "detail": {"indirect": is_indirect_library(library), "sha256": "", "hash_skipped": ""},
@@ -646,8 +630,9 @@ def _delivery_report(scene, entries: list[dict], page: list[dict], limit: int, o
         "changed_objects": [],
         "warnings": warnings,
         "limitations": [
-            "Paths that are not // -relative are reported by leaf name only, so the reply never carries this "
-            "host's directory layout.",
+            "Paths that are not // -relative are reported by leaf name only, flagged path_redacted with a "
+            "path_redaction_reason, so the reply never carries this host's directory layout; a redacted path is a "
+            "display leaf, not a broken link, and verdict is what reports breakage.",
             "A packed image is portable; a packed image with unsaved edits (dirty) is not yet written.",
             "Verdicts describe path shape and existence on this machine, not whether the destination can read them.",
         ],
@@ -681,9 +666,12 @@ class DeliveryHandlersMixin:
 
         Returns:
             dict: `scene`, `blend_filepath` (absolute), `saved`, `portable`,
-            `classes` (per kind: `total`, `unportable`), `entries` (the page),
-            `limit`, `offset`, `total`, `truncated`, `next_offset`,
-            `provenance`, `changed_objects`, `warnings`, `limitations`.
+            `classes` (per kind: `total`, `unportable`), `entries` (the page,
+            each carrying `path` with `path_redacted` and
+            `path_redaction_reason`: a redacted `path` is the reference's leaf
+            name, never a broken link), `limit`, `offset`, `total`, `truncated`,
+            `next_offset`, `provenance`, `changed_objects`, `warnings`,
+            `limitations`.
 
         Raises:
             ValueError: When an argument is out of range, the scene is unknown,

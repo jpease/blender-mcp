@@ -296,9 +296,11 @@ def _library_details(library: object) -> dict[str, object]:
         library: A `bpy.types.Library`.
 
     Returns:
-        dict[str, object]: The summary fields, `version` (`[major, minor, file
-        subversion]` of the Blender that last saved the file), `needs_liboverride_resync`
-        and `users`.
+        dict[str, object]: The summary fields - including `filepath` with its
+        `filepath_redacted` / `filepath_redaction_reason` pair, so a leaf-only
+        path is not read as a broken link - `version` (`[major, minor, file
+        subversion]` of the Blender that last saved the file),
+        `needs_liboverride_resync` and `users`.
 
     """
     return {

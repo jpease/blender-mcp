@@ -341,26 +341,83 @@ def light_snapshot(obj, *, include_nodes=False):
     return result
 
 
-def engine_identifiers():
-    """Read currently registered render-engine identifiers from runtime RNA."""
+def _rna_engine_identifiers():
+    """Read the engine identifiers the static RenderSettings.engine enum advertises."""
     prop = bpy.types.RenderSettings.bl_rna.properties["engine"]
     return {item.identifier: item.name for item in prop.enum_items}
 
 
-def resolve_engine(target):
+def _registered_engine_identifiers():
+    """
+    Read the engine identifiers registered as bpy.types.RenderEngine subclasses.
+
+    Verified against Blender 5.2.2: with Cycles enabled and actively rendering,
+    RenderSettings.engine's enum_items still reports only ['BLENDER_EEVEE'], because that enum
+    carries the built-in engines while every externally registered engine - Cycles included -
+    exists solely as a RenderEngine subclass carrying bl_idname/bl_label. This is the same
+    dynamic-RNA trap documented for openvdb_data_depth in handlers/liquid/simulation.py: the
+    static enum is not the list of what the runtime accepts. Intermediate base classes that only
+    exist to be derived from (HydraRenderEngine) carry no bl_idname and are skipped.
+    """
+    found = {}
+    seen = set()
+    pending = list(bpy.types.RenderEngine.__subclasses__())
+    while pending:
+        engine = pending.pop(0)
+        if id(engine) in seen:
+            continue
+        seen.add(id(engine))
+        pending.extend(engine.__subclasses__())
+        identifier = str(getattr(engine, "bl_idname", "") or "")
+        if identifier:
+            found.setdefault(identifier, str(getattr(engine, "bl_label", "") or identifier))
+    return found
+
+
+def engine_identifiers(scene=None):
+    """
+    Report every render engine this runtime can use, mapped to its display label.
+
+    Unions both registration sources - the static RenderSettings.engine enum and the registered
+    RenderEngine subclasses - because neither alone is complete, keeping RNA's label when both
+    report the same identifier. An engine a scene is already assigned is always included: the
+    assignment only succeeds for an engine the runtime accepts, so whichever source failed to
+    advertise it cannot make it unavailable. Pass the scene under inspection to scope that last
+    rule to it; by default every scene in the file contributes its assigned engine.
+    """
+    available = _registered_engine_identifiers()
+    available.update(_rna_engine_identifiers())
+    scenes = [scene] if scene is not None else list(getattr(bpy.data, "scenes", []) or [])
+    for item in scenes:
+        assigned = str(getattr(getattr(item, "render", None), "engine", "") or "")
+        if assigned:
+            available.setdefault(assigned, assigned)
+    return available
+
+
+def resolve_engine(target, scene=None):
     """Resolve an MCP engine label to a runtime Blender 5.1+ engine identifier."""
-    available = engine_identifiers()
+    available = engine_identifiers(scene)
     if target == "CYCLES":
         if "CYCLES" not in available:
             raise ValueError("Cycles is not registered in this Blender runtime")
         return "CYCLES"
     if target == "EEVEE":
-        matches = [
-            identifier for identifier, name in available.items() if "EEVEE" in identifier or "EEVEE" in name.upper()
-        ]
-        if len(matches) != 1:
-            raise ValueError(f"Could not resolve one EEVEE engine from runtime RNA: {sorted(available)}")
-        return matches[0]
+        # EEVEE is built in, so the RNA enum resolves it on its own; consulting the wider union
+        # first would let any registered add-on engine merely labelled "... EEVEE ..." make a
+        # resolution ambiguous that is not actually in doubt. The union is only a fallback for a
+        # runtime whose RNA enum names no EEVEE at all.
+        for candidates in (_rna_engine_identifiers(), available):
+            matches = sorted(
+                identifier
+                for identifier, name in candidates.items()
+                if "EEVEE" in identifier.upper() or "EEVEE" in str(name).upper()
+            )
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                break
+        raise ValueError(f"Could not resolve exactly one EEVEE engine from this runtime: {sorted(available)}")
     raise ValueError("target engine must be CYCLES or EEVEE")
 
 

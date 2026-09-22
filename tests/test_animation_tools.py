@@ -314,7 +314,14 @@ def test_data_path_errors_name_the_path_and_the_remedy(monkeypatch) -> None:
 
 
 class _FakeCycleModifier:
-    """The one F-Modifier field `set_action_cycle` discriminates on, plus the four it writes."""
+    """
+    The one F-Modifier field `set_action_cycle` discriminates on, plus the nine it writes.
+
+    Assigning one range bound moves the other to keep `frame_start <= frame_end`, which is
+    what Blender 5.2 measurably does (and not a clamp of the assigned value): a call that
+    wrote only one bound would silently drag the other, so this suite catches that here
+    rather than only in the smoke run.
+    """
 
     def __init__(self) -> None:
         self.type = "CYCLES"
@@ -322,6 +329,29 @@ class _FakeCycleModifier:
         self.mode_after = "NONE"
         self.cycles_before = 0
         self.cycles_after = 0
+        self.use_restricted_range = False
+        self.blend_in = 0.0
+        self.blend_out = 0.0
+        self._frame_start = 0.0
+        self._frame_end = 0.0
+
+    @property
+    def frame_start(self):
+        return self._frame_start
+
+    @frame_start.setter
+    def frame_start(self, value):
+        self._frame_start = value
+        self._frame_end = max(self._frame_end, value)
+
+    @property
+    def frame_end(self):
+        return self._frame_end
+
+    @frame_end.setter
+    def frame_end(self, value):
+        self._frame_end = value
+        self._frame_start = min(self._frame_start, value)
 
 
 class _FakeModifierStack(list):
@@ -457,7 +487,16 @@ def test_a_finite_cycle_count_says_where_the_repeat_stops(monkeypatch) -> None:
     """
     handler, target = _cycle_handler(monkeypatch, [_FakeCurve("location", 1, frames=(1.0, 25.0))])
 
-    result = handler.set_action_cycle(target, "Walk", cycles_before=2, cycles_after=6, action_slot_identifier="OBRig")
+    result = handler.set_action_cycle(
+        target,
+        "Walk",
+        # mode_before is NONE by default, which extrapolates nothing backwards and so bounds
+        # nothing: this test is about the counts, so both directions are asked to repeat.
+        mode_before="REPEAT_OFFSET",
+        cycles_before=2,
+        cycles_after=6,
+        action_slot_identifier="OBRig",
+    )
 
     record = result["modifiers"][0]
     assert record["repeat_end_frame"] == pytest.approx(25.0 + 6 * 24.0)
@@ -467,6 +506,214 @@ def test_a_finite_cycle_count_says_where_the_repeat_stops(monkeypatch) -> None:
     assert "extrapolation" in forward
     backward = next(warning for warning in result["warnings"] if warning.startswith("cycles_before=2"))
     assert "frame -47" in backward
+
+
+def test_a_cycle_extrapolates_only_forwards_unless_asked(monkeypatch) -> None:
+    """
+    A caller asking for a forward loop got an infinite backward one too, and never asked.
+
+    REPEAT_OFFSET before the first key fills every frame ahead of the cycle with motion
+    nobody requested - on a travelling root it walks the character backwards out of the set,
+    which is only visible once something renders frame 0 or the timeline start moves.
+    """
+    curve = _FakeCurve("location", 1, frames=(1.0, 25.0))
+    handler, target = _cycle_handler(monkeypatch, [curve])
+
+    result = handler.set_action_cycle(target, "Walk", action_slot_identifier="OBRig")
+
+    modifier = curve.modifiers[0]
+    assert modifier.mode_before == "NONE"
+    assert modifier.mode_after == "REPEAT_OFFSET"
+    assert result["modifiers"][0]["mode_before"] == "NONE"
+    assert result["modifiers"][0]["mode_after"] == "REPEAT_OFFSET"
+
+
+def test_a_count_on_a_direction_that_extrapolates_nothing_is_reported_inert(monkeypatch) -> None:
+    """`cycles_before` alone bounds repeats the default NONE mode never makes; say so."""
+    handler, target = _cycle_handler(monkeypatch, [_FakeCurve("location", 1, frames=(1.0, 25.0))])
+
+    result = handler.set_action_cycle(target, "Walk", cycles_before=3, action_slot_identifier="OBRig")
+
+    assert "repeat_start_frame" not in result["modifiers"][0], "a NONE direction has no repeat to bound"
+    inert = next(warning for warning in result["warnings"] if warning.startswith("cycles_before=3"))
+    assert "mode_before=NONE" in inert
+
+
+def test_a_later_key_that_redefined_the_period_is_refused_and_changes_nothing(monkeypatch) -> None:
+    """
+    The period is the curve's own key extent, so a later gesture key silently redefines it.
+
+    The rehearsal cycled a curve at 20 frames, keyed three explicit strides onto it, and read
+    back `period_frames: 60.0` from a reply that said success. `expected_period_frames` is how
+    that is caught at the call instead of at playback - and it is checked across the whole
+    selection before anything is created, so a mismatch leaves no modifier behind at all.
+    """
+    curves = [
+        _FakeCurve('pose.bones["leg"].location', 0, frames=(1.0, 21.0)),
+        _FakeCurve('pose.bones["leg"].location', 1, frames=(1.0, 60.0)),
+    ]
+    handler, target = _cycle_handler(monkeypatch, curves)
+
+    with pytest.raises(ValueError) as refusal:
+        handler.set_action_cycle(target, "Walk", expected_period_frames=20.0, action_slot_identifier="OBRig")
+
+    message = str(refusal.value)
+    assert "expected_period_frames=20" in message
+    assert 'pose.bones["leg"].location[1] keys 1-60, a 59-frame extent' in message
+    assert "manage_nla_tracks" not in message, "the handler names the route in prose, not a server tool symbol"
+    assert "NLA strip" in message
+    # The curve that did match must be untouched too: the guard runs before any mutation.
+    assert all(not curve.modifiers for curve in curves), "a refused call left a Cycles modifier behind"
+
+
+def test_an_expected_period_that_every_curve_matches_proceeds(monkeypatch) -> None:
+    """Matching within the module's frame epsilon is a match: 20.0000001 frames is 20 frames."""
+    curves = [_FakeCurve('pose.bones["leg"].location', index, frames=(1.0, 21.0000001)) for index in range(2)]
+    handler, target = _cycle_handler(monkeypatch, curves)
+
+    result = handler.set_action_cycle(target, "Walk", expected_period_frames=20.0, action_slot_identifier="OBRig")
+
+    assert result["curve_count"] == 2
+    assert all(any(modifier.type == "CYCLES" for modifier in curve.modifiers) for curve in curves)
+
+
+def test_a_curve_with_nothing_to_repeat_fails_an_expected_period(monkeypatch) -> None:
+    """One key has no extent, so it cannot carry the period the caller says the rig carries."""
+    curves = [_FakeCurve("location", 0, frames=(7.0,))]
+    handler, target = _cycle_handler(monkeypatch, curves)
+
+    with pytest.raises(ValueError, match="fewer than two distinct key frames"):
+        handler.set_action_cycle(target, "Walk", expected_period_frames=20.0, action_slot_identifier="OBRig")
+    assert not curves[0].modifiers
+
+
+def test_a_restricted_range_lands_on_the_modifier_and_in_the_reply(monkeypatch) -> None:
+    """
+    A cycle confined to part of a shot is the modifier's own restricted range.
+
+    Assigning one bound drags the other, so this re-ranges an already-ranged modifier forward
+    past its previous end: both bounds of the second call's window have to land, and the blend
+    lengths with them.
+    """
+    curve = _FakeCurve("location", 1, frames=(1.0, 25.0))
+    handler, target = _cycle_handler(monkeypatch, [curve])
+
+    handler.set_action_cycle(target, "Walk", frame_start=1.0, frame_end=25.0, action_slot_identifier="OBRig")
+    result = handler.set_action_cycle(
+        target,
+        "Walk",
+        frame_start=100.0,
+        frame_end=148.0,
+        blend_in=4.0,
+        blend_out=2.0,
+        action_slot_identifier="OBRig",
+    )
+
+    modifier = curve.modifiers[0]
+    assert modifier.use_restricted_range is True
+    assert (modifier.frame_start, modifier.frame_end) == (100.0, 148.0)
+    assert (modifier.blend_in, modifier.blend_out) == (4.0, 2.0)
+    record = result["modifiers"][0]
+    assert record["restricted_range"] == {
+        "frame_start": 100.0,
+        "frame_end": 148.0,
+        "blend_in": 4.0,
+        "blend_out": 2.0,
+    }
+    # The window bounds where the modifier applies; the period is still the curve's own extent.
+    assert record["period_frames"] == pytest.approx(24.0)
+
+
+def test_omitting_the_range_clears_a_previous_one(monkeypatch) -> None:
+    """A re-run without a window must widen back to the whole timeline, not keep the old one."""
+    curve = _FakeCurve("location", 1, frames=(1.0, 25.0))
+    handler, target = _cycle_handler(monkeypatch, [curve])
+
+    handler.set_action_cycle(target, "Walk", frame_start=10.0, frame_end=34.0, action_slot_identifier="OBRig")
+    result = handler.set_action_cycle(target, "Walk", action_slot_identifier="OBRig")
+
+    assert curve.modifiers[0].use_restricted_range is False
+    assert "restricted_range" not in result["modifiers"][0]
+
+
+def test_an_empty_or_half_given_range_is_refused(monkeypatch) -> None:
+    """A window that ends where it starts applies the modifier nowhere; one bound is a typo."""
+    curve = _FakeCurve("location", 1, frames=(1.0, 25.0))
+    handler, target = _cycle_handler(monkeypatch, [curve])
+
+    with pytest.raises(ValueError, match="frame_end must be greater than frame_start; got 40 to 40"):
+        handler.set_action_cycle(target, "Walk", frame_start=40.0, frame_end=40.0, action_slot_identifier="OBRig")
+    with pytest.raises(ValueError, match="frame_end must be greater than frame_start"):
+        handler.set_action_cycle(target, "Walk", frame_start=40.0, frame_end=12.0, action_slot_identifier="OBRig")
+    with pytest.raises(ValueError, match="must be given together"):
+        handler.set_action_cycle(target, "Walk", frame_start=40.0, action_slot_identifier="OBRig")
+    with pytest.raises(ValueError, match="blend_in/blend_out fade a restricted range"):
+        handler.set_action_cycle(target, "Walk", blend_in=3.0, action_slot_identifier="OBRig")
+    assert not curve.modifiers
+
+
+def test_remove_refuses_the_arguments_that_only_describe_a_cycle(monkeypatch) -> None:
+    """Accepting and ignoring them would report a success that did none of what was asked."""
+    curve = _FakeCurve("location", 1, cyclic=True, frames=(1.0, 25.0))
+    handler, target = _cycle_handler(monkeypatch, [curve])
+
+    with pytest.raises(ValueError, match="REMOVE deletes the Cycles modifier"):
+        handler.set_action_cycle(target, "Walk", "REMOVE", expected_period_frames=24.0, action_slot_identifier="OBRig")
+    with pytest.raises(ValueError, match="REMOVE deletes the Cycles modifier"):
+        handler.set_action_cycle(
+            target, "Walk", "REMOVE", frame_start=1.0, frame_end=25.0, action_slot_identifier="OBRig"
+        )
+    assert len(curve.modifiers) == 1, "a refused REMOVE must not have removed anything"
+
+
+def test_the_cycle_tool_refuses_a_malformed_range_before_the_socket(monkeypatch) -> None:
+    """The pairing and ordering rules are pure arithmetic; a round trip to Blender buys nothing."""
+    connection = _Connection()
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+    target = animation.AnimationTarget(type="OBJECT", name="Rig")
+
+    with pytest.raises(ToolError, match="must be given together"):
+        asyncio.run(animation.set_action_cycle(None, target, "Walk", frame_start=10.0))
+    with pytest.raises(ToolError, match="frame_end must be greater than frame_start"):
+        asyncio.run(animation.set_action_cycle(None, target, "Walk", frame_start=10.0, frame_end=10.0))
+    with pytest.raises(ToolError, match="cannot apply expected_period_frames"):
+        asyncio.run(animation.set_action_cycle(None, target, "Walk", "REMOVE", expected_period_frames=20.0))
+    assert connection.calls == []
+    # A period of zero and a negative blend are refused by the advertised schema, which is
+    # what an MCP client validates against before the call is ever made.
+    advertised = animation.mcp._tool_manager._tools["set_action_cycle"].parameters["properties"]
+    assert advertised["expected_period_frames"]["anyOf"][0]["exclusiveMinimum"] == pytest.approx(0.0)
+    assert advertised["blend_in"]["minimum"] == pytest.approx(0.0)
+    assert advertised["blend_out"]["minimum"] == pytest.approx(0.0)
+    assert advertised["mode_before"]["default"] == "NONE"
+
+
+def test_the_cycle_tool_forwards_the_new_arguments(monkeypatch) -> None:
+    """Every parameter the schema advertises has to reach the handler, or it is decoration."""
+    connection = _Connection()
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+    target = animation.AnimationTarget(type="OBJECT", name="Rig")
+
+    asyncio.run(
+        animation.set_action_cycle(
+            None,
+            target,
+            "Walk",
+            expected_period_frames=20.0,
+            frame_start=1.0,
+            frame_end=61.0,
+            blend_in=2.0,
+            blend_out=3.0,
+            data_path_prefix="location",
+        )
+    )
+
+    _command, params = connection.calls[0]
+    assert params["expected_period_frames"] == pytest.approx(20.0)
+    assert (params["frame_start"], params["frame_end"]) == (1.0, 61.0)
+    assert (params["blend_in"], params["blend_out"]) == (2.0, 3.0)
+    assert params["mode_before"] == "NONE"
+    assert params["mode_after"] == "REPEAT_OFFSET"
 
 
 def test_an_unscoped_cycle_names_the_parameter_that_narrows_it(monkeypatch) -> None:

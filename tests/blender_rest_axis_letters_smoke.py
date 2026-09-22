@@ -181,11 +181,12 @@ assert level_head["up_axis"] == "-X", level_head
 assert tilted_head["up_axis"] == "-Z", tilted_head
 assert level_page["length_axis"] == tilted_page["length_axis"] == "Y"
 
-# --- 4. A bone that stands up at rest names one letter twice, and an aim says so ---------------
+# --- 4. A bone that stands up at rest names one letter twice, and the table resolves it --------
 
 spine_page, spine = reported(level, "CHAR1_spine_jnt")
 print(f"CHAR1_spine_jnt: up_axis={spine['up_axis']!r} length_axis={spine_page['length_axis']!r}")
 assert spine["up_axis"] == spine_page["length_axis"] == "Y", spine
+assert spine["aim_axis_for_world"]["+Z"] == spine["up_axis"], spine
 rest_pose(level)
 refuses(
     lambda: handler.set_character_pose(
@@ -200,7 +201,49 @@ refuses(
     "different bone axis than track_axis",
 )
 
-# --- 5. The length axis really is the same letter for every bone, and what up_axis costs ------
+# The refusal names the axes that are still free, and where each points at rest, because a
+# caller holding only `length_axis` and `up_axis` has nothing else to try.
+rest_pose(level)
+refuses(
+    lambda: handler.set_character_pose(
+        level.name,
+        [
+            {
+                "bone_name": "CHAR1_spine_jnt",
+                "aim_at": {"target": (2.0, 0.0, 0.0), "track_axis": "Y", "up_axis": "Y"},
+            }
+        ],
+    ),
+    "The bone's other axes at rest:",
+)
+
+# And the table says which letter to track instead: the entry for the direction the bone should
+# point along. Fed back unchanged, with the same up_axis, it is accepted and it lands.
+rest_pose(level)
+spine_head = (level.matrix_world @ level.pose.bones["CHAR1_spine_jnt"].matrix).translation.copy()
+for direction, offset in (("+X", Vector((2.0, 0.0, 0.0))), ("-Y", Vector((0.0, -2.0, 0.0)))):
+    track_axis = spine["aim_axis_for_world"][direction]
+    assert track_axis.lstrip("-") != spine["up_axis"].lstrip("-"), f"{direction} named the upright axis: {track_axis}"
+    rest_pose(level)
+    target = spine_head + offset
+    handler.set_character_pose(
+        level.name,
+        [
+            {
+                "bone_name": "CHAR1_spine_jnt",
+                "aim_at": {"target": tuple(target), "track_axis": track_axis, "up_axis": spine["up_axis"]},
+            }
+        ],
+    )
+    aim_error = degrees_between(
+        signed_axis_world(level, "CHAR1_spine_jnt", track_axis), (target - spine_head).normalized()
+    )
+    up_error = degrees_between(signed_axis_world(level, "CHAR1_spine_jnt", spine["up_axis"]), WORLD_UP)
+    print(f"{direction}: track_axis={track_axis!r} aim {aim_error:.6f} deg, up {up_error:.6f} deg")
+    assert aim_error < ANGLE_TOLERANCE_DEGREES, f"{direction}: the table's letter missed by {aim_error} degrees"
+    assert up_error < ANGLE_TOLERANCE_DEGREES, f"{direction}: up_axis left the bone {up_error} off upright"
+
+# --- 5. The length axis is the same letter for every bone, and what the naming costs ----------
 
 wide = build_rig("WideRig", (0.0, 0.0, 0.0))
 bpy.context.view_layer.objects.active = wide
@@ -222,6 +265,7 @@ def without_the_addition(reply):
     stripped.pop("length_axis", None)
     for item in stripped["bones"]["items"]:
         item.pop("up_axis", None)
+        item.pop("aim_axis_for_world", None)
     return stripped
 
 
@@ -251,8 +295,10 @@ for label, page in (
     after, before = wire_bytes(page), wire_bytes(without_the_addition(page))
     per_bone = (after - before) / count
     print(f"{label}: rest_axes reply {before} -> {after} wire bytes (+{after - before}, {per_bone:.1f} a bone)")
-    # One short string and its key, on one line at the reply's indentation, plus the reply's
-    # single length_axis. Twice this would mean the naming had been repeated per bone again.
-    assert per_bone < 40, f"{label}: the derived naming cost {per_bone} bytes a bone"
+    # Six one-line entries and their wrapper, plus one `up_axis` line, at the reply's
+    # indentation: about 200 bytes a bone, against 170 for the nine rest numbers they resolve.
+    # It is the reply's most expensive field and the only one that answers "which letter do I
+    # pass", which is why `rest_axes` is opt-in and `bone_names` is the way to ask for it.
+    assert 150 < per_bone < 260, f"{label}: the derived naming cost {per_bone} bytes a bone"
 
 print("REST_AXIS_LETTERS_SMOKE_OK")

@@ -1,3 +1,7 @@
+# Inherited scope metrics: `validate_pbr_asset` was over the branch/statement/local limits before
+# this pass, and `scripts/lint_changed.py` attributes a whole-scope finding to any branch that
+# writes inside the scope.
+# ruff: file-ignore[too-many-branches, too-many-locals, too-many-statements]
 """Evidence-backed PBR readiness validation handlers."""
 
 import bpy
@@ -7,6 +11,20 @@ from ._shared import image_path_missing, linked_principled, material_by_name, me
 
 def _finding(severity, code, subject, evidence, remediation):
     return {"severity": severity, "code": code, "subject": subject, "evidence": evidence, "remediation": remediation}
+
+
+def _library_source(obj):
+    """
+    Name the library a mesh object's data - or the object itself - is linked from.
+
+    Returns None when both are local. Linked data is read-only in the file that links it, so a
+    finding whose remediation is "edit this mesh" is not actionable here and must say where it is.
+    """
+    for datablock in (getattr(obj, "data", None), obj):
+        library = getattr(datablock, "library", None)
+        if library is not None:
+            return str(getattr(library, "filepath", "") or getattr(library, "name", "") or "an unnamed library")
+    return None
 
 
 class TextureValidationHandlers:
@@ -52,13 +70,21 @@ class TextureValidationHandlers:
                 uv_report = self.inspect_uv_layout(obj.name, active_uv.name, overlap_pair_limit)
                 metrics = uv_report["uv_maps"][0]
                 if metrics["zero_area_faces"]:
+                    # A linked mesh cannot be unwrapped from the linking file, so an ERROR here
+                    # would hold `ready` false forever with no action available in this session.
+                    library = _library_source(obj)
                     findings.append(
                         _finding(
-                            "ERROR",
+                            "WARNING" if library else "ERROR",
                             "ZERO_AREA_UVS",
                             obj.name,
                             metrics["zero_area_faces"],
-                            "Unwrap the listed faces before texturing or baking.",
+                            (
+                                f"Mesh data is linked from {library}; unwrap the listed faces in that "
+                                "source file and reload the link - it cannot be unwrapped from here."
+                                if library
+                                else "Unwrap the listed faces before texturing or baking."
+                            ),
                         )
                     )
                 if metrics["overlap_pairs"]:

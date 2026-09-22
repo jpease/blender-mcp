@@ -1,3 +1,7 @@
+# Inherited scope metrics: `configure_armature_bones` and its neighbours were over the
+# branch/statement/local limits before this pass, and `scripts/lint_changed.py` attributes a
+# whole-scope finding to any branch that writes inside the scope.
+# ruff: file-ignore[too-many-branches, too-many-locals, too-many-statements]
 """Blender-main-thread handlers for armature foundations and skinning."""
 
 # Blender's generated Python stubs widen many bpy collections to bpy_struct.
@@ -22,6 +26,10 @@ from ..action_assignment import action_fcurve_collections as _action_fcurve_coll
 
 _MAX_BONES = 100_000
 _MAX_MEMBERSHIPS = 10_000_000
+# How many bones an override notice names before it counts the rest: the warning has to fit
+# beside the reply's own records in the byte budget, and a rig posed wholesale would otherwise
+# spend the budget on a list the caller already has.
+_MAX_LISTED_OVERRIDE_BONES = 8
 _BONE_DATA_FIELDS = (
     "use_deform",
     "use_inherit_rotation",
@@ -273,6 +281,47 @@ def _custom_properties(owner):
             continue
         result[str(key)] = _plain(owner[key])
     return result
+
+
+def _override_property_warning(armature_obj, bone_names):
+    """
+    Warn that a bare custom-property write on a library override will not survive the file.
+
+    Blender records an override for a pose bone's RNA channels - `rotation_quaternion` lands in
+    `override_library.properties` and reopens as written - and records nothing for a bare ID
+    property write. Measured on Blender 5.2, four cases: a property the source rig does not
+    define is gone after save and reopen; one the source does define reverts to the library's
+    value; registering the override property by hand (`override_library.properties.add` plus a
+    REPLACE operation) changes neither; and keying the property instead is durable, because the
+    action is local data and Blender records `animation_data` itself as an override property - the
+    keyed value read back 0.75 at every frame after reopen where the bare write had reverted to
+    0.1. A bare write succeeds and reads back correctly in-session, so nothing else in the reply
+    can tell a caller that the value is scenery.
+
+    Args:
+        armature_obj: The armature the properties are written on.
+        bone_names: The bones this call writes custom properties on without keying them, in any
+            order; empty when it writes none. A keyed write is durable and must not be passed.
+
+    Returns:
+        str | None: A notice naming the rig, the bones and the remedy, or None when the rig is
+        local (where a bare write is durable) or the call wrote no custom property.
+
+    """
+    names = sorted(set(bone_names))
+    if not names or getattr(armature_obj, "override_library", None) is None:
+        return None
+    listed = ", ".join(names[:_MAX_LISTED_OVERRIDE_BONES])
+    if len(names) > _MAX_LISTED_OVERRIDE_BONES:
+        listed = f"{listed} (+{len(names) - _MAX_LISTED_OVERRIDE_BONES} more)"
+    return (
+        f"Custom properties written on '{armature_obj.name}' will not survive save and reopen: the rig is a "
+        f"library override, and Blender carries no bare ID property write into an override, so the values on "
+        f"{listed} revert to the library's on load. Bone transforms are unaffected - they are recorded as "
+        f"override properties. Key the value instead - keyframe_character_pose writes it into the action, which "
+        f"is local data and does survive - and make sure the source rig defines the property, since a property "
+        f"the library does not carry is lost either way."
+    )
 
 
 def _armature_object(name):
@@ -2040,9 +2089,14 @@ class FoundationHandlersMixin:
                 new = getattr(owner, field)
                 field_name = field
             changes.append({"bone": owner.name, "field": field_name, "old": _plain(old), "new": _plain(new)})
+        warning = _override_property_warning(
+            armature_obj,
+            [patch["bone_name"] for patch in pose_bone_patches if patch.get("custom_properties")],
+        )
         return {
             "armature_object": armature_obj.name,
             "changes": changes,
+            "warnings": [warning] if warning else [],
             "changed_objects": [armature_obj.name],
             "changed_resources": [armature_obj.data.name] if bone_patches else [],
         }

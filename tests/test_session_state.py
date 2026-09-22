@@ -812,6 +812,8 @@ def test_get_session_info_reports_the_dirty_flag_and_the_library_summary(
             "session_uid": 4271,
             "name": "canon.blend",
             "filepath": "//libs/canon.blend",
+            "filepath_redacted": False,
+            "filepath_redaction_reason": None,
             "is_relative": True,
             "is_missing": False,
         }
@@ -922,6 +924,8 @@ def test_the_library_summary_reports_identity_without_the_asset_library_layout(
             "session_uid": 11,
             "name": "assetlib.blend",
             "filepath": "assetlib.blend",
+            "filepath_redacted": True,
+            "filepath_redaction_reason": "NOT_RELATIVE",
             "is_relative": False,
             "is_missing": True,
         },
@@ -929,6 +933,8 @@ def test_the_library_summary_reports_identity_without_the_asset_library_layout(
             "session_uid": 12,
             "name": "canon.blend",
             "filepath": "//libs/canon.blend",
+            "filepath_redacted": False,
+            "filepath_redaction_reason": None,
             "is_relative": True,
             "is_missing": False,
         },
@@ -936,6 +942,156 @@ def test_the_library_summary_reports_identity_without_the_asset_library_layout(
     rendered = json.dumps(libraries)
     assert "/Volumes/" not in rendered, f"the asset-library layout leaked: {rendered}"
     assert "studio" not in rendered, f"the asset-library layout leaked: {rendered}"
+
+
+def test_a_library_inside_the_project_tree_is_published_whole_and_says_it_was_not_reduced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The unredacted case has to be distinguishable from the redacted one, or the flag says nothing.
+
+    A `//` link inside the shot's own tree is the path the client can resolve,
+    so it is published exactly as Blender reported it.
+    """
+    library = types.SimpleNamespace(
+        name="canon.blend", filepath="//libs/props/canon.blend", session_uid=21, is_missing=False
+    )
+    server, _session, _bpy = _load_server(monkeypatch, libraries=[library])
+
+    entry = server.get_session_info()["libraries"][0]
+
+    assert entry["filepath"] == "//libs/props/canon.blend", "a resolvable project link was reduced"
+    assert entry["filepath_redacted"] is False
+    assert entry["filepath_redaction_reason"] is None
+
+
+def test_a_library_outside_the_project_tree_reports_its_leaf_as_a_redaction_not_as_a_defect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    `filepath: "canon.blend"` alone is indistinguishable from a malformed path.
+
+    The finding this closes: a client could not tell the deliberate reduction
+    from a bug, and read `is_relative: False` beside a bare leaf as breakage.
+    `is_missing` is the only field that reports a link that does not resolve, and
+    it must be untouched by the reduction.
+    """
+    library = types.SimpleNamespace(
+        name="canon.blend", filepath="/Volumes/assets/2026/canon.blend", session_uid=22, is_missing=False
+    )
+    server, _session, _bpy = _load_server(monkeypatch, libraries=[library])
+
+    entry = server.get_session_info()["libraries"][0]
+
+    assert entry["filepath"] == "canon.blend", "the reduction stopped publishing the leaf"
+    assert entry["filepath_redacted"] is True
+    assert entry["filepath_redaction_reason"] == "NOT_RELATIVE"
+    assert entry["is_relative"] is False, "is_relative is judged on the unredacted path"
+    assert entry["is_missing"] is False, "a redacted path was reported as a broken link"
+
+
+def test_a_missing_link_reports_is_missing_whether_or_not_its_path_was_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Breakage and redaction are two independent facts, and each keeps its own field."""
+    outside = types.SimpleNamespace(
+        name="assetlib.blend", filepath="/Volumes/assets/assetlib.blend", session_uid=31, is_missing=True
+    )
+    inside = types.SimpleNamespace(name="canon.blend", filepath="//libs/canon.blend", session_uid=32, is_missing=True)
+    server, _session, _bpy = _load_server(monkeypatch, libraries=[outside, inside])
+
+    redacted, published = server.get_session_info()["libraries"]
+
+    assert (redacted["is_missing"], redacted["filepath_redacted"]) == (True, True)
+    assert (published["is_missing"], published["filepath_redacted"]) == (True, False), (
+        "a link inside the project tree stopped reporting breakage once it was published whole"
+    )
+
+
+def _load_blend_files(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    """
+    Load the shared path publisher out of the full addon package.
+
+    It imports `bpy` at module scope, so it cannot be read with
+    `load_addon_source_module` the way `text_hygiene` is.
+
+    Args:
+        monkeypatch: Fixture the addon loader installs its stubs through.
+
+    Returns:
+        ModuleType: The addon's `handlers.blend_files`.
+
+    """
+    addon, _bpy = _load_addon(monkeypatch, data={"filepath": "", "is_dirty": False, "libraries": []})
+    return sys.modules[f"{addon.__name__}.handlers.blend_files"]
+
+
+def test_every_reduced_library_filepath_is_flagged_with_a_stable_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    The flag must track the publisher exactly: a leaf is never published unflagged.
+
+    A published path is either the `//` link the hygiene gate admitted, or a
+    leaf; the two are distinguishable by the prefix, so the flag is checkable
+    against the value itself for every hostile shape the summary handles.
+
+    Args:
+        monkeypatch: Fixture the addon loader installs its stubs through.
+
+    """
+    blend_files = _load_blend_files(monkeypatch)
+
+    for label, filepath, _forbidden in _HOSTILE_LIBRARY_PATHS:
+        fields = blend_files.published_path_fields(filepath)
+        reduced = not str(fields["filepath"]).startswith("//")
+        assert fields["filepath_redacted"] is reduced, f"{label}: the flag disagrees with the published value"
+        if reduced:
+            assert fields["filepath_redaction_reason"] in set(blend_files.PATH_REDACTION_REASONS), (
+                f"{label}: unknown reason code"
+            )
+        else:
+            assert fields["filepath_redaction_reason"] is None, f"{label}: a whole link claimed a reason"
+
+
+def test_each_refusal_the_publisher_makes_has_its_own_reason_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    One code per refusal, or a client cannot tell "too long" from "not yours to see".
+
+    A directory is reported without even a leaf, because its last component is
+    routinely a user name.
+
+    Args:
+        monkeypatch: Fixture the addon loader installs its stubs through.
+
+    """
+    blend_files = _load_blend_files(monkeypatch)
+    cases = {
+        "NOT_RELATIVE": "/Volumes/assets/canon.blend",
+        "TOO_LONG": "//" + "a" * 500 + ".blend",
+        "UNSAFE_COMPONENT": "//../../elsewhere/canon.blend",
+    }
+
+    for expected, filepath in cases.items():
+        fields = blend_files.published_path_fields(filepath)
+        assert fields["filepath_redaction_reason"] == expected, f"{filepath!r} was refused for the wrong reason"
+
+    directory = blend_files.published_path_fields("//caches/", key="path", is_directory=True)
+    assert directory["path_redaction_reason"] == "DIRECTORY"
+    assert directory["path_redacted"] is True
+
+
+def test_an_unset_path_is_published_empty_and_is_not_a_redaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    `""` means "nothing is set here", which no client should read as a hidden path.
+
+    Args:
+        monkeypatch: Fixture the addon loader installs its stubs through.
+
+    """
+    blend_files = _load_blend_files(monkeypatch)
+
+    fields = blend_files.published_path_fields("   ", key="path", blank_is_unset=True)
+
+    assert fields == {"path": "", "path_redacted": False, "path_redaction_reason": None}
 
 
 # One hostile `Library.filepath` per defect `_failure_note` also handles, plus

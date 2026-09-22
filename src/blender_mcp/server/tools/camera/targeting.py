@@ -8,7 +8,15 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from ._shared import ConstraintSpace, FollowForwardAxis, LockAxis, TrackAxis, UpAxis, _tool_params
+from ._shared import (
+    ConstraintSpace,
+    FollowForwardAxis,
+    LockAxis,
+    TrackAxis,
+    UpAxis,
+    _StrictModel,
+    _tool_params,
+)
 
 TrackingConstraint = Literal["TRACK_TO", "DAMPED_TRACK", "LOCKED_TRACK"]
 FramePolicy = Literal["MOVE_CAMERA", "CHANGE_LENS", "CHANGE_ORTHO_SCALE"]
@@ -41,8 +49,9 @@ async def point_camera_at(
     Optionally place a camera at a world point, then rotate it once to aim at an object or point.
 
     Supply exactly one target source. Rotates local -Z toward the target with local Y as up,
-    correctly resolving parent space. This is a one-shot rotation, not a constraint — use
-    add_camera_constraint for a live tracking relationship.
+    correctly resolving parent space. subtarget aims at the named bone's evaluated world head,
+    its posed position at the current frame, not the armature's origin. This is a one-shot
+    rotation, not a constraint — use add_camera_constraint for a live tracking relationship.
 
     camera_location is a world-space point applied before the aim, so place-and-aim is one call
     rather than set_object_transform followed by this tool. It is parent-aware: a camera parented
@@ -111,32 +120,59 @@ async def create_camera_target(
     )
 
 
+class BoneFrameTarget(_StrictModel):
+    """One posed bone whose head-tail segment must fit in frame."""
+
+    object_name: Annotated[str, Field(min_length=1, max_length=63)]
+    bone_name: Annotated[str, Field(min_length=1, max_length=63)]
+    radius_m: Annotated[float, Field(ge=0)] = 0.0
+
+
 @mcp.tool()
 async def frame_camera_on_objects(
     ctx: Context,
     scene_name: str,
     camera_name: str,
-    object_names: list[str],
+    object_names: list[str] | None = None,
+    bone_targets: Annotated[list[BoneFrameTarget], Field(max_length=64)] | None = None,
     margin: Annotated[float, Field(ge=0, lt=0.9)] = 0.1,
     policy: FramePolicy = "MOVE_CAMERA",
     aim_at_center: bool = True,
 ) -> dict:
     """
-    Fit explicit evaluated objects in a camera without viewport operators.
+    Fit explicit evaluated objects and posed bones in a camera without viewport operators.
 
     ``MOVE_CAMERA`` preserves perspective optics, ``CHANGE_LENS`` preserves camera position, and
     ``CHANGE_ORTHO_SCALE`` is required for orthographic scale changes. Modifier-evaluated world
     bounds, target point, solved distance or optical value, and limiting frame axis are returned.
     The margin is the fractional inset on each side of the render frame.
+
+    Supply ``object_names``, ``bone_targets``, or both; both together frame their union. A bone
+    target contributes its head-tail segment alone, read from the evaluated armature in world
+    space at the current frame, so constraints and animation are respected. That segment is a
+    line with no thickness, so ``radius_m`` pads it on every axis and is how the geometry
+    *around* a bone is included: ``{"object_name": "my_rig", "bone_name": "thigh.L",
+    "radius_m": 0.12}`` frames that bone plus 12 cm of limb. Naming a bone is how a region of a
+    rig is framed without guessing which meshes cover it; the reply echoes each resolved
+    ``head_world`` and ``tail_world``.
     """
-    if not object_names:
-        raise ToolError("object_names must not be empty")
+    object_names = object_names or []
+    bone_targets = bone_targets or []
+    if not object_names and not bone_targets:
+        raise ToolError("Supply at least one of object_names or bone_targets; both were empty")
+    seen: set[tuple[str, str]] = set()
+    for target in bone_targets:
+        key = (target.object_name, target.bone_name)
+        if key in seen:
+            raise ToolError(f"bone_targets must not repeat bone '{target.bone_name}' on '{target.object_name}'")
+        seen.add(key)
     return await call_blender(
         "frame_camera_on_objects",
         {
             "scene_name": scene_name,
             "camera_name": camera_name,
             "object_names": object_names,
+            "bone_targets": [target.model_dump() for target in bone_targets],
             "margin": margin,
             "policy": policy,
             "aim_at_center": aim_at_center,

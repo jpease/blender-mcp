@@ -8,6 +8,13 @@ raw curve's constant extrapolation snapped the root and froze it. Blender did ex
 asked every time. Nothing in the reply said what period each curve would repeat at, or where a
 finite count stops, so nothing caught it.
 
+A later rehearsal hit the structural half of the same trap: a curve cycled at 20 frames, three
+explicit strides keyed onto it afterwards, and `period_frames: 60.0` read back from a reply that
+still said success. The period is the curve's own key extent, so no parameter fixes that - what
+a caller can have is a refusal. This script proves `expected_period_frames` names the offending
+curve and its measured extent and creates nothing, that a forward loop is no longer also an
+unrequested backward one, and that a restricted range confines a cycle to part of a shot.
+
 The period comes from `keyframe_points` and the stop frame from Blender's own Cycles evaluation,
 neither of which the unit suite's fake `bpy` can produce: this script measures both against the
 real API.
@@ -48,6 +55,21 @@ CYCLES_AFTER = 6
 LEG_PATH = 'pose.bones["leg"].location'
 ARM_PATH = 'pose.bones["arm"].location'
 
+# The second finding, reproduced below from frame numbers the rehearsal actually used: a curve
+# cycled at 20 frames, three explicit strides keyed onto it afterwards, and a reply that still
+# read as success while `period_frames` had become 59.
+GUARD_ACTION = "CyclePeriodGuardTest"
+# Frame 21 is frame 1 of the next stride, so this extent is exactly one 20-frame cycle.
+GUARD_KEYS = ((1.0, 0.0), (21.0, 0.4))
+GUARD_PERIOD = GUARD_KEYS[-1][0] - GUARD_KEYS[0][0]
+GUARD_DELTA = GUARD_KEYS[-1][1] - GUARD_KEYS[0][1]
+GESTURE_FRAME = 60.0
+CYCLED_PATH = 'pose.bones["cycled"].location'
+OTHER_PATH = 'pose.bones["other"].location'
+# Where a cycle confined to part of a shot applies: three whole strides after the keyed one.
+RANGE_START = GUARD_KEYS[-1][0]
+RANGE_END = RANGE_START + 3 * GUARD_PERIOD
+
 
 class CyclePeriodSmokeHarness(
     character_handlers.CharacterRiggingHandlersMixin,
@@ -56,18 +78,18 @@ class CyclePeriodSmokeHarness(
     """The two handler domains this script drives, without starting the socket server."""
 
 
-def build_two_bone_rig(name):
-    """Build a rig with one bone per period, so one call can cycle two disagreeing extents."""
+def build_rig(name, bone_names):
+    """Build a rig with one independent bone per named channel, side by side along X."""
     data = bpy.data.armatures.new(f"{name}Data")
     rig = bpy.data.objects.new(name, data)
     bpy.context.scene.collection.objects.link(rig)
     bpy.context.view_layer.objects.active = rig
     rig.select_set(True)
     bpy.ops.object.mode_set(mode="EDIT")
-    leg = data.edit_bones.new("leg")
-    leg.head, leg.tail = (0.0, 0.0, 0.0), (0.0, 0.0, 0.4)
-    arm = data.edit_bones.new("arm")
-    arm.head, arm.tail = (0.3, 0.0, 0.0), (0.3, 0.0, 0.4)
+    for index, bone_name in enumerate(bone_names):
+        bone = data.edit_bones.new(bone_name)
+        bone.head = (0.3 * index, 0.0, 0.0)
+        bone.tail = (0.3 * index, 0.0, 0.4)
     bpy.ops.object.mode_set(mode="OBJECT")
     rig.select_set(False)
     bpy.context.view_layer.update()
@@ -110,7 +132,7 @@ def warning_containing(reply, fragment):
 
 
 handler = CyclePeriodSmokeHarness()
-rig = build_two_bone_rig("CycleRig")
+rig = build_rig("CycleRig", ("leg", "arm"))
 target = {"type": "OBJECT", "name": rig.name}
 
 for bone, keys in (("leg", LEG_KEYS), ("arm", ARM_KEYS)):
@@ -189,6 +211,138 @@ inside = handler.keyframe_character_pose(
 )
 assert inside["warnings"] == [], f"a key inside the cycle warned anyway: {inside['warnings']}"
 
+# --- item 4: a forward loop is not also a backward one ----------------------------------------
+guard_rig = build_rig("CycleGuardRig", ("cycled", "other"))
+guard_target = {"type": "OBJECT", "name": guard_rig.name}
+# Keyed through the generic writer, one channel per bone: this finding is about what an
+# F-Curve repeats, so the fewer channels in the slot the sharper every claim below is.
+handler.edit_keyframes(
+    guard_target,
+    [
+        {"data_path": f'pose.bones["{bone}"].location', "array_index": 0, "frame": frame, "value": offset}
+        for bone in ("cycled", "other")
+        for frame, offset in GUARD_KEYS
+    ],
+    action_name=GUARD_ACTION,
+)
+guard_action = bpy.data.actions[GUARD_ACTION]
+guard_curve = curve_for(guard_action, CYCLED_PATH, 0)
+
+authored = handler.set_action_cycle(
+    guard_target, GUARD_ACTION, expected_period_frames=GUARD_PERIOD, data_path_prefix=CYCLED_PATH
+)
+authored_record = record_for(authored, CYCLED_PATH)
+assert authored_record["period_frames"] == GUARD_PERIOD, authored_record
+assert authored_record["mode_before"] == "NONE", authored_record
+assert authored_record["mode_after"] == "REPEAT_OFFSET", authored_record
+
+# Forward it loops, and Blender accumulates the stride: frame 21 + one period is one delta on.
+forward = guard_curve.evaluate(GUARD_KEYS[-1][0] + GUARD_PERIOD)
+assert abs(forward - (GUARD_KEYS[-1][1] + GUARD_DELTA)) < 1e-5, (
+    f"frame {GUARD_KEYS[-1][0] + GUARD_PERIOD:g} should evaluate {GUARD_KEYS[-1][1] + GUARD_DELTA:.6f} one cycle "
+    f"on, got {forward:.6f}"
+)
+# Backward it does nothing, because nobody asked: the raw curve's constant extrapolation holds
+# the first key. Under the old REPEAT_OFFSET default this frame evaluated one delta the other
+# way, walking the character backwards out of the set before the shot began.
+backward = guard_curve.evaluate(GUARD_KEYS[0][0] - GUARD_PERIOD)
+assert abs(backward - GUARD_KEYS[0][1]) < 1e-5, (
+    f"mode_before defaults to NONE, so frame {GUARD_KEYS[0][0] - GUARD_PERIOD:g} should hold "
+    f"{GUARD_KEYS[0][1]:.6f}; got {backward:.6f}, which is an unrequested backward cycle"
+)
+
+# --- item 5: a later key redefines the period, and expected_period_frames refuses it ----------
+# The gesture the rehearsal keyed long after the cycle went on. Nothing refuses it, and
+# nothing should: extending a cycle on purpose is legitimate. It just is not a cycle any more.
+handler.edit_keyframes(
+    guard_target,
+    [{"data_path": CYCLED_PATH, "array_index": 0, "frame": GESTURE_FRAME, "value": 0.9}],
+    action_name=GUARD_ACTION,
+)
+measured = record_for(handler.set_action_cycle(guard_target, GUARD_ACTION, data_path_prefix=CYCLED_PATH), CYCLED_PATH)
+assert measured["last_key_frame"] == GESTURE_FRAME, measured
+assert measured["period_frames"] == GESTURE_FRAME - GUARD_KEYS[0][0], (
+    f"one gesture key at frame {GESTURE_FRAME:g} must redefine the period this curve repeats: {measured}"
+)
+
+other_curve = curve_for(guard_action, OTHER_PATH, 0)
+assert not any(modifier.type == "CYCLES" for modifier in other_curve.modifiers), (
+    "the 'other' bone has never been cycled; the refusal below must find it that way"
+)
+try:
+    handler.set_action_cycle(guard_target, GUARD_ACTION, expected_period_frames=GUARD_PERIOD)
+except ValueError as failure:
+    refusal = str(failure)
+else:
+    raise AssertionError(
+        f"a curve now measuring {measured['period_frames']:g} frames was cycled at "
+        f"expected_period_frames={GUARD_PERIOD:g} without complaint"
+    )
+assert f"expected_period_frames={GUARD_PERIOD:g}" in refusal, refusal
+assert f"keys {GUARD_KEYS[0][0]:g}-{GESTURE_FRAME:g}" in refusal, refusal
+assert f"a {GESTURE_FRAME - GUARD_KEYS[0][0]:g}-frame extent" in refusal, refusal
+assert "NLA strip" in refusal, refusal
+# Validate the whole selection, then mutate: the refusal named the third curve, so the first
+# two - the 'other' bone's, which did match - must still carry no modifier.
+assert not any(modifier.type == "CYCLES" for modifier in other_curve.modifiers), (
+    "a refused call left a Cycles modifier on a curve it was never allowed to cycle"
+)
+
+# --- item 6: a restricted range bounds where the cycle applies, not what it repeats -----------
+ranged = handler.set_action_cycle(
+    guard_target,
+    GUARD_ACTION,
+    expected_period_frames=GUARD_PERIOD,
+    frame_start=RANGE_START,
+    frame_end=RANGE_END,
+    data_path_prefix=OTHER_PATH,
+)
+ranged_record = record_for(ranged, OTHER_PATH)
+assert ranged_record["restricted_range"] == {
+    "frame_start": RANGE_START,
+    "frame_end": RANGE_END,
+    "blend_in": 0.0,
+    "blend_out": 0.0,
+}, ranged_record
+assert ranged_record["period_frames"] == GUARD_PERIOD, (
+    f"a restricted range bounds where the modifier applies and changes no period: {ranged_record}"
+)
+ranged_modifier = next(modifier for modifier in other_curve.modifiers if modifier.type == "CYCLES")
+assert ranged_modifier.use_restricted_range, "frame_start/frame_end must switch the restriction on"
+assert (ranged_modifier.frame_start, ranged_modifier.frame_end) == (RANGE_START, RANGE_END), (
+    f"the window collapsed on the way in: {ranged_modifier.frame_start:g} to {ranged_modifier.frame_end:g}"
+)
+
+# Inside the window Blender cycles and accumulates; one frame past it the modifier is out and
+# the raw curve holds its last key. That boundary is what confines a loop to part of a shot.
+inside_range = other_curve.evaluate(RANGE_END)
+outside_range = other_curve.evaluate(RANGE_END + 1.0)
+expected_inside = GUARD_KEYS[-1][1] + 3 * GUARD_DELTA
+assert abs(inside_range - expected_inside) < 1e-5, (
+    f"frame {RANGE_END:g} is the last frame of a three-stride window and should evaluate "
+    f"{expected_inside:.6f}; got {inside_range:.6f}"
+)
+assert abs(outside_range - GUARD_KEYS[-1][1]) < 1e-5, (
+    f"frame {RANGE_END + 1:g} is outside the window, so the raw curve should hold "
+    f"{GUARD_KEYS[-1][1]:.6f}; got {outside_range:.6f}"
+)
+
+# Moving the window forward past where it already was is what a second pass over a shot does.
+# An F-Modifier keeps frame_start <= frame_end by dragging whichever bound was not assigned,
+# so both have to be written: this is where a call that wrote only one would land wrong.
+moved_start, moved_end = RANGE_END + GUARD_PERIOD, RANGE_END + 4 * GUARD_PERIOD
+handler.set_action_cycle(
+    guard_target, GUARD_ACTION, frame_start=moved_start, frame_end=moved_end, data_path_prefix=OTHER_PATH
+)
+assert (ranged_modifier.frame_start, ranged_modifier.frame_end) == (moved_start, moved_end), (
+    f"re-ranging forward collapsed the window to {ranged_modifier.frame_start:g}-"
+    f"{ranged_modifier.frame_end:g}, not {moved_start:g}-{moved_end:g}"
+)
+
+# And omitting it widens back to the whole timeline rather than keeping the last window.
+handler.set_action_cycle(guard_target, GUARD_ACTION, data_path_prefix=OTHER_PATH)
+assert not ranged_modifier.use_restricted_range, "a re-run without a window must clear the old one"
+
 print(
     f"periods over {cycled['curve_count']} curves: leg {leg_record['period_frames']:g}, "
     f"arm {arm_record['period_frames']:g}"
@@ -197,4 +351,11 @@ print(f"disagreement: {disagreement}")
 print(f"finite: {finite}")
 print(f"stop frame {stop_frame:g} evaluates {last_repeat:.4f}, frame {stop_frame + 1:g} evaluates {past_repeat:.4f}")
 print(f"extension: {extension}")
+print(f"forward one cycle: {forward:.4f}; backward with mode_before=NONE: {backward:.4f}")
+print(f"period after the frame {GESTURE_FRAME:g} key: {measured['period_frames']:g}")
+print(f"refusal: {refusal}")
+print(
+    f"window {RANGE_START:g}-{RANGE_END:g}: frame {RANGE_END:g} evaluates {inside_range:.4f}, "
+    f"frame {RANGE_END + 1:g} evaluates {outside_range:.4f}"
+)
 print("CYCLE_PERIOD_SMOKE_OK")

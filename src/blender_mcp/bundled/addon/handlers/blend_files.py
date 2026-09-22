@@ -3,8 +3,12 @@ What every command that touches a `.blend` on disk shares: paths, flags, librari
 
 `file_lifecycle`, `linking`, `delivery` and `polyhaven` all open, save, link or
 describe `.blend` files, and they used to reach into `file_lifecycle` for these
-six helpers by their private names. They live here instead, public, so no module
+helpers by their private names. They live here instead, public, so no module
 imports another handler module's internals to get them.
+
+`published_path_fields` is the one of them every reply goes through to report a
+path: it publishes a safe `//` link whole, reduces anything else to a leaf, and
+says which it did, so a client can tell a redaction from a broken link.
 
 Nothing here decides whether a path is authorized: `file_paths.resolve_blend_path`
 does, once. `checked_blend_path` only expands Blender's `//` form first, which
@@ -22,17 +26,113 @@ from ..text_hygiene import client_safe_leaf, client_safe_name_leaf, relative_lin
 # per library, and the library list itself is unbounded.
 MAX_REPORTED_LINK_CHARS = 256
 
+# Why a path could not be published whole, one code per refusal
+# `text_hygiene.safe_relative_link` makes, in the order it makes them. Machine
+# stable: a client branches on these rather than on prose, and on `None` when
+# the path was published exactly as Blender reported it.
+REDACTION_DIRECTORY = "DIRECTORY"
+REDACTION_TOO_LONG = "TOO_LONG"
+REDACTION_NOT_RELATIVE = "NOT_RELATIVE"
+REDACTION_UNSAFE_COMPONENT = "UNSAFE_COMPONENT"
+PATH_REDACTION_REASONS = (
+    REDACTION_DIRECTORY,
+    REDACTION_TOO_LONG,
+    REDACTION_NOT_RELATIVE,
+    REDACTION_UNSAFE_COMPONENT,
+)
+
+
+def _redaction_reason(text: str, *, is_directory: bool) -> str:
+    """
+    Name the refusal that reduced a path, for a path already known to be reduced.
+
+    The checks are `safe_relative_link`'s own, in its order, so the code always
+    names the first rule the path broke. A directory is decided first because its
+    leaf is suppressed whatever its shape.
+
+    Args:
+        text: The path as Blender reported it.
+        is_directory: True when the caller established the path names a directory.
+
+    Returns:
+        str: One of `PATH_REDACTION_REASONS`.
+
+    """
+    if is_directory:
+        return REDACTION_DIRECTORY
+    stripped = strip_unsafe(text)
+    if len(stripped) > MAX_REPORTED_LINK_CHARS:
+        return REDACTION_TOO_LONG
+    if relative_link_body(stripped) is None:
+        return REDACTION_NOT_RELATIVE
+    return REDACTION_UNSAFE_COMPONENT
+
+
+def published_path_fields(
+    raw: object, *, key: str = "filepath", is_directory: bool = False, blank_is_unset: bool = False
+) -> dict[str, object]:
+    r"""
+    Publish one path together with the two fields that say whether it was reduced.
+
+    The single place any reply turns a path Blender reported into something a
+    client may read. `text_hygiene.safe_relative_link` decides: a `//`-relative
+    link whose every component is admissible and short enough is published
+    exactly as it came, and anything else - absolute, rooted `///...`,
+    traversing, over-long, or carrying a character outside the allowlist - is
+    reduced to its leaf, because the directories above it are this host's
+    storage layout.
+
+    A reduced path is the reason this returns three fields rather than one: on
+    its own, `"canon.blend"` is indistinguishable from a broken or malformed
+    link, so `<key>_redacted` states that the value is a display leaf and
+    `<key>_redaction_reason` says which rule reduced it. Neither reports
+    breakage; the summary's own `is_missing` does.
+
+    Args:
+        raw: The path as Blender reported it.
+        key: The name of the path field, which both flags are suffixed onto.
+        is_directory: True when the caller established the path names a
+            directory, whose leaf is routinely a user name and is never
+            published.
+        blank_is_unset: True where "no path set" is a real state of the source,
+            such as an unconfigured render output; a blank path is then
+            published as `""` rather than reduced.
+
+    Returns:
+        dict[str, object]: `<key>` (whole or a leaf), `<key>_redacted`, and
+        `<key>_redaction_reason` (one of `PATH_REDACTION_REASONS`, or None when
+        nothing was reduced).
+
+    """
+    text = str(raw or "")
+    if blank_is_unset and not text.strip():
+        return {key: "", f"{key}_redacted": False, f"{key}_redaction_reason": None}
+    whole = safe_relative_link(text, MAX_REPORTED_LINK_CHARS)
+    if whole is not None:
+        return {key: whole, f"{key}_redacted": False, f"{key}_redaction_reason": None}
+    return {
+        key: client_safe_leaf(text, is_directory=is_directory),
+        f"{key}_redacted": True,
+        f"{key}_redaction_reason": _redaction_reason(text, is_directory=is_directory),
+    }
+
 
 def library_summary(library: object) -> dict[str, object]:
     r"""
     Describe one linked library by identity, not by where it sits on this machine.
 
-    `text_hygiene.safe_relative_link` decides whether `filepath` is published
-    whole, exactly as it returned it. Anything it refuses (absolute, rooted
-    `///...`, traversing, over-long, or with a character outside its allowlist)
-    is reduced to a leaf, because it would reveal the studio's storage layout.
-    `is_relative` is judged on the same stripped form, so `///Users/...` is not
-    reported as relative.
+    `published_path_fields` decides whether `filepath` is published whole or
+    reduced to a leaf, and says which happened: a library outside the open
+    file's own tree - anything absolute, so anything outside the configured file
+    roots - is reported as `filepath_redacted: true` with a
+    `filepath_redaction_reason`, because the path would reveal the studio's
+    storage layout.
+
+    Both verdicts are judged on the unredacted path, so they stay meaningful
+    when the published one is a leaf: `is_relative` is false for that absolute
+    library even though the leaf it prints has no directories left to be
+    absolute about, and `is_missing` - not the redaction - is what reports a
+    link that does not resolve.
 
     `name` is reduced to a leaf too: Blender lets a `.blend` author set
     `Library.name` to a path such as `/Users/victim/shots/canon.blend`. Neither
@@ -47,16 +147,16 @@ def library_summary(library: object) -> dict[str, object]:
         resolve by, because two libraries' contents can share a name. It is
         valid only for the `(session_id, session_epoch)` it was read under:
         despite Blender's own description, it changes on every load. `name`,
-        for display only; `filepath`, whole or reduced to a leaf; `is_relative`;
-        and `is_missing`, true when the link is broken now.
+        for display only; `filepath`, whole or reduced to a leaf, with
+        `filepath_redacted` and `filepath_redaction_reason` saying which;
+        `is_relative`; and `is_missing`, true when the link is broken now.
 
     """
     filepath = str(getattr(library, "filepath", "") or "")
-    whole = safe_relative_link(filepath, MAX_REPORTED_LINK_CHARS)
     return {
         "session_uid": getattr(library, "session_uid", None),
         "name": client_safe_name_leaf(getattr(library, "name", "")),
-        "filepath": whole if whole is not None else client_safe_leaf(filepath),
+        **published_path_fields(filepath),
         "is_relative": relative_link_body(strip_unsafe(filepath)) is not None,
         "is_missing": bool(getattr(library, "is_missing", False)),
     }

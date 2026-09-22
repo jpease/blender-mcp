@@ -147,17 +147,26 @@ def character_animation_strategy() -> str:
 
     1. Read the rig before posing it.
         - list_character_bones(armature_object_name=..., bone_names=[...], rest_axes=True) for
-          the bones you intend to drive. Which way a bone's local X/Y/Z point is rig-specific
-          and not guessable from its name, so take the up_axis each bone reports and the
-          reply's length_axis straight into aim_at. Do not work either out from rest_axes: a
-          head aimed with a hand-derived up axis shipped 90 degrees over.
+          the bones you intend to drive. Which way a bone's local X/Y/Z point is rig-specific and
+          not guessable from its name, so read it rather than deriving it: each bone reports
+          aim_axis_for_world, the signed bone axis that points along each world direction at
+          rest. Pass the entry for the direction the bone should point at as aim_at.track_axis,
+          and up_axis (the same as aim_axis_for_world["+Z"]) for the roll. The reply's
+          length_axis is the axis along the bone - "Y" for every bone Blender builds - and is
+          almost never the axis that looks anywhere; aim_at refuses one letter for both.
         - get_character_rig_info(armature_object_name=..., bone_names=[...]) for world-space
           pose-bone matrices. Never chain FK forward from bone lengths by hand.
+        - A bone can aim at another rig's bone: aim_at takes target_object plus target_bone
+          (target_bone_position="HEAD"/"TAIL"/"CENTER"), which is how two characters look at
+          each other's heads instead of at each other's armature origins on the floor.
 
     2. Key the body first, the feet second, into ONE action.
         - Root and hip travel: keyframe_object_transform(action_name="<shot>") and
           keyframe_character_pose(action_name="<shot>"). Give both the same action_name: an ID
           holds one action, so a pose keyed into a second one stops the first driving the rig.
+        - Key many frames per call: keyframe_character_pose(keys=[{"frame": f, "poses": [...]},
+          ...]) solves and keys each frame in ascending order against the action's own root
+          motion at that frame. A thirteen-key stride is one call, not thirteen.
         - Do this BEFORE the feet. keyframe_bone_reach solves each frame against the evaluated
           parent pose at that frame, so the hips must already be travelling when it runs.
 
@@ -185,10 +194,19 @@ def character_animation_strategy() -> str:
         - handle_left="VECTOR"/handle_right="VECTOR" on a contact key, so the foot does not ease
           through the floor on its way in.
 
-    6. Loop it.
+    6. Loop it, knowing what a cycle actually repeats.
         - set_action_cycle(..., mode_after="REPEAT_OFFSET") so each repeat starts where the last
           ended and the character keeps travelling. Plain REPEAT teleports it back to the origin.
-        - data_path_prefix scopes the cycle to one limb or to the root's travel alone.
+          mode_before defaults to NONE: extrapolating a travelling root backwards from frame 1 is
+          motion nobody asked for, so ask for it explicitly if you want it.
+        - The period is the curve's OWN first-to-last key extent, so any later key on a cycled
+          curve redefines it - one gesture key at frame 162 turns a 24-frame loop into a
+          162-frame interpolation that never repeats. Pass expected_period_frames to be refused
+          instead of finding out at playback, and scope every call with data_path_prefix.
+        - A limb that cycles and then has to arrive or gesture must be keyed explicitly; to loop
+          part of a shot while animating the same bone elsewhere in it, use an NLA strip with
+          repeat (manage_nla_tracks). frame_start/frame_end bound where the modifier applies,
+          not what it repeats.
 
     7. Verify by looking, frame by frame.
         - set_scene_frame(frame=N) then get_viewport_screenshot. Every inspection tool reports

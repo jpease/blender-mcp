@@ -30,7 +30,11 @@ async def get_session_info(ctx: Context) -> dict:
     Returns:
         session_id, session_epoch, current_filepath (None if never saved), is_dirty,
         session_indeterminate, last_load_error, last_save_error, and libraries (each with
-        session_uid, name, filepath, is_relative, is_missing).
+        session_uid, name, filepath, filepath_redacted, filepath_redaction_reason,
+        is_relative, is_missing). A library path outside the configured file roots is
+        reported as its leaf name with filepath_redacted=true - a display leaf, not a
+        resolvable path and not a broken link; is_missing is what reports breakage, and
+        is_relative is judged on the unredacted path.
 
     """
     return await call_blender("get_session_info", {})
@@ -61,7 +65,10 @@ async def open_shot(
     Returns:
         filepath, scene_name, object_count, libraries, session_id, session_epoch,
         capabilities_changed, rehandshake_required, discarded_unsaved_changes, note, and
-        warnings when part of the swap report could not be read.
+        warnings when part of the swap report could not be read. Each library reports
+        filepath_redacted=true when its path lies outside the configured file roots and was
+        reduced to its leaf name; that is a display leaf, not a broken link, and is_missing
+        is the field that reports breakage.
 
     """
     return await call_blender(
@@ -237,10 +244,14 @@ async def list_libraries(ctx: Context, limit: int = 25, offset: int = 0, detail:
             whether the datablock is indirect or missing - instead of their names.
 
     Returns:
-        libraries (each with session_uid, name, filepath, is_relative, is_missing, version,
+        libraries (each with session_uid, name, filepath, filepath_redacted,
+        filepath_redaction_reason, is_relative, is_missing, version,
         needs_liboverride_resync, users, and datablocks: total, by_type and one page of
         names, or of records under detail), total, offset, limit, returned_count, truncated,
-        next_offset.
+        next_offset. A library path outside the configured file roots is reported as its
+        leaf name with filepath_redacted=true - a display leaf, not a resolvable path and
+        not a broken link; is_missing is what reports breakage, and is_relative is judged on
+        the unredacted path.
 
     """
     return await call_blender("list_libraries", {"limit": limit, "offset": offset, "detail": detail})
@@ -261,9 +272,9 @@ async def reload_library(ctx: Context, library_uid: int, detail: bool = False) -
         detail: Page the reloaded datablocks as records, carrying the new session_uid of each.
 
     Returns:
-        library, datablocks (total, by_type and one page of names, or of records with their
-        new session_uids under detail), note, and warnings when a linked datablock is now
-        missing.
+        library (as list_libraries, including filepath_redacted), datablocks (total, by_type
+        and one page of names, or of records with their new session_uids under detail),
+        note, and warnings when a linked datablock is now missing.
 
     """
     return await call_blender("reload_library", {"library_uid": library_uid, "detail": detail})
@@ -286,8 +297,9 @@ async def relocate_library(ctx: Context, library_uid: int, filepath: str, detail
         detail: Page the reloaded datablocks as records, carrying the new session_uid of each.
 
     Returns:
-        library, datablocks (as reload_library), name_before, name_after, note, and warnings
-        when a linked datablock is now missing.
+        library (as list_libraries, including filepath_redacted), datablocks (as
+        reload_library), name_before, name_after, note, and warnings when a linked datablock
+        is now missing.
 
     """
     return await call_blender(
@@ -319,8 +331,9 @@ async def unlink_libraries(
         purge_orphans: Also remove local datablocks this unlink leaves without users.
 
     Returns:
-        removed_libraries, already_removed_uids, removed_count, removed_by_type,
-        removed_uids, purged_orphans, purged_by_type, other_libraries_removed.
+        removed_libraries (each as list_libraries, including filepath_redacted),
+        already_removed_uids, removed_count, removed_by_type, removed_uids, purged_orphans,
+        purged_by_type, other_libraries_removed.
 
     """
     return await call_blender(
@@ -346,8 +359,10 @@ async def inspect_delivery(
     RELATIVE_OK, ABSOLUTE, MISSING or UNSET. `portable` is only true when the file is saved,
     the scan was complete, and nothing is ABSOLUTE or MISSING - it is a proof, not a guess.
 
-    A path that is not `//`-relative is reported by leaf name only, so the reply never
-    carries this machine's directory layout.
+    A path outside the configured file roots - anything not `//`-relative - is reported as
+    its leaf name with `path_redacted: true` and a `path_redaction_reason`, so the reply
+    never carries this machine's directory layout; that leaf is a display name, not a
+    resolvable path and not a broken link, and `verdict` (MISSING) is what reports breakage.
 
     Args:
         ctx: MCP request context.
@@ -362,8 +377,9 @@ async def inspect_delivery(
 
     Returns:
         scene, blend_filepath, saved, portable, classes (per kind: total, unportable),
-        entries (kind, name, path, absolute, verdict, detail), limit, offset, total,
-        truncated, next_offset, provenance, warnings, limitations.
+        entries (kind, name, path, path_redacted, path_redaction_reason, absolute, verdict,
+        detail), limit, offset, total, truncated, next_offset, provenance, warnings,
+        limitations.
 
     """
     return await call_blender(

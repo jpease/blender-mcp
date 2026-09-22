@@ -28,6 +28,7 @@ from .foundation import (
     _bone_path_token,
     _finite,
     _matrix_list,
+    _override_property_warning,
     _required_name,
     _selected_bones,
     _validate_limit_offset,
@@ -43,6 +44,19 @@ _PARENT_RELATIVE_SPACE = "LOCAL"
 
 _AXIS_INDEX = {"X": 0, "Y": 1, "Z": 2}
 _SIGNED_AXIS_SIGNS = {"X": 1.0, "-X": -1.0, "Y": 1.0, "-Y": -1.0, "Z": 1.0, "-Z": -1.0}
+# The six world directions an aim can want a bone axis to point along, in the spelling
+# `list_character_bones(rest_axes=True)` keys `aim_axis_for_world` by. Signed, because "which
+# way along X" is half the question a caller is asking.
+_WORLD_DIRECTIONS = {
+    "+X": (1.0, 0.0, 0.0),
+    "-X": (-1.0, 0.0, 0.0),
+    "+Y": (0.0, 1.0, 0.0),
+    "-Y": (0.0, -1.0, 0.0),
+    "+Z": (0.0, 0.0, 1.0),
+    "-Z": (0.0, 0.0, -1.0),
+}
+# Where on a target bone an aim may point.
+_BONE_POSITIONS = ("HEAD", "TAIL", "CENTER")
 # Which two axes cross into the third, so a basis built from two chosen axes stays right-handed
 # (determinant +1) and the bone is oriented rather than mirrored.
 _RIGHT_HANDED = {"X": ("Y", "Z"), "Y": ("Z", "X"), "Z": ("X", "Y")}
@@ -89,32 +103,226 @@ def _signed_axis(name, label):
     return name.lstrip("-"), sign
 
 
-def _validated_aim(aim, bone_name):
+def _alignment(column, direction):
+    """
+    Cosine between one unit axis and one unit direction.
+
+    Every axis-naming answer in this module is this number maximised over some set: which bone
+    axis stands up at rest, which bone axis points along a world direction, which world
+    direction a bone axis holds. Computing it once is what keeps those answers consistent -
+    `up_axis` is `aim_axis_for_world["+Z"]` by construction rather than by coincidence.
+
+    Args:
+        column: A unit vector.
+        direction: A unit direction, as a 3-sequence.
+
+    Returns:
+        float: Their dot product.
+
+    """
+    return sum(column[axis] * value for axis, value in enumerate(direction))
+
+
+def _rest_axis_units(armature, bone):
+    """
+    Each of one bone's own rest axes as a unit direction in world space.
+
+    The rig's object matrix is part of the answer: `bone.matrix_local` is armature-space, and
+    everything an aim is stated against - `up_reference`, a target point - is world-space. The
+    columns are normalised so a rig scaled unevenly cannot tip a comparison towards whichever
+    axis the object matrix happens to have stretched.
+
+    Args:
+        armature: The armature object the bone belongs to.
+        bone: A rest bone, from `armature.data.bones` or `pose_bone.bone`.
+
+    Returns:
+        dict: `{axis letter: unit vector}`, missing any axis the object transform collapses to
+        nothing, and empty when it collapses all three.
+
+    """
+    rest = armature.matrix_world.to_3x3() @ bone.matrix_local.to_3x3()
+    units = {}
+    for letter, index in _AXIS_INDEX.items():
+        column = rest.col[index]
+        if column.length > _AIM_MIN_LENGTH:
+            units[letter] = column.normalized()
+    return units
+
+
+def _nearest_rest_axis(units, direction):
+    """
+    Name the signed bone axis pointing most nearly along one world direction.
+
+    Args:
+        units: `_rest_axis_units` output for the bone.
+        direction: A unit world direction.
+
+    Returns:
+        str | None: A signed axis name such as `-X`, or None when no axis points anywhere.
+
+    """
+    if not units:
+        return None
+    alignments = {letter: _alignment(column, direction) for letter, column in units.items()}
+    letter = max(alignments, key=lambda name: abs(alignments[name]))
+    return letter if alignments[letter] >= 0.0 else f"-{letter}"
+
+
+def _nearest_world_direction(column):
+    """
+    Name the world direction one unit vector points most nearly along.
+
+    Args:
+        column: A unit vector in world space.
+
+    Returns:
+        str: One of `_WORLD_DIRECTIONS`' keys.
+
+    """
+    return max(_WORLD_DIRECTIONS, key=lambda name: _alignment(column, _WORLD_DIRECTIONS[name]))
+
+
+def _rest_aim_axes(armature, bone):
+    """
+    Name, for each world direction, the bone axis that already points that way at rest.
+
+    This is the table an aim is chosen from: `track_axis` is the entry for the direction the
+    caller wants the bone to point, and `up_axis` is `+Z`'s entry. Deriving it is not something
+    the reported nine rest numbers permit - they are armature-space, and an aim is stated in the
+    scene - so a rig laid over in the scene is exactly where a caller's own derivation parts
+    company with the aim it then makes.
+
+    Args:
+        armature: The armature object the bone belongs to.
+        bone: A rest bone from `armature.data.bones`.
+
+    Returns:
+        dict: `{world direction: signed bone axis}`, each value None where the rig's object
+        transform collapses the bone's axes and no axis points anywhere.
+
+    """
+    units = _rest_axis_units(armature, bone)
+    return {name: _nearest_rest_axis(units, direction) for name, direction in _WORLD_DIRECTIONS.items()}
+
+
+def _free_axis_advice(armature, pose_bone, track_letter):
+    """
+    Say which of the bone's axes are still free for `up_axis`, and where each points at rest.
+
+    The refusal this completes is raised by the call the tools themselves used to prescribe:
+    `length_axis` is `Y` on every bone Blender builds and an upright bone's `up_axis` is `Y`
+    too, so passing both straight through named one axis twice. Stating the remaining two, with
+    the world direction each holds, turns the rule into the remedy.
+
+    Args:
+        armature: The armature the bone belongs to, read for its object matrix.
+        pose_bone: The bone being aimed.
+        track_letter: The bare axis letter the aim tracks, which `up_axis` may not repeat.
+
+    Returns:
+        str: One sentence naming the two free axes and, where the rig's transform leaves them a
+        direction, the world direction each points along at rest.
+
+    """
+    units = _rest_axis_units(armature, pose_bone.bone)
+    described = [
+        f"{letter} points {_nearest_world_direction(units[letter])}" if letter in units else letter
+        for letter in "XYZ"
+        if letter != track_letter
+    ]
+    return (
+        f"The bone's other axes at rest: {' and '.join(described)} - name one of those, signed, as up_axis, "
+        "or track an axis that is not the one that should stay upright."
+    )
+
+
+def _aim_target_bone(target_object, aim, bone_name):
+    """
+    Resolve `aim_at.target_bone` to a pose bone on the object the aim names.
+
+    Aiming at an object aims at its origin, which on a character rig is the floor under it;
+    "look at that character" means a bone on it, and which point on that bone is the caller's
+    to choose.
+
+    Args:
+        target_object: The object `aim_at.target_object` named, or None when the aim names a
+            world point instead.
+        aim: The raw `aim_at` record.
+        bone_name: The bone being aimed, for error messages.
+
+    Returns:
+        tuple: The target pose bone, or None when none was named, and the position on it.
+
+    Raises:
+        ValueError: If a bone is named without an object, on an object that is not an armature,
+            or that the armature does not carry; or if a position is named without a bone or is
+            not one of `_BONE_POSITIONS`.
+
+    """
+    name = aim.get("target_bone")
+    position = aim.get("target_bone_position")
+    if name is None:
+        if position is not None:
+            raise ValueError(
+                f"aim_at.target_bone_position for '{bone_name}' names a point on a bone, and this aim names no "
+                "target_bone; target_object on its own aims at the object's own origin"
+            )
+        return None, "HEAD"
+    required = _required_name(name, "aim_at.target_bone")
+    if target_object is None:
+        raise ValueError(
+            f"aim_at.target_bone '{required}' for '{bone_name}' requires aim_at.target_object to name the "
+            "armature carrying it"
+        )
+    position = "HEAD" if position is None else position
+    if position not in _BONE_POSITIONS:
+        raise ValueError(
+            f"aim_at.target_bone_position for '{bone_name}' must be one of {', '.join(_BONE_POSITIONS)}; "
+            f"got {position!r}"
+        )
+    if target_object.type != "ARMATURE":
+        raise ValueError(
+            f"aim_at.target_bone '{required}' needs an armature to live on, and aim_at.target_object "
+            f"'{target_object.name}' is type={target_object.type}"
+        )
+    target_bone = target_object.pose.bones.get(required)
+    if target_bone is None:
+        raise ValueError(f"aim_at.target_bone not found on '{target_object.name}': {required}")
+    return target_bone, position
+
+
+def _validated_aim(armature, pose_bone, aim):
     """
     Check one `aim_at` record and resolve it to the values the write loop needs.
 
-    `track_axis` and `up_axis` name the bone's own axes - the same letters
-    `list_character_bones(rest_axes=True)` reports, whose directions it gives in armature space
-    - and never scene axes. `target` and `up_reference` are the world-space side of the record.
+    `track_axis` and `up_axis` name the bone's own axes - the letters
+    `list_character_bones(rest_axes=True)` reports in `aim_axis_for_world`, whose directions it
+    gives in armature space - and never scene axes. `target` and `up_reference` are the
+    world-space side of the record.
 
-    The target object is looked up now so a missing object fails before any bone moves, but its
-    world origin is read at apply time, after the pose the same call authored has settled.
+    The target object and bone are looked up now so a missing one fails before any bone moves,
+    but where they are is read at apply time, after the pose the same call authored has settled
+    and with the playhead on the frame being keyed.
 
     Args:
+        armature: The armature being posed, read for the rest axes a refusal has to name.
+        pose_bone: The bone the aim applies to.
         aim: The raw `aim_at` record from a pose entry.
-        bone_name: The bone it applies to, for error messages.
 
     Returns:
         dict: `target` (a world-space vector or None), `target_object` (an object or None),
+        `target_bone` (a pose bone on that object, or None) with `target_bone_position`,
         `track` from `_signed_axis`, and `up` as `(axis letter, sign, world reference)` or None
         for a minimal-arc aim.
 
     Raises:
-        ValueError: If the record names neither or both target forms, names an object that does
-            not exist, spells an axis wrongly, points `up_axis` at the tracked axis, or gives a
-            zero up reference.
+        ValueError: If the record names neither or both target forms, names an object or bone
+            that does not exist, asks for a point on a bone it does not name, spells an axis
+            wrongly, points `up_axis` at the tracked axis, or gives a zero up reference.
 
     """
+    bone_name = pose_bone.name
     if not isinstance(aim, dict):
         raise ValueError(f"aim_at for '{bone_name}' must be an object")
     target = aim.get("target")
@@ -129,6 +337,7 @@ def _validated_aim(aim, bone_name):
             raise ValueError(f"aim_at.target_object not found: {target_name}")
     else:
         point = _vector(target, f"aim_at.target for '{bone_name}'")
+    target_bone, position = _aim_target_bone(target_object, aim, bone_name)
     track_letter, track_sign = _signed_axis(aim.get("track_axis"), f"aim_at.track_axis for '{bone_name}'")
     up = None
     if aim.get("up_axis") is not None:
@@ -136,13 +345,21 @@ def _validated_aim(aim, bone_name):
         if up_letter == track_letter:
             raise ValueError(
                 f"aim_at.up_axis for '{bone_name}' must name a different bone axis than track_axis; "
-                f"'{aim['up_axis']}' and '{aim['track_axis']}' are both the {up_letter} axis"
+                f"'{aim['up_axis']}' and '{aim['track_axis']}' are both the {up_letter} axis. "
+                f"{_free_axis_advice(armature, pose_bone, track_letter)}"
             )
         reference = _vector(aim.get("up_reference") or _DEFAULT_UP_REFERENCE, f"aim_at.up_reference for '{bone_name}'")
         if reference.length <= _AIM_MIN_LENGTH:
             raise ValueError(f"aim_at.up_reference for '{bone_name}' is a zero vector; roll is undefined")
         up = (up_letter, up_sign, reference)
-    return {"target": point, "target_object": target_object, "track": (track_letter, track_sign), "up": up}
+    return {
+        "target": point,
+        "target_object": target_object,
+        "target_bone": target_bone,
+        "target_bone_position": position,
+        "track": (track_letter, track_sign),
+        "up": up,
+    }
 
 
 def _validated_rotate(rotate, bone_name):
@@ -209,6 +426,37 @@ def _pose_matrix_from_channels(armature, pose_bone, spec, space):
     return mathutils.Matrix.LocRotScale(tuple(location), rotation, tuple(scale))
 
 
+def _aim_target_point(aim):
+    """
+    Read where in the world this aim points, at the moment the bone is posed.
+
+    A bone target is read off the target rig's evaluated pose - `PoseBone.head`/`tail` are
+    armature-space and follow whatever is driving that rig - so an aim keyed at frame 30 looks
+    at where that bone is at frame 30, not at where it rests. A plain object target is its
+    origin, which on a character rig is usually the floor under it.
+
+    Args:
+        aim: A record from `_validated_aim`.
+
+    Returns:
+        mathutils.Vector | tuple: The world-space point to aim at.
+
+    """
+    bone = aim["target_bone"]
+    if bone is not None:
+        position = aim["target_bone_position"]
+        if position == "HEAD":
+            local = bone.head
+        elif position == "TAIL":
+            local = bone.tail
+        else:
+            local = (bone.head + bone.tail) * 0.5
+        return aim["target_object"].matrix_world @ mathutils.Vector(local)
+    if aim["target_object"] is not None:
+        return aim["target_object"].matrix_world.translation
+    return aim["target"]
+
+
 def _aim_pose_matrix(armature, pose_bone, aim):
     """
     Build the armature-space matrix that points one bone axis at a world target.
@@ -233,7 +481,7 @@ def _aim_pose_matrix(armature, pose_bone, aim):
     world_to_pose = armature.matrix_world.inverted()
     current = pose_bone.matrix.copy()
     head = current.translation.copy()
-    target = aim["target_object"].matrix_world.translation if aim["target_object"] is not None else aim["target"]
+    target = _aim_target_point(aim)
     direction = (world_to_pose @ mathutils.Vector(target)) - head
     distance = direction.length
     if distance <= _AIM_MIN_DISTANCE:
@@ -364,7 +612,7 @@ def _validate_pose_specs(armature, poses, space):
             raise ValueError(f"Custom properties not found on '{pose_bone.name}': {missing}")
         spec = dict(entry)
         if "aim_at" in spec:
-            spec["aim_at"] = _validated_aim(spec["aim_at"], pose_bone.name)
+            spec["aim_at"] = _validated_aim(armature, pose_bone, spec["aim_at"])
         if "rotate" in spec:
             spec["rotate"] = _validated_rotate(spec["rotate"], pose_bone.name)
         matrix_values = spec.get("matrix")
@@ -432,42 +680,6 @@ def _rest_axes(bone):
     """
     matrix = bone.matrix_local.to_3x3()
     return [round(float(value), _REST_AXIS_DECIMALS) for index in range(3) for value in matrix.col[index]]
-
-
-def _rest_up_axis(armature, bone):
-    """
-    Name the bone axis that stands up at rest, in `aim_at.up_axis`'s own vocabulary.
-
-    Which signed bone axis is nearest up is a derivation off `_rest_axes`, and it is the
-    derivation a demo runbook got wrong before aiming a head with it. It is also one the reply
-    does not otherwise permit: the nine numbers are armature-space and `up_reference` is a world
-    direction, so the answer turns on the rig's object matrix, which the reply never carries. A
-    rig laid over in the scene is where an armature-space reading and an aim part company.
-
-    Args:
-        armature: The armature object the bone belongs to.
-        bone: A rest bone from `armature.data.bones`.
-
-    Returns:
-        str | None: A signed axis name such as `-X`, or None when the rig's object transform
-        collapses the bone's axes to nothing and no axis points anywhere.
-
-    """
-    rest = armature.matrix_world.to_3x3() @ bone.matrix_local.to_3x3()
-    # How far up each of the bone's own axes points: its cosine against the same reference an
-    # aim defaults to, per unit length so a rig scaled unevenly does not tip the comparison
-    # towards whichever axis the object matrix happens to have stretched. The largest either
-    # way is the axis, and its sign picks which end of it is up.
-    alignments = {}
-    for letter, index in _AXIS_INDEX.items():
-        column = rest.col[index]
-        if column.length > _AIM_MIN_LENGTH:
-            upward = sum(column[axis] * value for axis, value in enumerate(_DEFAULT_UP_REFERENCE))
-            alignments[letter] = upward / column.length
-    if not alignments:
-        return None
-    letter = max(alignments, key=lambda name: abs(alignments[name]))
-    return letter if alignments[letter] >= 0.0 else f"-{letter}"
 
 
 def _changed_channels(spec):
@@ -896,7 +1108,7 @@ def _action_reply(
         "changed_keys": changed_keys,
         "interpolation_updates": interpolation_updates,
         "changed_objects": [armature.name],
-        "changed_resources": [{"type": "ACTION", "name": action.name}],
+        "changed_resources": [action.name],
     }
     previous_name = getattr(previous_action, "name", None)
     if previous_name is not None and previous_name != assigned_name:
@@ -912,14 +1124,13 @@ def _keyframe_reply(
     previous_action,
     *,
     keying_policy,
-    prepared,
-    changed_keys,
-    interpolation_count,
-    pose_records,
+    changed_bones,
+    keyed,
     warnings,
+    detail,
 ):
     """
-    Describe what one single-frame keying call left behind.
+    Describe what one pose keying call left behind, whether it keyed one frame or twenty.
 
     Args:
         armature: The posed armature object.
@@ -927,11 +1138,10 @@ def _keyframe_reply(
         action: The action that was authored.
         previous_action: The action that drove the rig before, or None.
         keying_policy: The policy the caller asked for.
-        prepared: `_validate_pose_specs` output, read for the posed bone names.
-        changed_keys: One record per channel keyed.
-        interpolation_count: How many keys had their style set.
-        pose_records: Per-bone matrices for a `detail` request, or None to omit them.
-        warnings: Non-fatal notices about what this call's keys did to the action.
+        changed_bones: Every bone any frame of the call posed, named once, complete.
+        keyed: `_key_pose_frames` output.
+        warnings: Non-fatal notices about the rig and about what this call's keys did to it.
+        detail: Whether the caller asked for the per-bone matrices.
 
     Returns:
         dict: The handler reply.
@@ -943,17 +1153,20 @@ def _keyframe_reply(
         action,
         previous_action,
         keying_policy,
-        [pose_bone.name for pose_bone, _spec, _matrix in prepared],
-        changed_keys,
-        interpolation_count,
+        changed_bones,
+        keyed["changed_keys"],
+        keyed["styled"],
     )
+    # Which frames the action now holds this call's keys at, ascending: the keys themselves are
+    # what the reply budget shortens, so a batched call still says what it covered.
+    reply["keyed_frames"] = keyed["frames"]
     # The envelope lifts these and never shortens them, so a notice about a cycle this call
     # just stretched survives the page of keys being cut down to fit the budget.
     reply["warnings"] = warnings
-    if pose_records is not None:
+    if detail:
         # The pose is restored before this returns, so these matrices describe what was keyed at
-        # the requested frame, not what the rig is holding now.
-        reply["bones"] = pose_records
+        # each requested frame, not what the rig is holding now.
+        reply["bones"] = keyed["records"]
     return reply
 
 
@@ -971,6 +1184,208 @@ def _place_playhead(scene, frame):
     """
     whole = math.floor(frame)
     scene.frame_set(whole, subframe=frame - whole)
+
+
+# What one batched keying call may apply, across every frame it names: 250 frames of 500 bones
+# would be 125,000 bone writes behind one socket call, each with its own view-layer update.
+# Mirrors `keys`' own caps on the server side, and is checked here as well because the socket
+# is the boundary an unvalidated caller reaches.
+_MAX_KEYED_POSE_ENTRIES = 2000
+
+
+def _pose_key_requests(frame, poses, keys):
+    """
+    Resolve the two shapes a keying call may take into one ascending list of frames.
+
+    A stride is thirteen keys of the same few bones, and keying it one call at a time is
+    thirteen round trips carrying the same rig name, action name and policy. `keys` says the
+    whole stride once; `frame` with `poses` stays the single-frame spelling.
+
+    Args:
+        frame: The single-frame form's frame, or None.
+        poses: The single-frame form's pose entries, or None.
+        keys: The batched form's `{frame, poses}` records, or None.
+
+    Returns:
+        tuple: `(frame, poses)` pairs in ascending frame order, and whether the caller used the
+        batched form - which names a frame on every per-bone record, where the single-frame
+        form would only repeat the one frame the call already carries.
+
+    Raises:
+        ValueError: If neither or both forms are given, if a batched entry is malformed or
+            empty, if a frame is named twice, or if the batch carries more pose entries than
+            one call may apply.
+
+    """
+    if (frame is not None or poses is not None) == (keys is not None):
+        raise ValueError(
+            "Supply exactly one of frame with poses (one frame) or keys (several frames, each with its own poses)"
+        )
+    if keys is None:
+        if frame is None or not poses:
+            raise ValueError("The single-frame form requires both frame and poses")
+        return [(_finite(frame, "frame"), list(poses))], False
+    requests = []
+    total = 0
+    for index, entry in enumerate(keys):
+        if not isinstance(entry, dict) or "frame" not in entry:
+            raise ValueError(f"keys[{index}] must be an object carrying frame and poses")
+        entry_poses = list(entry.get("poses") or ())
+        if not entry_poses:
+            raise ValueError(f"keys[{index}] requires at least one pose entry")
+        total += len(entry_poses)
+        requests.append((_finite(entry["frame"], f"keys[{index}].frame"), entry_poses))
+    if total > _MAX_KEYED_POSE_ENTRIES:
+        raise ValueError(
+            f"keys carries {total} pose entries across {len(requests)} frames, more than the "
+            f"{_MAX_KEYED_POSE_ENTRIES} one call may apply; split the frame range across calls"
+        )
+    frames = [at for at, _entry_poses in requests]
+    repeated = sorted({value for value in frames if frames.count(value) > 1})
+    if repeated:
+        # Two entries for one frame would key the second over the first, and which pose survived
+        # would depend on the order the list happened to be written in.
+        raise ValueError(f"keys names the same frame more than once: {repeated}")
+    return sorted(requests, key=lambda item: item[0]), True
+
+
+def _keyed_bone_names(prepared_frames):
+    """
+    Name every bone any frame of this call poses, once, in the order the call first names it.
+
+    Args:
+        prepared_frames: `(frame, prepared)` pairs.
+
+    Returns:
+        list[str]: The bone names, deduplicated across frames.
+
+    """
+    names = {}
+    for _frame, prepared in prepared_frames:
+        for pose_bone, _spec, _matrix in prepared:
+            names[pose_bone.name] = None
+    return list(names)
+
+
+def _keyed_custom_properties(prepared_frames):
+    """
+    Collect the custom properties this call writes, by bone, across every frame.
+
+    Args:
+        prepared_frames: `(frame, prepared)` pairs.
+
+    Returns:
+        dict: `{bone name: property names}`, in the order the call first names each, for the
+        pose restore to snapshot and for the library-override notice to name.
+
+    """
+    properties = {}
+    for _frame, prepared in prepared_frames:
+        for pose_bone, spec, _matrix in prepared:
+            written = properties.setdefault(pose_bone.name, [])
+            written.extend(name for name in spec.get("custom_properties", {}) if name not in written)
+    return properties
+
+
+def _bare_write_warnings(armature, custom_properties):
+    """
+    Report what a pose write, as opposed to a key, cannot make stick.
+
+    A custom property written straight onto a library override reads back correctly and is the
+    library's value again after save and reopen, and nothing the reply measures can say so. The
+    same value keyed into an action survives, because the action is local data - so this is
+    `set_character_pose`'s notice and not `keyframe_character_pose`'s.
+
+    Args:
+        armature: The rig being posed.
+        custom_properties: `{bone name: property names}` this call writes.
+
+    Returns:
+        list[str]: The notices for the reply, empty when the rig is local or nothing is written.
+
+    """
+    warning = _override_property_warning(armature, [name for name, written in custom_properties.items() if written])
+    return [] if warning is None else [warning]
+
+
+def _bounded_frame_warnings(per_frame):
+    """
+    Bound a batched call's per-frame notices to what the envelope can carry whole.
+
+    Warnings are lifted into the envelope and never paged, so 250 keyed frames each warning
+    about the same stretched cycle would spend the whole reply budget saying it.
+
+    Args:
+        per_frame: One list of warnings per keyed frame, in the order the frames were keyed.
+
+    Returns:
+        list[str]: Every warning when few frames raised any - which is what a single-frame call
+        always gets - otherwise the first `_MAX_CYCLE_WARNINGS` frames' warnings and one line
+        counting what is not listed.
+
+    """
+    speaking = [warnings for warnings in per_frame if warnings]
+    listed = [warning for warnings in speaking[:_MAX_CYCLE_WARNINGS] for warning in warnings]
+    remainder = speaking[_MAX_CYCLE_WARNINGS:]
+    if not remainder:
+        return listed
+    unlisted = sum(len(warnings) for warnings in remainder)
+    listed.append(
+        f"{len(remainder)} further keyed frame(s) raised {unlisted} more notice(s) of the same kind, not "
+        "listed so the reply can still carry the keys this call wrote."
+    )
+    return listed
+
+
+def _key_pose_frames(armature, action, prepared_frames, space, keying_policy, style, *, detail, report_frames):
+    """
+    Apply, key and style every requested frame, in ascending order.
+
+    The playhead moves to each frame before that frame's poses are resolved. That is what makes
+    a multi-frame call correct rather than merely fast: an `aim_at` then reads its target where
+    the target is at that frame, and an absolute-space pose is built on whatever root and parent
+    motion the action already holds there.
+
+    Args:
+        armature: The armature being keyed.
+        action: The action every key lands in, already assigned to the rig.
+        prepared_frames: `(frame, prepared)` pairs in ascending order.
+        space: The pose space every entry is expressed in.
+        keying_policy: INSERT, REPLACE or REMOVE.
+        style: The `KeyStyle` every key this call writes is shaped with.
+        detail: Whether to capture per-bone matrices at Blender's own precision.
+        report_frames: Whether each per-bone record names the frame it describes.
+
+    Returns:
+        dict: frames (ascending), changed_keys, styled (how many points were styled), records
+        (per-bone, per-frame) and warnings.
+
+    """
+    scene = bpy.context.scene
+    changed_keys = []
+    records = []
+    per_frame_warnings = []
+    styled = 0
+    for frame, prepared in prepared_frames:
+        _place_playhead(scene, frame)
+        if keying_policy != "REMOVE":
+            posed = _apply_pose_specs(armature, prepared, space, detail=detail)
+            records.extend({"frame": frame, **record} if report_frames else record for record in posed)
+            # Measured before the write: afterwards this frame is inside the extent it widened,
+            # and the stretched cycle is invisible again. REMOVE narrows an extent rather than
+            # widening one, and has no key landing outside anything.
+            per_frame_warnings.append(_cycle_extension_warnings(action, prepared, frame))
+        written = _write_pose_keys(action, prepared, frame, keying_policy)
+        if keying_policy != "REMOVE":
+            styled += _style_written_keys(action, written, style)
+        changed_keys.extend(written)
+    return {
+        "frames": [frame for frame, _prepared in prepared_frames],
+        "changed_keys": changed_keys,
+        "styled": styled,
+        "records": records,
+        "warnings": _bounded_frame_warnings(per_frame_warnings),
+    }
 
 
 # --- What a posing call borrows, and the order it hands it back ----------------------------
@@ -1882,9 +2297,13 @@ class PoseAnimationHandlersMixin:
             }
             if rest_axes:
                 item["rest_axes"] = _rest_axes(bone)
-                # The conclusion the nine numbers leave to the reader, and the one the reply
-                # cannot otherwise support: it turns on the rig's object matrix, not on them.
-                item["up_axis"] = _rest_up_axis(armature, bone)
+                # The conclusions the nine numbers leave to the reader, and the ones the reply
+                # cannot otherwise support: they turn on the rig's object matrix, not on them.
+                # `up_axis` is the "+Z" entry, read off the same derivation rather than beside
+                # it, so the two can never disagree about which way this bone stands.
+                aim_axes = _rest_aim_axes(armature, bone)
+                item["up_axis"] = aim_axes["+Z"]
+                item["aim_axis_for_world"] = aim_axes
             items.append(item)
         reply = {"armature_object": armature.name}
         if rest_axes:
@@ -1932,6 +2351,7 @@ class PoseAnimationHandlersMixin:
             # reply budget shortens, so this is what still names every bone the call posed.
             "changed_bones": [record["bone"] for record in records],
             "bones": records,
+            "warnings": _bare_write_warnings(armature, custom_properties),
             "changed_objects": [armature.name],
         }
 
@@ -1972,8 +2392,9 @@ class PoseAnimationHandlersMixin:
         self,
         armature_object_name,
         action_name,
-        frame,
-        poses,
+        frame=None,
+        poses=None,
+        keys=None,
         space="LOCAL",
         keying_policy="INSERT",
         interpolation="BEZIER",
@@ -1985,17 +2406,28 @@ class PoseAnimationHandlersMixin:
         action_slot_identifier=None,
         detail=False,
     ):
+        """Pose and key one frame, or every frame of a stride, into one named action."""
         armature = _armature_object(armature_object_name)
-        frame = _finite(frame, "frame")
-        prepared = _validate_pose_specs(armature, list(poses or ()), space)
+        requests, batched = _pose_key_requests(frame, poses, keys)
+        prepared_frames = [(at, _validate_pose_specs(armature, entries, space)) for at, entries in requests]
         style = KeyStyle(interpolation, handle_left, handle_right, easing)
-        _refuse_unkeyable_request(keying_policy, style, action_policy, action_name, prepared)
+        # Every frame is checked before the first key is written: a bone that does not exist at
+        # frame 20 must not leave frames 1-19 keyed, an action created and the rig moved onto it.
+        _refuse_unkeyable_request(
+            keying_policy,
+            style,
+            action_policy,
+            action_name,
+            [entry for _at, prepared in prepared_frames for entry in prepared],
+        )
+        changed_bones = _keyed_bone_names(prepared_frames)
+        custom_properties = _keyed_custom_properties(prepared_frames)
         scene = bpy.context.scene
         animation = armature.animation_data_create()
         with (
             restored_playhead(scene),
             restored_action_assignment(animation) as previous_action,
-            restored_bone_pose(armature, [pose_bone.name for pose_bone, _spec, _matrix in prepared]),
+            restored_bone_pose(armature, changed_bones, custom_properties),
         ):
             action = assign_named_action(
                 armature,
@@ -2004,27 +2436,26 @@ class PoseAnimationHandlersMixin:
                 action_slot_identifier,
                 confirm_displace=confirm_displace_action,
             )
-            _place_playhead(scene, frame)
-            pose_records = []
-            if keying_policy != "REMOVE":
-                pose_records = _apply_pose_specs(armature, prepared, space, detail=detail)
-            # Measured before the write: afterwards this frame is inside the extent it widened,
-            # and the stretched cycle is invisible again. REMOVE narrows an extent rather than
-            # widening one, and has no key landing outside anything.
-            warnings = [] if keying_policy == "REMOVE" else _cycle_extension_warnings(action, prepared, frame)
-            changed_keys = _write_pose_keys(action, prepared, frame, keying_policy)
-            interpolation_count = 0 if keying_policy == "REMOVE" else _style_written_keys(action, changed_keys, style)
+            keyed = _key_pose_frames(
+                armature,
+                action,
+                prepared_frames,
+                space,
+                keying_policy,
+                style,
+                detail=detail,
+                report_frames=batched,
+            )
         return _keyframe_reply(
             armature,
             animation,
             action,
             previous_action,
             keying_policy=keying_policy,
-            prepared=prepared,
-            changed_keys=changed_keys,
-            interpolation_count=interpolation_count,
-            pose_records=pose_records if detail else None,
-            warnings=warnings,
+            changed_bones=changed_bones,
+            keyed=keyed,
+            warnings=keyed["warnings"],
+            detail=detail,
         )
 
     def keyframe_bone_reach(

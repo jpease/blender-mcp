@@ -647,7 +647,15 @@ async def configure_armature_bones(
     bone_patches: Annotated[list[BoneBehaviorPatch], Field(max_length=1_000)] | None = None,
     pose_bone_patches: Annotated[list[PoseBoneBehaviorPatch], Field(max_length=1_000)] | None = None,
 ) -> dict:
-    """Patch allowlisted non-geometric Bone and PoseBone settings after complete preflight validation."""
+    """
+    Patch allowlisted non-geometric Bone and PoseBone settings after complete preflight validation.
+
+    A pose-bone patch's custom_properties is durable on a local rig only. Blender records an
+    override for a bone's transform channels and nothing for a bare ID property write, so on a
+    library override the value reverts to the library's at reopen even when the source file
+    defines it; the reply warns and names the bones when that is what the call did. Keying the
+    same property with keyframe_character_pose is durable, because the action is local data.
+    """
     if not bone_patches and not pose_bone_patches:
         raise ToolError("At least one bone or pose-bone patch is required")
     return await call_blender(

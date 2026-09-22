@@ -3,6 +3,7 @@
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
+from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field, model_validator
 
 from ...app import mcp
@@ -18,14 +19,22 @@ _MINIMUM_SQUARED_LENGTH = 1e-18
 
 class BoneAim(_StrictModel):
     """
-    Point one of a bone's own axes at a world-space point or at another object's origin.
+    Point one of a bone's own axes at a world point, at an object, or at a bone on that object.
 
-    track_axis and up_axis name the bone's own axes, in the letters list_character_bones(
-    rest_axes=True) reports as up_axis and length_axis; target and up_reference are world-space.
+    track_axis and up_axis name the bone's own axes. Read them from
+    list_character_bones(rest_axes=True): aim_axis_for_world's entry for the world direction the
+    bone should point along is track_axis, and up_axis is that reply's up_axis (the "+Z" entry)
+    unless track_axis already took that axis, in which case name another entry. The reply's
+    length_axis is the axis along the bone - "Y" on every bone Blender builds - and is almost
+    never the axis that should look anywhere. target, target_object and up_reference are
+    world-space; target_object alone aims at the object's origin, which on a character rig is
+    the floor under it, so name target_bone to aim at a bone on it.
     """
 
     target: tuple[float, float, float] | None = None
     target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
+    target_bone: Annotated[str, Field(min_length=1, max_length=63)] | None = None
+    target_bone_position: Literal["HEAD", "TAIL", "CENTER"] = "HEAD"
     track_axis: _SignedAxis
     up_axis: _SignedAxis | None = None
     up_reference: tuple[float, float, float] = (0.0, 0.0, 1.0)
@@ -39,12 +48,17 @@ class BoneAim(_StrictModel):
             BoneAim: This model, unchanged.
 
         Raises:
-            ValueError: If neither or both target forms are given, if up_axis repeats the
-                tracked axis, or if up_reference is a zero vector.
+            ValueError: If neither or both target forms are given, if target_bone names no
+                object to find it on, if a position is named without a bone, if up_axis repeats
+                the tracked axis, or if up_reference is a zero vector.
 
         """
         if (self.target is None) == (self.target_object is None):
             raise ValueError("Supply exactly one of target or target_object")
+        if self.target_bone is not None and self.target_object is None:
+            raise ValueError("target_bone names a bone on target_object, so target_object is required")
+        if self.target_bone is None and "target_bone_position" in self.model_fields_set:
+            raise ValueError("target_bone_position names a point on target_bone, which this aim does not name")
         if self.up_axis is not None and self.up_axis.lstrip("-") == self.track_axis.lstrip("-"):
             raise ValueError("up_axis must name a different bone axis than track_axis")
         if sum(value * value for value in self.up_reference) <= _MINIMUM_SQUARED_LENGTH:
@@ -149,27 +163,32 @@ async def list_character_bones(
         limit: Bones per page. A production rig carries a few hundred bones, so one page rarely
             covers a whole rig.
         offset: Where to resume. Pass the previous reply's next_offset while truncated is true.
-        rest_axes: Also report each bone's rest axes, and name the one an aim has to choose.
-            Which way a bone's own X, Y and Z point is rig-specific and not guessable from its
-            name. It costs about 205 wire bytes a bone, which the reply budget spends as
-            roughly 20 bones a page instead of 57, so leave it off unless choosing an axis.
+        rest_axes: Also report each bone's rest axes, and name the bone axis that already points
+            along each world direction. Which way a bone's own X, Y and Z point is rig-specific
+            and not guessable from its name, and the letters an aim takes cannot be derived from
+            the nine numbers alone. It costs about 375 wire bytes a bone, measured, which the
+            reply budget spends as roughly 12 bones a page instead of 57, so leave it off unless
+            choosing an axis - and name bone_names when you do.
         bone_names: Report only these exact bones. Name the bones you intend to pose and read
             their rest axes in one call, instead of paging a whole rig to reach three of them -
-            a 187-bone rig costs nine calls with rest_axes and one with this. A name the
+            a 187-bone rig costs sixteen calls with rest_axes and one with this. A name the
             armature does not have is an error, never a silent omission.
 
     Returns:
         armature_object, and bones with items (name, parent - null for a root - and deform,
         whether the bone deforms a bound mesh), total, offset, limit, truncated, and next_offset
         (null on the last page). With rest_axes, each item also carries rest_axes (nine numbers:
-        the bone's own X axis, then Y, then Z, each a unit direction in armature space) and
-        up_axis, those same axes read the way aim_at takes them - its signed axis nearest world
-        +Z at rest, null only where the rig's object scale collapses it. The reply's own
-        length_axis is the axis along the bone, one letter for every bone Blender builds. Pass
-        both to aim_at instead of deriving them: the nine numbers cannot give up_axis, being
-        armature-space where up_reference is a world direction. A bone upright at rest reports
-        the same letter twice, and aim_at refuses one letter for both. Items follow armature
-        bone order, a parent before its children.
+        the bone's own X axis, then Y, then Z, each a unit direction in armature space),
+        aim_axis_for_world (one signed bone-axis letter per world direction - "+X" "-X" "+Y"
+        "-Y" "+Z" "-Z" - naming the bone's own axis that points most nearly that way at rest,
+        measured through the rig's object matrix, null only where the rig's object scale
+        collapses the axes), and up_axis, which is that table's "+Z" entry. Choose
+        aim_at.track_axis by looking up the world direction the bone should point along and
+        passing the letter through unchanged; the reply's own length_axis is the axis along the
+        bone, one letter for every bone Blender builds, and is almost never the one that should
+        look anywhere. up_axis must name a different axis than track_axis, so where the two
+        collide take the roll from another entry of the same table. Items follow armature bone
+        order, a parent before its children.
 
     """
     return await call_blender(
@@ -216,22 +235,29 @@ async def set_character_pose(
             Its letters name axes of space: under LOCAL and LOCAL_WITH_PARENT that is the
             bone's own rest basis, under POSE the armature's, under WORLD the scene's. It is
             sugar: rotation_axis_angle says the same thing in radians.
-            aim_at points the bone's track_axis at target (a world point) or target_object's
-            origin, and leans up_axis toward up_reference (a world direction, default +Z) to
-            fix the roll. Both letters name the bone's own axes whatever space is, so pass
-            list_character_bones(rest_axes=True)'s length_axis and up_axis straight through;
-            track_axis has no default, because a bone's length axis is rarely the one that
-            "looks" anywhere. Without up_axis the aim takes the shortest arc and keeps the roll
-            the bone already holds, which depends on the pose it started from, and a swing past
-            150 degrees is refused because that roll is then arbitrary.
+            aim_at points the bone's track_axis at target (a world point), at target_object's
+            origin, or at target_bone's HEAD, TAIL or CENTER when target_object is an armature
+            carrying that bone, and leans up_axis toward up_reference (a world direction,
+            default +Z) to fix the roll. Both letters name the bone's own axes whatever space
+            is: take track_axis from list_character_bones(rest_axes=True)'s aim_axis_for_world
+            entry for the world direction the bone should point along, and up_axis from that
+            same table's "+Z" entry unless track_axis already took that axis, in which case
+            name a different entry. Do not pass length_axis: it is the axis along the bone,
+            "Y" on every bone, and an upright bone reports "Y" for up as well, so the pair is
+            refused. track_axis has no default. Without up_axis the aim takes the shortest arc
+            and keeps the roll the bone already holds, which depends on the pose it started
+            from, and a swing past 150 degrees is refused because that roll is then arbitrary.
         detail: Also report each bone's pre-call pose matrix, and report both matrices at
             Blender's own precision instead of rounded to six decimal places.
 
     Returns:
-        armature_object, space, changed_bones naming every posed bone, and bones with one
-        record per posed bone (bone, the channels the call set - a custom property appears as
-        its data path - and after_pose_matrix, the armature-space matrix it ended on). A long
-        pose shortens bones to fit the reply budget; changed_bones stays complete.
+        armature_object, space, changed_bones naming every posed bone, bones with one record
+        per posed bone (bone, the channels the call set - a custom property appears as its data
+        path - and after_pose_matrix, the armature-space matrix it ended on), and warnings -
+        which say, in particular, when a custom property was written straight onto a library
+        override, where it reads back correctly now and is the library's value again after save
+        and reopen. A long pose shortens bones to fit the reply budget; changed_bones and
+        warnings stay complete.
 
     """
     if reset_unspecified and not confirm_reset_unspecified:
@@ -250,13 +276,50 @@ async def set_character_pose(
     )
 
 
+class PoseKeyframe(_StrictModel):
+    """One frame of a batched pose keying call: the frame, and the bones posed at it."""
+
+    frame: float
+    poses: Annotated[list[BonePose], Field(min_length=1, max_length=500)]
+
+
+# What one batched call may apply across every frame it names. 250 frames of 500 bones would be
+# 125,000 bone writes and as many view-layer updates behind one request; the handler refuses the
+# same total, because the socket is the boundary an unvalidated caller reaches.
+_MAX_BATCHED_POSE_ENTRIES = 2000
+
+
+def _validate_pose_key_batch(keys: list[PoseKeyframe]) -> None:
+    """
+    Reject a batch that names a frame twice or carries more poses than one call may apply.
+
+    Args:
+        keys: The requested frames.
+
+    Raises:
+        ToolError: Naming the repeated frames, or the total and the ceiling it passed.
+
+    """
+    frames = [key.frame for key in keys]
+    repeated = sorted({value for value in frames if frames.count(value) > 1})
+    if repeated:
+        raise ToolError(f"keys names the same frame more than once: {repeated}")
+    total = sum(len(key.poses) for key in keys)
+    if total > _MAX_BATCHED_POSE_ENTRIES:
+        raise ToolError(
+            f"keys carries {total} pose entries across {len(keys)} frames, more than the "
+            f"{_MAX_BATCHED_POSE_ENTRIES} one call may apply; split the frame range across calls"
+        )
+
+
 @mcp.tool()
 async def keyframe_character_pose(
     ctx: Context,
     armature_object_name: str,
     action_name: Annotated[str, Field(min_length=1, max_length=63)],
-    frame: float,
-    poses: Annotated[list[BonePose], Field(min_length=1, max_length=500)],
+    frame: float | None = None,
+    poses: Annotated[list[BonePose], Field(min_length=1, max_length=500)] | None = None,
+    keys: Annotated[list[PoseKeyframe], Field(min_length=1, max_length=250)] | None = None,
     space: Literal["LOCAL", "LOCAL_WITH_PARENT", "POSE", "WORLD"] = "LOCAL",
     keying_policy: Literal["INSERT", "REPLACE", "REMOVE"] = "INSERT",
     interpolation: Interpolation = "BEZIER",
@@ -270,6 +333,13 @@ async def keyframe_character_pose(
 ) -> dict:
     """
     Apply a pose and insert, replace, or remove exact keys in a named action.
+
+    Key one frame with frame and poses, or a whole stride in one call with keys - exactly one of
+    the two forms, never both. A batched call is not a loop over the single-frame one only in
+    round trips: the frames are validated together before the first key is written, the action
+    is assigned once, and the playhead is placed on each frame in ascending order before that
+    frame's poses are resolved, so an aim_at reads its target where the target is at that frame
+    and an absolute-space pose is built on the root motion the action already holds there.
 
     action_policy="ENSURE" (default) keys into action_name whether or not it already exists;
     "CREATE" requires it to be new, "REUSE" requires it to exist, and keying_policy="REMOVE"
@@ -292,33 +362,69 @@ async def keyframe_character_pose(
 
     Pose entries take the same channels as set_character_pose, with one added rule: an aim_at
     must supply up_axis. A shortest-arc aim keeps whatever roll the bone already holds, so the
-    same call at two frames would key two different rolls. A keyed aim is also re-spelled to
-    interpolate the short way from the previous key in this action: the quaternion sign is
-    flipped when it would take the long route, and an Euler triple is made compatible with the
-    previous key.
+    same call at two frames would key two different rolls. A world-space aim is evaluated at the
+    frame being keyed, not at the frame the playhead happened to be on: target_object and
+    target_bone are read where they are at that frame, so aiming at an animated character keys
+    a look that follows it. A keyed aim is also re-spelled to interpolate the short way from the
+    previous key in this action: the quaternion sign is flipped when it would take the long
+    route, and an Euler triple is made compatible with the previous key.
 
     Args:
         ctx: MCP request context.
-        frame: Fractional frames are keyed as subframes.
-        poses: The bones to key; see set_character_pose for the channels.
+        frame: The single-frame form's frame; fractional frames are keyed as subframes. Given
+            together with poses, and never alongside keys.
+        poses: The bones to key at frame; see set_character_pose for the channels.
+        keys: The batched form: one entry per frame, each with its own frame and poses, up to
+            2000 pose entries in total. Frames must be unique and may arrive in any order; they
+            are keyed ascending. A thirteen-key stride is one call, not thirteen.
         detail: Also report, as "bones", the pose each bone was keyed at - its pre-call and
-            keyed armature-space matrices, at Blender's own precision.
+            keyed armature-space matrices, at Blender's own precision. Under keys each record
+            also names its frame.
 
     Returns:
         armature_object, action, action_slot, assigned_action (the action now driving the rig),
         unassigned_action when a different action was displaced, keying_policy, changed_bones
-        naming every posed bone, changed_keys with one entry per keyed channel (bone, data_path,
-        frame), and interpolation_updates. A long pose shortens changed_keys to fit the reply
-        budget; changed_bones stays complete.
+        naming every bone any frame posed (once, complete), changed_keys with one entry per keyed
+        channel (bone, data_path, frame), interpolation_updates, keyed_frames (ascending) and
+        warnings. A long call shortens changed_keys to fit the reply budget; changed_bones,
+        keyed_frames and warnings stay complete.
+
+    Raises:
+        ToolError: If neither or both call forms are supplied, if keys repeats a frame, or if it
+            carries more pose entries than one call may apply.
 
     """
+    if keys is None:
+        if frame is None or poses is None:
+            raise ToolError(
+                "keyframe_character_pose takes either frame with poses (one frame) or keys (several frames, "
+                "each with its own poses); neither form was supplied in full"
+            )
+    elif frame is not None or poses is not None:
+        raise ToolError(
+            "keyframe_character_pose takes either frame with poses (one frame) or keys (several frames, each "
+            "with its own poses), not both"
+        )
+    else:
+        _validate_pose_key_batch(keys)
     return await call_blender(
         "keyframe_character_pose",
         {
             "armature_object_name": armature_object_name,
             "action_name": action_name,
             "frame": frame,
-            "poses": [pose.model_dump(exclude_none=True, exclude_unset=True) for pose in poses],
+            "poses": None
+            if poses is None
+            else [pose.model_dump(exclude_none=True, exclude_unset=True) for pose in poses],
+            "keys": None
+            if keys is None
+            else [
+                {
+                    "frame": key.frame,
+                    "poses": [pose.model_dump(exclude_none=True, exclude_unset=True) for pose in key.poses],
+                }
+                for key in keys
+            ],
             "space": space,
             "keying_policy": keying_policy,
             "interpolation": interpolation,

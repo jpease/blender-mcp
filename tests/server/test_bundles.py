@@ -546,7 +546,34 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # The camera-marker retroactive-binding fix in the same pass cost nothing here: it is entirely
 # handler-side (`handlers/camera/shots.py`), with no server-tool signature or docstring change.
 # Measured shot payload 235,043 bytes.
-SHOT_MODE_BYTE_CEILING = 236_000
+# Raised a ninth time, from 235,043, by the second runbook-rehearsal pass - eight defects a live
+# socket rehearsal hit, of which five cost catalog bytes. Measured per tool against HEAD with
+# `payload_report(...).per_tool`:
+#   2,690 `keyframe_character_pose`: the batched `keys=[{frame, poses}, ...]` form and its
+#     preconditions, plus `BoneAim`'s `target_bone`/`target_bone_position` through the shared
+#     schema. A thirteen-key stride was thirteen round trips, and "look at each other" aimed at
+#     an armature origin on the floor, so both characters stared at each other's feet.
+#   2,134 `set_action_cycle`: `mode_before` defaulting to NONE with its rationale,
+#     `expected_period_frames`, the restricted range, and the paragraph stating that the period
+#     is the curve's own key extent - a rehearsal measured `period_frames: 60.0` on a curve it
+#     believed was looping at 20, and the reply had reported success.
+#   1,518 `frame_camera_on_objects`: `bone_targets`, which is how a close-up is framed on a rig
+#     bone instead of on a guess about which meshes make up the region.
+#   1,311 `set_character_pose`: the same `BoneAim` growth, and the corrected axis instruction -
+#     the previous text told callers to pass `length_axis` as `track_axis`, which the tool then
+#     refused, because Blender builds every bone along its own Y.
+#   406 `list_character_bones`: `aim_axis_for_world`, the measured bone axis for each of the six
+#     world directions, which is the answer the refusal above left unreported.
+#   1,191 the file-lifecycle surface stating the path-redaction rule once per tool
+#     (`get_session_info` and `list_libraries` 302 each, `inspect_delivery` 259, `open_shot` 225,
+#     `unlink_libraries` 54, `reload_library` and `relocate_library` 49 each): a leaf-reduced
+#     path was indistinguishable from a broken one, and `is_relative: false` on it read as a
+#     defect.
+#   126 `point_camera_at`: one sentence stating that `subtarget` aims at the bone's evaluated
+#     world head, verified against real Blender rather than changed.
+# The `validate_scene` engine probe and the UV-layer staleness fix in the same pass cost nothing
+# here: both are handler-side only. Measured shot payload 244,468 bytes.
+SHOT_MODE_BYTE_CEILING = 245_500
 
 # The same rule for the default, core-only surface, and the same work: 166 bytes for
 # `validate_scene`'s `persistence` scope, 2,202 for `inspect_delivery`, 601 for `save_shot`'s
@@ -566,7 +593,12 @@ SHOT_MODE_BYTE_CEILING = 236_000
 # Unchanged by the runbook-rehearsal pass beyond `set_action_cycle`'s 252 bytes, which is the
 # only core-surface tool it touched: no posing tool is in core, and `render_scene` is not in
 # the default surface either. Measured core payload 80,158 bytes, still inside this ceiling.
-DEFAULT_MODE_BYTE_CEILING = 80_500
+# Raised from 80,500 by the core-surface half of the second runbook-rehearsal pass: 2,134 for
+# `set_action_cycle` (`object_animation` and `animation` are core, so a cycle is set from every
+# mode) and 1,240 for the file-lifecycle surface stating the path-redaction rule once per tool.
+# The posing and camera growth of that pass is absent here, as neither bundle is core, and the
+# `validate_scene` engine probe is handler-side. Measured core payload 83,532 bytes.
+DEFAULT_MODE_BYTE_CEILING = 84_000
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

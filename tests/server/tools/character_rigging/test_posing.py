@@ -15,6 +15,7 @@ import types
 
 import pytest
 
+from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 from pydantic_core import to_json
 from test_mutation_transaction import _load_addon
@@ -387,10 +388,16 @@ class _PoseBone:
         self.keyed = []
         self.deleted = []
         self.insert_fails = False
+        self.custom_properties: dict = {}
 
     @property
     def parent_recursive(self) -> list:
         return [self.parent, *self.parent.parent_recursive] if self.parent else []
+
+    @property
+    def bone(self) -> types.SimpleNamespace:
+        """The rest bone behind the pose bone: `matrix_local` is its armature-space rest."""
+        return types.SimpleNamespace(name=self.name, matrix_local=self.rest_pose)
 
     @property
     def rest_pose(self) -> _Matrix:
@@ -440,12 +447,23 @@ class _PoseBone:
     def keyframe_insert(self, data_path, frame, group=None) -> bool:
         if self.insert_fails:
             return False
-        self.keyed.append((data_path, frame, group, list(getattr(self, data_path))))
+        # A custom property is keyed under its subscript, not as an attribute.
+        value = self.custom_properties[data_path[2:-2]] if data_path.startswith("[") else list(getattr(self, data_path))
+        self.keyed.append((data_path, frame, group, value))
         return True
 
     def keyframe_delete(self, data_path, frame) -> bool:
         self.deleted.append((data_path, frame))
         return True
+
+    def __contains__(self, key) -> bool:
+        return key in self.custom_properties
+
+    def __getitem__(self, key):
+        return self.custom_properties[key]
+
+    def __setitem__(self, key, value) -> None:
+        self.custom_properties[key] = value
 
 
 class _Key:
@@ -545,7 +563,8 @@ def _posing(monkeypatch, bones, *, matrix_world=None, objects=None):
 
 
 def _target_object(name, location) -> types.SimpleNamespace:
-    return types.SimpleNamespace(name=name, matrix_world=_Matrix.Translation(location))
+    """Build a non-armature aim target: every object carries a `type`, and a bone aim reads it."""
+    return types.SimpleNamespace(name=name, type="EMPTY", matrix_world=_Matrix.Translation(location))
 
 
 # A rig that is not at the origin and not axis-aligned, so armature space and world space differ
@@ -571,8 +590,9 @@ def test_aim_points_the_named_axis_at_an_object_and_leaves_position_and_scale_al
     before = head.matrix.copy()
 
     aim = posing._validated_aim(
+        rig,
+        head,
         {"target_object": "SH030_cam", "track_axis": "Z", "up_axis": "-X", "up_reference": (0, 0, 1)},
-        head.name,
     )
     matrix = posing._aim_pose_matrix(rig, head, aim)
 
@@ -591,7 +611,7 @@ def test_aim_points_the_named_axis_at_an_object_and_leaves_position_and_scale_al
 def test_aim_at_a_world_point_resolves_through_the_rig_transform(monkeypatch) -> None:
     _server, rig, _animation, posing, _spine, head = _head_rig(monkeypatch)
 
-    aim = posing._validated_aim({"target": (0.0, -2.0, 0.75), "track_axis": "Z"}, head.name)
+    aim = posing._validated_aim(rig, head, {"target": (0.0, -2.0, 0.75), "track_axis": "Z"})
     matrix = posing._aim_pose_matrix(rig, head, aim)
 
     direction = ((rig.matrix_world.inverted() @ _Vector((0.0, -2.0, 0.75))) - head.matrix.translation).normalized()
@@ -604,7 +624,7 @@ def test_aim_rejects_every_direction_it_cannot_define(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="at the head of 'CHAR1_head_jnt'"):
         posing._aim_pose_matrix(
-            rig, head, posing._validated_aim({"target": tuple(head_world), "track_axis": "Z"}, head.name)
+            rig, head, posing._validated_aim(rig, head, {"target": tuple(head_world), "track_axis": "Z"})
         )
     forward = tuple(rig.matrix_world @ (head.matrix.translation + _Vector((0.0, 0.0, 0.5))))
     with pytest.raises(ValueError, match="parallel to the aim direction"):
@@ -612,21 +632,134 @@ def test_aim_rejects_every_direction_it_cannot_define(monkeypatch) -> None:
             rig,
             head,
             posing._validated_aim(
-                {"target": forward, "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 1)}, head.name
+                rig, head, {"target": forward, "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 1)}
             ),
         )
     with pytest.raises(ValueError, match="is a zero vector"):
         posing._validated_aim(
-            {"target": (0, -2, 0.75), "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 0)}, head.name
+            rig, head, {"target": (0, -2, 0.75), "track_axis": "Z", "up_axis": "X", "up_reference": (0, 0, 0)}
         )
     with pytest.raises(ValueError, match="different bone axis than track_axis"):
-        posing._validated_aim({"target": (0, -2, 0.75), "track_axis": "Z", "up_axis": "-Z"}, head.name)
+        posing._validated_aim(rig, head, {"target": (0, -2, 0.75), "track_axis": "Z", "up_axis": "-Z"})
     with pytest.raises(ValueError, match="must be one of X, -X, Y, -Y, Z, -Z"):
-        posing._validated_aim({"target": (0, -2, 0.75), "track_axis": "W"}, head.name)
+        posing._validated_aim(rig, head, {"target": (0, -2, 0.75), "track_axis": "W"})
     with pytest.raises(ValueError, match="exactly one of target or target_object"):
-        posing._validated_aim({"target": (0, -2, 0.75), "target_object": "SH030_cam", "track_axis": "Z"}, head.name)
+        posing._validated_aim(rig, head, {"target": (0, -2, 0.75), "target_object": "SH030_cam", "track_axis": "Z"})
     with pytest.raises(ValueError, match=r"aim_at\.target_object not found: SH030_cam"):
-        posing._validated_aim({"target_object": "SH030_cam", "track_axis": "Z"}, head.name)
+        posing._validated_aim(rig, head, {"target_object": "SH030_cam", "track_axis": "Z"})
+
+
+def _target_armature(name, location, bone_name, head, tail) -> types.SimpleNamespace:
+    """
+    Build a second rig whose pose bone an aim can name.
+
+    `PoseBone.head`/`tail` are armature-space and follow the pose, which is why the aim reads
+    them through the object matrix rather than off the rest bone.
+
+    Args:
+        name: The object name.
+        location: Where the rig sits in the scene.
+        bone_name: The pose bone the aim may name.
+        head: The bone's armature-space head.
+        tail: Its armature-space tail.
+
+    Returns:
+        The stub armature object.
+
+    """
+    bone = types.SimpleNamespace(name=bone_name, head=_Vector(head), tail=_Vector(tail))
+    return types.SimpleNamespace(
+        name=name,
+        type="ARMATURE",
+        matrix_world=_Matrix.Translation(location),
+        pose=types.SimpleNamespace(bones={bone_name: bone}),
+    )
+
+
+def _aimed_direction(rig, matrix, world_point):
+    """Measure, in armature space, the direction from an aimed bone's head to a world point."""
+    return ((rig.matrix_world.inverted() @ _Vector(world_point)) - matrix.translation).normalized()
+
+
+# A second character standing 2 m away whose head bone sits 1.6 m up, while its object origin
+# sits on the floor: aiming at the object aims at its feet.
+_OTHER_ORIGIN = (2.0, 1.0, 0.0)
+_OTHER_HEAD = (2.0, 1.0, 1.6)
+_OTHER_TAIL = (2.0, 1.0, 1.75)
+
+
+def test_an_aim_at_a_bone_looks_at_the_bone_and_not_at_the_rigs_origin(monkeypatch) -> None:
+    """Two characters told to look at each other stared at each other's feet; this is why."""
+    other = _target_armature("OtherRig", _OTHER_ORIGIN, "head", (0.0, 0.0, 1.6), (0.0, 0.0, 1.75))
+    _server, rig, _animation, posing, _spine, head = _head_rig(monkeypatch, objects={"OtherRig": other})
+
+    aim = posing._validated_aim(
+        rig, head, {"target_object": "OtherRig", "target_bone": "head", "track_axis": "Z", "up_axis": "-X"}
+    )
+    matrix = posing._aim_pose_matrix(rig, head, aim)
+
+    tracked = matrix.to_3x3().col[2]
+    assert tracked.dot(_aimed_direction(rig, matrix, _OTHER_HEAD)) == pytest.approx(1.0, abs=1e-12)
+    at_origin = math.degrees(math.acos(min(1.0, tracked.dot(_aimed_direction(rig, matrix, _OTHER_ORIGIN)))))
+    assert at_origin > 10.0, f"aiming at the bone and at the origin differ by only {at_origin} degrees"
+
+
+def test_a_bone_target_can_name_the_tail_or_the_centre_of_the_bone(monkeypatch) -> None:
+    other = _target_armature("OtherRig", _OTHER_ORIGIN, "head", (0.0, 0.0, 1.6), (0.0, 0.0, 1.75))
+    _server, rig, _animation, posing, _spine, head = _head_rig(monkeypatch, objects={"OtherRig": other})
+
+    for position, expected in (("TAIL", _OTHER_TAIL), ("CENTER", (2.0, 1.0, 1.675))):
+        aim = posing._validated_aim(
+            rig,
+            head,
+            {
+                "target_object": "OtherRig",
+                "target_bone": "head",
+                "target_bone_position": position,
+                "track_axis": "Z",
+                "up_axis": "-X",
+            },
+        )
+        matrix = posing._aim_pose_matrix(rig, head, aim)
+        assert matrix.to_3x3().col[2].dot(_aimed_direction(rig, matrix, expected)) == pytest.approx(1.0, abs=1e-12)
+
+
+def test_a_bone_target_the_scene_cannot_supply_is_refused_by_name(monkeypatch) -> None:
+    other = _target_armature("OtherRig", _OTHER_ORIGIN, "head", (0.0, 0.0, 1.6), (0.0, 0.0, 1.75))
+    camera = _target_object("SH030_cam", (0.6, -4.7, 0.95))
+    _server, rig, _animation, posing, _spine, head = _head_rig(
+        monkeypatch, objects={"OtherRig": other, "SH030_cam": camera}
+    )
+
+    with pytest.raises(ValueError, match=r"aim_at\.target_bone not found on 'OtherRig': neck"):
+        posing._validated_aim(rig, head, {"target_object": "OtherRig", "target_bone": "neck", "track_axis": "Z"})
+    with pytest.raises(ValueError, match="needs an armature to live on"):
+        posing._validated_aim(rig, head, {"target_object": "SH030_cam", "target_bone": "head", "track_axis": "Z"})
+    with pytest.raises(ValueError, match="names a point on a bone"):
+        posing._validated_aim(
+            rig, head, {"target_object": "OtherRig", "target_bone_position": "TAIL", "track_axis": "Z"}
+        )
+
+
+def test_one_axis_named_twice_is_refused_with_the_axes_that_are_still_free(monkeypatch) -> None:
+    """
+    The tools' own instruction produced this refusal, so the refusal has to carry the remedy.
+
+    `length_axis` is `Y` for every bone and an upright bone's `up_axis` is `Y` as well, so
+    "pass both straight through" named one axis twice. Naming the two axes that are left, and
+    where each points, is the difference between a rule and a next call.
+    """
+    _server, rig, _animation, posing, _spine, head = _head_rig(monkeypatch)
+
+    with pytest.raises(ValueError) as refusal:
+        posing._validated_aim(rig, head, {"target": (0.0, -2.0, 0.75), "track_axis": "Y", "up_axis": "Y"})
+
+    message = str(refusal.value)
+    assert "both the Y axis" in message
+    # This bone's own X runs along world +X at rest and its Z along world -Y, through a rig that
+    # is itself turned 0.55 rad about Z - the part a caller cannot read off `rest_axes`.
+    assert "X points +X" in message, message
+    assert "Z points -Y" in message, message
 
 
 def test_posing_an_aim_lands_it_on_the_target_after_the_parent_has_moved(monkeypatch) -> None:
@@ -653,13 +786,13 @@ def test_a_minimal_arc_aim_past_the_flip_angle_is_refused_rather_than_rolled_arb
     behind = tuple(rig.matrix_world @ (head.matrix.translation + _Vector((0.0, 2.0, 0.0))))
 
     with pytest.raises(ValueError, match="without an up reference"):
-        posing._aim_pose_matrix(rig, head, posing._validated_aim({"target": behind, "track_axis": "Z"}, head.name))
+        posing._aim_pose_matrix(rig, head, posing._validated_aim(rig, head, {"target": behind, "track_axis": "Z"}))
 
     # The same swing is well defined once the roll is pinned.
     matrix = posing._aim_pose_matrix(
         rig,
         head,
-        posing._validated_aim({"target": behind, "track_axis": "Z", "up_axis": "Y"}, head.name),
+        posing._validated_aim(rig, head, {"target": behind, "track_axis": "Z", "up_axis": "Y"}),
     )
     direction = ((rig.matrix_world.inverted() @ _Vector(behind)) - head.matrix.translation).normalized()
     assert matrix.to_3x3().col[2].dot(direction) == pytest.approx(1.0, abs=1e-12)
@@ -759,6 +892,9 @@ def test_keying_leaves_the_rig_driven_by_the_action_it_authored(monkeypatch) -> 
     assert animation.action.name == "CHAR1_sh030_motion"
     assert reply["assigned_action"] == "CHAR1_sh030_motion"
     assert "unassigned_action" not in reply
+    # The envelope's own vocabulary: a changed resource is a plain datablock name, as it is in
+    # every other handler. A record here instead was a shape the client had to special-case.
+    assert reply["changed_resources"] == ["CHAR1_sh030_motion"]
 
 
 def test_keying_reports_the_action_it_displaced(monkeypatch) -> None:
@@ -817,7 +953,7 @@ def test_a_keyed_aim_takes_the_short_way_round_from_the_previous_key(monkeypatch
     server, rig, animation, posing, _spine, head = _head_rig(monkeypatch)
     action = _Action("CHAR1_sh030_motion")
     sys.modules["bpy"].data.actions["CHAR1_sh030_motion"] = action
-    aim = posing._validated_aim({"target": (0.0, -2.0, 0.75), "track_axis": "Z", "up_axis": "-X"}, head.name)
+    aim = posing._validated_aim(rig, head, {"target": (0.0, -2.0, 0.75), "track_axis": "Z", "up_axis": "-X"})
     head.matrix = posing._aim_pose_matrix(rig, head, aim)
     reached = list(head.rotation_quaternion)
     head.matrix_basis = _Matrix.Identity(4)
@@ -843,7 +979,7 @@ def test_a_keyed_euler_aim_stays_on_the_previous_keys_branch(monkeypatch) -> Non
     )
     action = _Action("CHAR1_sh030_motion")
     sys.modules["bpy"].data.actions["CHAR1_sh030_motion"] = action
-    aim = posing._validated_aim({"target_object": "SH030_cam", "track_axis": "Z", "up_axis": "-X"}, head.name)
+    aim = posing._validated_aim(rig, head, {"target_object": "SH030_cam", "track_axis": "Z", "up_axis": "-X"})
     head.matrix = posing._aim_pose_matrix(rig, head, aim)
     natural = list(head.rotation_euler)
     head.matrix_basis = _Matrix.Identity(4)
@@ -961,6 +1097,224 @@ def test_a_whole_rig_keyed_past_its_cycles_counts_the_bones_it_cannot_name(monke
     assert "CHAR1_bone_04" in summary and "and 1 more" in summary
 
 
+def _batched_aim_rig(monkeypatch):
+    """
+    Build a rig whose aim target moves with the playhead, so a per-frame aim differs from a stale one.
+
+    Args:
+        monkeypatch: The test's monkeypatch.
+
+    Returns:
+        tuple: the server, the rig, the head bone, the scene, and `{frame: target location}`.
+
+    """
+    camera = _target_object("SH030_cam", (0.0, 0.0, 0.0))
+    server, rig, _animation, _posing_module, _spine, head = _head_rig(monkeypatch, objects={"SH030_cam": camera})
+    track = {1.0: (3.0, 0.0, 0.9), 5.0: (0.0, 3.0, 0.9), 9.0: (-3.0, 0.0, 0.9)}
+    scene = sys.modules["bpy"].context.scene
+
+    def move(frame, subframe=0.0) -> None:
+        scene.frame_current = frame + subframe
+        camera.matrix_world = _Matrix.Translation(track[frame + subframe])
+
+    scene.frame_set = move
+    move(1.0)
+    return server, rig, head, scene, track
+
+
+def _aim_pose(bone_name):
+    return {"bone_name": bone_name, "aim_at": {"target_object": "SH030_cam", "track_axis": "Z", "up_axis": "-X"}}
+
+
+def test_a_batched_call_keys_every_frame_at_the_target_that_frame_holds(monkeypatch) -> None:
+    """
+    Thirteen keys of a stride were thirteen round trips, and each solved against one frame.
+
+    The frames are keyed in ascending order with the playhead on each of them, so an aim at a
+    moving target keys three different looks rather than three copies of the one the playhead
+    happened to be showing.
+    """
+    server, rig, head, scene, track = _batched_aim_rig(monkeypatch)
+
+    reply = server.keyframe_character_pose(
+        "CHAR1_rig",
+        "CHAR1_sh030_motion",
+        keys=[{"frame": frame, "poses": [_aim_pose(head.name)]} for frame in (9.0, 1.0, 5.0)],
+    )
+
+    assert reply["keyed_frames"] == [1.0, 5.0, 9.0]
+    assert reply["changed_bones"] == [head.name]
+    assert [entry["frame"] for entry in reply["changed_keys"]] == [1.0, 5.0, 9.0]
+    assert scene.frame_current == pytest.approx(1.0), "the playhead was left where the last key was written"
+    keyed = {frame: values for _path, frame, _group, values in head.keyed}
+    for frame, target in track.items():
+        head.rotation_quaternion = _Quaternion(keyed[frame])
+        direction = ((rig.matrix_world.inverted() @ _Vector(target)) - head.matrix.translation).normalized()
+        landed = head.matrix.to_3x3().normalized().col[2].dot(direction)
+        assert landed == pytest.approx(1.0, abs=1e-9), f"frame {frame} was keyed aiming somewhere else"
+
+
+def test_a_batched_call_restores_the_pose_it_borrowed_for_every_frame(monkeypatch) -> None:
+    server, _rig, head, _scene, _track = _batched_aim_rig(monkeypatch)
+    before = [value for row in head.matrix_basis.rows for value in row]
+
+    server.keyframe_character_pose(
+        "CHAR1_rig",
+        "CHAR1_sh030_motion",
+        keys=[{"frame": frame, "poses": [_aim_pose(head.name)]} for frame in (1.0, 5.0, 9.0)],
+    )
+
+    assert [value for row in head.matrix_basis.rows for value in row] == pytest.approx(before)
+
+
+def test_a_single_frame_call_still_reports_exactly_what_it_did_before(monkeypatch) -> None:
+    """The batched form is an addition: the one-frame reply keeps its shape, plus keyed_frames."""
+    server, _rig, _animation, _posing_module, _spine, head = _head_rig(monkeypatch)
+
+    reply = server.keyframe_character_pose(
+        "CHAR1_rig", "CHAR1_sh030_motion", 3.0, [{"bone_name": head.name, "location": (0.1, 0.0, 0.0)}], detail=True
+    )
+
+    assert reply["keyed_frames"] == [3.0]
+    assert reply["changed_keys"] == [{"bone": head.name, "data_path": "location", "frame": 3.0}]
+    assert set(reply["bones"][0]) == {"bone", "channels", "before_pose_matrix", "after_pose_matrix"}
+
+
+def test_a_batched_detail_record_names_the_frame_it_describes(monkeypatch) -> None:
+    """A record per bone per frame is unreadable without the frame; one frame carries its own."""
+    server, _rig, head, _scene, _track = _batched_aim_rig(monkeypatch)
+
+    reply = server.keyframe_character_pose(
+        "CHAR1_rig",
+        "CHAR1_sh030_motion",
+        keys=[{"frame": frame, "poses": [_aim_pose(head.name)]} for frame in (1.0, 5.0)],
+        detail=True,
+    )
+
+    assert [record["frame"] for record in reply["bones"]] == [1.0, 5.0]
+
+
+def test_the_two_call_shapes_are_exclusive_and_named_in_the_refusal(monkeypatch) -> None:
+    server, _rig, _animation, _posing_module, _spine, head = _head_rig(monkeypatch)
+    pose = [{"bone_name": head.name, "location": (0.1, 0.0, 0.0)}]
+
+    with pytest.raises(ValueError, match="exactly one of frame with poses"):
+        server.keyframe_character_pose("CHAR1_rig", "CHAR1_sh030_motion")
+    with pytest.raises(ValueError, match="exactly one of frame with poses"):
+        server.keyframe_character_pose("CHAR1_rig", "CHAR1_sh030_motion", 1.0, pose, keys=[{"frame": 2.0, "poses": pose}])
+    with pytest.raises(ValueError, match="requires both frame and poses"):
+        server.keyframe_character_pose("CHAR1_rig", "CHAR1_sh030_motion", 1.0)
+
+
+def test_a_batch_that_repeats_a_frame_or_outgrows_one_call_is_refused(monkeypatch) -> None:
+    """A frame keyed twice in one call would key whichever pose the list happened to end on."""
+    posing = _load_posing(monkeypatch)
+    pose = [{"bone_name": "CHAR1_head_jnt", "location": (0.1, 0.0, 0.0)}]
+
+    with pytest.raises(ValueError, match=r"keys names the same frame more than once: \[2.0\]"):
+        posing._pose_key_requests(None, None, [{"frame": 2.0, "poses": pose}, {"frame": 2.0, "poses": pose}])
+    with pytest.raises(ValueError, match="more than the 2000 one call may apply"):
+        posing._pose_key_requests(None, None, [{"frame": float(index), "poses": pose * 9} for index in range(250)])
+    with pytest.raises(ValueError, match=r"keys\[1\] requires at least one pose entry"):
+        posing._pose_key_requests(None, None, [{"frame": 1.0, "poses": pose}, {"frame": 2.0, "poses": []}])
+
+
+def test_the_batched_form_reaches_the_handler_with_its_frames_intact(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        _dispatch,
+        "send_command",
+        lambda command, params=None: calls.append((command, params)) or {"ok": True},
+    )
+    pose = character_rigging.BonePose(bone_name="hand.L", location=(0.1, 0.0, 0.0))
+
+    asyncio.run(
+        character_rigging.keyframe_character_pose(
+            ctx=None,
+            armature_object_name="my_rig",
+            action_name="Walk",
+            keys=[character_rigging.PoseKeyframe(frame=frame, poses=[pose]) for frame in (1.0, 13.0)],
+        )
+    )
+
+    params = calls[0][1]
+    assert params["frame"] is None
+    assert params["poses"] is None
+    assert params["keys"] == [
+        {"frame": 1.0, "poses": [{"bone_name": "hand.L", "location": (0.1, 0.0, 0.0)}]},
+        {"frame": 13.0, "poses": [{"bone_name": "hand.L", "location": (0.1, 0.0, 0.0)}]},
+    ]
+
+
+def test_the_tool_refuses_both_call_shapes_and_a_repeated_frame() -> None:
+    pose = character_rigging.BonePose(bone_name="hand.L", location=(0.1, 0.0, 0.0))
+    key = character_rigging.PoseKeyframe(frame=1.0, poses=[pose])
+
+    with pytest.raises(ToolError, match="neither form was supplied in full"):
+        asyncio.run(
+            character_rigging.keyframe_character_pose(ctx=None, armature_object_name="my_rig", action_name="Walk")
+        )
+    with pytest.raises(ToolError, match="not both"):
+        asyncio.run(
+            character_rigging.keyframe_character_pose(
+                ctx=None, armature_object_name="my_rig", action_name="Walk", frame=1.0, poses=[pose], keys=[key]
+            )
+        )
+    with pytest.raises(ToolError, match=r"keys names the same frame more than once: \[1.0\]"):
+        asyncio.run(
+            character_rigging.keyframe_character_pose(
+                ctx=None, armature_object_name="my_rig", action_name="Walk", keys=[key, key]
+            )
+        )
+
+
+def test_a_bone_position_without_a_bone_is_refused_by_the_schema() -> None:
+    with pytest.raises(ValidationError, match="target_bone_position names a point on target_bone"):
+        character_rigging.BoneAim(target_object="OtherRig", target_bone_position="TAIL", track_axis="Z")
+    with pytest.raises(ValidationError, match="target_bone names a bone on target_object"):
+        character_rigging.BoneAim(target=(1.0, 0.0, 0.0), target_bone="head", track_axis="Z")
+
+
+def _override_rig(monkeypatch, *, overridden):
+    """Build a rig carrying one bone with a custom property, either local or a library override."""
+    bone = _PoseBone("CHAR1_head_jnt")
+    bone.custom_properties["ik_blend"] = 0.0
+    server, rig, _animation, _posing_module = _posing(monkeypatch, [bone])
+    rig.override_library = types.SimpleNamespace(properties=[]) if overridden else None
+    return server, bone
+
+
+def test_a_custom_property_written_onto_a_library_override_says_it_will_not_survive(monkeypatch) -> None:
+    """The write reads back correctly in-session and is the library's value again after reopen."""
+    server, bone = _override_rig(monkeypatch, overridden=True)
+
+    reply = server.set_character_pose("CHAR1_rig", [{"bone_name": bone.name, "custom_properties": {"ik_blend": 1.0}}])
+
+    assert len(reply["warnings"]) == 1, reply["warnings"]
+    assert "library override" in reply["warnings"][0]
+    assert bone.name in reply["warnings"][0]
+
+
+def test_a_local_rig_is_not_warned_about_its_own_custom_properties(monkeypatch) -> None:
+    server, bone = _override_rig(monkeypatch, overridden=False)
+
+    reply = server.set_character_pose("CHAR1_rig", [{"bone_name": bone.name, "custom_properties": {"ik_blend": 1.0}}])
+
+    assert reply["warnings"] == []
+
+
+def test_keying_a_custom_property_onto_an_override_is_not_warned_about(monkeypatch) -> None:
+    """A keyed value lands in the action, which is local data, and reopens as written."""
+    server, bone = _override_rig(monkeypatch, overridden=True)
+
+    reply = server.keyframe_character_pose(
+        "CHAR1_rig", "CHAR1_sh030_motion", 1.0, [{"bone_name": bone.name, "custom_properties": {"ik_blend": 1.0}}]
+    )
+
+    assert reply["warnings"] == []
+    assert reply["changed_keys"] == [{"bone": bone.name, "data_path": '["ik_blend"]', "frame": 1.0}]
+
+
 def test_rest_axes_are_reported_only_when_asked_for(monkeypatch) -> None:
     bone = types.SimpleNamespace(
         name="CHAR1_head_jnt",
@@ -1041,14 +1395,44 @@ def test_the_up_axis_follows_the_rig_into_the_scene_where_the_nine_numbers_canno
     assert reply["bones"]["items"][0]["up_axis"] == "-Z"
 
 
-def test_a_rig_scaled_to_nothing_names_no_up_axis_rather_than_guessing_one(monkeypatch) -> None:
+def test_each_world_direction_is_given_the_bone_axis_that_already_points_that_way(monkeypatch) -> None:
+    """
+    The table an aim is chosen from, and the one the reply could not otherwise support.
+
+    The rig is laid over 1.2 rad about X, so four of the six answers differ from the same bone's
+    armature-space reading - which is exactly the derivation a caller would otherwise do off
+    `rest_axes`, and get wrong.
+    """
+    server = _char1_head_rig(monkeypatch, _Matrix.Rotation(1.2, 4, "X"))
+
+    item = server.list_character_bones("CHAR1_rig", rest_axes=True)["bones"]["items"][0]
+
+    assert item["aim_axis_for_world"] == {"+X": "Y", "-X": "-Y", "+Y": "X", "-Y": "-X", "+Z": "-Z", "-Z": "Z"}
+    # up_axis is this table's "+Z" entry, read off the same derivation rather than beside it.
+    assert item["up_axis"] == item["aim_axis_for_world"]["+Z"]
+
+
+def test_the_same_bone_standing_upright_names_different_axes_for_the_same_directions(monkeypatch) -> None:
+    """Only the rig's object matrix differs, and it is the half of the answer rest_axes omits."""
+    server = _char1_head_rig(monkeypatch, _Matrix.Identity(4))
+
+    item = server.list_character_bones("CHAR1_rig", rest_axes=True)["bones"]["items"][0]
+
+    assert item["rest_axes"] == _CHAR1_HEAD_AXES
+    assert item["aim_axis_for_world"]["+Y"] == "-Z"
+    assert item["aim_axis_for_world"]["+Z"] == "-X"
+
+
+def test_a_rig_scaled_to_nothing_names_no_axis_for_any_direction(monkeypatch) -> None:
     """No axis points anywhere, so there is no answer to give and none is invented."""
     flattened = _Matrix([[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]])
     server = _char1_head_rig(monkeypatch, flattened)
 
-    reply = server.list_character_bones("CHAR1_rig", rest_axes=True)
+    item = server.list_character_bones("CHAR1_rig", rest_axes=True)["bones"]["items"][0]
 
-    assert reply["bones"]["items"][0]["up_axis"] is None
+    assert item["up_axis"] is None
+    assert set(item["aim_axis_for_world"]) == {"+X", "-X", "+Y", "-Y", "+Z", "-Z"}
+    assert set(item["aim_axis_for_world"].values()) == {None}
 
 
 def _rig_with_bones(monkeypatch, *names: str):

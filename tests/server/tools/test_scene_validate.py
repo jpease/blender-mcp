@@ -383,3 +383,172 @@ def test_validate_scene_runs_the_persistence_domain_on_request(monkeypatch) -> N
     assert result["domain_summaries"]["persistence"] == {"findings": 1, "truncated": False}
     assert result["findings"][0]["domain"] == "persistence"
     assert result["findings"][0]["code"] == "UNREFERENCED_DATABLOCK"
+
+
+# ---------------------------------------------------------------------------
+# The engine probe behind ENGINE_UNAVAILABLE. Blender 5.2.2 registers Cycles
+# only as a bpy.types.RenderEngine subclass: RenderSettings.engine's static
+# enum still reports ['BLENDER_EEVEE'] while Cycles renders, so reading that
+# enum alone reported an ERROR against a scene that was rendering fine and
+# made validate_scene's `ready` unreachable in a stock install.
+# ---------------------------------------------------------------------------
+
+
+def _install_engine_sources(bpy, *, enum_items, registered, keep):
+    """Point bpy.types at one RNA enum and one RenderEngine class tree."""
+    bpy.types.RenderSettings = types.SimpleNamespace(
+        bl_rna=types.SimpleNamespace(
+            properties={
+                "engine": types.SimpleNamespace(
+                    enum_items=[types.SimpleNamespace(identifier=key, name=label) for key, label in enum_items]
+                )
+            }
+        )
+    )
+    base = type("RenderEngine", (), {})
+    parent = base
+    for identifier, label in registered:
+        # __subclasses__ holds weak references, so the classes must outlive this call.
+        parent = type(f"Engine_{identifier or 'base'}", (parent,), {"bl_idname": identifier, "bl_label": label})
+        keep.append(parent)
+    bpy.types.RenderEngine = base
+    return base
+
+
+def _lighting_shared(addon):
+    return addon.handlers.lighting._shared
+
+
+def test_engine_probe_reports_engines_registered_only_as_render_engine_subclasses(monkeypatch) -> None:
+    addon, bpy = _load_addon(monkeypatch, data={})
+    keep: list[type] = []
+    # A base class with no bl_idname sits between RenderEngine and the real engine, exactly as
+    # HydraRenderEngine does; it must be walked through and never reported as an engine.
+    _install_engine_sources(
+        bpy,
+        enum_items=[("BLENDER_EEVEE", "EEVEE")],
+        registered=[("", ""), ("CYCLES", "Cycles")],
+        keep=keep,
+    )
+
+    assert _lighting_shared(addon).engine_identifiers() == {"BLENDER_EEVEE": "EEVEE", "CYCLES": "Cycles"}
+
+
+def test_engine_probe_keeps_the_rna_label_when_both_sources_report_one_identifier(monkeypatch) -> None:
+    addon, bpy = _load_addon(monkeypatch, data={})
+    keep: list[type] = []
+    _install_engine_sources(
+        bpy,
+        enum_items=[("BLENDER_EEVEE", "EEVEE")],
+        registered=[("BLENDER_EEVEE", "Subclass Label")],
+        keep=keep,
+    )
+
+    assert _lighting_shared(addon).engine_identifiers()["BLENDER_EEVEE"] == "EEVEE"
+
+
+def test_engine_probe_always_includes_the_engine_a_scene_is_already_assigned(monkeypatch) -> None:
+    addon, bpy = _load_addon(monkeypatch, data={})
+    keep: list[type] = []
+    _install_engine_sources(bpy, enum_items=[("BLENDER_EEVEE", "EEVEE")], registered=[], keep=keep)
+    scene = types.SimpleNamespace(name="Scene", render=types.SimpleNamespace(engine="SOME_ADDON_ENGINE"))
+
+    available = _lighting_shared(addon).engine_identifiers(scene)
+
+    assert available == {"BLENDER_EEVEE": "EEVEE", "SOME_ADDON_ENGINE": "SOME_ADDON_ENGINE"}
+
+
+def test_resolve_engine_finds_cycles_registered_only_as_a_subclass(monkeypatch) -> None:
+    addon, bpy = _load_addon(monkeypatch, data={})
+    keep: list[type] = []
+    _install_engine_sources(bpy, enum_items=[("BLENDER_EEVEE", "EEVEE")], registered=[("CYCLES", "Cycles")], keep=keep)
+
+    assert _lighting_shared(addon).resolve_engine("CYCLES") == "CYCLES"
+
+
+def test_resolve_engine_still_refuses_cycles_when_nothing_registers_it(monkeypatch) -> None:
+    addon, bpy = _load_addon(monkeypatch, data={})
+    keep: list[type] = []
+    _install_engine_sources(bpy, enum_items=[("BLENDER_EEVEE", "EEVEE")], registered=[], keep=keep)
+
+    with pytest.raises(ValueError, match="Cycles is not registered"):
+        _lighting_shared(addon).resolve_engine("CYCLES")
+
+
+def test_resolve_engine_resolves_exactly_one_eevee_despite_a_rival_addon_engine(monkeypatch) -> None:
+    addon, bpy = _load_addon(monkeypatch, data={})
+    keep: list[type] = []
+    _install_engine_sources(
+        bpy,
+        enum_items=[("BLENDER_EEVEE", "EEVEE")],
+        registered=[("CYCLES", "Cycles"), ("THIRD_PARTY", "Turbo EEVEE Booster")],
+        keep=keep,
+    )
+
+    assert _lighting_shared(addon).resolve_engine("EEVEE") == "BLENDER_EEVEE"
+
+
+def test_resolve_engine_refuses_an_ambiguous_eevee_in_the_rna_enum(monkeypatch) -> None:
+    addon, bpy = _load_addon(monkeypatch, data={})
+    keep: list[type] = []
+    _install_engine_sources(
+        bpy,
+        enum_items=[("BLENDER_EEVEE", "EEVEE"), ("BLENDER_EEVEE_NEXT", "EEVEE Next")],
+        registered=[],
+        keep=keep,
+    )
+
+    with pytest.raises(ValueError, match="exactly one EEVEE"):
+        _lighting_shared(addon).resolve_engine("EEVEE")
+
+
+# ---------------------------------------------------------------------------
+# ZERO_AREA_UVS severity: an ERROR the session cannot act on is a permanent
+# `ready: false`, so linked mesh data is reported as a WARNING that names the
+# file the unwrap belongs in.
+# ---------------------------------------------------------------------------
+
+
+class _FakeUVLayers(list):
+    @property
+    def active(self):
+        return self[0] if self else None
+
+
+def _mesh_with_zero_area_uvs(monkeypatch, addon, *, library):
+    obj = types.SimpleNamespace(
+        name="Prop",
+        library=None,
+        material_slots=[],
+        data=types.SimpleNamespace(library=library, uv_layers=_FakeUVLayers([types.SimpleNamespace(name="UVMap")])),
+    )
+    monkeypatch.setattr(addon.handlers.texture.validation, "mesh_object", lambda _name: obj, raising=True)
+    server = addon.BlenderMCPServer()
+    monkeypatch.setattr(
+        server,
+        "inspect_uv_layout",
+        lambda *_a, **_k: {"uv_maps": [{"zero_area_faces": [3, 4], "overlap_pairs": []}]},
+        raising=False,
+    )
+    result = server.validate_pbr_asset(object_names=["Prop"])
+    return next(item for item in result["findings"] if item["code"] == "ZERO_AREA_UVS")
+
+
+def test_zero_area_uvs_on_a_local_mesh_stays_an_error(monkeypatch) -> None:
+    addon, _bpy = _load_addon(monkeypatch, data={})
+
+    finding = _mesh_with_zero_area_uvs(monkeypatch, addon, library=None)
+
+    assert finding["severity"] == "ERROR"
+    assert finding["remediation"] == "Unwrap the listed faces before texturing or baking."
+
+
+def test_zero_area_uvs_on_a_linked_mesh_warns_and_names_the_library(monkeypatch) -> None:
+    addon, _bpy = _load_addon(monkeypatch, data={})
+    library = types.SimpleNamespace(name="props.blend", filepath="//libs/props.blend")
+
+    finding = _mesh_with_zero_area_uvs(monkeypatch, addon, library=library)
+
+    assert finding["severity"] == "WARNING"
+    assert "//libs/props.blend" in finding["remediation"]
+    assert finding["evidence"] == [3, 4]
