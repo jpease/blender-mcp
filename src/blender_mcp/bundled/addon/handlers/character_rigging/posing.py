@@ -29,6 +29,7 @@ from .foundation import (
     _finite,
     _matrix_list,
     _override_property_warning,
+    _plain,
     _required_name,
     _selected_bones,
     _validate_limit_offset,
@@ -80,6 +81,16 @@ _FRAME_TOLERANCE = 1e-6
 # One call may pose 500 bones, and the envelope lifts warnings whole rather than paging them,
 # so the per-bone cycle notices are named up to this many and then counted.
 _MAX_CYCLE_WARNINGS = 4
+# How many of one bone's custom properties a page carries. A face control bone can hold 199
+# sliders, which is more than the 8 KiB reply budget fits whole, so the page is bounded here
+# and `custom_property_next_offset` resumes it; the envelope's own shortening cuts whole bones
+# and could not reach inside one.
+_MAX_BONE_PROPERTIES = 40
+# At or past this, a custom property's UI range is Blender's "unbounded" rather than a slider a
+# rig author drew: an unbounded float answers +-FLT_MAX (3.4028235e+38) and an int the 32-bit
+# limits, measured on Blender 5.2. Reporting either would put two meaningless fields on every
+# property of a 199-slider bone.
+_UNBOUNDED_PROPERTY_LIMIT = 2_147_483_647
 
 
 def _signed_axis(name, label):
@@ -782,27 +793,55 @@ def _length_axis_twist_degrees(spec):
     return math.degrees(abs(angle))
 
 
-def _twist_notice(bone_name, degrees, space):
-    """Word the notice for one bone whose rotation cannot move it."""
+def _twist_notice(pose_bone, degrees, space):
+    """
+    Word the notice for one bone rotated about its own length, claiming only what was measured.
+
+    This reads the rest hierarchy, not the evaluated mesh, and the difference decides whether a
+    roll is a mistake. It is one on a relay bone whose job is to swing a forearm. It is the
+    intended motion on a head bone whose length axis is the character's up: measured on one such
+    rig, 30 degrees moved the tail 0.000 cm and the face 6.47 cm, and a notice that concluded
+    "nothing swings" was wrong about the only part the audience sees. So the notice states the
+    tail and child-head result it actually derived, and says what deforming geometry does with a
+    roll rather than implying it does nothing.
+
+    Args:
+        pose_bone: The bone rotated, read for whether it deforms geometry.
+        degrees: How far the entry turns it about its length axis.
+        space: The call's pose space, whose axis letters the notice quotes.
+
+    Returns:
+        str: The notice.
+
+    """
+    deforms = bool(getattr(getattr(pose_bone, "bone", None), "use_deform", False))
+    consequence = (
+        "This bone deforms geometry, and that geometry rolls with it - on a head or neck bone whose length axis "
+        "is the character's up, that roll is the turn you asked for. Measure the mesh, or render, before "
+        "treating this as a mistake."
+        if deforms
+        else "This bone deforms no geometry, so whatever it moves, it moves through a child bone or a constraint."
+    )
     return (
-        f"Bone '{bone_name}': {degrees:.4g} degrees about the bone's own length axis "
-        f"({_LENGTH_AXIS} in {space} space, the axis running head to tail) is a twist. It rolls the bone and "
-        "whatever is parented to it, but the bone's tail - and every child bone's head, which sits on it - "
-        "stay exactly where they are, so this joint does not bend and nothing swings. If a bend was intended, "
-        "rotate about one of the bone's other two axes; list_character_bones(rest_axes=True) reports where "
-        "each one points."
+        f"Bone '{pose_bone.name}': {degrees:.4g} degrees about the bone's own length axis "
+        f"({_LENGTH_AXIS} in {space} space, the axis running head to tail) is a roll. Measured from the rest "
+        "hierarchy: the bone's tail - and every child bone's head, which sits on it - stay exactly where they "
+        f"are, so no child bone swings and this joint does not bend. {consequence} If a bend was intended, "
+        "rotate about one of the bone's other two axes; list_character_bones(rest_axes=True) reports where each "
+        "one points."
     )
 
 
 def _inert_rotation_warnings(prepared, space):
     """
-    Say which of this call's rotations turn a bone about its own length, moving nothing.
+    Say which of this call's rotations turn a bone about its own length.
 
     A bone's own +Y runs head to tail (`_LENGTH_AXIS`), so a rotation about it rolls the bone
-    where it stands: the call succeeds, the keys land, the bone's tail and every child's head
-    stay exactly put, and the render shows no bend. That failure is silent in every other
-    channel this handler reports - the pose matrix genuinely changed - which is why it is worth
-    a warning rather than leaving the caller to measure the tail themselves.
+    where it stands: the call succeeds, the keys land, and the bone's tail and every child's
+    head stay exactly put. That is silent in every other channel this handler reports - the pose
+    matrix genuinely changed - which is why it is worth a warning rather than leaving the caller
+    to measure the tail themselves. What the roll does to skinned geometry is `_twist_notice`'s
+    to say, and is not the same answer on every bone.
 
     Only LOCAL and LOCAL_WITH_PARENT are judged: in those spaces the axis letters resolve to
     the bone's own rest basis, so `Y` is the bone's length. Under POSE and WORLD the same letter
@@ -813,14 +852,14 @@ def _inert_rotation_warnings(prepared, space):
         space: The call's pose space.
 
     Returns:
-        list[str]: One notice per bone whose rotation is a twist about its own length, in the
+        list[str]: One notice per bone whose rotation is a roll about its own length, in the
         order posed.
 
     """
     if space not in _BONE_LOCAL_SPACES:
         return []
-    turns = ((pose_bone.name, _length_axis_twist_degrees(spec)) for pose_bone, spec, _matrix in prepared)
-    return [_twist_notice(name, degrees, space) for name, degrees in turns if degrees is not None]
+    turns = ((pose_bone, _length_axis_twist_degrees(spec)) for pose_bone, spec, _matrix in prepared)
+    return [_twist_notice(pose_bone, degrees, space) for pose_bone, degrees in turns if degrees is not None]
 
 
 def _resolved_target(armature, pose_bone, spec, space, prepared_matrix):
@@ -2406,13 +2445,88 @@ def _keyed_reach_reply(armature, animation, action, previous_action, keyed, tole
     return reply
 
 
+def _property_bounds(pose_bone, name):
+    """
+    Read the slider range Blender's UI data records for one custom property.
+
+    A range is only worth reporting when a rig author set one. Measured on Blender 5.2, a float
+    property nobody bounded still answers `min: -3.4028235e+38, max: 3.4028235e+38` and an int
+    one the 32-bit limits, which is Blender spelling "unbounded" - two fields per property that
+    say nothing, on a bone that can carry 199 of them.
+
+    Args:
+        pose_bone: The bone holding the property.
+        name: The property's key.
+
+    Returns:
+        dict: `min` and `max` when the property defines real ones, else empty - a property with
+        no UI data, a string one, or one left at the type's full range has no range to state.
+
+    """
+    reader = getattr(pose_bone, "id_properties_ui", None)
+    if reader is None:
+        return {}
+    try:
+        described = dict(reader(name).as_dict())
+    except (TypeError, KeyError, AttributeError):
+        return {}
+    bounds = {}
+    for bound in ("min", "max"):
+        value = described.get(bound)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if not math.isfinite(value) or abs(value) >= _UNBOUNDED_PROPERTY_LIMIT:
+            continue
+        bounds[bound] = float(value)
+    return bounds
+
+
+def _bone_custom_properties(pose_bone, offset):
+    """
+    Page one pose bone's custom properties, which is where a rig keeps its sliders.
+
+    These are the names `set_character_pose` and `keyframe_character_pose` take in
+    `custom_properties`, and until now no tool in the posing surface reported them: a rig
+    shipping 45 composite and 199 direct face sliders could not be asked what it has, and every
+    name had to come from a document beside the file. One rig's `face_ctrl` bone carries all
+    199, so the page is per bone and resumable rather than whole.
+
+    Args:
+        pose_bone: The bone to read, or None when the rest bone has no pose bone.
+        offset: Where in this bone's sorted property names to resume.
+
+    Returns:
+        tuple: (records, total, next_offset). Each record is `name`, `value`, and `min`/`max`
+        where the property defines them. `next_offset` is None once the page reaches the end.
+
+    """
+    if pose_bone is None:
+        return [], 0, None
+    names = sorted(key for key in getattr(pose_bone, "keys", lambda: ())() if key != "_RNA_UI")
+    page = names[offset : offset + _MAX_BONE_PROPERTIES]
+    records = [{"name": name, "value": _plain(pose_bone[name]), **_property_bounds(pose_bone, name)} for name in page]
+    consumed = offset + len(page)
+    return records, len(names), consumed if consumed < len(names) else None
+
+
 class PoseAnimationHandlersMixin:
     """Apply pose-space transforms and author named animation actions."""
 
-    def list_character_bones(self, armature_object_name, limit=100, offset=0, rest_axes=False, bone_names=None):
-        """Page the armature's rest bones with their parent, deform flag and optional rest axes."""
+    def list_character_bones(
+        self,
+        armature_object_name,
+        limit=100,
+        offset=0,
+        rest_axes=False,
+        bone_names=None,
+        custom_properties=False,
+        property_offset=0,
+    ):
+        """Page the armature's rest bones with their parent, deform flag, optional rest axes and sliders."""
         armature = _armature_object(armature_object_name)
         _validate_limit_offset(limit, offset, _MAX_BONE_PAGE, "bone")
+        if isinstance(property_offset, bool) or int(property_offset) < 0:
+            raise ValueError("property_offset must be a non-negative integer")
         # Rest-bone names, parents and deform flags are edited in Edit Mode, which keeps its own
         # copy of the armature until it exits; flush it rather than report stale bones.
         sync_from_editmode(armature)
@@ -2434,6 +2548,15 @@ class PoseAnimationHandlersMixin:
                 aim_axes = _rest_aim_axes(armature, bone)
                 item["up_axis"] = aim_axes["+Z"]
                 item["aim_axis_for_world"] = aim_axes
+            if custom_properties:
+                # The pose bone, not the rest bone: the two hold separate ID property stores,
+                # and the sliders a pose call writes are the pose bone's.
+                properties, total, property_next = _bone_custom_properties(
+                    armature.pose.bones.get(bone.name), int(property_offset)
+                )
+                item["custom_properties"] = properties
+                item["custom_property_count"] = total
+                item["custom_property_next_offset"] = property_next
             items.append(item)
         reply = {"armature_object": armature.name}
         if rest_axes:

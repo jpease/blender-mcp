@@ -108,6 +108,7 @@ class _RecordingWm:
 
         """
         self._bpy.data.objects = []
+        self._bpy.context.scene.objects = []
         return self._load("read_homefile", "", kwargs)
 
     def read_factory_settings(self, **kwargs: object) -> set[str]:
@@ -260,6 +261,9 @@ def _server(
         },
     )
     bpy.context.scene.name = "Scene"
+    # The scene holds one of the two object datablocks, which is what a linked hierarchy looks
+    # like from here: `bpy.data.objects` counts the whole file, `scene.objects` counts the shot.
+    bpy.context.scene.objects = ["a"]
     bpy.context.preferences = types.SimpleNamespace(
         filepaths=types.SimpleNamespace(use_scripts_auto_execute=auto_execute),
         edit=types.SimpleNamespace(use_global_undo=True),
@@ -592,7 +596,11 @@ def test_open_shot_reports_the_new_session_and_asks_for_a_rehandshake(
     assert result["session_epoch"] == before + 1
     assert result["filepath"] == os.path.realpath(shot)
     assert result["scene_name"] == "Scene"
-    assert result["object_count"] == len(bpy.data.objects)
+    # The shot's own objects, which is the number `list_scene_objects` reports for the same
+    # moment; the file's object datablocks are a different, larger question under their own
+    # name. Reporting the second under the first had two tools disagreeing by the linked set.
+    assert result["object_count"] == len(bpy.context.scene.objects) == 1
+    assert result["datablock_object_count"] == len(bpy.data.objects) == 2
     assert result["libraries"] == []
     assert result["capabilities_changed"] is False
     assert result["rehandshake_required"] is True

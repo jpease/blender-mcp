@@ -388,7 +388,13 @@ class FileLifecycleHandlersMixin:
         warnings: list[str] = []
         try:
             report["scene_name"] = client_safe_text(bpy.context.scene.name)
-            report["object_count"] = len(bpy.data.objects)
+            # The scene's own objects, which is what `object_count` means everywhere else in
+            # this surface (`list_scene_objects` reports the same number for the same moment).
+            # `len(bpy.data.objects)` is a different question - it counts every object datablock
+            # in the file, linked hierarchies included - and reporting it under this name had
+            # two tools disagreeing by exactly the linked set: 31 against 16.
+            report["object_count"] = len(bpy.context.scene.objects)
+            report["datablock_object_count"] = len(bpy.data.objects)
             report["libraries"] = [library_summary(library) for library in bpy.data.libraries]
             report["capabilities_changed"] = self._capability_names() != capabilities_before
         except _POST_SWAP_READ_ERRORS as exc:
@@ -425,7 +431,8 @@ class FileLifecycleHandlersMixin:
         Returns:
             dict[str, object]: `filepath` (the open file, as
             `get_session_info.current_filepath` publishes it), `scene_name`,
-            `object_count`, `libraries`, `session_id`, `session_epoch`,
+            `object_count` (the scene's own objects), `datablock_object_count`
+            (every object datablock in the file), `libraries`, `session_id`, `session_epoch`,
             `capabilities_changed`, `rehandshake_required` (always True) with a
             `note`, and `discarded_unsaved_changes`.
 

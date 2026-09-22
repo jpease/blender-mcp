@@ -327,7 +327,9 @@ async def set_action_cycle(
 
     Args:
         ctx: MCP request context.
-        target: The ID whose action is made cyclic.
+        target: The ID whose action is made cyclic. Pose-bone curves are keyed under the
+            armature OBJECT's slot, so a rig is type="OBJECT" named for the rig object, never
+            type="ARMATURE" named for its armature datablock.
         action_name: The action to modify. An action of that name must exist.
         operation: SET adds or updates the Cycles modifier; REMOVE deletes it, leaving a
             curve that has none untouched. REMOVE accepts none of the arguments below that
@@ -339,9 +341,14 @@ async def set_action_cycle(
         expected_period_frames: The period every selected curve must already measure, in
             frames. Any curve whose own key extent differs, or that has no extent at all, is
             refused by name before a single modifier is created or changed.
-        frame_start: First frame the modifier applies on, given together with frame_end. Bounds
-            WHERE the modifier applies; it does not change the period.
-        frame_end: Last frame the modifier applies on, later than frame_start.
+        frame_start: First frame the modifier applies on, refused unless frame_end is given
+            too. Bounds WHERE the modifier applies; it does not change the period. Outside the
+            window the modifier contributes nothing and the curve falls back to its own keys,
+            by default holding the nearest one - so bounding a REPEAT_OFFSET cycle discards the
+            travel its repeats accumulated and snaps the value back. Leave a travelling cycle
+            unbounded unless the pose past frame_end is keyed explicitly.
+        frame_end: Last frame the modifier applies on, later than frame_start and refused
+            without it.
         blend_in: Frames over which the modifier fades in at frame_start.
         blend_out: Frames over which it fades out at frame_end.
         data_path_prefix: Only touch curves whose data_path starts with this - e.g.

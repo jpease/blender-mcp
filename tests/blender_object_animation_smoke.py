@@ -190,6 +190,43 @@ def _test_batch_validation(handler) -> None:
     assert result["policy"] == "REPLACE_EXISTING"
 
 
+def _test_a_key_outside_a_travelling_cycle_is_reported(handler, root) -> None:
+    """
+    Report the root-teleport defect in the tool that keys roots.
+
+    A stride's travel is keyed over a handful of frames and cycled with REPEAT_OFFSET; the
+    arrival is then keyed long after it. Blender redefines the period to the curve's new key
+    extent and says nothing, so the walk stops repeating and every repeat carries the wrong
+    distance. `keyframe_character_pose` has warned about this for pose bones; this is the same
+    warning on the channel that moves the whole character.
+    """
+    for frame, distance in ((1.0, 0.0), (17.0, 2.1)):
+        handler.keyframe_object_transform(
+            keyframes=[{"object_name": root.name, "frame": frame, "space": "LOCAL", "location": (0.0, distance, 0.0)}],
+            action_name="RootTravel",
+        )
+    curve = _fcurve(root, "location")
+    modifier = curve.modifiers.new(type="CYCLES")
+    modifier.mode_after = "REPEAT_OFFSET"
+
+    quiet = handler.keyframe_object_transform(
+        keyframes=[{"object_name": root.name, "frame": 9.0, "space": "LOCAL", "location": (0.0, 1.0, 0.0)}],
+        action_name="RootTravel",
+    )
+    stretched = handler.keyframe_object_transform(
+        keyframes=[{"object_name": root.name, "frame": 199.0, "space": "LOCAL", "location": (0.0, 9.0, 0.0)}],
+        action_name="RootTravel",
+    )
+
+    assert quiet["warnings"] == [], f"a key inside the cycle warned anyway: {quiet['warnings']}"
+    warning = next(text for text in stretched["warnings"] if "cycles over" in text)
+    assert f"'{root.name}'.location is keyed at frame 199" in warning, warning
+    assert "period becomes 198 frames instead of 16" in warning, warning
+    # Warned, not refused: the key landed, and Blender now repeats the period the notice named.
+    assert any(math.isclose(point.co[0], 199.0, abs_tol=1e-4) for point in curve.keyframe_points), warning
+    print(f"cycle extension: {warning}")
+
+
 def main() -> None:
     """Exercise LOCAL/WORLD keying, rotation-mode enforcement, at_seconds, policies, and interpolation styling."""
     handler = ObjectAnimationHandlersMixin()
@@ -213,6 +250,7 @@ def main() -> None:
     _test_insert_only_and_replace_existing(handler, cube)
     _test_interpolation_and_handle_styling(handler, cube)
     _test_batch_validation(handler)
+    _test_a_key_outside_a_travelling_cycle_is_reported(handler, _new_object("AnimRoot"))
 
     print("OBJECT_ANIMATION_SMOKE_OK")
 

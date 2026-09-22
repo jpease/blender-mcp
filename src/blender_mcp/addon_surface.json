@@ -1704,8 +1704,10 @@
     "list_character_bones": [
       "armature_object_name",
       "bone_names",
+      "custom_properties",
       "limit",
       "offset",
+      "property_offset",
       "rest_axes"
     ],
     "list_libraries": [
@@ -2553,5 +2555,5 @@
       "scope"
     ]
   },
-  "protocol_version": 37
+  "protocol_version": 38
 }

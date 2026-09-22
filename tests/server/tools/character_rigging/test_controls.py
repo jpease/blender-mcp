@@ -233,13 +233,14 @@ def test_dispatch_exposes_complete_character_surface(monkeypatch) -> None:
     assert not {name for name in new_commands if server.command_spec(name).read_only}
 
 
-def _fake_armature(monkeypatch, bones, *, name="HeroRig", obj_type="ARMATURE"):
+def _fake_armature(monkeypatch, bones, *, name="HeroRig", obj_type="ARMATURE", pose_bones=None):
     """Build an addon loaded against a fake `bpy` holding one armature object."""
     flushes = []
     armature = types.SimpleNamespace(
         name=name,
         type=obj_type,
         data=types.SimpleNamespace(name=f"{name}Data", bones=list(bones)),
+        pose=types.SimpleNamespace(bones=dict(pose_bones or {})),
         update_from_editmode=lambda: flushes.append(name),
     )
     addon, _bpy = _load_addon(monkeypatch, data={"objects": {name: armature}})
@@ -248,6 +249,27 @@ def _fake_armature(monkeypatch, bones, *, name="HeroRig", obj_type="ARMATURE"):
 
 def _bone(name, parent=None, use_deform=True):
     return types.SimpleNamespace(name=name, parent=parent, use_deform=use_deform)
+
+
+class _SliderBone:
+    """A pose bone's ID property bag, plus the UI data a bounded slider carries."""
+
+    def __init__(self, name, properties, bounds=None) -> None:
+        self.name = name
+        self._properties = dict(properties)
+        self._bounds = dict(bounds or {})
+
+    def keys(self):
+        # Blender's own bag lists `_RNA_UI` on files old enough to carry it.
+        return [*self._properties, "_RNA_UI"]
+
+    def __getitem__(self, key):
+        return self._properties[key]
+
+    def id_properties_ui(self, key):
+        if key not in self._properties:
+            raise KeyError(key)
+        return types.SimpleNamespace(as_dict=lambda: dict(self._bounds.get(key, {})))
 
 
 def test_bone_listing_is_registered_read_only_and_paginates(monkeypatch) -> None:
@@ -266,6 +288,8 @@ def test_bone_listing_is_registered_read_only_and_paginates(monkeypatch) -> None
         "offset": 200,
         "rest_axes": False,
         "bone_names": None,
+        "custom_properties": False,
+        "property_offset": 0,
     }
     assert calls == [("list_character_bones", expected)]
     advertised = character_rigging.mcp._tool_manager._tools["list_character_bones"].parameters["properties"]
@@ -321,6 +345,59 @@ def test_bone_listing_reports_parents_deform_flags_and_continuation(monkeypatch)
     assert second["bones"]["items"] == [{"name": "CTRL-head", "parent": "DEF-spine", "deform": False}]
     assert (second["bones"]["truncated"], second["bones"]["next_offset"]) == (False, None)
     assert flushes == ["HeroRig", "HeroRig"]
+
+
+def test_bone_listing_reports_the_sliders_a_pose_call_has_to_name(monkeypatch) -> None:
+    """
+    A rig's sliders are pose-bone custom properties, and nothing in `shot` mode reported them.
+
+    `keyframe_character_pose` takes these names and refuses one the bone does not carry, so an
+    agent that cannot enumerate them has to be handed the list in prose - which is how a
+    45-composite, 199-direct face rig ended up documented by hand beside the file.
+    `get_character_rig_info` does report them and is a `character-rigging` tool, absent from
+    every posing-only process.
+    """
+    head = _SliderBone(
+        "head",
+        {"expr_smile": 0.0, "expr_squint": 0.25, "label": "face"},
+        bounds={
+            "expr_smile": {"min": 0.0, "max": 1.0, "description": "smile"},
+            # What Blender 5.2 answers for a float property nobody bounded: its own spelling of
+            # "unbounded", which is not a slider range and is not worth two fields a property.
+            "expr_squint": {"min": -3.4028234663852886e38, "max": 3.4028234663852886e38},
+        },
+    )
+    server, _flushes = _fake_armature(monkeypatch, [_bone("head")], pose_bones={"head": head})
+
+    quiet = server.list_character_bones("HeroRig")
+    reported = server.list_character_bones("HeroRig", custom_properties=True)["bones"]["items"][0]
+
+    assert "custom_properties" not in quiet["bones"]["items"][0], "the names cost bytes; they are opt-in"
+    assert reported["custom_properties"] == [
+        {"name": "expr_smile", "value": 0.0, "min": 0.0, "max": 1.0},
+        {"name": "expr_squint", "value": 0.25},
+        {"name": "label", "value": "face"},
+    ]
+    assert (reported["custom_property_count"], reported["custom_property_next_offset"]) == (3, None)
+
+
+def test_a_bone_carrying_more_sliders_than_one_page_is_resumable(monkeypatch) -> None:
+    """One face control bone can hold 199 properties, which no 8 KiB reply carries whole."""
+    names = [f"sk_{index:03d}" for index in range(45)]
+    face = _SliderBone("face_ctrl", dict.fromkeys(names, 0.0))
+    server, _flushes = _fake_armature(monkeypatch, [_bone("face_ctrl")], pose_bones={"face_ctrl": face})
+
+    first = server.list_character_bones("HeroRig", custom_properties=True)["bones"]["items"][0]
+    resumed = server.list_character_bones(
+        "HeroRig", custom_properties=True, property_offset=first["custom_property_next_offset"]
+    )["bones"]["items"][0]
+
+    assert [record["name"] for record in first["custom_properties"]] == names[:40]
+    assert (first["custom_property_count"], first["custom_property_next_offset"]) == (45, 40)
+    assert [record["name"] for record in resumed["custom_properties"]] == names[40:]
+    assert resumed["custom_property_next_offset"] is None
+    with pytest.raises(ValueError, match="property_offset must be a non-negative integer"):
+        server.list_character_bones("HeroRig", custom_properties=True, property_offset=-1)
 
 
 # Full-precision floats, as Blender hands a pose matrix back: the rounding is only visible on

@@ -584,7 +584,17 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 #     on `create_camera`. Longer property names, on schemas that repeat them, bought against a
 #     live agent writing `target_point` into a pose call by analogy with the camera tools and
 #     having it rejected.
-SHOT_MODE_BYTE_CEILING = 247_000
+# Raised from 247,000 by the third runbook-rehearsal pass, measured at 248,603 - 1,884 bytes:
+#   1,097 `list_character_bones`: `custom_properties`/`property_offset`, and what the page
+#     carries. A rig's sliders are pose-bone custom properties, and in `shot` mode no tool
+#     reported them at all (`get_character_rig_info` is a `character-rigging` tool), so the
+#     names `keyframe_character_pose` requires had to come from a document beside the file.
+#   526 `set_action_cycle`: that pose-bone curves belong to the armature OBJECT, and that a
+#     restricted range reverts rather than holds past `frame_end` - both learned by a rehearsal,
+#     the first as thirteen refused calls, the second as a character teleporting to his mark.
+#   261 `open_shot`/`reset_session` naming what `object_count` counts, against the
+#     `datablock_object_count` it used to report under that name.
+SHOT_MODE_BYTE_CEILING = 249_000
 
 # The same rule for the default, core-only surface, and the same work: 166 bytes for
 # `validate_scene`'s `persistence` scope, 2,202 for `inspect_delivery`, 601 for `save_shot`'s
@@ -609,7 +619,10 @@ SHOT_MODE_BYTE_CEILING = 247_000
 # mode) and 1,240 for the file-lifecycle surface stating the path-redaction rule once per tool.
 # The posing and camera growth of that pass is absent here, as neither bundle is core, and the
 # `validate_scene` engine probe is handler-side. Measured core payload 83,532 bytes.
-DEFAULT_MODE_BYTE_CEILING = 84_000
+# Raised from 84,000 by the core-surface half of the third runbook-rehearsal pass, measured at
+# 84,593: the 526 bytes of `set_action_cycle` and the 261 of the file-lifecycle object counts
+# described above. `list_character_bones` is a posing tool, so its 1,097 are not in this figure.
+DEFAULT_MODE_BYTE_CEILING = 85_000
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

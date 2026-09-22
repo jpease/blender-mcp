@@ -327,6 +327,42 @@ assert abs(outside_range - GUARD_KEYS[-1][1]) < 1e-5, (
     f"{GUARD_KEYS[-1][1]:.6f}; got {outside_range:.6f}"
 )
 
+# --- item 7: and the reply says so, before a render has to ------------------------------------
+# The evaluation above is the whole defect a later rehearsal shipped: it bounded a travelling
+# root cycle at frame 141, read the world position at 150, and got the value one raw period
+# ends on - the character back on his starting mark, having followed every documented rule.
+# `frame_start`/`frame_end` read as a scoping convenience and behave as a cliff, so the call
+# that sets one now says what governs past it.
+bounded_range = warning_containing(ranged, f"frame_end={RANGE_END:g}")
+assert "the curve evaluates from its own keys alone" in bounded_range, bounded_range
+assert "REPEAT_OFFSET's accumulated travel is not part of that hold" in bounded_range, bounded_range
+assert "no key out there" in bounded_range, bounded_range
+# mode_before is NONE, so the start bound extrapolates nothing and warns about nothing.
+assert not any(warning.startswith("frame_start=") for warning in ranged["warnings"]), ranged["warnings"]
+
+# --- item 8: a pose-bone cycle addressed at the armature datablock names the object ----------
+# Blender keys `pose.bones[...]` under the armature *object's* slot, so an ARMATURE target is
+# always wrong here and the old refusal named the datablock without naming the remedy. Thirteen
+# refused calls in one rehearsal.
+armature_target = {"type": "ARMATURE", "name": guard_rig.data.name}
+try:
+    handler.set_action_cycle(armature_target, GUARD_ACTION, data_path_prefix=CYCLED_PATH)
+except ValueError as failure:
+    scoped_refusal = str(failure)
+else:
+    raise AssertionError("a pose-bone prefix on an ARMATURE datablock target was accepted")
+assert "live on the armature object" in scoped_refusal, scoped_refusal
+assert '"type": "OBJECT"' in scoped_refusal, scoped_refusal
+
+try:
+    handler.set_action_cycle(armature_target, GUARD_ACTION)
+except ValueError as failure:
+    slot_refusal = str(failure)
+else:
+    raise AssertionError("an ARMATURE datablock resolved a slot that holds pose-bone curves")
+assert f'retry with target={{"type": "OBJECT", "name": "{guard_rig.name}"}}' in slot_refusal, slot_refusal
+
+
 # Moving the window forward past where it already was is what a second pass over a shot does.
 # An F-Modifier keeps frame_start <= frame_end by dragging whichever bound was not assigned,
 # so both have to be written: this is where a call that wrote only one would land wrong.
@@ -358,4 +394,7 @@ print(
     f"window {RANGE_START:g}-{RANGE_END:g}: frame {RANGE_END:g} evaluates {inside_range:.4f}, "
     f"frame {RANGE_END + 1:g} evaluates {outside_range:.4f}"
 )
+print(f"bounded range: {bounded_range}")
+print(f"pose-bone prefix on an armature datablock: {scoped_refusal}")
+print(f"unscoped armature target: {slot_refusal}")
 print("CYCLE_PERIOD_SMOKE_OK")

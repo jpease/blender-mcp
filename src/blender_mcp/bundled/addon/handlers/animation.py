@@ -34,6 +34,10 @@ _MAX_LISTED_PERIODS = 3
 # as the same period: the same absolute epsilon `_find_key` compares frames with, because a
 # period is the difference of two key frames and inherits their precision.
 _CYCLE_PERIOD_TOLERANCE = 1e-6
+# The data-path prefix every pose-bone curve carries. Curves under it live on the armature
+# *object*, never on the armature datablock, which is the distinction `_object_route_hint`
+# exists to spell out.
+_POSE_BONE_PREFIX = "pose.bones"
 _NLA_TRACK_PROPERTIES = {"mute", "solo", "lock"}
 _NLA_STRIP_PROPERTIES = {
     "frame_start",
@@ -133,6 +137,59 @@ def _action_slot(action, owner, *, create=False):
     return action.slots.new(owner.id_type, owner.name)
 
 
+def _object_route_hint(owner):
+    """
+    Name the route to a rig's animation when the caller addressed its skeleton instead.
+
+    An armature datablock is the bones; the *pose* that moves them belongs to the Object using
+    it, and Blender's layered Actions key `pose.bones[...]` under that Object's slot. A caller
+    reading a data path that names a bone reasonably picks `target.type="ARMATURE"`, and the
+    refusal that follows names the datablock without naming the fix - thirteen refused calls in
+    one rehearsal before the caller worked it out.
+
+    Args:
+        owner: The ID the caller targeted, read for the objects it is the data of.
+
+    Returns:
+        str: The remedy, naming an object that uses this armature, or "" when the target is not
+        an armature datablock and nothing about it is misaddressed.
+
+    """
+    if getattr(owner, "id_type", None) != "ARMATURE":
+        return ""
+    users = sorted(obj.name for obj in getattr(bpy.data, "objects", ()) if getattr(obj, "data", None) is owner)
+    named = f'"{users[0]}"' if users else "<the object using this armature>"
+    return (
+        ". Pose-bone animation is keyed under the armature object's slot, not this armature datablock's: "
+        f'retry with target={{"type": "OBJECT", "name": {named}}}'
+    )
+
+
+def _refuse_pose_bone_on_non_object(target_type, data_path_prefix):
+    """
+    Refuse a pose-bone-scoped call addressed at anything but the armature object.
+
+    `pose.bones[...]` curves exist on the Object alone, so another target either has no slot in
+    the action at all or has one holding that datablock's own animation, and neither selects a
+    bone curve. Caught here the call names its own fix; left to slot resolution it reports a
+    missing slot, and left to curve selection a prefix that matches nothing.
+
+    Args:
+        target_type: The resolved target type.
+        data_path_prefix: The prefix the call scopes to, or None.
+
+    Raises:
+        ValueError: If a pose-bone prefix was given for a non-OBJECT target.
+
+    """
+    if target_type == "OBJECT" or not str(data_path_prefix or "").startswith(_POSE_BONE_PREFIX):
+        return
+    raise ValueError(
+        f"data_path_prefix={data_path_prefix!r} names pose-bone curves, which live on the armature object; a "
+        f'{target_type} target does not reach them. Retry with target={{"type": "OBJECT", "name": <the rig object>}}'
+    )
+
+
 def _cycle_slot_handle(action, owner, slot_identifier):
     """
     Pick which of an action's slots a cycle operation applies to.
@@ -156,7 +213,10 @@ def _cycle_slot_handle(action, owner, slot_identifier):
         return slot.handle, slot.identifier
     slot = _action_slot(action, owner)
     if slot is None:
-        raise ValueError(f"Action {action.name} has no slot for {owner.name}; assign it before making it cyclic")
+        raise ValueError(
+            f"Action {action.name} has no slot for {owner.name}; assign it before making it cyclic"
+            f"{_object_route_hint(owner)}"
+        )
     return slot.handle, slot.identifier
 
 
@@ -1149,6 +1209,51 @@ def _finite_repeat_warning(records, count, field, label, phrase):
     )
 
 
+def _bounded_range_warning(records, restricted, mode, bound, phrase):
+    """
+    State what governs outside the window a restricted range confines the cycle to.
+
+    `frame_start`/`frame_end` read as a scoping convenience and behave as a cliff: outside the
+    window the Cycles modifier contributes nothing and the curve evaluates from its own keys
+    alone, by default holding the nearest one. Under REPEAT_OFFSET that discards every metre the
+    repeats had accumulated, so a root bounded at frame 141 and read at frame 150 reports the
+    raw value its single period ends on - the same teleport a finite `cycles_after` causes, by a
+    different mechanism, found by a rehearsal that was otherwise following every documented rule.
+
+    Args:
+        records: The per-curve records this call built, read for their key extents.
+        restricted: `_cycle_restricted_range`'s window, or None when the cycle is unbounded.
+        mode: The extrapolation mode for this direction; NONE extrapolates nothing to bound.
+        bound: Which end of the window this direction stops at, frame_start or frame_end.
+        phrase: How the outside of the window reads for this direction.
+
+    Returns:
+        str | None: One warning naming the bound, what governs past it, and how many of the
+        selected curves have no key out there at all, or None when nothing is bounded.
+
+    """
+    if restricted is None or mode == "NONE":
+        return None
+    frame = restricted[bound]
+    beyond = (
+        [record for record in records if (record["last_key_frame"] or frame) <= frame]
+        if bound == "frame_end"
+        else [record for record in records if (record["first_key_frame"] or frame) >= frame]
+    )
+    accumulated = (
+        " REPEAT_OFFSET's accumulated travel is not part of that hold, so a root that walked "
+        "across the repeats snaps back to the value its own keys end on."
+        if mode == "REPEAT_OFFSET"
+        else ""
+    )
+    return (
+        f"{bound}={frame:g} bounds where this cycle applies, not what it repeats: {phrase} frame {frame:g} the "
+        f"Cycles modifier contributes nothing and the curve evaluates from its own keys alone - by default a "
+        f"constant hold of the nearest one.{accumulated} {len(beyond)} of the {len(records)} selected curves carry "
+        f"no key out there. Leave an offsetting cycle unbounded, or key the pose the shot needs past {bound}."
+    )
+
+
 def _inert_count_warning(mode, count, mode_label, count_label):
     """
     Warn when a cycle count bounds repeats a NONE mode never makes.
@@ -1176,7 +1281,7 @@ def _inert_count_warning(mode, count, mode_label, count_label):
     )
 
 
-def _cycle_warnings(records, operation, cycles, modes):
+def _cycle_warnings(records, operation, cycles, modes, restricted=None):
     """
     Every non-fatal notice one cycle call owes its caller.
 
@@ -1185,6 +1290,7 @@ def _cycle_warnings(records, operation, cycles, modes):
         operation: SET or REMOVE; a removal cycles nothing, so it warns about nothing.
         cycles: (cycles_before, cycles_after) as requested; 0 is unlimited.
         modes: (mode_before, mode_after) as requested.
+        restricted: The window the modifier was confined to, or None for the whole timeline.
 
     Returns:
         list[str]: The warnings, in the order a caller needs them.
@@ -1201,6 +1307,8 @@ def _cycle_warnings(records, operation, cycles, modes):
         _finite_repeat_warning(
             records, cycles_before, "repeat_start_frame", "cycles_before", "the first repeat starts at"
         ),
+        _bounded_range_warning(records, restricted, mode_after, "frame_end", "past"),
+        _bounded_range_warning(records, restricted, mode_before, "frame_start", "before"),
         _inert_count_warning(mode_after, cycles_after, "mode_after", "cycles_after"),
         _inert_count_warning(mode_before, cycles_before, "mode_before", "cycles_before"),
     )
@@ -1454,7 +1562,8 @@ class AnimationHandlersMixin:
         action_slot_identifier=None,
     ):
         """Add, update or remove the Cycles F-Modifier on an action slot's curves."""
-        owner, _target_type = _target(target)
+        owner, target_type = _target(target)
+        _refuse_pose_bone_on_non_object(target_type, data_path_prefix)
         operation = str(operation).upper()
         if operation not in {"SET", "REMOVE"}:
             raise ValueError("operation must be SET or REMOVE")
@@ -1517,7 +1626,9 @@ class AnimationHandlersMixin:
             "modifiers": records,
             # The envelope lifts these, so the period a curve will really repeat at, and the
             # frame a finite count stops at, reach a caller who read nothing but the warnings.
-            "warnings": _cycle_warnings(records, operation, (cycles_before, cycles_after), (mode_before, mode_after)),
+            "warnings": _cycle_warnings(
+                records, operation, (cycles_before, cycles_after), (mode_before, mode_after), restricted
+            ),
             "changed_resources": [action.name],
         }
 

@@ -17,6 +17,9 @@ _MIN_FRAME = -1_048_574
 _MAX_FRAME = 1_048_574
 _MAX_BATCH = 500
 _KEYFRAME_MATCH_TOLERANCE = 1e-5
+# One call may key 500 records, and the envelope lifts warnings whole rather than paging them,
+# so the per-channel cycle notices are named up to this many and then counted.
+_MAX_CYCLE_WARNINGS = 4
 _SPACES = {"LOCAL", "WORLD"}
 _POLICIES = {"INSERT_ONLY", "REPLACE_EXISTING"}
 _CHANNEL_LENGTHS = {"location": 3, "rotation_euler": 3, "rotation_quaternion": 4, "scale": 3}
@@ -127,6 +130,90 @@ def _style_inserted_keys(obj, data_path, frame, style):
         style_point(point, style)
         changed.append({"data_path": data_path, "array_index": curve.array_index, "frame": frame})
     return changed
+
+
+def _cycled_extent(obj, data_path):
+    """
+    Measure the key extent a cycling channel already repeats, if it cycles at all.
+
+    Args:
+        obj: The object about to be keyed.
+        data_path: The channel this call writes.
+
+    Returns:
+        tuple | None: (first, last) key frame across that channel's cycling curves, or None
+        when none of them carries a Cycles modifier or they hold one frame between them.
+
+    """
+    frames = []
+    _action, curves = _action_fcurves(obj)
+    for curve in curves:
+        if curve.data_path != data_path or not any(modifier.type == "CYCLES" for modifier in curve.modifiers):
+            continue
+        frames.extend(float(point.co[0]) for point in curve.keyframe_points)
+    if len(frames) <= 1:
+        return None
+    first, last = min(frames), max(frames)
+    return None if first == last else (first, last)
+
+
+def _cycle_extension_warnings(prepared):
+    """
+    Warn once per channel whose new key lands outside a cycle that channel already repeats.
+
+    `keyframe_character_pose` has warned about this since the walk whose arms drifted; the
+    object path carried the same trap and said nothing, which is worse, because the channel it
+    redefines is usually the root's `location`. A rehearsal keyed a root at frame 199 over a
+    16-frame travelling cycle and moved the whole character: the period became 199 frames, the
+    stride stopped repeating, and every REPEAT_OFFSET repeat now carried the wrong distance.
+    Extending a cycle on purpose is legitimate authoring, so this warns and keys rather than
+    refusing.
+
+    Args:
+        prepared: The validated records, read after the batch's action is assigned so the
+            curves measured are the ones this call is about to write into.
+
+    Returns:
+        list[str]: One warning per affected object channel, naming the frame, the extent it
+        fell outside and the period that extent becomes, bounded by `_MAX_CYCLE_WARNINGS` with
+        one summary line for the rest. Warnings are lifted whole into the envelope and never
+        paged, so a 500-record batch must not be able to spend the reply budget on them.
+
+    """
+    stretched = {}
+    for entry in prepared:
+        for data_path in entry["channels"]:
+            identity = (entry["object_name"], data_path)
+            if identity in stretched:
+                continue
+            extent = _cycled_extent(entry["object"], data_path)
+            if extent is None:
+                continue
+            first, last = extent
+            if first - _KEYFRAME_MATCH_TOLERANCE <= entry["frame"] <= last + _KEYFRAME_MATCH_TOLERANCE:
+                continue
+            stretched[identity] = (first, last, entry["frame"])
+    affected = list(stretched)
+    warnings = []
+    for identity in affected[:_MAX_CYCLE_WARNINGS]:
+        name, data_path = identity
+        first, last, frame = stretched[identity]
+        warnings.append(
+            f"'{name}'.{data_path} is keyed at frame {frame:g}, outside the frames {first:g}-{last:g} it already "
+            f"cycles over. A Cycles modifier repeats its own curve's key extent, so this channel's period becomes "
+            f"{max(last, frame) - min(first, frame):g} frames instead of {last - first:g}; under REPEAT_OFFSET "
+            "each repeat then carries that much further, so a travelling root stops arriving where the cycle put "
+            "it. Key it inside the cycle, or re-cycle the action deliberately."
+        )
+    remainder = affected[_MAX_CYCLE_WARNINGS:]
+    if remainder:
+        listed = ", ".join(f"'{name}'.{path}" for name, path in remainder[:_MAX_CYCLE_WARNINGS])
+        trailing = f" and {len(remainder) - _MAX_CYCLE_WARNINGS} more" if len(remainder) > _MAX_CYCLE_WARNINGS else ""
+        warnings.append(
+            f"{len(remainder)} further channel(s) are keyed outside the cycle their own curves carry, stretching "
+            f"it the same way: {listed}{trailing}."
+        )
+    return warnings
 
 
 def _apply_and_key(obj, frame, space, channels):
@@ -272,6 +359,9 @@ class ObjectAnimationHandlersMixin:
                         f"A key already exists at {entry['label']} for {existing}; INSERT_ONLY made no changes"
                     )
 
+        # Measured before a key is written: inserting one moves the extent it is measured
+        # against, and the question is which cycle the call arrived to.
+        warnings = _cycle_extension_warnings(prepared)
         changed_keys = []
         for entry in prepared:
             inserted = _apply_and_key(entry["object"], entry["frame"], entry["space"], entry["channels"])
@@ -295,6 +385,9 @@ class ObjectAnimationHandlersMixin:
             "actions": actions,
             "action_slot": assigned_slot_identifier(single_owner) if single_owner is not None else None,
             "policy": policy,
+            # The envelope lifts these, so a period this call silently redefined reaches a
+            # caller who read nothing but the warnings.
+            "warnings": warnings,
             "changed_objects": changed_objects,
             "changed_resources": actions,
         }

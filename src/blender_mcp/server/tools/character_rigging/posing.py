@@ -149,6 +149,8 @@ async def list_character_bones(
     offset: Annotated[int, Field(ge=0, le=99_999)] = 0,
     rest_axes: bool = False,
     bone_names: Annotated[list[str] | None, Field(min_length=1, max_length=200)] = None,
+    custom_properties: bool = False,
+    property_offset: Annotated[int, Field(ge=0, le=99_999)] = 0,
 ) -> dict:
     """
     List a rig's bone names, parents, and deform flags so a pose can name real bones.
@@ -173,6 +175,13 @@ async def list_character_bones(
             their rest axes in one call, instead of paging a whole rig to reach three of them -
             a 187-bone rig costs sixteen calls with rest_axes and one with this. A name the
             armature does not have is an error, never a silent omission.
+        custom_properties: Also report each bone's pose-bone custom properties - the sliders a
+            rig carries, and the exact names set_character_pose and keyframe_character_pose
+            take in their own custom_properties. A face rig commonly puts hundreds on one
+            control bone, so name that bone in bone_names rather than paging the rig with this
+            on.
+        property_offset: Where to resume inside each reported bone's property list, when a bone
+            holds more than one page of them. Pass the item's custom_property_next_offset.
 
     Returns:
         armature_object, and bones with items (name, parent - null for a root - and deform,
@@ -190,6 +199,12 @@ async def list_character_bones(
         collide take the roll from another entry of the same table. Items follow armature bone
         order, a parent before its children.
 
+        With custom_properties, each item also carries custom_properties (name, value, and
+        min/max where the property defines a slider range), custom_property_count (how many the
+        bone holds in total) and custom_property_next_offset (null once the page reaches the
+        end). Values are read from the pose bone, so on a library override they are the
+        override's, and a bare write to one does not survive a reload - key it instead.
+
     """
     return await call_blender(
         "list_character_bones",
@@ -199,6 +214,8 @@ async def list_character_bones(
             "offset": offset,
             "rest_axes": rest_axes,
             "bone_names": bone_names,
+            "custom_properties": custom_properties,
+            "property_offset": property_offset,
         },
     )
 

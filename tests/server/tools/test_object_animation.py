@@ -2,6 +2,7 @@
 """Regression coverage for generic object transform keyframing tools."""
 
 import asyncio
+import types
 
 import pytest
 
@@ -183,3 +184,89 @@ def test_keyframe_object_transform_refuses_one_action_for_several_objects(monkey
     assert hero.inserted == []
     assert prop.inserted == []
     assert bpy.data.actions.get("SH030_motion") is None
+
+
+class _FakeKey:
+    """One keyframe point; the cycle scan reads the frame it sits on, nothing else."""
+
+    def __init__(self, frame) -> None:
+        self.co = (float(frame), 0.0)
+
+
+class _CycledCurve:
+    """An F-Curve already carrying a Cycles modifier over the frames it was keyed across."""
+
+    def __init__(self, data_path, frames, *, cyclic=True) -> None:
+        self.data_path = data_path
+        self.array_index = 1
+        self.keyframe_points = [_FakeKey(frame) for frame in frames]
+        self.modifiers = [types.SimpleNamespace(type="CYCLES")] if cyclic else []
+
+
+def _cycling_rig(monkeypatch, curves):
+    """
+    Build an object whose assigned action holds `curves`, and the server to key it through.
+
+    Args:
+        monkeypatch: pytest's monkeypatch fixture.
+        curves: The F-Curves the object's action carries before this call keys anything.
+
+    Returns:
+        tuple: The server and the keyed object.
+
+    """
+    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
+    addon, bpy = _load_addon(monkeypatch, data=data)
+    rig = _KeyedObject("CHAR1_rig")
+    action = types.SimpleNamespace(name="CHAR1_sh030_performance", fcurves=list(curves))
+    rig.animation_data = types.SimpleNamespace(
+        action=action, action_slot=types.SimpleNamespace(identifier="OBCHAR1_rig", handle=3)
+    )
+    bpy.data.objects["CHAR1_rig"] = rig
+    return addon.BlenderMCPServer(), rig
+
+
+def _key_at(server, frame, channel="location", value=(0.0, 2.1, 0.0)):
+    return server.execute_command_internal(
+        {
+            "type": "keyframe_object_transform",
+            "params": {
+                "keyframes": [{"object_name": "CHAR1_rig", "frame": frame, "space": "LOCAL", channel: list(value)}]
+            },
+        }
+    )
+
+
+def test_a_key_outside_a_travelling_cycle_reports_the_period_it_redefines(monkeypatch) -> None:
+    """
+    `keyframe_character_pose` has warned about this since the walk whose arms drifted.
+
+    The object path carried the same trap silently, and it is the worse one: the channel it
+    redefines is the root's own `location`, so a key landing outside the stride's extent moves
+    the whole character rather than one limb. A rehearsal stretched a 16-frame travelling cycle
+    to 199 frames this way and only saw it in a render.
+    """
+    server, rig = _cycling_rig(monkeypatch, [_CycledCurve("location", (1.0, 17.0))])
+
+    response = _key_at(server, 199.0)
+
+    assert response["status"] == "success", response
+    warning = next(text for text in response["result"]["warnings"] if "cycles over" in text)
+    assert "'CHAR1_rig'.location is keyed at frame 199" in warning
+    assert "frames 1-17" in warning
+    assert "period becomes 198 frames instead of 16" in warning
+    # It warns and keys: extending a cycle deliberately is legitimate authoring.
+    assert rig.inserted == [("location", 199.0)]
+
+
+def test_a_key_inside_the_cycle_or_on_an_uncycled_channel_stays_quiet(monkeypatch) -> None:
+    """The notice has to be rare enough to read: neither of these redefines anything."""
+    server, _rig = _cycling_rig(
+        monkeypatch, [_CycledCurve("location", (1.0, 17.0)), _CycledCurve("scale", (1.0, 17.0), cyclic=False)]
+    )
+
+    inside = _key_at(server, 9.0)
+    uncycled = _key_at(server, 199.0, channel="scale", value=(1.0, 1.0, 1.0))
+
+    assert inside["result"]["warnings"] == []
+    assert uncycled["result"]["warnings"] == []

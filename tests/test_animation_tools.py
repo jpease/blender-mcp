@@ -8,7 +8,7 @@ import pytest
 
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
+from test_mutation_transaction import FakeCollection, _load_addon
 
 from blender_mcp.server.tools import _dispatch, animation
 
@@ -634,6 +634,109 @@ def test_omitting_the_range_clears_a_previous_one(monkeypatch) -> None:
 
     assert curve.modifiers[0].use_restricted_range is False
     assert "restricted_range" not in result["modifiers"][0]
+
+
+def test_a_bounded_offsetting_cycle_says_what_governs_past_its_end(monkeypatch) -> None:
+    """
+    `frame_end` reads as scoping and behaves as a cliff, and the reply used to say nothing.
+
+    A rehearsal bounded a REPEAT_OFFSET root cycle at 141 while following every documented
+    rule - unlimited count, one scoped data path - read the world position at 150 and got the
+    value frame 17 ends on: outside the window the modifier stops applying and the curve's own
+    flat extrapolation takes over, holding none of the travel the repeats had accumulated. The
+    character teleported back to his mark, which is the same symptom a finite `cycles_after`
+    causes by a different mechanism, and only that one warned.
+    """
+    curve = _FakeCurve("location", 1, frames=(1.0, 17.0))
+    handler, target = _cycle_handler(monkeypatch, [curve])
+
+    result = handler.set_action_cycle(
+        target, "Walk", frame_start=1.0, frame_end=141.0, data_path_prefix="location", action_slot_identifier="OBRig"
+    )
+
+    bounded = next(warning for warning in result["warnings"] if warning.startswith("frame_end=141"))
+    assert "the curve evaluates from its own keys alone" in bounded
+    assert "REPEAT_OFFSET's accumulated travel is not part of that hold" in bounded
+    assert "1 of the 1 selected curves carry no key out there" in bounded
+    # mode_before is NONE by default, so the start bound extrapolates nothing to warn about.
+    assert not any(warning.startswith("frame_start=") for warning in result["warnings"])
+    # And an unbounded cycle - the shape a travelling root wants - says none of it.
+    unbounded = handler.set_action_cycle(target, "Walk", data_path_prefix="location", action_slot_identifier="OBRig")
+    assert not any(warning.startswith("frame_end=") for warning in unbounded["warnings"])
+
+
+def test_a_bounded_plain_repeat_warns_without_claiming_accumulated_travel(monkeypatch) -> None:
+    """REPEAT carries no offset to lose, so the notice must not describe one it never had."""
+    curve = _FakeCurve('pose.bones["thigh.L"].rotation_quaternion', 0, frames=(1.0, 25.0))
+    handler, target = _cycle_handler(monkeypatch, [curve])
+
+    result = handler.set_action_cycle(
+        target, "Walk", mode_after="REPEAT", frame_start=1.0, frame_end=60.0, action_slot_identifier="OBRig"
+    )
+
+    bounded = next(warning for warning in result["warnings"] if warning.startswith("frame_end=60"))
+    assert "REPEAT_OFFSET" not in bounded
+
+
+def _armature_target_handler(monkeypatch):
+    """
+    Load the handlers over a rig whose action has an Object slot and no Armature one.
+
+    That is what Blender 4.x+ layered Actions do with pose-bone animation: the curves say
+    `pose.bones[...]` and the slot they live in belongs to the armature *object*.
+
+    Args:
+        monkeypatch: pytest's monkeypatch fixture.
+
+    Returns:
+        tuple: The bound handler mixin and the ARMATURE target spec that names the rig.
+
+    """
+    armature_data = types.SimpleNamespace(name="CHAR1_rig", id_type="ARMATURE", animation_data=None)
+    rig = types.SimpleNamespace(name="CHAR1_rig", id_type="OBJECT", data=armature_data, animation_data=None, library=None)
+    objects = FakeCollection()
+    objects["CHAR1_rig"] = rig
+    slot = types.SimpleNamespace(identifier="OBCHAR1_rig", handle=7, target_id_type="OBJECT", name_display="CHAR1_rig")
+    curve = _FakeCurve('pose.bones["thigh.L"].rotation_quaternion', 0, frames=(1.0, 25.0))
+    bag = types.SimpleNamespace(slot_handle=7, fcurves=[curve])
+    strip = types.SimpleNamespace(channelbags=[bag])
+    action = types.SimpleNamespace(
+        name="Walk", slots=[slot], layers=[types.SimpleNamespace(strips=[strip])], id_root="OBJECT"
+    )
+    addon, _bpy = _load_addon(
+        monkeypatch,
+        data={
+            "objects": objects,
+            "armatures": types.SimpleNamespace(get=lambda name: armature_data if name == "CHAR1_rig" else None),
+            "actions": types.SimpleNamespace(get=lambda name: action if name == "Walk" else None),
+        },
+    )
+    return addon.handlers.animation.AnimationHandlersMixin(), {"type": "ARMATURE", "name": "CHAR1_rig"}
+
+
+def test_a_pose_bone_prefix_on_an_armature_datablock_names_the_object_route(monkeypatch) -> None:
+    """
+    An ARMATURE target beside a `pose.bones` path is the obvious reading and is always wrong.
+
+    It cost a rehearsal thirteen refused calls: the old message named the datablock the slot
+    was missing from and never said that the slot lives on the object.
+    """
+    handler, target = _armature_target_handler(monkeypatch)
+
+    with pytest.raises(ValueError, match=r'Retry with target=\{"type": "OBJECT"') as refused:
+        handler.set_action_cycle(target, "Walk", data_path_prefix='pose.bones["thigh.L"]')
+
+    assert "live on the armature object" in str(refused.value)
+
+
+def test_an_unscoped_armature_cycle_still_names_the_object_that_holds_the_slot(monkeypatch) -> None:
+    """Without a prefix the call reaches slot resolution, and that refusal owes the same remedy."""
+    handler, target = _armature_target_handler(monkeypatch)
+
+    with pytest.raises(ValueError, match="has no slot for CHAR1_rig") as refused:
+        handler.set_action_cycle(target, "Walk")
+
+    assert 'retry with target={"type": "OBJECT", "name": "CHAR1_rig"}' in str(refused.value)
 
 
 def test_an_empty_or_half_given_range_is_refused(monkeypatch) -> None:

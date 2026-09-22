@@ -310,4 +310,31 @@ for label, page in (
     # pass", which is why `rest_axes` is opt-in and `bone_names` is the way to ask for it.
     assert 150 < per_bone < 260, f"{label}: the derived naming cost {per_bone} bytes a bone"
 
+# --- 6. The sliders a pose call has to name, read off the rig instead of a document ----------
+#
+# A face rig keeps its controls as bounded custom properties on a pose bone, and
+# `keyframe_character_pose` refuses a name the bone does not carry. Until now no tool in a
+# posing-only process reported them: `get_character_rig_info` does and belongs to the
+# rig-authoring bundle, so an agent assembling a shot had to be handed the names in prose.
+# The UI bounds come from Blender's own `id_properties_ui`, which no fake `bpy` can stand in for.
+
+face = wide.pose.bones[BONE]
+face["expr_smile"] = 0.25
+face.id_properties_ui("expr_smile").update(min=0.0, max=1.0, description="mouth corners")
+face["sk_brow_up_in_L"] = 0.0
+
+sliders = handler.list_character_bones(wide.name, bone_names=[BONE], custom_properties=True)["bones"]["items"][0]
+quiet = handler.list_character_bones(wide.name, bone_names=[BONE])["bones"]["items"][0]
+
+assert "custom_properties" not in quiet, quiet
+by_name = {record["name"]: record for record in sliders["custom_properties"]}
+assert set(by_name) == {"expr_smile", "sk_brow_up_in_L"}, sliders
+assert math.isclose(by_name["expr_smile"]["value"], 0.25, abs_tol=1e-6), by_name
+assert math.isclose(by_name["expr_smile"]["min"], 0.0, abs_tol=1e-6), by_name
+assert math.isclose(by_name["expr_smile"]["max"], 1.0, abs_tol=1e-6), by_name
+# A property with no authored UI data has no range to state and spends no bytes saying so.
+assert "max" not in by_name["sk_brow_up_in_L"], by_name
+assert (sliders["custom_property_count"], sliders["custom_property_next_offset"]) == (2, None), sliders
+print(f"sliders on {BONE}: {sliders['custom_properties']}")
+
 print("REST_AXIS_LETTERS_SMOKE_OK")

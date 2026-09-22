@@ -63,7 +63,9 @@ async def open_shot(
         discard_unsaved: Required to discard unsaved changes in the open session.
 
     Returns:
-        filepath, scene_name, object_count, libraries, session_id, session_epoch,
+        filepath, scene_name, object_count (the reopened scene's own objects, the number
+        list_scene_objects reports), datablock_object_count (every object datablock in the
+        file, which a linked hierarchy makes larger), libraries, session_id, session_epoch,
         capabilities_changed, rehandshake_required, discarded_unsaved_changes, note, and
         warnings when part of the swap report could not be read. Each library reports
         filepath_redacted=true when its path lies outside the configured file roots and was
@@ -145,7 +147,8 @@ async def reset_session(ctx: Context, confirm: bool = False) -> dict:
         confirm: Required to discard the open file and any unsaved work.
 
     Returns:
-        filepath (None), scene_name, object_count, libraries (empty), session_id,
+        filepath (None), scene_name, object_count (the scene's own objects),
+        datablock_object_count (every object datablock in the file), libraries (empty), session_id,
         session_epoch, capabilities_changed, rehandshake_required, discarded_unsaved_changes,
         note, and warnings when part of the swap report could not be read.
 

@@ -5477,18 +5477,18 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 247_000",
-        # One byte below the *measured* payload (246,535), not below the ceiling: the ceiling has
-        # headroom by design, so reverting it to 246_999 would still pass and prove nothing.
-        "SHOT_MODE_BYTE_CEILING = 246_534",
+        "SHOT_MODE_BYTE_CEILING = 249_000",
+        # One byte below the *measured* payload (248,603), not below the ceiling: the ceiling has
+        # headroom by design, so reverting it to 248_999 would still pass and prove nothing.
+        "SHOT_MODE_BYTE_CEILING = 248_602",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
         "server tools: the default ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 84_000",
-        # Same rule: one byte below the measured core payload (83,532), not below the ceiling.
-        "DEFAULT_MODE_BYTE_CEILING = 83_531",
+        "DEFAULT_MODE_BYTE_CEILING = 85_000",
+        # Same rule: one byte below the measured core payload (84,593), not below the ceiling.
+        "DEFAULT_MODE_BYTE_CEILING = 84_592",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
@@ -7479,8 +7479,8 @@ REVERTS: list[Revert] = [
         # surface moved and the number did not - has to be re-pointed at the new pair.
         "addon surface: the dispatch table moved while the protocol number stayed where it was",
         ADDON_MANAGER,
+        "EXPECTED_ADDON_PROTOCOL_VERSION = 38",
         "EXPECTED_ADDON_PROTOCOL_VERSION = 37",
-        "EXPECTED_ADDON_PROTOCOL_VERSION = 36",
         (
             f"{SURFT}::test_snapshot_records_the_protocol_version_the_server_expects",
             f"{SURFT}::test_both_protocol_constants_agree",

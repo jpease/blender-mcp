@@ -375,8 +375,9 @@ class _PoseBone:
     a matrix round trip would canonicalise both away.
     """
 
-    def __init__(self, name, rest_relative=None, parent=None, rotation_mode="QUATERNION") -> None:
+    def __init__(self, name, rest_relative=None, parent=None, rotation_mode="QUATERNION", use_deform=True) -> None:
         self.name = name
+        self.use_deform = use_deform
         self.parent = parent
         self.rest_relative = rest_relative or _Matrix.Identity(4)
         self.rotation_mode = rotation_mode
@@ -397,7 +398,7 @@ class _PoseBone:
     @property
     def bone(self) -> types.SimpleNamespace:
         """The rest bone behind the pose bone: `matrix_local` is its armature-space rest."""
-        return types.SimpleNamespace(name=self.name, matrix_local=self.rest_pose)
+        return types.SimpleNamespace(name=self.name, matrix_local=self.rest_pose, use_deform=self.use_deform)
 
     @property
     def rest_pose(self) -> _Matrix:
@@ -864,6 +865,32 @@ def test_a_rotation_about_the_bones_own_length_axis_says_the_bone_will_not_move(
     # The same call about a perpendicular axis does move the bone, and says nothing.
     assert head.matrix.to_3x3().col[1].dot(rest_direction) == pytest.approx(math.cos(math.radians(60.0)), abs=1e-12)
     assert bent["warnings"] == []
+
+
+def test_the_length_axis_notice_claims_the_tail_it_measured_and_not_the_mesh(monkeypatch) -> None:
+    """
+    The notice used to conclude "nothing swings", which is false on exactly the bone it hits.
+
+    A head bone's length axis is the character's up, so a roll about it is the head turn: on one
+    real rig, 30 degrees moved the bone's tail 0.000 cm and the face 6.47 cm, and the same
+    warning on a 0.5 cm relay bone was correct. The detector reads the rest hierarchy and cannot
+    tell those apart, so it now reports what it measured - the tail and every child head - and
+    says what a roll does to skinned geometry instead of denying that anything moves.
+    """
+    spine = _PoseBone("CHAR1_spine03_skn_jnt", rest_relative=_SPINE_REST)
+    head = _PoseBone("CHAR1_head_jnt", rest_relative=_HEAD_REST, parent=spine)
+    control = _PoseBone("CHAR1_face_ctrl", rest_relative=_HEAD_REST, parent=head, use_deform=False)
+    server, _rig, _animation, _module = _posing(monkeypatch, [spine, head, control], matrix_world=_RIG_WORLD)
+    roll = {"rotate": {"axis": "Y", "degrees": 30.0}}
+
+    deforming = server.set_character_pose("CHAR1_rig", [{"bone_name": "CHAR1_head_jnt", **roll}])
+    inert = server.set_character_pose("CHAR1_rig", [{"bone_name": "CHAR1_face_ctrl", **roll}])
+
+    notice = deforming["warnings"][0]
+    assert "no child bone swings" in notice
+    assert "that geometry rolls with it" in notice
+    assert "nothing swings" not in notice, "the detector never measured the mesh and must not rule on it"
+    assert "deforms no geometry" in inert["warnings"][0]
 
 
 @pytest.mark.parametrize(
