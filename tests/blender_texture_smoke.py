@@ -95,6 +95,16 @@ def main() -> None:
             {"BLENDER_EEVEE_NEXT": preview_path},
         )
         assert preview["outputs"][0]["size_bytes"] > 0
+        # The view transform and look are chosen through Blender's runtime enum callback, and
+        # this is the only place that can be checked: `view_settings.bl_rna.properties
+        # ["view_transform"].enum_items` is `['NONE']` on a real 5.2.2 --factory-startup, so the
+        # static read this replaced matched nothing and set neither property. The look assertion
+        # is the one that falsifies - restore the static read and it reports "None" - because
+        # AgX is Blender's own default and hid the same failure on view_transform.
+        color = preview["color_management"]
+        assert color["view_transform"] == "AgX", f"preview did not apply AgX: {color}"
+        assert color["look"] != "None", f"preview applied no look: {color}"
+        print(f"preview color management: {color}")
 
     seams = handler.set_uv_seams(obj.name, "MARK", edge_indices=[0, 1])
     assert seams["changed_edge_indices"] == [0, 1]

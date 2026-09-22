@@ -7,6 +7,7 @@ import bmesh
 import bpy
 import mathutils
 
+from ...helpers import runtime_enum_item_name
 from ._shared import material_by_name, runtime_engine, validate_engine
 
 
@@ -40,6 +41,126 @@ def _preview_mesh(name, geometry):
     return mesh
 
 
+def _configure_preview_color_management(scene):
+    """
+    Put the preview scene on a known view transform and look, and report what it got.
+
+    Resolved through Blender's runtime enum callback rather than
+    `bl_rna.properties[...].enum_items`: both of these enums are populated from the OCIO config
+    at runtime, and the static list holds only NONE. The static read this replaced matched
+    nothing and set neither property. `view_transform` survived that by luck - AgX is Blender
+    5.2's own default - but `look` did not: every preview rendered with look "None" while the
+    reply named the contrast it meant to use.
+
+    Args:
+        scene: The disposable preview scene to configure.
+
+    Returns:
+        dict: The view transform, look and exposure the scene ended on, which is what the
+        reply reports and what makes the choice checkable from outside Blender.
+
+    """
+    settings = scene.view_settings
+    if runtime_enum_item_name(settings, "view_transform", "AgX"):
+        settings.view_transform = "AgX"
+    for look in ("AgX - Medium High Contrast", "Medium High Contrast", "None"):
+        if runtime_enum_item_name(settings, "look", look):
+            settings.look = look
+            break
+    return {
+        "view_transform": settings.view_transform,
+        "look": settings.look,
+        "exposure": float(settings.exposure),
+    }
+
+
+def _validated_output_paths(output_paths, engines):
+    """
+    Check every requested destination before a single datablock is created.
+
+    Args:
+        output_paths: The caller's engine-to-path mapping.
+        engines: The engines this call will render, which the mapping must name exactly.
+
+    Returns:
+        dict: The same mapping, copied, once every path is known good.
+
+    Raises:
+        ValueError: If the mapping names the wrong engines, a path is not an absolute `.png`,
+            its directory does not exist, or a file is already there. Refusing here is what
+            keeps a bad path from leaving a half-built preview scene behind.
+
+    """
+    paths = dict(output_paths or {})
+    if set(paths) != set(engines):
+        raise ValueError(f"output_paths must contain exactly {engines}")
+    for engine, path in paths.items():
+        if not os.path.isabs(path) or os.path.splitext(path)[1].lower() != ".png":
+            raise ValueError(f"{engine} output path must be an absolute .png path")
+        if not os.path.isdir(os.path.dirname(path)):
+            raise ValueError(f"Output directory does not exist: {os.path.dirname(path)}")
+        if os.path.exists(path):
+            raise ValueError(f"Preview output already exists: {path}")
+    return paths
+
+
+def _build_preview_studio(scene, collection, geometry, material, created_objects, created_data):
+    """
+    Populate the disposable scene with the subject, camera, three-point rig and world.
+
+    Every datablock it makes is appended to the caller's two lists as it is made, not at the
+    end: the caller's `finally` removes exactly what exists, so a failure part way through
+    this leaves nothing behind.
+
+    Args:
+        scene: The disposable preview scene.
+        collection: The collection inside it that holds every created object.
+        geometry: Which preview surface to build.
+        material: The material under test, assigned to the subject.
+        created_objects: Accumulator for objects, owned by the caller.
+        created_data: Accumulator for non-object datablocks, owned by the caller.
+
+    The render refers to nothing it builds by name - the scene holds the camera and the
+    collection holds the rest - so it returns nothing.
+
+    """
+    mesh = _preview_mesh("MCP Preview Surface", geometry)
+    created_data.append(mesh)
+    subject = bpy.data.objects.new("MCP Preview Surface", mesh)
+    created_objects.append(subject)
+    collection.objects.link(subject)
+    subject.data.materials.append(material)
+    camera_data = bpy.data.cameras.new("MCP Preview Camera")
+    created_data.append(camera_data)
+    camera = bpy.data.objects.new("MCP Preview Camera", camera_data)
+    created_objects.append(camera)
+    collection.objects.link(camera)
+    camera.location = (3.2, -3.2, 2.4)
+    _point_camera(camera, mathutils.Vector((0, 0, 0)))
+    camera_data.lens = 55
+    scene.camera = camera
+    for name, location, energy, size in (
+        ("Key", (3.0, -2.0, 4.0), 900.0, 3.0),
+        ("Fill", (-3.0, -1.0, 2.0), 450.0, 4.0),
+        ("Rim", (1.0, 3.0, 3.0), 700.0, 2.0),
+    ):
+        light_data = bpy.data.lights.new(f"MCP Preview {name}", "AREA")
+        light_data.energy, light_data.shape, light_data.size = energy, "DISK", size
+        created_data.append(light_data)
+        light = bpy.data.objects.new(f"MCP Preview {name}", light_data)
+        created_objects.append(light)
+        collection.objects.link(light)
+        light.location = location
+        _point_camera(light, mathutils.Vector((0, 0, 0)))
+    world = bpy.data.worlds.new("MCP PBR Preview World")
+    created_data.append(world)
+    world.use_nodes = True
+    background = world.node_tree.nodes.get("Background")
+    background.inputs["Color"].default_value = (0.05, 0.05, 0.05, 1.0)
+    background.inputs["Strength"].default_value = 0.25
+    scene.world = world
+
+
 class TexturePreviewHandlers:
     """Render materials in a disposable, reproducible studio scene."""
 
@@ -56,78 +177,21 @@ class TexturePreviewHandlers:
         material = material_by_name(material_name)
         target_engine = validate_engine(target_engine)
         engines = [target_engine] if target_engine != "BOTH" else ["CYCLES", "BLENDER_EEVEE_NEXT"]
-        paths = dict(output_paths or {})
-        if set(paths) != set(engines):
-            raise ValueError(f"output_paths must contain exactly {engines}")
-        for engine, path in paths.items():
-            if not os.path.isabs(path) or os.path.splitext(path)[1].lower() != ".png":
-                raise ValueError(f"{engine} output path must be an absolute .png path")
-            if not os.path.isdir(os.path.dirname(path)):
-                raise ValueError(f"Output directory does not exist: {os.path.dirname(path)}")
-            if os.path.exists(path):
-                raise ValueError(f"Preview output already exists: {path}")
+        paths = _validated_output_paths(output_paths, engines)
         scene = bpy.data.scenes.new("MCP PBR Preview")
         collection = bpy.data.collections.new("MCP PBR Preview Assets")
         scene.collection.children.link(collection)
         created_objects, created_data = [], []
         outputs = []
         try:
-            mesh = _preview_mesh("MCP Preview Surface", geometry)
-            created_data.append(mesh)
-            subject = bpy.data.objects.new("MCP Preview Surface", mesh)
-            created_objects.append(subject)
-            collection.objects.link(subject)
-            subject.data.materials.append(material)
-            camera_data = bpy.data.cameras.new("MCP Preview Camera")
-            created_data.append(camera_data)
-            camera = bpy.data.objects.new("MCP Preview Camera", camera_data)
-            created_objects.append(camera)
-            collection.objects.link(camera)
-            camera.location = (3.2, -3.2, 2.4)
-            _point_camera(camera, mathutils.Vector((0, 0, 0)))
-            camera_data.lens = 55
-            scene.camera = camera
-            for name, location, energy, size in (
-                ("Key", (3.0, -2.0, 4.0), 900.0, 3.0),
-                ("Fill", (-3.0, -1.0, 2.0), 450.0, 4.0),
-                ("Rim", (1.0, 3.0, 3.0), 700.0, 2.0),
-            ):
-                light_data = bpy.data.lights.new(f"MCP Preview {name}", "AREA")
-                light_data.energy, light_data.shape, light_data.size = energy, "DISK", size
-                created_data.append(light_data)
-                light = bpy.data.objects.new(f"MCP Preview {name}", light_data)
-                created_objects.append(light)
-                collection.objects.link(light)
-                light.location = location
-                _point_camera(light, mathutils.Vector((0, 0, 0)))
-            world = bpy.data.worlds.new("MCP PBR Preview World")
-            created_data.append(world)
-            world.use_nodes = True
-            background = world.node_tree.nodes.get("Background")
-            background.inputs["Color"].default_value = (0.05, 0.05, 0.05, 1.0)
-            background.inputs["Strength"].default_value = 0.25
-            scene.world = world
+            _build_preview_studio(scene, collection, geometry, material, created_objects, created_data)
             render = scene.render
             render.resolution_x = render.resolution_y = int(resolution)
             render.resolution_percentage = 100
             render.image_settings.file_format = "PNG"
             render.image_settings.color_mode = "RGBA"
             render.film_transparent = bool(transparent_background)
-            view_items = {
-                item.identifier for item in scene.view_settings.bl_rna.properties["view_transform"].enum_items
-            }
-            if "AgX" in view_items:
-                scene.view_settings.view_transform = "AgX"
-            look_items = {item.identifier for item in scene.view_settings.bl_rna.properties["look"].enum_items}
-            for look in ("AgX - Medium High Contrast", "Medium High Contrast", "None"):
-                if look in look_items:
-                    scene.view_settings.look = look
-                    break
-            color_management = {
-                "view_transform": scene.view_settings.view_transform,
-                "look": scene.view_settings.look,
-                "exposure": float(scene.view_settings.exposure),
-            }
+            color_management = _configure_preview_color_management(scene)
             for engine in engines:
                 scene.render.engine = runtime_engine(engine)
                 if engine == "CYCLES":

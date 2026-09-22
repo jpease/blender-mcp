@@ -7,6 +7,32 @@ import mathutils
 from . import ADDON_ID
 
 
+def runtime_enum_item_name(owner, property_name, identifier):
+    """
+    Ask Blender whether a dynamic enum currently offers an item, by its own callback.
+
+    The same trap `handlers/lighting/_shared.engine_identifiers` documents for `engine`:
+    `owner.bl_rna.properties[name].enum_items` reads the *static* RNA definition, and an enum
+    whose items come from a runtime callback is not in it. Measured on Blender 5.2.2
+    `--factory-startup`: `view_settings.bl_rna.properties["view_transform"].enum_items` is
+    `['NONE']`, while the live property offers AgX, Filmic, Standard and Khronos PBR Neutral.
+    Reading the static list therefore finds nothing and the caller silently keeps the default.
+
+    `UILayout.enum_item_name` runs the callback against a live instance, which is the only way
+    to see what the property actually accepts right now.
+
+    Args:
+        owner: The RNA instance owning the property, not its type.
+        property_name: The enum property's identifier.
+        identifier: The candidate item to look for.
+
+    Returns:
+        str: The item's display name, or an empty string when it is not currently offered.
+
+    """
+    return bpy.types.UILayout.enum_item_name(owner, property_name, identifier)
+
+
 def get_blendermcp_addon_preferences(context=None):
     """
     Get add-on preferences object if available.
