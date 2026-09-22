@@ -45,7 +45,7 @@ socket command, goes in a `--blender-script`.
 
 ## Blender API probes
 
-`blender_probes/` holds 21 probes. Every Blender API fact asserted in this codebase was
+`blender_probes/` holds 24 probes. Every Blender API fact asserted in this codebase was
 established by one of them, which is why they are committed rather than thrown away: when
 Blender changes, re-running them is how you find out what changed. They take no arguments:
 
@@ -59,7 +59,7 @@ Most print an observation transcript for a person to read; only
 ### Vetting a new Blender release
 
 ```
-just probes          # run all 21 against their recorded baselines: ~16 s, no GUI
+just probes          # run all 24 against their recorded baselines: ~16 s, no GUI
 just probes-record   # accept the current transcripts, once every diff is understood
 ```
 

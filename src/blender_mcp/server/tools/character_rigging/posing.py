@@ -17,7 +17,12 @@ _MINIMUM_SQUARED_LENGTH = 1e-18
 
 
 class BoneAim(_StrictModel):
-    """Point one of a bone's own axes at a world-space point or at another object's origin."""
+    """
+    Point one of a bone's own axes at a world-space point or at another object's origin.
+
+    track_axis and up_axis name the bone's own axes, in the letters list_character_bones(
+    rest_axes=True) reports as up_axis and length_axis; target and up_reference are world-space.
+    """
 
     target: tuple[float, float, float] | None = None
     target_object: Annotated[str, Field(min_length=1, max_length=63)] | None = None
@@ -144,21 +149,27 @@ async def list_character_bones(
         limit: Bones per page. A production rig carries a few hundred bones, so one page rarely
             covers a whole rig.
         offset: Where to resume. Pass the previous reply's next_offset while truncated is true.
-        rest_axes: Also report each bone's rest axes, the datum an axis has to be chosen from:
-            which way a bone's local X, Y and Z point is rig-specific and not guessable from
-            its name. It costs about 180 wire bytes a bone, which the reply budget spends as
-            roughly 22 bones a page instead of 57, so leave it off unless choosing an axis.
+        rest_axes: Also report each bone's rest axes, and name the one an aim has to choose.
+            Which way a bone's own X, Y and Z point is rig-specific and not guessable from its
+            name. It costs about 205 wire bytes a bone, which the reply budget spends as
+            roughly 20 bones a page instead of 57, so leave it off unless choosing an axis.
         bone_names: Report only these exact bones. Name the bones you intend to pose and read
             their rest axes in one call, instead of paging a whole rig to reach three of them -
-            a 187-bone rig costs six calls with rest_axes and one with this. A name the
+            a 187-bone rig costs nine calls with rest_axes and one with this. A name the
             armature does not have is an error, never a silent omission.
 
     Returns:
         armature_object, and bones with items (name, parent - null for a root - and deform,
         whether the bone deforms a bound mesh), total, offset, limit, truncated, and next_offset
-        (null on the last page). With rest_axes, each item also carries rest_axes: nine numbers,
-        the bone's rest X axis, then Y, then Z, each a unit direction in armature space. Items
-        follow armature bone order, which lists a parent before its children.
+        (null on the last page). With rest_axes, each item also carries rest_axes (nine numbers:
+        the bone's own X axis, then Y, then Z, each a unit direction in armature space) and
+        up_axis, those same axes read the way aim_at takes them - its signed axis nearest world
+        +Z at rest, null only where the rig's object scale collapses it. The reply's own
+        length_axis is the axis along the bone, one letter for every bone Blender builds. Pass
+        both to aim_at instead of deriving them: the nine numbers cannot give up_axis, being
+        armature-space where up_reference is a world direction. A bone upright at rest reports
+        the same letter twice, and aim_at refuses one letter for both. Items follow armature
+        bone order, a parent before its children.
 
     """
     return await call_blender(
@@ -200,16 +211,19 @@ async def set_character_pose(
     Args:
         ctx: MCP request context.
         poses: The bones to change, each with at most one rotation.
-            rotate turns the bone degrees about axis - a signed bone axis name such as "-Y", or
-            a vector in space - replacing its rotation unless relative=True composes with what
-            is there. It is sugar: rotation_axis_angle says the same thing in radians.
+            rotate turns the bone degrees about axis - a signed axis name such as "-Y", or a
+            vector - replacing its rotation unless relative=True composes with what is there.
+            Its letters name axes of space: under LOCAL and LOCAL_WITH_PARENT that is the
+            bone's own rest basis, under POSE the armature's, under WORLD the scene's. It is
+            sugar: rotation_axis_angle says the same thing in radians.
             aim_at points the bone's track_axis at target (a world point) or target_object's
-            origin. track_axis has no default, because a bone's length axis is rarely the one
-            that "looks" anywhere; read the axes from list_character_bones(rest_axes=True).
-            up_axis leans that bone axis toward up_reference (a world direction, default +Z)
-            and so fixes the roll. Without up_axis the aim takes the shortest arc and keeps the
-            roll the bone already holds, which depends on the pose it started from, and a swing
-            past 150 degrees is refused because that roll is then arbitrary.
+            origin, and leans up_axis toward up_reference (a world direction, default +Z) to
+            fix the roll. Both letters name the bone's own axes whatever space is, so pass
+            list_character_bones(rest_axes=True)'s length_axis and up_axis straight through;
+            track_axis has no default, because a bone's length axis is rarely the one that
+            "looks" anywhere. Without up_axis the aim takes the shortest arc and keeps the roll
+            the bone already holds, which depends on the pose it started from, and a swing past
+            150 degrees is refused because that roll is then arbitrary.
         detail: Also report each bone's pre-call pose matrix, and report both matrices at
             Blender's own precision instead of rounded to six decimal places.
 

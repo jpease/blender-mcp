@@ -93,6 +93,10 @@ def _validated_aim(aim, bone_name):
     """
     Check one `aim_at` record and resolve it to the values the write loop needs.
 
+    `track_axis` and `up_axis` name the bone's own axes - the same letters
+    `list_character_bones(rest_axes=True)` reports, whose directions it gives in armature space
+    - and never scene axes. `target` and `up_reference` are the world-space side of the record.
+
     The target object is looked up now so a missing object fails before any bone moves, but its
     world origin is read at apply time, after the pose the same call authored has settled.
 
@@ -144,6 +148,11 @@ def _validated_aim(aim, bone_name):
 def _validated_rotate(rotate, bone_name):
     """
     Check one `rotate` record and resolve its axis and angle.
+
+    Unlike `aim_at`, a named axis here is an axis of the call's pose space, not of the bone:
+    under `LOCAL` and `LOCAL_WITH_PARENT` that space is the bone's own rest basis, so `Z` is the
+    bone's own rest Z as `list_character_bones(rest_axes=True)` reports it; under `POSE` it is
+    the armature's Z and under `WORLD` the scene's.
 
     Args:
         rotate: The raw `rotate` record from a pose entry.
@@ -382,6 +391,13 @@ _POSE_MATRIX_DECIMALS = 6
 # off the table, and they halve what full float precision would add to the page (measured on a
 # 187-bone rig: +33,840 wire bytes at 3 dp).
 _REST_AXIS_DECIMALS = 3
+# Blender builds every bone with its own +Y running head to tail, whatever the rig's naming or
+# roll, so which axis is the bone's length is a fact about the format and not about the bone.
+# The reply states it once per page rather than on every row: repeating it per bone measured
+# 28 wire bytes a row, which is 5,236 bytes and a whole page of a 187-bone walk (22 bones a
+# page rather than 20), to say the same letter 187 times.
+# `tests/blender_rest_axis_letters_smoke.py` checks it holds for every bone of a real one.
+_LENGTH_AXIS = "Y"
 # The channels a pose entry can set, in the order a record names them.
 _POSE_CHANNELS = (
     "matrix",
@@ -410,12 +426,48 @@ def _rest_axes(bone):
         bone: A rest bone from `armature.data.bones`.
 
     Returns:
-        list: The X, then Y, then Z columns of `matrix_local` - the bone's rest axes in armature
-        space - rounded to `_REST_AXIS_DECIMALS`.
+        list: The X, then Y, then Z columns of `matrix_local` - each of the bone's own rest axes
+        as a unit direction in armature space - rounded to `_REST_AXIS_DECIMALS`.
 
     """
     matrix = bone.matrix_local.to_3x3()
     return [round(float(value), _REST_AXIS_DECIMALS) for index in range(3) for value in matrix.col[index]]
+
+
+def _rest_up_axis(armature, bone):
+    """
+    Name the bone axis that stands up at rest, in `aim_at.up_axis`'s own vocabulary.
+
+    Which signed bone axis is nearest up is a derivation off `_rest_axes`, and it is the
+    derivation a demo runbook got wrong before aiming a head with it. It is also one the reply
+    does not otherwise permit: the nine numbers are armature-space and `up_reference` is a world
+    direction, so the answer turns on the rig's object matrix, which the reply never carries. A
+    rig laid over in the scene is where an armature-space reading and an aim part company.
+
+    Args:
+        armature: The armature object the bone belongs to.
+        bone: A rest bone from `armature.data.bones`.
+
+    Returns:
+        str | None: A signed axis name such as `-X`, or None when the rig's object transform
+        collapses the bone's axes to nothing and no axis points anywhere.
+
+    """
+    rest = armature.matrix_world.to_3x3() @ bone.matrix_local.to_3x3()
+    # How far up each of the bone's own axes points: its cosine against the same reference an
+    # aim defaults to, per unit length so a rig scaled unevenly does not tip the comparison
+    # towards whichever axis the object matrix happens to have stretched. The largest either
+    # way is the axis, and its sign picks which end of it is up.
+    alignments = {}
+    for letter, index in _AXIS_INDEX.items():
+        column = rest.col[index]
+        if column.length > _AIM_MIN_LENGTH:
+            upward = sum(column[axis] * value for axis, value in enumerate(_DEFAULT_UP_REFERENCE))
+            alignments[letter] = upward / column.length
+    if not alignments:
+        return None
+    letter = max(alignments, key=lambda name: abs(alignments[name]))
+    return letter if alignments[letter] >= 0.0 else f"-{letter}"
 
 
 def _changed_channels(spec):
@@ -1830,18 +1882,22 @@ class PoseAnimationHandlersMixin:
             }
             if rest_axes:
                 item["rest_axes"] = _rest_axes(bone)
+                # The conclusion the nine numbers leave to the reader, and the one the reply
+                # cannot otherwise support: it turns on the rig's object matrix, not on them.
+                item["up_axis"] = _rest_up_axis(armature, bone)
             items.append(item)
-        return {
-            "armature_object": armature.name,
-            "bones": {
-                "items": items,
-                "total": len(bones),
-                "offset": start,
-                "limit": limit,
-                "truncated": truncated,
-                "next_offset": next_offset,
-            },
+        reply = {"armature_object": armature.name}
+        if rest_axes:
+            reply["length_axis"] = _LENGTH_AXIS
+        reply["bones"] = {
+            "items": items,
+            "total": len(bones),
+            "offset": start,
+            "limit": limit,
+            "truncated": truncated,
+            "next_offset": next_offset,
         }
+        return reply
 
     def set_character_pose(
         self,

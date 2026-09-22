@@ -507,6 +507,10 @@ NEW_NODES_IN_EXISTING_FILES = (
         f"{POSET}::test_a_malformed_bone_name_filter_is_refused[{case}]"
         for case in ("value0", "value1", "value2", "CHAR1_head_jnt")
     ),
+    # --- the rest axes carry their own conclusion, in the vocabulary an aim takes ---
+    f"{POSET}::test_the_rest_axes_are_also_named_in_the_vocabulary_an_aim_takes",
+    f"{POSET}::test_the_up_axis_follows_the_rig_into_the_scene_where_the_nine_numbers_cannot",
+    f"{POSET}::test_a_rig_scaled_to_nothing_names_no_up_axis_rather_than_guessing_one",
     f"{POSET}::test_aim_points_the_named_axis_at_an_object_and_leaves_position_and_scale_alone",
     f"{POSET}::test_aim_at_a_world_point_resolves_through_the_rig_transform",
     f"{POSET}::test_aim_rejects_every_direction_it_cannot_define",
@@ -5405,18 +5409,18 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 234_000",
-        # One byte below the *measured* payload (233,211), not below the ceiling: the ceiling has
-        # headroom by design, so reverting it to 233_999 would still pass and prove nothing.
-        "SHOT_MODE_BYTE_CEILING = 233_210",
+        "SHOT_MODE_BYTE_CEILING = 236_000",
+        # One byte below the *measured* payload (235,043), not below the ceiling: the ceiling has
+        # headroom by design, so reverting it to 235_999 would still pass and prove nothing.
+        "SHOT_MODE_BYTE_CEILING = 235_042",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
         "server tools: the default ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
         "DEFAULT_MODE_BYTE_CEILING = 80_500",
-        # Same rule: one byte below the measured core payload (79,834), not below the ceiling.
-        "DEFAULT_MODE_BYTE_CEILING = 79_833",
+        # Same rule: one byte below the measured core payload (80,158), not below the ceiling.
+        "DEFAULT_MODE_BYTE_CEILING = 80_157",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
@@ -6215,9 +6219,50 @@ REVERTS: list[Revert] = [
     Revert(
         "pose: rest axes are withheld even when the caller asks for them",
         ADDON_POSING,
-        '            if rest_axes:\n                item["rest_axes"] = _rest_axes(bone)\n',
+        "            if rest_axes:\n"
+        '                item["rest_axes"] = _rest_axes(bone)\n'
+        "                # The conclusion the nine numbers leave to the reader, and the one the reply\n"
+        "                # cannot otherwise support: it turns on the rig's object matrix, not on them.\n"
+        '                item["up_axis"] = _rest_up_axis(armature, bone)\n',
         "",
         (f"{POSET}::test_rest_axes_are_reported_only_when_asked_for",),
+    ),
+    # --- the nine numbers carry their own conclusion ---
+    #
+    # A runbook read a head bone's rest axes, concluded `up_axis: "-X"`, aimed with it and
+    # shipped a head tilted 90 degrees. Measured on a synthetic bone carrying those exact axes
+    # (`scripts/blender_probes/pose_axis_frames.py`), "-X" is right and the conventions agree:
+    # `rest_axes`, `aim_at.track_axis` and `aim_at.up_axis` all name the bone's own axes. What
+    # the reply could not support is the derivation itself - `up_reference` is a world
+    # direction, the nine numbers are armature-space, and the rig's object matrix is nowhere in
+    # the reply - so the answer is reported rather than left to be worked out.
+    Revert(
+        "pose: rest axes are handed back as nine numbers with the up axis left to be derived",
+        ADDON_POSING,
+        '                item["up_axis"] = _rest_up_axis(armature, bone)\n',
+        "",
+        (f"{POSET}::test_the_rest_axes_are_also_named_in_the_vocabulary_an_aim_takes",),
+    ),
+    Revert(
+        "pose: the bone's length axis is left unsaid, so which letter aims the bone is folklore",
+        ADDON_POSING,
+        '        if rest_axes:\n            reply["length_axis"] = _LENGTH_AXIS\n',
+        "",
+        (f"{POSET}::test_the_rest_axes_are_also_named_in_the_vocabulary_an_aim_takes",),
+    ),
+    Revert(
+        "pose: the up axis is read in armature space, ignoring where the rig sits in the scene",
+        ADDON_POSING,
+        "    rest = armature.matrix_world.to_3x3() @ bone.matrix_local.to_3x3()\n",
+        "    rest = bone.matrix_local.to_3x3()\n",
+        (f"{POSET}::test_the_up_axis_follows_the_rig_into_the_scene_where_the_nine_numbers_cannot",),
+    ),
+    Revert(
+        "pose: a rig with no direction left in it still has an up axis guessed for it",
+        ADDON_POSING,
+        "    if not alignments:\n        return None\n",
+        "    if not alignments:\n        return _LENGTH_AXIS\n",
+        (f"{POSET}::test_a_rig_scaled_to_nothing_names_no_up_axis_rather_than_guessing_one",),
     ),
     Revert(
         "pose: an aim's up axis is not made perpendicular, so the basis shears",

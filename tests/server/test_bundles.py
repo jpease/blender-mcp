@@ -526,7 +526,27 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # calls and a 4x4 matrix round-trip per foot per frame, the playhead can be moved so the agent
 # can look at frame 12 instead of only frame 1, and pose keys can be shaped like every other
 # domain's. Measured shot payload 233,211 bytes.
-SHOT_MODE_BYTE_CEILING = 234_000
+# Raised an eighth time, from 233,211, by the runbook-rehearsal pass - the defects a live
+# rehearsal of the walk-cycle surface actually hit. Measured per tool with
+# `payload_report(...).per_tool`, against each file's previous revision:
+#   1,056 the axis-frame work on the posing tools. A runbook read `CHAR1_head_jnt`'s reported
+#     rest axes, concluded `up_axis: "-X"`, and shipped a head tilted 90 degrees; the same
+#     file was then cached and reused. Measured on a synthetic bone carrying those exact axes,
+#     "-X" is correct and the conventions already agreed, so what is bought here is the
+#     derivation not being one: 479 is `list_character_bones` reporting the up axis it resolves
+#     to and saying which frame the nine numbers are in, 366 is `BoneAim`'s own statement that
+#     its letters are bone axes (183 apiece, once per pose tool through the shared schema), and
+#     211 is `set_character_pose` correcting "a signed bone axis name" for `rotate`, whose
+#     letters are measurably the call's `space`, not the bone's.
+#   452 `render_scene`'s paragraph on a long ANIMATION outliving the client's request timeout:
+#     the frames keep landing, so the move is `inspect_render_output`, not a re-render.
+#   252 `set_action_cycle`'s reply contract - period_frames/first_key_frame/last_key_frame and
+#     the notice that an unscoped cycle's shortened `modifiers` page cannot be resumed. Both
+#     halves are that one tool's description and do not separate at tool granularity.
+# The camera-marker retroactive-binding fix in the same pass cost nothing here: it is entirely
+# handler-side (`handlers/camera/shots.py`), with no server-tool signature or docstring change.
+# Measured shot payload 235,043 bytes.
+SHOT_MODE_BYTE_CEILING = 236_000
 
 # The same rule for the default, core-only surface, and the same work: 166 bytes for
 # `validate_scene`'s `persistence` scope, 2,202 for `inspect_delivery`, 601 for `save_shot`'s
@@ -543,6 +563,9 @@ SHOT_MODE_BYTE_CEILING = 234_000
 # `set_scene_frame`, plus 1,058 for the widened key-style vocabulary on `edit_keyframes`,
 # `bake_evaluated_animation` and `keyframe_object_transform`. `keyframe_bone_reach` is a posing
 # tool, so none of its 8,330 bytes are in this figure. Measured core payload 79,834 bytes.
+# Unchanged by the runbook-rehearsal pass beyond `set_action_cycle`'s 252 bytes, which is the
+# only core-surface tool it touched: no posing tool is in core, and `render_scene` is not in
+# the default surface either. Measured core payload 80,158 bytes, still inside this ceiling.
 DEFAULT_MODE_BYTE_CEILING = 80_500
 
 

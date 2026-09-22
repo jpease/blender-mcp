@@ -148,7 +148,9 @@ def character_animation_strategy() -> str:
     1. Read the rig before posing it.
         - list_character_bones(armature_object_name=..., bone_names=[...], rest_axes=True) for
           the bones you intend to drive. Which way a bone's local X/Y/Z point is rig-specific
-          and not guessable from its name.
+          and not guessable from its name, so take the up_axis each bone reports and the
+          reply's length_axis straight into aim_at. Do not work either out from rest_axes: a
+          head aimed with a hand-derived up axis shipped 90 degrees over.
         - get_character_rig_info(armature_object_name=..., bone_names=[...]) for world-space
           pose-bone matrices. Never chain FK forward from bone lengths by hand.
 

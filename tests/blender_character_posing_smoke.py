@@ -320,8 +320,9 @@ print(
     f"rest_axes cost on {bone_count} bones: {plain_bytes} -> {axis_bytes} bytes "
     f"(+{axis_bytes - plain_bytes}, x{axis_bytes / plain_bytes:.2f}, {per_bone:.0f} per bone)"
 )
-# Nine rounded numbers, one per line at the reply's indentation: about 180 bytes a bone. Twice
-# that would mean the rounding or the flat shape had been lost.
+# Nine rounded numbers one per line at the reply's indentation, plus the up_axis they resolve
+# to: about 205 bytes a bone. Twice that would mean the rounding or the flat shape had been
+# lost. `tests/blender_rest_axis_letters_smoke.py` measures the naming's own share.
 assert 100 < per_bone < 260, f"a rest-axis row costs {per_bone} bytes"
 
 # Naming the bones is the difference between six paginated calls and one. Measured on this

@@ -1,0 +1,51 @@
+exit: 0
+--- stdout ---
+=== BLENDER === <version>
+rest_axes: [0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, -1.0, -0.0]
+  X = (0.0, 0.0, -1.0)  wanted (0.0, 0.0, -1.0)
+  Y = (1.0, 0.0, 0.0)  wanted (1.0, 0.0, 0.0)
+  Z = (0.0, -1.0, -0.0)  wanted (0.0, -1.0, 0.0)
+  max drift from the runbook's numbers: 0.<size>
+  rest  X -> world (0.0, 0.0, -1.0), 180.00 deg from +Z
+  rest -X -> world (-0.0, -0.0, 1.0),   0.00 deg from +Z
+  rest  Y -> world (1.0, 0.0, 0.0),  90.00 deg from +Z
+  rest -Y -> world (-1.0, -0.0, -0.0),  90.00 deg from +Z
+  rest  Z -> world (0.0, -1.0, -0.0),  90.00 deg from +Z
+  rest -Z -> world (-0.0, 1.0, 0.0),  90.00 deg from +Z
+
+track_axis='Z', target along the rest track axis (a no-op aim), target=(0.0, -2.0, 1.0)
+  up_axis='-X': aim error  0.0000 deg | the axis up_axis named is   0.000 deg from world +Z | the bone's rest-up axis (-X) is   0.000 deg from world +Z
+  up_axis= 'Y': aim error  0.0000 deg | the axis up_axis named is   0.000 deg from world +Z | the bone's rest-up axis (-X) is  90.000 deg from world +Z
+
+track_axis='Z', target 40 deg off the rest track axis, target=(1.68, -2.0, 1.0)
+  up_axis='-X': aim error  0.0000 deg | the axis up_axis named is   0.000 deg from world +Z | the bone's rest-up axis (-X) is   0.000 deg from world +Z
+  up_axis= 'Y': aim error  0.0000 deg | the axis up_axis named is   0.000 deg from world +Z | the bone's rest-up axis (-X) is  90.000 deg from world +Z
+
+track_axis='Y' (the bone's length), target=(2.0, 0.0, 1.0)
+  up_axis='-X': the bone's rest-up axis (-X) is   0.000 deg from world +Z
+  up_axis= 'Z': the bone's rest-up axis (-X) is  90.000 deg from world +Z
+  up_axis='-Z': the bone's rest-up axis (-X) is  90.000 deg from world +Z
+
+rotate.axis='Z', 30 degrees, relative, on a root bone of a rig tilted 0.5/0.0/0.7 rad:
+  the bone's own rest Z in world: (0.565, -0.671, -0.479)
+  armature +Z in world:           (0.309, -0.367, 0.878)
+  space=LOCAL             : turned  30.00 deg about world (0.565, -0.671, -0.479) |   0.00 from own rest Z |  90.00 from armature +Z
+  space=LOCAL_WITH_PARENT : turned  30.00 deg about world (0.565, -0.671, -0.479) |   0.00 from own rest Z |  90.00 from armature +Z
+  space=POSE              : turned  30.00 deg about world (0.309, -0.367, 0.878) |  90.00 from own rest Z |   0.00 from armature +Z
+  space=WORLD             : turned  30.00 deg about world (-0.0, -0.0, 1.0) | 118.65 from own rest Z |  28.65 from armature +Z
+
+rotate.axis='Z', 30 degrees, relative, on a parented bone of a rig tilted 0.5/0.0/0.7 rad:
+  the bone's own rest Z in world: (0.821, -0.099, 0.562)
+  its parent's rest Z in world:   (0.565, -0.671, -0.479)
+  armature +Z in world:           (0.309, -0.367, 0.878)
+  space=LOCAL             : turned  30.00 deg about world (0.821, -0.099, 0.562) |   0.00 from own rest Z |  74.87 from parent's rest Z |  38.47 from armature +Z
+  space=LOCAL_WITH_PARENT : turned  30.00 deg about world (0.821, -0.099, 0.562) |   0.00 from own rest Z |  74.87 from parent's rest Z |  38.47 from armature +Z
+  space=POSE              : turned  30.00 deg about world (0.309, -0.367, 0.878) |  38.47 from own rest Z |  90.00 from parent's rest Z |   0.00 from armature +Z
+  space=WORLD             : turned  30.00 deg about world (0.0, 0.0, 1.0) |  55.81 from own rest Z | 118.65 from parent's rest Z |  28.65 from armature +Z
+
+done
+Blender <version> (hash <build>)
+
+Blender quit
+
+--- stderr ---
