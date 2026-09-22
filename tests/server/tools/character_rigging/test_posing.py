@@ -27,6 +27,7 @@ from .rig_doubles import (
     _PoseBone,
     _posing,
     _Quaternion,
+    _skinned_mesh,
     _target_object,
     _Vector,
 )
@@ -290,14 +291,15 @@ def test_relative_rotate_composes_while_the_default_replaces(monkeypatch) -> Non
     assert 2.0 * math.acos(min(1.0, abs(composed[0]))) == pytest.approx(math.radians(60.0), abs=1e-9)
 
 
-def test_a_rotation_about_the_bones_own_length_axis_says_the_bone_will_not_move(monkeypatch) -> None:
+def test_a_roll_that_moves_nothing_measurable_warns_and_quotes_what_it_measured(monkeypatch) -> None:
     """
     The silent failure the runbook hit twice: the call succeeds, the keys land, nothing bends.
 
-    Blender builds every bone along its own +Y, so a LOCAL rotation about Y turns the bone
-    about the line through its head and tail. The evidence is in the same assertion: the
-    bone's length direction and its origin come out of the roll unchanged, so its tail - and
-    every child bone's head, which sits on it - is exactly where it started.
+    Blender builds every bone along its own +Y, so a LOCAL rotation about Y turns the bone about
+    the line through its head and tail. This head bone carries no child and no skin, so there is
+    nothing off that line for the roll to move - and the notice has to say the travel it
+    measured, because a warning whose evidence cannot be checked is the one an agent learns to
+    skip.
     """
     server, _rig, _animation, _posing, _spine, head = _head_rig(monkeypatch)
     rest_direction = head.matrix.to_3x3().col[1].copy()
@@ -311,37 +313,279 @@ def test_a_rotation_about_the_bones_own_length_axis_says_the_bone_will_not_move(
     assert rolled_direction.dot(rest_direction) == pytest.approx(1.0, abs=1e-12)
     assert (rolled_origin - rest_origin).length == pytest.approx(0.0, abs=1e-12)
     assert len(rolled["warnings"]) == 1
-    assert "length axis" in rolled["warnings"][0]
-    assert head.name in rolled["warnings"][0]
+    notice = rolled["warnings"][0]
+    assert head.name in notice
+    assert "length axis" in notice
+    assert "moves the furthest thing measured by 0 m" in notice, notice
     # The same call about a perpendicular axis does move the bone, and says nothing.
     assert head.matrix.to_3x3().col[1].dot(rest_direction) == pytest.approx(math.cos(math.radians(60.0)), abs=1e-12)
     assert bent["warnings"] == []
 
 
-def test_the_length_axis_notice_claims_the_tail_it_measured_and_not_the_mesh(monkeypatch) -> None:
+def test_a_roll_that_swings_an_offset_child_bone_says_nothing(monkeypatch) -> None:
     """
-    The notice used to conclude "nothing swings", which is false on exactly the bone it hits.
+    Finding 4's acceptance criterion: a warning that fires has to mean something moved wrong.
 
-    A head bone's length axis is the character's up, so a roll about it is the head turn: on one
-    real rig, 30 degrees moved the bone's tail 0.000 cm and the face 6.47 cm, and the same
-    warning on a 0.5 cm relay bone was correct. The detector reads the rest hierarchy and cannot
-    tell those apart, so it now reports what it measured - the tail and every child head - and
-    says what a roll does to skinned geometry instead of denying that anything moves.
+    A head bone's length axis is the character's up, so a roll about it is the head turn. On one
+    real rig 30 degrees moved the bone's tail 0.000 cm and the face 6.47 cm, and the notice
+    called that a mistake - which taught the agent that these warnings were noise, and it then
+    dismissed a correct, quantitative cycle warning and lost a thirteen-key walk. The control
+    bone here hangs 0.28 m off the head's length axis, so the roll carries it 0.145 m: measured
+    motion, and nothing to warn about.
     """
     spine = _PoseBone("CHAR1_spine03_skn_jnt", rest_relative=_SPINE_REST)
     head = _PoseBone("CHAR1_head_jnt", rest_relative=_HEAD_REST, parent=spine)
     control = _PoseBone("CHAR1_face_ctrl", rest_relative=_HEAD_REST, parent=head, use_deform=False)
     server, _rig, _animation, _module = _posing(monkeypatch, [spine, head, control], matrix_world=_RIG_WORLD)
     roll = {"rotate": {"axis": "Y", "degrees": 30.0}}
+    rest_control = control.matrix.translation.copy()
 
-    deforming = server.set_character_pose("CHAR1_rig", [{"bone_name": "CHAR1_head_jnt", **roll}])
-    inert = server.set_character_pose("CHAR1_rig", [{"bone_name": "CHAR1_face_ctrl", **roll}])
+    carrier = server.set_character_pose("CHAR1_rig", [{"bone_name": "CHAR1_head_jnt", **roll}])
+    travelled = (control.matrix.translation - rest_control).length
+    server.set_character_pose("CHAR1_rig", [{"bone_name": "CHAR1_head_jnt", "rotate": {"axis": "Y", "degrees": 0.0}}])
+    barren = server.set_character_pose("CHAR1_rig", [{"bone_name": "CHAR1_face_ctrl", **roll}])
 
-    notice = deforming["warnings"][0]
-    assert "no child bone swings" in notice
-    assert "that geometry rolls with it" in notice
-    assert "nothing swings" not in notice, "the detector never measured the mesh and must not rule on it"
-    assert "deforms no geometry" in inert["warnings"][0]
+    # The measurement, not the opinion: the child really did travel, and by about the chord a
+    # 0.28 m radius turns through at 30 degrees.
+    assert travelled == pytest.approx(2.0 * 0.28 * math.sin(math.radians(15.0)), abs=1e-6)
+    assert carrier["warnings"] == [], "a roll that carried a child bone 14 cm was called inert"
+    # The leaf control carries nothing at all, and that one is still worth saying.
+    assert len(barren["warnings"]) == 1
+    assert "deforms no geometry" in barren["warnings"][0]
+
+
+def test_a_roll_that_carries_skinned_vertices_off_the_axis_says_nothing(monkeypatch) -> None:
+    """
+    The mesh is the only witness a leaf deform bone has, so it is the only one that can clear it.
+
+    A jaw or a head bone often has no child bone at all: every part of it an audience sees is
+    skin. Reading the rest hierarchy alone cannot tell that from a relay bone, which is exactly
+    how the notice came to fire on correct poses, so the weighted vertices are measured too.
+    """
+    spine = _PoseBone("CHAR1_spine03_skn_jnt", rest_relative=_SPINE_REST)
+    head = _PoseBone("CHAR1_head_jnt", rest_relative=_HEAD_REST, parent=spine)
+    server, rig, _animation, _module = _posing(monkeypatch, [spine, head], matrix_world=_RIG_WORLD)
+    # Two vertices set 9 cm and 5 cm off the head's own world length axis, so the roll carries
+    # them 4.7 cm and 2.6 cm - which is the face travelling while the tail stays put.
+    origin = rig.matrix_world @ head.bone.head_local
+    face = _skinned_mesh(
+        "CHAR1_face_msh",
+        rig,
+        {"CHAR1_head_jnt": [tuple(origin + _Vector((0.09, 0.0, 0.0))), tuple(origin + _Vector((0.0, 0.05, 0.0)))]},
+    )
+    sys.modules["bpy"].data.objects["CHAR1_face_msh"] = face
+
+    rolled = server.set_character_pose(
+        "CHAR1_rig", [{"bone_name": "CHAR1_head_jnt", "rotate": {"axis": "Y", "degrees": 30.0}}]
+    )
+
+    assert rolled["warnings"] == [], "a roll that carries skinned geometry is the turn the caller asked for"
+
+
+def test_a_deforming_bone_with_no_reachable_mesh_says_what_it_did_not_measure(monkeypatch) -> None:
+    """
+    Not proving the skin stays put is not the same as proving it moves, and the notice says which.
+
+    The old wording asserted the tail and every child head "stay exactly where they are" and
+    then talked about the mesh without ever reading one. Here there is no mesh to read, so the
+    notice reports the hierarchy result it did measure and names the skin as unmeasured.
+    """
+    server, _rig, _animation, _posing, _spine, head = _head_rig(monkeypatch)
+
+    rolled = server.set_character_pose("CHAR1_rig", [{"bone_name": head.name, "rotate": {"axis": "Y", "degrees": 30.0}}])
+
+    notice = rolled["warnings"][0]
+    assert "no mesh bound to this armature carries a vertex group named after it" in notice, notice
+    assert "nothing about the skin was measured here" in notice
+    assert "stay exactly where they are" not in notice, "the measurement never covered the skin"
+
+
+def test_a_bounded_vertex_scan_says_its_radius_is_a_floor(monkeypatch) -> None:
+    """
+    A million-vertex body cannot be walked once a frame, so the scan stops - and discloses it.
+
+    Every vertex here sits on the bone's own length axis, so the roll moves none of them and the
+    warning is correct; what the notice must not do is present a bounded maximum as if it had
+    read the whole mesh.
+    """
+    spine = _PoseBone("CHAR1_spine03_skn_jnt", rest_relative=_SPINE_REST)
+    head = _PoseBone("CHAR1_head_jnt", rest_relative=_HEAD_REST, parent=spine, length=0.2)
+    server, rig, _animation, module = _posing(monkeypatch, [spine, head], matrix_world=_RIG_WORLD)
+    # Every vertex placed exactly on the bone's own world length axis, so each contributes a
+    # zero radius and the roll really does move none of them.
+    origin = rig.matrix_world @ head.bone.head_local
+    along = ((rig.matrix_world @ head.bone.tail_local) - origin).normalized()
+    on_axis = [tuple(origin + along * (0.001 * index)) for index in range(module._MAX_TWIST_WEIGHTED_VERTICES + 1)]
+    sys.modules["bpy"].data.objects["CHAR1_face_msh"] = _skinned_mesh("CHAR1_face_msh", rig, {"CHAR1_head_jnt": on_axis})
+
+    rolled = server.set_character_pose(
+        "CHAR1_rig", [{"bone_name": "CHAR1_head_jnt", "rotate": {"axis": "Y", "degrees": 30.0}}]
+    )
+
+    notice = rolled["warnings"][0]
+    assert f"{module._MAX_TWIST_WEIGHTED_VERTICES} vertices weighted to it across 1 bound mesh(es)" in notice, notice
+    assert "stopped on its own bound, so this is a floor" in notice
+
+
+def test_a_whole_rig_rolled_about_its_own_length_counts_the_bones_it_cannot_name(monkeypatch) -> None:
+    """Warnings are lifted whole and never paged, so one per posed bone would spend the budget."""
+    bones = [_PoseBone(f"CHAR1_roll_{index:02d}") for index in range(9)]
+    server, _rig, _animation, _module = _posing(monkeypatch, bones)
+
+    reply = server.set_character_pose(
+        "CHAR1_rig", [{"bone_name": bone.name, "rotate": {"axis": "Y", "degrees": 45.0}} for bone in bones]
+    )
+
+    assert len(reply["warnings"]) == 5, reply["warnings"]
+    assert sum(f"Bone '{bone.name}'" in reply["warnings"][0] for bone in bones) == 1
+    summary = reply["warnings"][-1]
+    assert summary.startswith("5 further bone(s) were rolled about their own length axis")
+    assert "CHAR1_roll_04" in summary and "and 1 more" in summary
+
+
+def _probe_rig(monkeypatch):
+    """Build a spine, a head turned a quarter turn about X, and a control 0.28 m off its axis."""
+    spine = _PoseBone("CHAR1_spine03_skn_jnt", rest_relative=_SPINE_REST)
+    head = _PoseBone("CHAR1_head_jnt", rest_relative=_HEAD_REST, parent=spine)
+    control = _PoseBone("CHAR1_face_ctrl", rest_relative=_HEAD_REST, parent=head, use_deform=False)
+    server, rig, _animation, module = _posing(monkeypatch, [spine, head, control], matrix_world=_RIG_WORLD)
+    return server, rig, module, head, control
+
+
+def test_the_probe_separates_the_axis_that_swings_a_bone_from_the_one_that_only_rolls_it(monkeypatch) -> None:
+    """
+    The whole point of the tool: rest_axes names directions, and only a witness names motion.
+
+    Blender builds every bone along its own +Y, so a LOCAL turn about Y carries nothing that
+    sits on that line - here the bone's own tail. The other two swing it through a chord of
+    2*length*sin(theta/2), and the probe has to show that difference rather than assert it.
+    """
+    server, _rig, _animation, _module, _spine, head = _head_rig(monkeypatch)
+
+    reply = server.probe_bone_axis("CHAR1_rig", head.name, ["X", "Y", "Z"])
+
+    travel = {record["axis"]: record["travel_m"] for record in reply["axes"]}
+    swing = 2.0 * head.length * math.sin(math.radians(15.0) / 2.0)
+    assert travel["Y"] == pytest.approx(0.0, abs=1e-9), "the length axis moved the witness"
+    assert travel["X"] == pytest.approx(swing, abs=1e-6)
+    assert travel["Z"] == pytest.approx(swing, abs=1e-6)
+    assert travel["X"] > travel["Y"] * 100.0 + 1e-3
+    # With no descendant to read it through, the probe says so rather than guessing a witness.
+    assert reply["witness_bone"] == head.name
+    assert reply["witness_bone_source"] == "probed_bone"
+    assert reply["bone_length_m"] == pytest.approx(head.length, abs=1e-6)
+
+
+def test_the_sign_of_a_reference_component_follows_the_sign_of_the_turn(monkeypatch) -> None:
+    """
+    "Which way" is the half of the answer a magnitude cannot carry.
+
+    Whether a wrist roll turns the palm outward or inward is a sign against a direction the
+    caller names, so reversing the turn has to reverse the number - otherwise the reply says
+    only that something moved, which the caller already knew.
+    """
+    server, _rig, _animation, _module, _spine, head = _head_rig(monkeypatch)
+    directions = {"camera_right": (1.0, 0.0, 0.0)}
+
+    forward = server.probe_bone_axis("CHAR1_rig", head.name, ["X"], degrees=15.0, reference_directions=directions)
+    backward = server.probe_bone_axis("CHAR1_rig", head.name, ["X"], degrees=-15.0, reference_directions=directions)
+
+    ahead = forward["axes"][0]["reference_components_m"]["camera_right"]
+    behind = backward["axes"][0]["reference_components_m"]["camera_right"]
+    assert abs(ahead) > 1e-3, "the reference direction is perpendicular to the travel; it proves nothing"
+    assert abs(behind) > 1e-3
+    assert ahead * behind < 0.0, f"reversing the turn left the component's sign alone: {ahead} and {behind}"
+    # Turning about -X is the same rotation as turning about +X the other way, so these two are
+    # the same measurement spelled differently and have to agree exactly, not merely in sign.
+    negated = server.probe_bone_axis("CHAR1_rig", head.name, ["-X"], degrees=15.0, reference_directions=directions)
+    assert negated["axes"][0]["reference_components_m"]["camera_right"] == pytest.approx(behind, abs=1e-9)
+
+
+def test_the_probe_defaults_to_the_farthest_descendant_and_names_how_it_chose(monkeypatch) -> None:
+    """A shoulder read at the shoulder answers almost nothing; the lever arm is the hand."""
+    server, _rig, _module, head, control = _probe_rig(monkeypatch)
+
+    chosen = server.probe_bone_axis("CHAR1_rig", head.name, ["X"])
+    named = server.probe_bone_axis("CHAR1_rig", head.name, ["X"], witness_bone_name=head.name)
+
+    assert chosen["witness_bone"] == control.name
+    assert chosen["witness_bone_source"] == "farthest_descendant"
+    assert named["witness_bone"] == head.name
+    assert named["witness_bone_source"] == "explicit"
+    assert chosen["axes"][0]["travel_m"] > named["axes"][0]["travel_m"] * 2.0, (
+        "the farther witness must report the larger travel, or the default buys nothing"
+    )
+
+
+def _channel_values(pose_bone):
+    """Flatten a pose bone's own channel delta, so a restore can be compared value by value."""
+    return [value for row in pose_bone.matrix_basis.rows for value in row]
+
+
+def test_the_probe_hands_the_pose_back_untouched(monkeypatch) -> None:
+    """
+    The command is read-only, so it skips `mutation_transaction` and the restore is all there is.
+
+    A probe that left a 15-degree trial turn on a bone would corrupt the pose it was called to
+    explain, and nothing downstream would put it back.
+    """
+    server, _rig, _animation, _module, _spine, head = _head_rig(monkeypatch)
+    server.set_character_pose("CHAR1_rig", [{"bone_name": head.name, "rotate": {"axis": "Z", "degrees": 22.0}}])
+    before = _channel_values(head)
+
+    server.probe_bone_axis("CHAR1_rig", head.name, ["X", "Y", "Z"], degrees=40.0)
+
+    assert _channel_values(head) == pytest.approx(before, abs=1e-12)
+
+
+def test_a_probe_that_raises_part_way_through_still_hands_the_pose_back(monkeypatch) -> None:
+    """The failure mode a read-only command has no transaction to cover: a half-applied trial turn."""
+    server, _rig, _animation, _module, _spine, head = _head_rig(monkeypatch)
+    server.set_character_pose("CHAR1_rig", [{"bone_name": head.name, "rotate": {"axis": "Z", "degrees": 22.0}}])
+    before = _channel_values(head)
+    updates = []
+
+    def failing_update():
+        updates.append(None)
+        # Fourth update: the second axis has been written and the scene is being re-solved.
+        if len(updates) == 4:
+            raise RuntimeError("depsgraph blew up mid-probe")
+
+    sys.modules["bpy"].context.view_layer.update = failing_update
+
+    with pytest.raises(RuntimeError, match="mid-probe"):
+        server.probe_bone_axis("CHAR1_rig", head.name, ["X", "Z"], degrees=40.0)
+
+    assert _channel_values(head) == pytest.approx(before, abs=1e-12)
+
+
+def test_a_probe_refuses_a_direction_that_names_no_direction_by_name(monkeypatch) -> None:
+    """Six named directions in and one silently ignored is a wrong answer nobody can see."""
+    server, _rig, _animation, _module, _spine, head = _head_rig(monkeypatch)
+
+    with pytest.raises(ValueError, match=r"reference_directions\['up'\] must be a non-zero vector"):
+        server.probe_bone_axis(
+            "CHAR1_rig", head.name, ["X"], reference_directions={"camera_right": (1, 0, 0), "up": (0, 0, 0)}
+        )
+    with pytest.raises(ValueError, match=r"reference_directions\['up'\]\[2\]"):
+        server.probe_bone_axis("CHAR1_rig", head.name, ["X"], reference_directions={"up": (0, 0, float("inf"))})
+
+
+def test_a_probe_refuses_a_repeated_axis_and_an_unknown_one_before_touching_the_bone(monkeypatch) -> None:
+    """Two identical probes answer the same number twice; a bad letter must not reach the rig."""
+    server, _rig, _animation, _module, _spine, head = _head_rig(monkeypatch)
+    before = [list(row) for row in head.matrix_basis.rows]
+
+    with pytest.raises(ValueError, match="Duplicate probe axes: X"):
+        server.probe_bone_axis("CHAR1_rig", head.name, ["X", "X"])
+    with pytest.raises(ValueError, match="must be one of X, -X, Y, -Y, Z, -Z"):
+        server.probe_bone_axis("CHAR1_rig", head.name, ["W"])
+    with pytest.raises(ValueError, match="too small to measure"):
+        server.probe_bone_axis("CHAR1_rig", head.name, ["X"], degrees=0.0)
+    with pytest.raises(ValueError, match="Pose bone not found: CHAR1_nope"):
+        server.probe_bone_axis("CHAR1_rig", head.name, ["X"], witness_bone_name="CHAR1_nope")
+
+    assert [list(row) for row in head.matrix_basis.rows] == before
 
 
 @pytest.mark.parametrize(

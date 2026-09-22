@@ -61,14 +61,16 @@ def test_validate_scene_is_registered_and_read_only(monkeypatch) -> None:
     assert server.command_spec("validate_scene").read_only
 
 
-def test_validate_scene_dispatches_scope_and_max_findings(stub_blender_connection: StubFactory) -> None:
+def test_validate_scene_dispatches_scope_max_findings_and_offset(stub_blender_connection: StubFactory) -> None:
     connection = stub_blender_connection({"findings": []})
 
-    asyncio.run(scene.validate_scene(ctx=None, scene_name="Scene", scope=["cloth", "liquid"], max_findings=50))
+    asyncio.run(
+        scene.validate_scene(ctx=None, scene_name="Scene", scope=["cloth", "liquid"], max_findings=50, offset=50)
+    )
 
     assert connection.calls[0] == (
         "validate_scene",
-        {"scene_name": "Scene", "scope": ["cloth", "liquid"], "max_findings": 50},
+        {"scene_name": "Scene", "scope": ["cloth", "liquid"], "max_findings": 50, "offset": 50},
     )
 
 
@@ -92,6 +94,13 @@ def test_validate_scene_max_findings_schema_rejects_out_of_range() -> None:
         TypeAdapter(_VALIDATE_SCENE_HINTS["max_findings"]).validate_python(0)
     with pytest.raises(ValidationError):
         TypeAdapter(_VALIDATE_SCENE_HINTS["max_findings"]).validate_python(1001)
+
+
+def test_validate_scene_offset_schema_rejects_out_of_range() -> None:
+    with pytest.raises(ValidationError):
+        TypeAdapter(_VALIDATE_SCENE_HINTS["offset"]).validate_python(-1)
+    with pytest.raises(ValidationError):
+        TypeAdapter(_VALIDATE_SCENE_HINTS["offset"]).validate_python(10_000)
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +146,21 @@ def test_validate_scene_rejects_out_of_range_max_findings(monkeypatch) -> None:
         server.validate_scene("Scene", max_findings=0)
     with pytest.raises(ValueError, match="max_findings must be in"):
         server.validate_scene("Scene", max_findings=1001)
+
+
+def test_validate_scene_rejects_out_of_range_offset_before_scanning_anything(monkeypatch) -> None:
+    """A bad page request costs nothing: it is refused before a single domain is walked."""
+    server = _server_with_scene(monkeypatch, _fake_scene())
+
+    def _never(*_a, **_k):
+        raise AssertionError("a domain was scanned for an offset that was never valid")
+
+    monkeypatch.setattr(server, "validate_cloth_setup", _never, raising=False)
+
+    with pytest.raises(ValueError, match="offset must be in"):
+        server.validate_scene("Scene", scope=["cloth"], offset=-1)
+    with pytest.raises(ValueError, match="offset must be in"):
+        server.validate_scene("Scene", scope=["cloth"], offset=10_000)
 
 
 def test_validate_scene_only_calls_domains_in_scope(monkeypatch) -> None:
@@ -235,18 +259,145 @@ def test_validate_scene_truncation_and_summary(monkeypatch) -> None:
     assert result["ready"] is False
 
 
-def test_validate_scene_propagates_sub_validator_truncation_flag(monkeypatch) -> None:
+def test_validate_scene_separates_a_cut_page_from_a_domain_that_capped_itself(monkeypatch) -> None:
+    """
+    `truncated` and `domains_truncated` are two different facts and must not share a key.
+
+    A domain that stopped counting internally is unreachable by any offset of this call, so
+    reporting it as `truncated` sent callers after a page that does not exist. The reply used to
+    conflate both on `truncated`, which is what made `next_offset` point at nothing.
+    """
     server = _server_with_scene(monkeypatch, _fake_scene())
     monkeypatch.setattr(
         server,
         "validate_liquid_setup",
-        lambda *_a, **_k: {"findings": [], "truncated": True},
+        lambda *_a, **_k: {"findings": [{"severity": "INFO", "code": "L0", "object": "Pool"}], "truncated": True},
         raising=False,
     )
 
-    result = server.validate_scene("Scene", scope=["liquid"], max_findings=500)
+    capped = server.validate_scene("Scene", scope=["liquid"], max_findings=500)
 
-    assert result["truncated"] is True
+    assert capped["domains_truncated"] is True
+    assert capped["truncated"] is False, "one finding of one is a complete page"
+    assert capped["next_offset"] is None
+    assert capped["domain_summaries"]["liquid"]["truncated"] is True
+
+    monkeypatch.setattr(
+        server,
+        "validate_cloth_setup",
+        lambda *_a, **_k: {
+            "findings": [{"severity": "ERROR", "code": f"C{i}", "object": f"Obj{i}"} for i in range(5)],
+            "truncated": False,
+        },
+        raising=False,
+    )
+
+    cut = server.validate_scene("Scene", scope=["cloth"], max_findings=2)
+
+    assert cut["truncated"] is True
+    assert cut["domains_truncated"] is False
+
+
+def _cloth_findings(monkeypatch, server, total, *, honour_cap=False):
+    """Install a cloth validator reporting `total` issues, optionally obeying its own cap."""
+
+    def validate_cloth_setup(*_a, max_findings=300, **_k):
+        items = [{"severity": "ERROR", "code": f"C{i}", "object": f"Obj{i}", "message": "m"} for i in range(total)]
+        if not honour_cap:
+            return {"findings": items, "truncated": False}
+        return {"findings": items[:max_findings], "truncated": total > max_findings}
+
+    monkeypatch.setattr(server, "validate_cloth_setup", validate_cloth_setup, raising=False)
+
+
+def test_validate_scene_offset_returns_the_next_findings_and_a_matching_next_offset(monkeypatch) -> None:
+    """
+    Each page holds the findings after the last one, and `next_offset` walks to the end.
+
+    The reply used to advertise `next_offset` and "continue with offset=..." while neither this
+    tool nor the add-on accepted an offset at all, so the resume point was unusable.
+    """
+    server = _server_with_scene(monkeypatch, _fake_scene())
+    _cloth_findings(monkeypatch, server, total=5)
+
+    first = server.validate_scene("Scene", scope=["cloth"], max_findings=2)
+    second = server.validate_scene("Scene", scope=["cloth"], max_findings=2, offset=first["next_offset"])
+    last = server.validate_scene("Scene", scope=["cloth"], max_findings=2, offset=second["next_offset"])
+
+    assert [item["code"] for item in first["findings"]] == ["C0", "C1"]
+    assert [item["code"] for item in second["findings"]] == ["C2", "C3"]
+    assert [item["code"] for item in last["findings"]] == ["C4"]
+    assert (first["offset"], second["offset"], last["offset"]) == (0, 2, 4)
+    assert (first["next_offset"], second["next_offset"], last["next_offset"]) == (2, 4, None)
+    assert (first["truncated"], second["truncated"], last["truncated"]) == (True, True, False)
+    assert {page["total_findings"] for page in (first, second, last)} == {5}
+    assert last["returned_count"] == 1
+
+
+def test_validate_scene_asks_each_domain_for_enough_findings_to_fill_a_resumed_page(monkeypatch) -> None:
+    """
+    A domain that stops at its own cap must still be asked past the start of the page.
+
+    Forwarding the caller's `max_findings` unchanged made every resumed page of a self-capping
+    domain empty: the domain returned exactly the findings the first page had already shown.
+    """
+    server = _server_with_scene(monkeypatch, _fake_scene())
+    _cloth_findings(monkeypatch, server, total=5, honour_cap=True)
+
+    resumed = server.validate_scene("Scene", scope=["cloth"], max_findings=2, offset=2)
+
+    assert [item["code"] for item in resumed["findings"]] == ["C2", "C3"]
+    assert resumed["offset"] == 2
+    assert resumed["returned_count"] == 2
+
+
+def test_validate_scene_offset_past_the_findings_returns_an_empty_final_page(monkeypatch) -> None:
+    """An offset beyond the last finding is an empty page, not an error and not a wrapped one."""
+    server = _server_with_scene(monkeypatch, _fake_scene())
+    _cloth_findings(monkeypatch, server, total=3)
+
+    result = server.validate_scene("Scene", scope=["cloth"], max_findings=10, offset=9)
+
+    assert result["findings"] == []
+    assert result["offset"] == 3
+    assert result["total_findings"] == 3
+    assert result["truncated"] is False
+    assert result["next_offset"] is None
+
+
+def test_validate_scene_bounds_one_findings_evidence_without_starving_the_others(monkeypatch) -> None:
+    """
+    A verbose finding is shortened in place; every other finding still ships in the same reply.
+
+    One PBR OVERLAPPING_UVS finding carries every overlapping face pair it found - kilobytes of
+    an 8 KiB reply - and the envelope cuts the longest list first, so that single finding used to
+    push every other domain's findings off the wire.
+    """
+    server = _server_with_scene(monkeypatch, _fake_scene(objects=[_fake_object("Mesh1")]))
+    pairs = [[index, index + 1] for index in range(100)]
+    monkeypatch.setattr(
+        server,
+        "validate_pbr_asset",
+        lambda *_a, **_k: {
+            "findings": [
+                {"severity": "WARNING", "code": "OVERLAPPING_UVS", "object": "Mesh1", "evidence": pairs},
+                {"severity": "WARNING", "code": "MISSING_UVS", "object": "Mesh1", "evidence": {"uv_layers": 0}},
+                {"severity": "WARNING", "code": "NON_MANIFOLD", "object": "Mesh1", "evidence": [1, 2]},
+            ]
+        },
+        raising=False,
+    )
+
+    result = server.validate_scene("Scene", scope=["pbr"])
+    by_code = {item["code"]: item for item in result["findings"]}
+
+    assert by_code["OVERLAPPING_UVS"]["evidence"] == pairs[:12]
+    assert by_code["OVERLAPPING_UVS"]["evidence_omitted"] == 88
+    assert by_code["MISSING_UVS"]["evidence"] == {"uv_layers": 0}, "a dict evidence is not a page to cut"
+    assert by_code["NON_MANIFOLD"]["evidence"] == [1, 2]
+    assert "evidence_omitted" not in by_code["NON_MANIFOLD"]
+    assert "evidence_omitted" not in by_code["MISSING_UVS"]
+    assert len(result["findings"]) == 3, "shortening one finding must not drop the others"
 
 
 # ---------------------------------------------------------------------------

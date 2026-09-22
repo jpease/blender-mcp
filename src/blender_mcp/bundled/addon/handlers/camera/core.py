@@ -1,3 +1,8 @@
+# Two handlers here configure a datablock they have just created or patched from inside the try
+# that owns undoing it, and the configuration is the part that can raise: shortening the clause
+# would put a write outside its own rollback, which is the defect these clauses exist to prevent.
+# Declared per file as `handlers/character_rigging/references.py` does.
+# ruff: file-ignore[too-many-statements-in-try-clause]
 # pyright: reportGeneralTypeIssues=false, reportOptionalSubscript=false
 """Camera object lifecycle: creation, optics/display configuration, scene-camera assignment, and depth of field."""
 
@@ -26,6 +31,7 @@ from ._shared import (
     _required_name,
     _retroactive_cut_warnings,
     _scene,
+    _target_world_point,
     _transform_info,
     _update_view_layer,
     _validate_display,
@@ -64,6 +70,91 @@ def _validate_optics(data, patch):
 _QUATERNION_COMPONENTS = 4
 _DEGENERATE_QUATERNION_LENGTH_SQUARED = 1e-16
 
+_DOF_ENGINE_NOTICE = "Depth-of-field appearance depends on the render engine and sampling settings."
+# A focus intent on a camera with `use_dof` off renders exactly like no focus intent at all, and
+# every other field of this reply says the change landed - which it did, on a switch nothing is
+# reading. `create_focus_pull` turns the switch on for its caller; this tool does not, because a
+# camera deliberately left sharp must stay sharp, so the inconsistency is stated rather than
+# resolved by guessing which one the caller meant.
+_DOF_DISABLED_WARNING = (
+    "Focus was set, but this camera's use_dof is off, so the render shows no depth of field at all. "
+    'Pass patch={"use_dof": true} to enable it.'
+)
+
+
+def _validated_dof_patch(patch):
+    """
+    Check a depth-of-field patch's numeric fields before any of them is written.
+
+    Args:
+        patch: The caller's raw patch, possibly None.
+
+    Returns:
+        dict: The patch, defaulted to empty.
+
+    Raises:
+        ValueError: If a field is out of its range, leaving the camera untouched.
+
+    """
+    patch = patch or {}
+    for field in ("aperture_fstop", "aperture_ratio"):
+        if field in patch:
+            _positive(patch[field], field)
+    if "aperture_blades" in patch:
+        _bounded_int(patch["aperture_blades"], "aperture_blades", 0, 16)
+    if "aperture_rotation" in patch:
+        _finite_number(patch["aperture_rotation"], "aperture_rotation")
+    return patch
+
+
+def _reusable_focus_target(focus_target_name, reuse_focus_target):
+    """
+    Resolve a named focus target that already exists, refusing to take one over implicitly.
+
+    Args:
+        focus_target_name: The target name the caller supplied, or None.
+        reuse_focus_target: Whether the caller consented to reusing an existing object.
+
+    Returns:
+        The existing object, or None when the name is free or unset.
+
+    Raises:
+        ValueError: If the name is taken without consent, or by something this tool did not make.
+
+    """
+    existing = bpy.data.objects.get(focus_target_name) if focus_target_name else None
+    if existing is None:
+        return None
+    if not reuse_focus_target:
+        raise ValueError(f"Focus target '{focus_target_name}' exists; set reuse_focus_target=true")
+    if existing.type != "EMPTY" or existing.get("mcp_camera_role") != "focus_target":
+        raise ValueError(f"Object '{focus_target_name}' is not a tagged MCP focus target")
+    return existing
+
+
+def _focus_target_for_point(scene, collection_name, existing_target, focus_target_name, point):
+    """
+    Put the focus Empty a world-space focus point needs, reusing the caller's or making one.
+
+    Args:
+        scene: The scene the collection is resolved in.
+        collection_name: Where a newly created target is linked.
+        existing_target: The target `_reusable_focus_target` approved, or None.
+        focus_target_name: The name a new target takes.
+        point: The world-space point to focus on.
+
+    Returns:
+        tuple: The object to focus on, and the object this call created, or None if it reused one.
+        The caller removes the second on failure, which is why reuse must not report one.
+
+    """
+    if existing_target is not None:
+        existing_target.matrix_world.translation = point
+        return existing_target, None
+    collection = _ensure_collection(scene, collection_name)
+    created = _new_empty(collection, focus_target_name, point, str(uuid.uuid4()), "focus_target", display_type="SPHERE")
+    return created, created
+
 
 def _validated_quaternion(values):
     """
@@ -88,7 +179,7 @@ def _validated_quaternion(values):
     return quaternion
 
 
-def _resolved_aim_target(scene, target_object_name, target_point):
+def _resolved_aim_target(scene, target_object_name, target_point, target_bone_name):
     """
     Read where a new camera should look, from whichever of the two target forms was given.
 
@@ -96,25 +187,29 @@ def _resolved_aim_target(scene, target_object_name, target_point):
         scene: The scene a `target_object_name` is resolved in.
         target_object_name: An object to look at, or None.
         target_point: A world point to look at, or None.
+        target_bone_name: A bone on that object to look at instead of its origin, or None.
 
     Returns:
         mathutils.Vector | None: The world point to aim at, or None when neither was given.
 
     Raises:
-        ValueError: If the named object does not exist, or the point is not three finite numbers.
+        ValueError: If the named object or bone does not exist, or the point is not three finite
+        numbers.
 
     """
     if target_object_name is not None:
-        # The object's evaluated world position, so a constrained or animated target aims at
-        # where it actually is rather than at its unevaluated origin.
+        # The object's evaluated world position, so a constrained or animated target - or a posed
+        # bone on it - aims at where it actually is rather than at its unevaluated origin.
         _update_view_layer()
-        return _object(target_object_name, scene=scene).matrix_world.translation.copy()
+        return _target_world_point(_object(target_object_name, scene=scene), target_bone_name)
     if target_point is not None:
         return _vector(target_point, "target_point")
     return None
 
 
-def _resolved_camera_orientation(scene, rotation_euler, rotation_quaternion, target_object_name, target_point):
+def _resolved_camera_orientation(
+    scene, rotation_euler, rotation_quaternion, target_object_name, target_point, target_bone_name
+):
     """
     Reduce the four ways a new camera can be oriented to the values the write needs.
 
@@ -124,6 +219,8 @@ def _resolved_camera_orientation(scene, rotation_euler, rotation_quaternion, tar
         rotation_quaternion: An explicit `[w, x, y, z]`, or None.
         target_object_name: An object to look at, or None.
         target_point: A world point to look at, or None.
+        target_bone_name: A bone on `target_object_name` to look at, or None. This qualifies that
+            object rather than competing with it, so it is not one of the exclusive sources.
 
     Returns:
         tuple: `(rotation_euler, quaternion, aim_target)`, each None unless the caller named
@@ -136,10 +233,12 @@ def _resolved_camera_orientation(scene, rotation_euler, rotation_quaternion, tar
     sources = (rotation_euler, rotation_quaternion, target_object_name, target_point)
     if sum(value is not None for value in sources) > 1:
         raise ValueError("Supply only one camera orientation source")
+    if target_bone_name is not None and target_object_name is None:
+        raise ValueError("target_bone_name requires target_object_name")
     return (
         None if rotation_euler is None else _vector(rotation_euler, "rotation_euler"),
         None if rotation_quaternion is None else _validated_quaternion(rotation_quaternion),
-        _resolved_aim_target(scene, target_object_name, target_point),
+        _resolved_aim_target(scene, target_object_name, target_point, target_bone_name),
     )
 
 
@@ -157,6 +256,7 @@ class _CoreMixin:
         rotation_quaternion=None,
         target_object_name=None,
         target_point=None,
+        target_bone_name=None,
         optics=None,
         make_active=False,
     ):
@@ -164,7 +264,7 @@ class _CoreMixin:
         _required_name(name, "name")
         world_location = _vector(location, "location")
         rotation_euler, quaternion, aim_target = _resolved_camera_orientation(
-            scene, rotation_euler, rotation_quaternion, target_object_name, target_point
+            scene, rotation_euler, rotation_quaternion, target_object_name, target_point, target_bone_name
         )
 
         if optics and optics.get("projection") not in {None, projection}:
@@ -172,22 +272,34 @@ class _CoreMixin:
         collection = _ensure_collection(scene, collection_name)
         data = bpy.data.cameras.new(f"{name} Data")
         obj = bpy.data.objects.new(name, data)
-        collection.objects.link(obj)
-        patch = {"projection": projection, **(optics or {})}
-        validated = _validate_optics(data, patch)
-        _patch_values(data, validated, _CAMERA_OPTICS | {"type"})
-        obj.location = world_location
-        if rotation_euler is not None:
-            obj.rotation_mode = "XYZ"
-            obj.rotation_euler = rotation_euler
-        elif quaternion is not None:
-            obj.rotation_mode = "QUATERNION"
-            obj.rotation_quaternion = quaternion
-        elif aim_target is not None:
-            obj.rotation_mode = "QUATERNION"
-            obj.rotation_quaternion = _look_quaternion(world_location, aim_target)
-        if make_active:
-            scene.camera = obj
+        try:
+            collection.objects.link(obj)
+            patch = {"projection": projection, **(optics or {})}
+            validated = _validate_optics(data, patch)
+            _patch_values(data, validated, _CAMERA_OPTICS | {"type"})
+            obj.location = world_location
+            if rotation_euler is not None:
+                obj.rotation_mode = "XYZ"
+                obj.rotation_euler = rotation_euler
+            elif quaternion is not None:
+                obj.rotation_mode = "QUATERNION"
+                obj.rotation_quaternion = quaternion
+            elif aim_target is not None:
+                obj.rotation_mode = "QUATERNION"
+                obj.rotation_quaternion = _look_quaternion(world_location, aim_target)
+            if make_active:
+                scene.camera = obj
+        except Exception:
+            # Optics and the aim are only checkable against the camera they are being written to,
+            # so both can still refuse after the datablocks exist - a panorama_type on a
+            # non-PANO projection, or a camera placed on the point it was told to look at. A
+            # dispatched call would be unwound by the mutation transaction, but a direct caller
+            # (the real-Blender smoke scripts) and the invalidated-transaction path have nothing
+            # to unwind with, and the refusal would leave a half-built camera plus an orphan
+            # `<name> Data` behind under a name the next attempt can no longer use cleanly.
+            bpy.data.objects.remove(obj, do_unlink=True)
+            bpy.data.cameras.remove(data, do_unlink=True)
+            raise
         return {
             "object": obj.name,
             "camera_data": data.name,
@@ -308,56 +420,35 @@ class _CoreMixin:
         if point is not None and not focus_target_name:
             raise ValueError("focus_target_name is required for a focus point")
         dof = camera.data.dof
-        patch = patch or {}
+        patch = _validated_dof_patch(patch)
         if not patch and focus_object_name is None and focus_distance is None and focus_point is None:
             raise ValueError("Provide at least one depth-of-field or focus change")
-        for field in ("aperture_fstop", "aperture_ratio"):
-            if field in patch:
-                _positive(patch[field], field)
-        if "aperture_blades" in patch:
-            _bounded_int(patch["aperture_blades"], "aperture_blades", 0, 16)
-        if "aperture_rotation" in patch:
-            _finite_number(patch["aperture_rotation"], "aperture_rotation")
-        existing_target = bpy.data.objects.get(focus_target_name) if focus_target_name else None
-        existing_target_matrix = existing_target.matrix_world.copy() if existing_target is not None else None
-        if existing_target is not None:
-            if not reuse_focus_target:
-                raise ValueError(f"Focus target '{focus_target_name}' exists; set reuse_focus_target=true")
-            if existing_target.type != "EMPTY" or existing_target.get("mcp_camera_role") != "focus_target":
-                raise ValueError(f"Object '{focus_target_name}' is not a tagged MCP focus target")
-        old_patch = {field: getattr(dof, field) for field in patch}
-        old_focus_object = dof.focus_object
-        old_focus_distance = dof.focus_distance
+        existing_target = _reusable_focus_target(focus_target_name, reuse_focus_target)
+        before = {
+            "patch": {field: getattr(dof, field) for field in patch},
+            "focus_object": dof.focus_object,
+            "focus_distance": dof.focus_distance,
+            "target_matrix": existing_target.matrix_world.copy() if existing_target is not None else None,
+        }
         created_target = None
         try:
             old, new = _patch_values(dof, patch, _DOF_FIELDS)
             if point is not None:
-                if existing_target is not None:
-                    existing_target.matrix_world.translation = point
-                    focus_object = existing_target
-                else:
-                    collection = _ensure_collection(scene, focus_collection_name)
-                    created_target = _new_empty(
-                        collection,
-                        focus_target_name,
-                        point,
-                        str(uuid.uuid4()),
-                        "focus_target",
-                        display_type="SPHERE",
-                    )
-                    focus_object = created_target
+                focus_object, created_target = _focus_target_for_point(
+                    scene, focus_collection_name, existing_target, focus_target_name, point
+                )
             if focus_object is not None:
                 dof.focus_object = focus_object
             elif focus_distance is not None:
                 dof.focus_object = None
                 dof.focus_distance = focus_distance
         except Exception:
-            for field, value in old_patch.items():
+            for field, value in before["patch"].items():
                 setattr(dof, field, value)
-            dof.focus_object = old_focus_object
-            dof.focus_distance = old_focus_distance
-            if existing_target is not None and existing_target_matrix is not None:
-                existing_target.matrix_world = existing_target_matrix
+            dof.focus_object = before["focus_object"]
+            dof.focus_distance = before["focus_distance"]
+            if existing_target is not None and before["target_matrix"] is not None:
+                existing_target.matrix_world = before["target_matrix"]
             if created_target is not None:
                 bpy.data.objects.remove(created_target, do_unlink=True)
             raise
@@ -369,8 +460,8 @@ class _CoreMixin:
             "camera_data": camera.data.name,
             "old": {
                 **old,
-                "focus_object": getattr(old_focus_object, "name", None),
-                "focus_distance": old_focus_distance,
+                "focus_object": getattr(before["focus_object"], "name", None),
+                "focus_distance": before["focus_distance"],
             },
             "new": {
                 **new,
@@ -380,5 +471,5 @@ class _CoreMixin:
             "focus_intent": "OBJECT" if dof.focus_object else "DISTANCE",
             "changed_objects": changed,
             "changed_resources": [camera.data.name],
-            "warnings": ["Depth-of-field appearance depends on the render engine and sampling settings."],
+            "warnings": [_DOF_ENGINE_NOTICE, *([] if dof.use_dof else [_DOF_DISABLED_WARNING])],
         }

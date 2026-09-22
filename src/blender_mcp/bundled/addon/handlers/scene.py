@@ -8,11 +8,19 @@ from collections import Counter
 import bpy
 import mathutils
 
-from ..helpers import apply_modifier, modifier_result, rotation_as_native_list
+from ..helpers import apply_modifier, modifier_result, paginate, rotation_as_native_list
 from ..object_lookup import find_object
 from ..text_hygiene import client_safe_text
 
 _VALIDATE_SCENE_DOMAINS = ("scene", "camera", "lighting", "pbr", "cloth", "liquid", "persistence")
+# How many items of a list `evidence` one finding may carry. A single PBR OVERLAPPING_UVS
+# finding's evidence is every overlapping face pair `validate_pbr_asset` found, up to its own
+# `overlap_pair_limit` (default 100) `[face_a, face_b]` entries at ~25-30 wire bytes each - about
+# 3 KB of an 8 KiB reply. The envelope shortens the longest page first and `findings` strictly
+# contains `evidence`, so that one finding used to starve every other domain's findings out of
+# the same reply. Twelve entries still show the pattern; `evidence_omitted` says how many the
+# caller is not seeing, and the per-domain validator still reports the full list on its own.
+_MAX_FINDING_EVIDENCE_ITEMS = 12
 # Blender's own `Scene.frame_current` limits; outside them `frame_set` silently clamps, which
 # would make the reply's frame disagree with the one the caller asked for.
 _MIN_SCENE_FRAME = -1_048_574
@@ -47,7 +55,11 @@ def _normalized_domain_finding(domain, item):
     evidence = item.get("evidence")
     if message is None and isinstance(evidence, str):
         message, evidence = evidence, None
-    return {
+    omitted = 0
+    if isinstance(evidence, list) and len(evidence) > _MAX_FINDING_EVIDENCE_ITEMS:
+        omitted = len(evidence) - _MAX_FINDING_EVIDENCE_ITEMS
+        evidence = evidence[:_MAX_FINDING_EVIDENCE_ITEMS]
+    finding = {
         "domain": domain,
         "severity": item["severity"],
         "code": item.get("code"),
@@ -56,6 +68,11 @@ def _normalized_domain_finding(domain, item):
         "evidence": evidence,
         "remediation": item.get("remediation"),
     }
+    if omitted:
+        # Deliberately not `evidence_truncated`: the envelope reads that spelling as a page it
+        # can resume with an `evidence` offset, and no side of this call accepts one.
+        finding["evidence_omitted"] = omitted
+    return finding
 
 
 def _scene_level_findings(scene, active_domains):
@@ -222,6 +239,65 @@ def _persistence_findings(max_findings):
             if len(findings) > max_findings:
                 return findings[:max_findings], True
     return findings[:max_findings], len(findings) > max_findings
+
+
+def _collected_domain_findings(handler, scene, domains, domain_limit):
+    """
+    Run every in-scope domain validator and normalize what each one found.
+
+    Each domain is asked for `domain_limit` findings, not the caller's page length: a domain
+    that stopped at the page length could not fill a page starting past it, so a resumed page
+    came back empty while `total_findings` still promised more.
+
+    Args:
+        handler: The server whose per-domain validator methods are called.
+        scene: The scene to validate.
+        domains: Domain names to run, already filtered to the caller's scope.
+        domain_limit: Findings to ask each domain for, within the [1, 1000] they accept.
+
+    Returns:
+        tuple[list[dict], dict]: The normalized findings, and each domain's count and whether
+        it stopped at its own internal cap.
+
+    """
+    findings = []
+    domain_summaries = {}
+
+    def record(domain, items, *, truncated=False):
+        normalized = [_normalized_domain_finding(domain, item) for item in items]
+        findings.extend(normalized)
+        domain_summaries[domain] = {"findings": len(normalized), "truncated": bool(truncated)}
+
+    if "camera" in domains:
+        record("camera", handler.validate_camera_rig(scene.name).get("findings", []))
+
+    if "lighting" in domains:
+        result = handler.validate_lighting_setup(scene.name, limit=200, offset=0)
+        record("lighting", result.get("findings", []), truncated=result.get("truncated", False))
+
+    if "pbr" in domains:
+        mesh_names = sorted(obj.name for obj in scene.objects if obj.type == "MESH")
+        if mesh_names:
+            record("pbr", handler.validate_pbr_asset(object_names=mesh_names).get("findings", []))
+        else:
+            domain_summaries["pbr"] = {"findings": 0, "truncated": False}
+
+    if "cloth" in domains:
+        result = handler.validate_cloth_setup(scene.name, max_findings=domain_limit)
+        record("cloth", result.get("findings", []), truncated=result.get("truncated", False))
+
+    if "liquid" in domains:
+        result = handler.validate_liquid_setup(scene.name, max_findings=domain_limit)
+        record("liquid", result.get("findings", []), truncated=result.get("truncated", False))
+
+    if "scene" in domains:
+        record("scene", _scene_level_findings(scene, domains))
+
+    if "persistence" in domains:
+        items, persistence_truncated = _persistence_findings(domain_limit)
+        record("persistence", items, truncated=persistence_truncated)
+
+    return findings, domain_summaries
 
 
 def _required_name(value, label):
@@ -1391,9 +1467,11 @@ class SceneHandlersMixin:
             "changed_resources": unlinked_collections,
         }
 
-    def validate_scene(self, scene_name, scope=None, max_findings=300):
+    def validate_scene(self, scene_name, scope=None, max_findings=300, offset=0):
         if not 1 <= int(max_findings) <= 1000:
             raise ValueError("max_findings must be in [1, 1000]")
+        if not 0 <= int(offset) <= 9999:
+            raise ValueError("offset must be in [0, 9999]")
         scene = bpy.data.scenes.get(_required_name(scene_name, "scene_name"))
         if scene is None:
             raise ValueError(f"Scene not found: {scene_name}")
@@ -1407,44 +1485,11 @@ class SceneHandlersMixin:
         else:
             domains = list(_VALIDATE_SCENE_DOMAINS)
 
-        findings = []
-        domain_summaries = {}
-
-        def record(domain, items, *, truncated=False):
-            normalized = [_normalized_domain_finding(domain, item) for item in items]
-            findings.extend(normalized)
-            domain_summaries[domain] = {"findings": len(normalized), "truncated": bool(truncated)}
-
-        if "camera" in domains:
-            result = self.validate_camera_rig(scene.name)
-            record("camera", result.get("findings", []))
-
-        if "lighting" in domains:
-            result = self.validate_lighting_setup(scene.name, limit=200, offset=0)
-            record("lighting", result.get("findings", []), truncated=result.get("truncated", False))
-
-        if "pbr" in domains:
-            mesh_names = sorted(obj.name for obj in scene.objects if obj.type == "MESH")
-            if mesh_names:
-                result = self.validate_pbr_asset(object_names=mesh_names)
-                record("pbr", result.get("findings", []))
-            else:
-                domain_summaries["pbr"] = {"findings": 0, "truncated": False}
-
-        if "cloth" in domains:
-            result = self.validate_cloth_setup(scene.name, max_findings=int(max_findings))
-            record("cloth", result.get("findings", []), truncated=result.get("truncated", False))
-
-        if "liquid" in domains:
-            result = self.validate_liquid_setup(scene.name, max_findings=int(max_findings))
-            record("liquid", result.get("findings", []), truncated=result.get("truncated", False))
-
-        if "scene" in domains:
-            record("scene", _scene_level_findings(scene, domains))
-
-        if "persistence" in domains:
-            items, persistence_truncated = _persistence_findings(int(max_findings))
-            record("persistence", items, truncated=persistence_truncated)
+        # A sub-validator asked for `max_findings` alone cannot fill a page that starts past it,
+        # so every domain is asked for enough findings to reach the end of this page, within the
+        # [1, 1000] its own parameter accepts.
+        domain_limit = min(int(offset) + int(max_findings), 1000)
+        findings, domain_summaries = _collected_domain_findings(self, scene, domains, domain_limit)
 
         severity_order = {"ERROR": 0, "WARNING": 1, "INFO": 2}
         findings.sort(
@@ -1455,18 +1500,27 @@ class SceneHandlersMixin:
                 str(item["subject"]),
             )
         )
-        domain_truncated = any(summary["truncated"] for summary in domain_summaries.values())
-        truncated = len(findings) > max_findings or domain_truncated
-        returned = findings[: int(max_findings)]
+        # Two different facts, so two keys: `truncated` is strictly "more findings follow this
+        # page", which `next_offset` resumes, while `domains_truncated` is "some domain stopped
+        # counting at its own cap", which no offset of this call can reach and which
+        # `domain_summaries` already names per domain.
+        domains_truncated = any(summary["truncated"] for summary in domain_summaries.values())
+        start, end, truncated, next_offset = paginate(len(findings), int(offset), int(max_findings), 1000)
+        page = findings[start:end]
 
         return {
             "scene": scene.name,
             "domains_checked": domains,
             "domain_summaries": domain_summaries,
-            "findings": returned,
+            "findings": page,
             "summary": dict(Counter(item["severity"] for item in findings)),
             "total_findings": len(findings),
+            "offset": start,
+            "limit": int(max_findings),
+            "returned_count": len(page),
             "truncated": truncated,
+            "next_offset": next_offset,
+            "domains_truncated": domains_truncated,
             "ready": not any(item["severity"] == "ERROR" for item in findings),
             "limitations": [
                 "Aggregates validate_pbr_asset, validate_lighting_setup, validate_cloth_setup, "

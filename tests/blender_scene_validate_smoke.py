@@ -158,10 +158,38 @@ assert geometry_by_code["DEGENERATE_GEOMETRY"]["subject"] == mesh_obj.name
 # All three of the above are WARNING-severity; the scene is still "ready".
 assert geometry["ready"] is True
 
+# A page of one, then the page after it. `truncated` here means strictly "more findings follow",
+# and `next_offset` is the offset that reads them: the reply used to promise a resume point that
+# no parameter of this call accepted, so the findings past the first were unreachable.
 bounded = server.validate_scene(scene.name, scope=["scene"], max_findings=1)
 assert len(bounded["findings"]) == 1
 assert bounded["truncated"] is True
+assert bounded["domains_truncated"] is False
+assert bounded["offset"] == 0
+assert bounded["next_offset"] == 1
 assert bounded["total_findings"] > 1
+
+resumed = server.validate_scene(scene.name, scope=["scene"], max_findings=1, offset=bounded["next_offset"])
+assert resumed["offset"] == 1
+assert resumed["returned_count"] == 1
+assert resumed["total_findings"] == bounded["total_findings"]
+assert resumed["findings"][0] != bounded["findings"][0], "a resumed page must not repeat the first one"
+
+# The whole list in one page: nothing follows it, so there is no resume point.
+whole = server.validate_scene(scene.name, scope=["scene"], max_findings=1000)
+assert whole["truncated"] is False
+assert whole["next_offset"] is None
+assert [finding["code"] for finding in whole["findings"][:2]] == [
+    bounded["findings"][0]["code"],
+    resumed["findings"][0]["code"],
+]
+
+try:
+    server.validate_scene(scene.name, offset=10_000)
+except ValueError as error:
+    assert "offset must be in" in str(error)
+else:
+    raise AssertionError("validate_scene should reject an out-of-range offset")
 
 # pbr domain must not be silently skipped, and must not fall back to the
 # active scene's full object list when this scene happens to have no meshes

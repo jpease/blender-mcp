@@ -241,9 +241,9 @@ command = "blender-mcp"
 blender-mcp registers just over 300 tools in total. Sending all of them to a client on every
 connection can be large enough to eat into the context available for the actual task, so by
 default a server process only registers its **core** bundle — scene inspection, object editing,
-viewport, animation, and file lifecycle/linking (~34 tools). Everything else is opt-in, selected
-with the `BLENDER_MCP_TOOLSETS` environment variable (a comma-separated list of names, or `all`
-for the previous everything-registered behavior).
+object removal, viewport, animation, and file lifecycle/linking (35 tools). Everything else is
+opt-in, selected with the `BLENDER_MCP_TOOLSETS` environment variable (a comma-separated list of
+names, or `all` for the previous everything-registered behavior).
 
 A name is either a **mode** — one word for the surface an artist is working in — or a **bundle**,
 for fine-grained control. Modes are curated presets over bundles and compose with them, e.g.
@@ -256,11 +256,11 @@ for fine-grained control. Modes are curated presets over bundles and compose wit
 
 | Bundle | Adds |
 |---|---|
-| *(default, always on)* | scene inspection, object editing, viewport, animation, file lifecycle (open/save/reset a shot, link/override/list/reload/relocate/unlink canon libraries) |
+| *(default, always on)* | scene inspection, object editing, object removal, viewport, animation, file lifecycle (open/save/reset a shot, link/override/list/reload/relocate/unlink canon libraries) |
 | `core-authoring` | mesh and model creation/editing |
 | `camera` | camera placement, framing, shots (rig construction is separate, see `camera-rigs`) |
 | `camera-rigs` | orbit/dolly/crane/path rig construction |
-| `scene-authoring` | declarative geometry creation, scene reset, object removal |
+| `scene-authoring` | declarative geometry creation, whole-scene reset |
 | `cloth` | cloth simulation |
 | `liquid` | fluid/liquid simulation |
 | `rigid-body` | rigid body physics, scene physics |
@@ -274,6 +274,15 @@ for fine-grained control. Modes are curated presets over bundles and compose wit
 | `texture-lighting` | **deprecated**, kept for existing configs: `texture` + `lighting` + `lighting-construction` |
 | `rendering` | render + inspect render output |
 | `assets` | Poly Haven, Sketchfab |
+
+A tool outside the selected bundles is not advertised at all, so a client reports a call to it
+exactly as it reports a typo. That is worth knowing before it costs an afternoon: a tool missing
+from the session may be one env var away rather than unimplemented. `get_addon_status` answers
+both halves — its `toolsets` field names the bundles this process mounted and counts what each
+unmounted bundle holds, and `get_addon_status(tool_name="create_dolly_camera_rig")` returns a
+`tool_lookup` verdict saying whether that name is mounted here, implemented but unmounted (with
+the `BLENDER_MCP_TOOLSETS` value that would mount it), served by a newer add-on than this server,
+or unknown to both.
 
 Add one MCP server entry per mode or bundle set you want available this session — set the env var
 on that entry, not globally, so each client config controls exactly which tools it sees:

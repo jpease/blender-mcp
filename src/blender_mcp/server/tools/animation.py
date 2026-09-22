@@ -291,7 +291,7 @@ async def set_action_cycle(
     ctx: Context,
     target: AnimationTarget,
     action_name: Annotated[str, Field(min_length=1, max_length=128)],
-    operation: Literal["SET", "REMOVE"] = "SET",
+    operation: Literal["SET", "REMOVE", "INSPECT"] = "SET",
     mode_before: Literal["NONE", "REPEAT", "REPEAT_OFFSET", "MIRROR"] = "NONE",
     mode_after: Literal["NONE", "REPEAT", "REPEAT_OFFSET", "MIRROR"] = "REPEAT_OFFSET",
     cycles_before: Annotated[int, Field(ge=0, le=10_000)] = 0,
@@ -325,6 +325,9 @@ async def set_action_cycle(
     elsewhere in it, the supported route is an NLA strip with repeat (manage_nla_tracks), which
     loops a bounded slice of the action, not this tool.
 
+    ``operation="INSPECT"`` measures that period and writes nothing: before it existed the only
+    reply carrying a period was the one that deleted the cycle to produce it.
+
     Args:
         ctx: MCP request context.
         target: The ID whose action is made cyclic. Pose-bone curves are keyed under the
@@ -332,8 +335,10 @@ async def set_action_cycle(
             type="ARMATURE" named for its armature datablock.
         action_name: The action to modify. An action of that name must exist.
         operation: SET adds or updates the Cycles modifier; REMOVE deletes it, leaving a
-            curve that has none untouched. REMOVE accepts none of the arguments below that
-            describe a cycle, since it creates none.
+            curve that has none untouched; INSPECT changes nothing and reports every selected
+            curve, including those carrying no modifier. Neither REMOVE nor INSPECT accepts
+            the arguments below that describe a new cycle, except that INSPECT still honours
+            ``expected_period_frames`` and refuses on it exactly as SET does.
         mode_before: Extrapolation before the first key.
         mode_after: Extrapolation after the last key.
         cycles_before: How many repeats before the range; 0 is unlimited.
@@ -360,22 +365,24 @@ async def set_action_cycle(
         action, action_slot, operation, curve_count, warnings, and modifiers - per curve:
         data_path, array_index, mode_before, mode_after, first_key_frame, last_key_frame,
         period_frames (what that curve repeats: its own key extent, null under two keys),
-        restricted_range (frame_start/frame_end/blend_in/blend_out, only when one was
-        given), and, for a finite count, repeat_end_frame/repeat_start_frame - where
+        restricted_range (frame_start/frame_end/blend_in/blend_out, only when one is in
+        force), and, for a finite count, repeat_end_frame/repeat_start_frame - where
         repetition stops and the curve's own extrapolation takes over, by default holding
-        the end key: a snap, then a freeze. modifiers shortens to fit the reply budget.
+        the end key: a snap, then a freeze. INSPECT reads all of those off the modifier that
+        is there and adds has_cycles_modifier, cycles_before and cycles_after - null or false
+        on a curve with no modifier. modifiers shortens to fit the reply budget.
 
     """
     if (frame_start is None) != (frame_end is None):
         raise ToolError("frame_start and frame_end must be given together")
     if frame_start is not None and frame_end is not None and frame_end <= frame_start:
         raise ToolError(f"frame_end must be greater than frame_start; got {frame_start} to {frame_end}")
-    if operation == "REMOVE":
+    if operation != "SET":
         # Accepting and ignoring them would report a success that did none of what was asked.
         unusable = [
             name
             for name, given in (
-                ("expected_period_frames", expected_period_frames is not None),
+                ("expected_period_frames", operation == "REMOVE" and expected_period_frames is not None),
                 ("frame_start", frame_start is not None),
                 ("blend_in", bool(blend_in)),
                 ("blend_out", bool(blend_out)),
@@ -383,7 +390,12 @@ async def set_action_cycle(
             if given
         ]
         if unusable:
-            raise ToolError(f"REMOVE deletes the Cycles modifier and cannot apply {', '.join(unusable)}")
+            subject = (
+                "REMOVE deletes the Cycles modifier"
+                if operation == "REMOVE"
+                else "INSPECT only reads the cycle already there"
+            )
+            raise ToolError(f"{subject} and cannot apply {', '.join(unusable)}")
     return await call_blender(
         "set_action_cycle",
         {

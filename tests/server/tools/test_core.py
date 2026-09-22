@@ -8,6 +8,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from blender_mcp.addon_manager import EXPECTED_ADDON_PROTOCOL_VERSION, AddonHandshake
 from blender_mcp.server.connection import BlenderTransportError
+from blender_mcp.server.mount_map import CORE_BUNDLE, bundle_tool_names, known_tool_names
 from blender_mcp.server.tools import core
 
 
@@ -82,13 +83,19 @@ def test_get_addon_status_reports_no_roots_for_an_addon_that_does_not_send_them(
 
 def test_get_addon_status_documents_every_key_it_returns(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    Every key the payload carries is named in the docstring.
+    Every key the payload carries is named in the docstring, the opt-in ones included.
 
     Agents learn the payload from the docstring, so an unmentioned key is invisible to them.
+    The opt-in keys are asked for here on purpose: a key only one argument ever produces is the
+    one whose missing documentation nothing else would notice.
     """
     _install_handshake(monkeypatch, _handshake())
 
-    payload = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]
+    payload = asyncio.run(
+        core.get_addon_status(  # pyright: ignore[reportArgumentType]
+            ctx=None, detail=True, tool_name="get_addon_status", mounted_tools=True
+        )
+    )["data"]
 
     documented = core.get_addon_status.__doc__ or ""
     undocumented = sorted(key for key in payload if f'"{key}"' not in documented)
@@ -247,3 +254,198 @@ def test_get_addon_status_reports_a_dead_socket_as_a_transport_failure(monkeypat
     assert "transport failure" in message, f"the failure must not read as a version verdict: {message}"
     assert "do not reinstall" in message
     assert "Connection closed before receiving any data" in message, "the underlying fault is not named"
+
+
+# The rehearsal's tool: registered, dispatch-wired and tested, and mounted only by `camera-rigs`.
+_UNMOUNTED_TOOL = "create_dolly_camera_rig"
+
+
+def test_tool_lookup_separates_an_unmounted_tool_from_an_unknown_one() -> None:
+    """
+    The four situations behind "I cannot call this tool" need four different responses.
+
+    A client reports all of them as one unknown-tool error, and an agent that reads "not
+    mounted" as "not implemented" abandons work the server can do - which is what a rehearsal
+    did with `create_dolly_camera_rig`, after confirming its absence from the mounted surface.
+    """
+    mounted = frozenset({"get_addon_status"})
+
+    unmounted = core._tool_lookup(_UNMOUNTED_TOOL, (), mounted)
+    assert (unmounted["mounted"], unmounted["in_this_build"]) == (False, True)
+    assert unmounted["bundles"] == ["camera-rigs"]
+    assert "BLENDER_MCP_TOOLSETS=camera-rigs" in str(unmounted["verdict"])
+
+    unknown = core._tool_lookup("create_teapot", (), mounted)
+    assert (unknown["mounted"], unknown["in_this_build"], unknown["addon_command"]) == (False, False, False)
+
+    stale_server = core._tool_lookup("create_teapot", ("create_teapot",), mounted)
+    assert stale_server["in_this_build"] is False and stale_server["addon_command"] is True
+    assert "Upgrade the server" in str(stale_server["verdict"])
+
+    assert core._tool_lookup("get_addon_status", (), mounted)["mounted"] is True
+
+
+def test_tool_lookup_appends_the_missing_bundle_to_the_selection_already_in_force(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The suggested value must replace the whole variable, keeping what the client already asked for.
+
+    Suggesting the bare bundle would silently unmount the mode the session is running, so the
+    remedy would cost the agent every other tool it was using.
+    """
+    monkeypatch.setenv("BLENDER_MCP_TOOLSETS", "shot")
+
+    verdict = str(core._tool_lookup(_UNMOUNTED_TOOL, (), frozenset())["verdict"])
+
+    assert "BLENDER_MCP_TOOLSETS=shot,camera-rigs" in verdict
+
+
+def test_toolset_payload_counts_what_a_selection_left_out() -> None:
+    """
+    A bundle whose tools are absent must be named with a count; one fully present must not.
+
+    Measured against an explicit mounted set rather than this test process's own registrations,
+    which any other test importing a tool module would change.
+    """
+    only_core = frozenset(bundle_tool_names()[CORE_BUNDLE])
+
+    payload = core._toolset_payload(only_core)
+
+    assert payload["mounted_bundles"] == [CORE_BUNDLE], "a bundle with no tools mounted read as mounted"
+    assert payload["mounted_tool_count"] == len(only_core)
+    expected_absent = {
+        bundle: len(names - only_core)
+        for bundle, names in bundle_tool_names().items()
+        if bundle != CORE_BUNDLE and names - only_core
+    }
+    assert payload["unmounted_bundles"] == expected_absent
+    assert expected_absent["camera-rigs"] == len(bundle_tool_names()["camera-rigs"])
+    assert payload["unmounted_tool_count"] == len(known_tool_names() - only_core)
+
+    everything = known_tool_names()
+    assert core._toolset_payload(everything)["unmounted_bundles"] == {}, "nothing is missing when all is mounted"
+
+
+def test_get_addon_status_reports_the_mount_state_without_being_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    The mount state must reach the client on the plain call, since that is the setup check.
+
+    `capability_count` next to a short tool list already looked like a registration fault; this
+    is the field that explains the gap instead of leaving it to be misread. The lookup stays
+    opt-in, because naming one tool is a question only the caller has.
+    """
+    _install_handshake(monkeypatch, _handshake())
+
+    payload = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]
+
+    toolsets = payload["toolsets"]
+    assert toolsets["mounted_bundles"][0] == CORE_BUNDLE
+    assert toolsets["mounted_tool_count"] == len(core._mounted_tool_names())
+    assert toolsets["env_var"] == "BLENDER_MCP_TOOLSETS"
+    assert "tool_lookup" not in payload, "the lookup must stay opt-in"
+
+
+# Five stand-in tool names, written out of order so a page that hands back the registry's own
+# import order instead of a sorted one cannot pass.
+_REGISTERED = frozenset({"save_shot", "create_light", "get_addon_status", "open_shot", "aim_light"})
+
+
+def _names_page(monkeypatch: pytest.MonkeyPatch, **paging: int) -> dict:
+    """
+    Ask for one page of mounted tool names over a fixed registry.
+
+    Args:
+        monkeypatch: Fixture used to replace the tool module's collaborators.
+        **paging: `tool_limit`/`tool_offset` for this page.
+
+    Returns:
+        dict: The reply's "mounted_tools" page.
+
+    """
+    _install_handshake(monkeypatch, _handshake())
+    monkeypatch.setattr(core, "_mounted_tool_names", lambda: _REGISTERED)
+    payload = asyncio.run(
+        core.get_addon_status(ctx=None, mounted_tools=True, **paging)  # pyright: ignore[reportArgumentType]
+    )["data"]
+    return payload["mounted_tools"]
+
+
+def test_get_addon_status_keeps_the_mounted_tool_names_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Every name costs bytes in a reply that most callers make for the version verdict alone.
+
+    The counts and the bundle summary are what the plain call is for; the list is a question only
+    a caller chasing a specific absent tool has.
+    """
+    _install_handshake(monkeypatch, _handshake())
+
+    payload = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]
+
+    assert "mounted_tools" not in payload, "the enumeration must stay opt-in"
+
+
+def test_get_addon_status_enumerates_exactly_the_tools_this_process_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Until the names shipped, a documented tool absent from a build was found only by calling it.
+
+    Read off the live registry rather than a stand-in set: a list that disagreed with what the
+    client can actually call would answer the question wrongly while looking right, and the count
+    beside it must be the same number the toolset summary reports.
+    """
+    _install_handshake(monkeypatch, _handshake())
+
+    payload = asyncio.run(
+        core.get_addon_status(ctx=None, mounted_tools=True, tool_limit=300)  # pyright: ignore[reportArgumentType]
+    )["data"]
+
+    page = payload["mounted_tools"]
+    mounted = core._mounted_tool_names()
+    assert page["total"] == len(mounted) == payload["toolsets"]["mounted_tool_count"]
+    assert page["items"] == sorted(mounted)[: page["returned_count"]]
+    assert "get_addon_status" in page["items"], "the tool answering the question left itself out"
+
+
+def test_get_addon_status_pages_the_tool_names_deterministically(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Following next_offset must walk the whole list once: same order, no repeats, nothing skipped.
+
+    `truncated` and `next_offset` are what a caller loops on, so a page calling itself the last one
+    early would hide exactly the tools this enumeration exists to reveal.
+    """
+    names = sorted(_REGISTERED)
+
+    first = _names_page(monkeypatch, tool_limit=2)
+
+    assert first["items"] == names[:2]
+    assert (first["total"], first["offset"], first["limit"], first["returned_count"]) == (len(names), 0, 2, 2)
+    assert first["truncated"] is True
+    assert first["next_offset"] == 2
+
+    second = _names_page(monkeypatch, tool_limit=2, tool_offset=first["next_offset"])
+
+    assert second["items"] == names[2:4]
+    assert second["offset"] == 2
+    assert second["truncated"] is True
+    assert second["next_offset"] == 4
+
+    last = _names_page(monkeypatch, tool_limit=2, tool_offset=second["next_offset"])
+
+    assert last["items"] == names[4:]
+    assert last["returned_count"] == 1
+    assert last["truncated"] is False, "a page ending on the total must not ask to be continued"
+    assert last["next_offset"] is None
+    assert first["items"] + second["items"] + last["items"] == names
+
+
+def test_get_addon_status_reports_an_offset_past_the_last_name_as_the_end(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An over-run must read as the end of the list, not wrap round to the names already seen."""
+    page = _names_page(monkeypatch, tool_offset=len(_REGISTERED))
+
+    assert page["items"] == []
+    assert page["returned_count"] == 0
+    assert page["truncated"] is False
+    assert page["next_offset"] is None
+    assert page["total"] == len(_REGISTERED), "the total must stay the list's, not the page's"

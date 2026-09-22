@@ -457,7 +457,7 @@ def _aggregate_animation_summary(plan: dict, replies: list[dict], outcome: _Anim
     passes/pass_verification come from the LAST completed frame, matching the single-call path
     reading Render Result once, after its whole loop. An empty `replies` (cancelled before any
     frame rendered) reports first_file/last_file as None, bytes_written as 0, and passes as
-    empty - honest about there being no render to report on, rather than the single-call path's
+    empty, because there is no render to report on, rather than the single-call path's
     own quirk of reading whatever Render Result happened to predate the call.
 
     Args:

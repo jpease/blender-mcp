@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import bpy
+import mathutils
 
 addon_path = Path(__file__).resolve().parents[1] / "src" / "blender_mcp" / "bundled" / "addon" / "__init__.py"
 package_name = "blender_mcp_camera_smoke"
@@ -74,6 +75,23 @@ focus_result = handler.create_focus_pull(
 )
 assert scene.frame_current == 7
 assert focus_result["mode"] == "DISTANCE"
+# The documented DISTANCE contract: keys the camera's own focus distance, enables DOF, and adds
+# no object. A rehearsal read the tool as adding a focus control in every mode and went looking
+# for one that is never built here.
+assert focus_result["focus_control"] is None
+assert not [obj for obj in bpy.data.objects if obj.get("mcp_camera_role") == "focus_pull"]
+assert camera.data.dof.use_dof is True, "create_focus_pull owns the switch"
+assert camera.data.dof.focus_object is None
+
+# The other half of that ownership split: configure_camera_dof leaves the switch alone, so a
+# focus set while it is off renders sharp. Silence there is what made the two tools look alike.
+camera.data.dof.use_dof = False
+dof_result = handler.configure_camera_dof(scene.name, camera.name, {}, focus_distance=4.0)
+assert camera.data.dof.use_dof is False, "configure_camera_dof must not enable DOF behind the caller"
+assert any("use_dof" in warning for warning in dof_result["warnings"]), dof_result["warnings"]
+enabled = handler.configure_camera_dof(scene.name, camera.name, {"use_dof": True}, focus_distance=4.0)
+assert camera.data.dof.use_dof is True
+assert not any("use_dof is off" in warning for warning in enabled["warnings"]), enabled["warnings"]
 
 # Keywords, not positions: `start_at_seconds`/`end_at_seconds` were added between
 # the frame and distance parameters, so a positional call passes distances as times.
@@ -149,6 +167,63 @@ point_result = handler.point_camera_at(scene.name, camera.name, target_object_na
 expected_rotation = (target.location - camera.matrix_world.translation).to_track_quat("-Z", "Y")
 assert all(abs(a - b) < 1e-6 for a, b in zip(camera.rotation_quaternion, expected_rotation, strict=True))
 assert point_result["target_object"] == target.name
+
+# ---------------------------------------------------------------------------------------------
+# create_camera(target_bone_name=...) aims at the bone's evaluated world head. A character rig's
+# object origin is the floor under the character, so an object-only aim frames the top of a head.
+# ---------------------------------------------------------------------------------------------
+
+hero_rig_data = bpy.data.armatures.new("Smoke Hero Rig Data")
+hero_rig = _new_object("Smoke Hero Rig", hero_rig_data)
+hero_rig.location = (6.0, 0.0, 0.0)
+bpy.context.view_layer.objects.active = hero_rig
+bpy.ops.object.mode_set(mode="EDIT")
+head_bone = hero_rig_data.edit_bones.new("head")
+head_bone.head = (0.0, 0.0, 1.60)
+head_bone.tail = (0.0, 0.0, 1.85)
+bpy.ops.object.mode_set(mode="OBJECT")
+# Constrained rather than merely posed: the aim has to read the depsgraph-evaluated bone, and a
+# constraint is what moves it away from the rest position its edit bone was built at.
+head_anchor = _new_object("Smoke Head Anchor")
+head_anchor.location = (6.0, 0.0, 1.70)
+pinned_head = hero_rig.pose.bones["head"].constraints.new("COPY_LOCATION")
+pinned_head.target = head_anchor
+bpy.context.view_layer.update()
+
+HEAD_WORLD = mathutils.Vector((6.0, 0.0, 1.70))
+face_result = handler.create_camera(
+    scene.name,
+    "Smoke Rigs",
+    "Smoke Face Cam",
+    location=(6.0, -3.0, 1.70),
+    target_object_name=hero_rig.name,
+    target_bone_name="head",
+)
+face_camera = bpy.data.objects[face_result["object"]]
+face_direction = (HEAD_WORLD - face_camera.matrix_world.translation).normalized()
+# bpy's stub types `Matrix @ Vector` as a Matrix; at runtime it is the rotated Vector.
+face_forward = (face_camera.matrix_world.to_3x3() @ mathutils.Vector((0.0, 0.0, -1.0))).normalized()
+assert face_direction.dot(face_forward) > 1.0 - 1e-6, (  # pyright: ignore[reportArgumentType]
+    "create_camera(target_bone_name=...) did not aim at the constrained bone head"
+)
+
+# The same call without the bone aims 1.7 m lower, at the rig's origin on the floor.
+floor_result = handler.create_camera(
+    scene.name, "Smoke Rigs", "Smoke Floor Cam", location=(6.0, -3.0, 1.70), target_object_name=hero_rig.name
+)
+floor_camera = bpy.data.objects[floor_result["object"]]
+floor_forward = (floor_camera.matrix_world.to_3x3() @ mathutils.Vector((0.0, 0.0, -1.0))).normalized()
+assert floor_forward.z < -0.4, "the object-only aim did not point down at the rig's floor origin"  # pyright: ignore[reportAttributeAccessIssue]
+
+# A refusal after the datablocks exist removes both of them: no orphan object, no orphan data.
+try:
+    handler.create_camera(scene.name, "Smoke Rigs", "Smoke Orphan Cam", optics={"panorama_type": "EQUIRECTANGULAR"})
+except ValueError:
+    pass
+else:
+    raise AssertionError("create_camera accepted panorama_type on a PERSP projection")
+assert bpy.data.objects.get("Smoke Orphan Cam") is None, "a refused creation left the camera object behind"
+assert bpy.data.cameras.get("Smoke Orphan Cam Data") is None, "a refused creation left the camera data behind"
 
 gate_result = handler.configure_camera_render_gate(
     scene.name,

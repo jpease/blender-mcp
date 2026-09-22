@@ -1,12 +1,12 @@
 """
 The invariants the one `COMMANDS` registry now makes assertable.
 
-A command's identity used to be spread over the 346-line `_build_command_handlers`
-plus nine separate name-keyed sets, and nothing coupled any of them to the dispatch
-keys. A name misspelled in - or missing from - `_GEOMETRY_MUTATING_COMMANDS` silently
-turned mesh backup off for it, and nothing failed. One registry makes both halves of
-that checkable: every row names a real handler, and every classification is read from
-that row and nowhere else.
+A command's identity used to be spread across `_build_command_handlers` plus several
+separate name-keyed sets, and nothing coupled any of them to the dispatch keys. A name
+misspelled in - or missing from - `_GEOMETRY_MUTATING_COMMANDS` silently turned mesh
+backup off for it, and nothing failed. One registry makes both halves of that checkable:
+every row names a real handler, and every classification is read from that row and
+nowhere else.
 """
 
 import ast

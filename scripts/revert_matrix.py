@@ -86,6 +86,9 @@ ADDON_OBJECT_LOOKUP = ROOT / "src/blender_mcp/bundled/addon/object_lookup.py"
 ADDON_CANDIDATES = ROOT / "src/blender_mcp/bundled/addon/candidates.py"
 SERVER_APP = ROOT / "src/blender_mcp/server/app.py"
 ADDON_SCENE = ROOT / "src/blender_mcp/bundled/addon/handlers/scene.py"
+# The scene tool wrapper: the preflight's paging arguments and `remove_scene_objects`, which
+# moved onto the core surface from `scene_authoring.py`.
+SERVER_SCENE_TOOL = ROOT / "src/blender_mcp/server/tools/scene.py"
 ADDON_ANIMATION = ROOT / "src/blender_mcp/bundled/addon/handlers/animation.py"
 SERVER_ANIMATION_TOOL = ROOT / "src/blender_mcp/server/tools/animation.py"
 # The object-keyframing handler and the action-assignment module it and the posing handler
@@ -109,6 +112,8 @@ SERVER_POSING_TOOL = ROOT / "src/blender_mcp/server/tools/character_rigging/posi
 # resolve without a round trip, and the handler repeats the check against the resolved target.
 ADDON_CAMERA_TARGETING = ROOT / "src/blender_mcp/bundled/addon/handlers/camera/targeting.py"
 SERVER_CAMERA_TARGETING_TOOL = ROOT / "src/blender_mcp/server/tools/camera/targeting.py"
+# Camera creation on the server side, where a bone qualifies the object it names.
+SERVER_CAMERA_CORE_TOOL = ROOT / "src/blender_mcp/server/tools/camera/core.py"
 # The two camera modules that leave timeline markers behind: the shared resolution that decides
 # whether the earliest one claims the frames before it, and the scene-camera assignment that has
 # to report that in the same words create_camera_markers does.
@@ -401,7 +406,10 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{CONNT}::test_an_ordinary_commands_result_cannot_trip_a_re_handshake",
     f"{CONNT}::test_a_non_conforming_epoch_does_not_re_arm_the_flag_forever",
     f"{CONNT}::test_one_swap_costs_exactly_one_re_handshake_over_a_real_round_trip",
-    f"{CONNT}::test_a_refresh_that_fails_leaves_the_staleness_signal_standing",
+    # Both halves of "the refresh did not report a session": the round trip died, and it
+    # completed carrying half a pair.
+    f"{CONNT}::test_a_refresh_whose_round_trip_dies_leaves_the_staleness_signal_standing",
+    f"{CONNT}::test_a_refresh_that_reports_no_usable_session_leaves_the_staleness_signal_standing",
     # --- the server boundary, the latch, the send floor ---
     f"{AMT}::test_the_handshake_strips_control_characters_from_the_session_id",
     f"{AMT}::test_the_handshake_strips_control_characters_from_the_reported_filepath",
@@ -505,17 +513,17 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{CTRLT}::test_pose_tools_forward_the_detail_flag",
     # --- the pose an agent authors reaches the file, and a child is solved against its parent ---
     # --- naming the bones instead of paging to them ---
-    f"{POSET}::test_named_bones_are_returned_in_one_page_instead_of_paged_to",
-    f"{POSET}::test_an_unknown_bone_name_is_refused_rather_than_silently_dropped",
-    f"{POSET}::test_no_filter_still_lists_every_bone",
+    f"{LISTT}::test_named_bones_are_returned_in_one_page_instead_of_paged_to",
+    f"{LISTT}::test_an_unknown_bone_name_is_refused_rather_than_silently_dropped",
+    f"{LISTT}::test_no_filter_still_lists_every_bone",
     *(
-        f"{POSET}::test_a_malformed_bone_name_filter_is_refused[{case}]"
+        f"{LISTT}::test_a_malformed_bone_name_filter_is_refused[{case}]"
         for case in ("value0", "value1", "value2", "CHAR1_head_jnt")
     ),
     # --- the rest axes carry their own conclusion, in the vocabulary an aim takes ---
-    f"{POSET}::test_the_rest_axes_are_also_named_in_the_vocabulary_an_aim_takes",
-    f"{POSET}::test_the_up_axis_follows_the_rig_into_the_scene_where_the_nine_numbers_cannot",
-    f"{POSET}::test_a_rig_scaled_to_nothing_names_no_axis_for_any_direction",
+    f"{LISTT}::test_the_rest_axes_are_also_named_in_the_vocabulary_an_aim_takes",
+    f"{LISTT}::test_the_up_axis_follows_the_rig_into_the_scene_where_the_nine_numbers_cannot",
+    f"{LISTT}::test_a_rig_scaled_to_nothing_names_no_axis_for_any_direction",
     f"{POSET}::test_aim_points_the_named_axis_at_an_object_and_leaves_position_and_scale_alone",
     f"{POSET}::test_aim_at_a_world_point_resolves_through_the_rig_transform",
     f"{POSET}::test_aim_rejects_every_direction_it_cannot_define",
@@ -534,43 +542,43 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{POSET}::test_keying_an_aim_without_an_up_reference_is_refused",
     f"{POSET}::test_a_keyed_aim_takes_the_short_way_round_from_the_previous_key",
     f"{POSET}::test_a_keyed_euler_aim_stays_on_the_previous_keys_branch",
-    f"{POSET}::test_rest_axes_are_reported_only_when_asked_for",
+    f"{LISTT}::test_rest_axes_are_reported_only_when_asked_for",
     # --- the chain, pole and target resolution both reach tools share ---
-    f"{POSET}::test_unbranched_ancestor_chain_stops_before_a_mid_chain_fork",
-    f"{POSET}::test_unbranched_ancestor_chain_stops_before_a_root_level_fork",
-    f"{POSET}::test_unbranched_ancestor_chain_includes_an_unforked_root",
-    f"{POSET}::test_unbranched_ancestor_chain_respects_max_length",
-    f"{POSET}::test_unbranched_ancestor_chain_of_a_root_bone_is_just_that_bone",
-    f"{POSET}::test_rest_ancestor_chain_returns_the_exact_requested_length",
-    f"{POSET}::test_rest_ancestor_chain_refuses_a_length_past_the_root",
-    f"{POSET}::test_synthesize_pole_finds_the_bend_side_of_a_bent_two_bone_chain",
-    f"{POSET}::test_synthesize_pole_refuses_a_straight_two_bone_rest_chain",
-    f"{POSET}::test_synthesize_pole_refuses_a_single_bone_chain",
-    f"{POSET}::test_synthesize_pole_refuses_a_chain_whose_root_and_tip_coincide",
-    f"{POSET}::test_synthesize_pole_converts_through_the_armatures_world_matrix",
-    f"{POSET}::test_resolve_reach_chain_refuses_an_unknown_tip_bone",
-    f"{POSET}::test_resolve_reach_chain_reports_resolved_when_chain_length_is_omitted",
-    f"{POSET}::test_resolve_reach_chain_reports_explicit_when_chain_length_is_given",
-    f"{POSET}::test_resolve_reach_chain_refuses_a_bone_already_claimed_by_an_earlier_reach",
-    f"{POSET}::test_resolved_reach_target_refuses_an_unknown_object_name",
-    f"{POSET}::test_a_reach_whose_pole_cannot_be_resolved_removes_the_targets_scratch_empty",
-    f"{POSET}::test_a_constraint_value_blender_refuses_removes_the_constraint_it_already_added",
-    f"{POSET}::test_bone_reach_requires_exactly_one_target_form",
-    f"{POSET}::test_bone_reach_allows_at_most_one_pole_form",
-    f"{POSET}::test_solve_bone_reach_forwards_reaches_and_omits_unset_optional_fields",
+    f"{REACHT}::test_unbranched_ancestor_chain_stops_before_a_mid_chain_fork",
+    f"{REACHT}::test_unbranched_ancestor_chain_stops_before_a_root_level_fork",
+    f"{REACHT}::test_unbranched_ancestor_chain_includes_an_unforked_root",
+    f"{REACHT}::test_unbranched_ancestor_chain_respects_max_length",
+    f"{REACHT}::test_unbranched_ancestor_chain_of_a_root_bone_is_just_that_bone",
+    f"{REACHT}::test_rest_ancestor_chain_returns_the_exact_requested_length",
+    f"{REACHT}::test_rest_ancestor_chain_refuses_a_length_past_the_root",
+    f"{REACHT}::test_synthesize_pole_finds_the_bend_side_of_a_bent_two_bone_chain",
+    f"{REACHT}::test_synthesize_pole_refuses_a_straight_two_bone_rest_chain",
+    f"{REACHT}::test_synthesize_pole_refuses_a_single_bone_chain",
+    f"{REACHT}::test_synthesize_pole_refuses_a_chain_whose_root_and_tip_coincide",
+    f"{REACHT}::test_synthesize_pole_converts_through_the_armatures_world_matrix",
+    f"{REACHT}::test_resolve_reach_chain_refuses_an_unknown_tip_bone",
+    f"{REACHT}::test_resolve_reach_chain_reports_resolved_when_chain_length_is_omitted",
+    f"{REACHT}::test_resolve_reach_chain_reports_explicit_when_chain_length_is_given",
+    f"{REACHT}::test_resolve_reach_chain_refuses_a_bone_already_claimed_by_an_earlier_reach",
+    f"{REACHT}::test_resolved_reach_target_refuses_an_unknown_object_name",
+    f"{REACHT}::test_a_reach_whose_pole_cannot_be_resolved_removes_the_targets_scratch_empty",
+    f"{REACHT}::test_a_constraint_value_blender_refuses_removes_the_constraint_it_already_added",
+    f"{REACHT}::test_bone_reach_requires_exactly_one_target_form",
+    f"{REACHT}::test_bone_reach_allows_at_most_one_pole_form",
+    f"{REACHT}::test_solve_bone_reach_forwards_reaches_and_omits_unset_optional_fields",
     # --- solve_bone_reach says whether it converged, and why not ---
-    f"{POSET}::test_a_reach_inside_its_tolerance_reports_converged_and_says_nothing_else",
-    f"{POSET}::test_a_tighter_tolerance_turns_the_same_solve_into_a_miss",
-    f"{POSET}::test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig",
-    f"{POSET}::test_a_target_beyond_the_chains_reach_is_reported_as_unreachable",
-    f"{POSET}::test_the_chains_reach_is_measured_in_world_space_not_in_rest_bone_lengths",
+    f"{REACHT}::test_a_reach_inside_its_tolerance_reports_converged_and_says_nothing_else",
+    f"{REACHT}::test_a_tighter_tolerance_turns_the_same_solve_into_a_miss",
+    f"{REACHT}::test_a_reachable_target_the_solve_stalled_short_of_warns_without_blaming_the_rig",
+    f"{REACHT}::test_a_target_beyond_the_chains_reach_is_reported_as_unreachable",
+    f"{REACHT}::test_the_chains_reach_is_measured_in_world_space_not_in_rest_bone_lengths",
     *(
-        f"{POSET}::test_a_tolerance_that_names_no_precision_is_refused_before_the_rig_is_touched[{case}]"
+        f"{REACHT}::test_a_tolerance_that_names_no_precision_is_refused_before_the_rig_is_touched[{case}]"
         for case in ("0.0", "-0.0001", "nan", "inf")
     ),
-    f"{POSET}::test_a_missed_reach_still_warns_after_the_envelope_has_shortened_the_reply",
+    f"{REACHT}::test_a_missed_reach_still_warns_after_the_envelope_has_shortened_the_reply",
     # --- a reach that raises part way through hands the rig back the action it arrived on ---
-    f"{POSET}::test_a_reach_that_fails_part_way_through_hands_back_the_action_it_arrived_on",
+    f"{REACHT}::test_a_reach_that_fails_part_way_through_hands_back_the_action_it_arrived_on",
     # --- configure_render_settings answers with the paths it wrote, not the whole state ---
     f"{RENDT}::test_configure_render_settings_returns_only_the_patched_values",
     f"{RENDT}::test_configure_render_settings_detail_returns_both_full_state_blocks",
@@ -595,11 +603,57 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{CONNFAILT}::test_a_side_effect_free_command_is_resent_once_on_a_reconnected_socket",
     f"{CONNFAILT}::test_a_mutating_command_is_never_resent_after_the_peer_closed",
     f"{CONNFAILT}::test_a_reply_cut_off_mid_message_is_not_resent_even_for_a_read_only_command",
-    # --- a rotation about a bone's own length axis says so, because nothing else can ---
-    f"{POSET}::test_a_rotation_about_the_bones_own_length_axis_says_the_bone_will_not_move",
+    # --- a roll about a bone's own length axis is judged by the travel it was measured to cause ---
+    f"{POSET}::test_a_roll_that_moves_nothing_measurable_warns_and_quotes_what_it_measured",
+    f"{POSET}::test_a_roll_that_swings_an_offset_child_bone_says_nothing",
+    f"{POSET}::test_a_roll_that_carries_skinned_vertices_off_the_axis_says_nothing",
+    f"{POSET}::test_a_deforming_bone_with_no_reachable_mesh_says_what_it_did_not_measure",
+    f"{POSET}::test_a_bounded_vertex_scan_says_its_radius_is_a_floor",
+    f"{POSET}::test_a_whole_rig_rolled_about_its_own_length_counts_the_bones_it_cannot_name",
+    # --- the probe answers which axis moves a bone, and hands the pose back it borrowed ---
+    f"{POSET}::test_the_probe_separates_the_axis_that_swings_a_bone_from_the_one_that_only_rolls_it",
+    f"{POSET}::test_the_sign_of_a_reference_component_follows_the_sign_of_the_turn",
+    f"{POSET}::test_the_probe_defaults_to_the_farthest_descendant_and_names_how_it_chose",
+    f"{POSET}::test_the_probe_hands_the_pose_back_untouched",
+    f"{POSET}::test_a_probe_that_raises_part_way_through_still_hands_the_pose_back",
+    f"{POSET}::test_a_probe_refuses_a_direction_that_names_no_direction_by_name",
+    f"{POSET}::test_a_probe_refuses_a_repeated_axis_and_an_unknown_one_before_touching_the_bone",
     # --- a whole character frames on the meshes its rig deforms, not on the bones ---
     f"{CAMT}::test_handler_framing_expands_an_armature_to_the_meshes_it_deforms",
     f"{CAMT}::test_handler_framing_refuses_every_unresolvable_armature_name_before_touching_the_camera",
+    # --- validate_scene pages its findings, and bounds one finding's evidence ---
+    f"{SVT}::test_validate_scene_dispatches_scope_max_findings_and_offset",
+    f"{SVT}::test_validate_scene_offset_schema_rejects_out_of_range",
+    f"{SVT}::test_validate_scene_rejects_out_of_range_offset_before_scanning_anything",
+    f"{SVT}::test_validate_scene_separates_a_cut_page_from_a_domain_that_capped_itself",
+    f"{SVT}::test_validate_scene_offset_returns_the_next_findings_and_a_matching_next_offset",
+    f"{SVT}::test_validate_scene_asks_each_domain_for_enough_findings_to_fill_a_resumed_page",
+    f"{SVT}::test_validate_scene_offset_past_the_findings_returns_an_empty_final_page",
+    f"{SVT}::test_validate_scene_bounds_one_findings_evidence_without_starving_the_others",
+    # --- deleting an object a session made is core work, not an authoring bundle's ---
+    f"{BUNT}::test_removing_a_named_object_is_core_not_an_authoring_bundle",
+    f"{BUNT}::test_remove_scene_objects_advertises_its_destructiveness_from_the_core_surface",
+    # --- a new camera aims at a bone on the rig, and leaves no half-built camera behind ---
+    f"{CAMT}::test_create_camera_treats_a_bone_as_a_qualifier_of_its_object_not_a_fifth_source",
+    f"{CAMT}::test_handler_create_camera_aims_at_the_named_bone_not_the_rig_origin",
+    f"{CAMT}::test_handler_create_camera_refuses_a_bone_the_armature_does_not_have",
+    f"{CAMT}::test_handler_create_camera_removes_both_datablocks_when_configuration_is_refused",
+    # --- a cycle's period is readable without deleting the cycle to produce it ---
+    f"{ANIMT}::test_inspect_reports_the_period_without_destroying_the_cycle",
+    f"{ANIMT}::test_inspect_reports_a_curve_that_carries_no_cycle_where_remove_omits_it",
+    f"{ANIMT}::test_inspect_reads_the_modifier_that_is_there_not_this_calls_defaults",
+    f"{ANIMT}::test_inspect_asserts_an_expected_period_and_still_writes_nothing",
+    f"{ANIMT}::test_inspect_says_when_the_selected_curves_do_not_share_one_period",
+    f"{ANIMT}::test_the_cycle_tool_lets_inspect_assert_a_period_and_refuses_what_it_cannot_write",
+    # --- an edited key that redefines a cycled curve's period says so, once, measured first ---
+    f"{ANIMT}::test_an_edited_key_outside_a_cycle_reports_the_period_it_redefines",
+    f"{ANIMT}::test_an_edited_key_inside_the_cycle_or_off_a_cycled_curve_stays_quiet",
+    f"{ANIMT}::test_the_cycle_notice_is_measured_before_the_batch_starts_inserting",
+    # --- an INSPECT cycle call reads, and a probe restores what it borrowed ---
+    f"{DRT}::test_the_params_decide_whether_these_commands_read_or_write[set_action_cycle-reading14-writing14]",
+    f"{DRT}::test_the_params_decide_whether_these_commands_read_or_write[set_action_cycle-reading15-writing15]",
+    f"{DRT}::test_these_commands_run_outside_the_transaction"
+    "[probe_bone_axis-restores its own trial pose, so there is no net mutation to snapshot]",
 )
 
 # Nodes no single revert can break, each with the reason, so the gap check skips them.
@@ -2397,7 +2451,18 @@ REVERTS: list[Revert] = [
         SERVER_CONNECTION,
         "    if learned is None or None in learned:",
         "    if False:",
-        (f"{CONNT}::test_a_refresh_that_fails_leaves_the_staleness_signal_standing",),
+        # The row's node was renamed away to a test of the *raising* path, which this guard is
+        # not on, so the row ran nothing and survived. This is the test of the guard itself:
+        # a re-handshake that completes and reports half a session pair.
+        (f"{CONNT}::test_a_refresh_that_reports_no_usable_session_leaves_the_staleness_signal_standing",),
+    ),
+    Revert(
+        "rehandshake: a re-handshake whose round trip dies clears the staleness signal for good",
+        SERVER_CONNECTION,
+        '        logger.warning(f"Re-handshake never completed ({exc}); staying stale so the next command retries")\n'
+        "        _session_marker_stale.set()\n",
+        '        logger.warning(f"Re-handshake never completed ({exc}); staying stale so the next command retries")\n',
+        (f"{CONNT}::test_a_refresh_whose_round_trip_dies_leaves_the_staleness_signal_standing",),
     ),
     Revert(
         "rehandshake: the observed pair is compared raw, so a normalized value never equals its own twin",
@@ -5481,18 +5546,18 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 249_000",
-        # One byte below the *measured* payload (248,603), not below the ceiling: the ceiling has
-        # headroom by design, so reverting it to 248_999 would still pass and prove nothing.
-        "SHOT_MODE_BYTE_CEILING = 248_602",
+        "SHOT_MODE_BYTE_CEILING = 259_500",
+        # One byte below the *measured* payload (259,274), not below the ceiling: the ceiling has
+        # headroom by design, so reverting it to 259_499 would still pass and prove nothing.
+        "SHOT_MODE_BYTE_CEILING = 259_273",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
         "server tools: the default ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 85_000",
-        # Same rule: one byte below the measured core payload (84,593), not below the ceiling.
-        "DEFAULT_MODE_BYTE_CEILING = 84_592",
+        "DEFAULT_MODE_BYTE_CEILING = 89_250",
+        # Same rule: one byte below the measured core payload (89,044), not below the ceiling.
+        "DEFAULT_MODE_BYTE_CEILING = 89_043",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
@@ -5596,9 +5661,9 @@ REVERTS: list[Revert] = [
     Revert(
         "pose: a key landing past an existing cycle stretches its period silently again",
         ADDON_POSING,
-        "                _cycle_extension_warnings(action, prepared, frame) + "
-        "_inert_rotation_warnings(prepared, space)\n",
-        "                [] + _inert_rotation_warnings(prepared, space)\n",
+        "                _cycle_extension_warnings(action, prepared, frame)\n"
+        "                + _inert_rotation_warnings(prepared, space, witnesses)\n",
+        "                []\n                + _inert_rotation_warnings(prepared, space, witnesses)\n",
         (f"{POSET}::test_keying_past_a_cycle_says_the_period_it_just_changed",),
     ),
     Revert(
@@ -6465,7 +6530,7 @@ REVERTS: list[Revert] = [
         "    return tolerance_m\n",
         "    return float(tolerance_m)\n",
         tuple(
-            f"{POSET}::test_a_tolerance_that_names_no_precision_is_refused_before_the_rig_is_touched[{case}]"
+            f"{REACHT}::test_a_tolerance_that_names_no_precision_is_refused_before_the_rig_is_touched[{case}]"
             for case in ("0.0", "-0.0001", "nan", "inf")
         ),
     ),
@@ -6673,7 +6738,7 @@ REVERTS: list[Revert] = [
         "            ValueError: If neither or both target forms are given.\n"
         "\n"
         '        """\n',
-        (f"{POSET}::test_bone_reach_requires_exactly_one_target_form",),
+        (f"{REACHT}::test_bone_reach_requires_exactly_one_target_form",),
     ),
     Revert(
         "pose: a reach naming two pole targets is accepted by the schema",
@@ -6681,7 +6746,7 @@ REVERTS: list[Revert] = [
         "        if self.pole_target_point is not None and self.pole_target_object_name is not None:\n"
         '            raise ValueError("Supply at most one of pole_target_point or pole_target_object_name")\n',
         "",
-        (f"{POSET}::test_bone_reach_allows_at_most_one_pole_form",),
+        (f"{REACHT}::test_bone_reach_allows_at_most_one_pole_form",),
     ),
     Revert(
         # An unset optional field sent as null is not the same request as one left out: the
@@ -6695,7 +6760,7 @@ REVERTS: list[Revert] = [
         '            "reaches": [reach.model_dump() for reach in reaches],\n'
         '            "tolerance_m": tolerance_m,\n'
         '            "detail": detail,\n',
-        (f"{POSET}::test_solve_bone_reach_forwards_reaches_and_omits_unset_optional_fields",),
+        (f"{REACHT}::test_solve_bone_reach_forwards_reaches_and_omits_unset_optional_fields",),
     ),
     # --- a reach that raises part way through hands the rig back the action it arrived on ---
     Revert(
@@ -6816,8 +6881,8 @@ REVERTS: list[Revert] = [
     Revert(
         "scene validation: the persistence domain is never run",
         ADDON_SCENE,
-        '        if "persistence" in domains:',
-        "        if False:",
+        '    if "persistence" in domains:',
+        "    if False:",
         (f"{SVT}::test_validate_scene_runs_the_persistence_domain_on_request",),
     ),
     Revert(
@@ -7350,8 +7415,8 @@ REVERTS: list[Revert] = [
         "    if bone_names is None:\n        return bones",
         "    if True:\n        return bones",
         (
-            f"{POSET}::test_named_bones_are_returned_in_one_page_instead_of_paged_to",
-            f"{POSET}::test_an_unknown_bone_name_is_refused_rather_than_silently_dropped",
+            f"{LISTT}::test_named_bones_are_returned_in_one_page_instead_of_paged_to",
+            f"{LISTT}::test_an_unknown_bone_name_is_refused_rather_than_silently_dropped",
             f"{CRFT}::test_selected_bones_returns_named_bones_in_armature_order_not_request_order",
         ),
     ),
@@ -7361,7 +7426,7 @@ REVERTS: list[Revert] = [
         '    if missing:\n        raise ValueError(f"Bones not found in armature',
         '    if False:\n        raise ValueError(f"Bones not found in armature',
         (
-            f"{POSET}::test_an_unknown_bone_name_is_refused_rather_than_silently_dropped",
+            f"{LISTT}::test_an_unknown_bone_name_is_refused_rather_than_silently_dropped",
             f"{CRFT}::test_selected_bones_refuses_an_unknown_name",
         ),
     ),
@@ -7371,8 +7436,8 @@ REVERTS: list[Revert] = [
         "    if not isinstance(bone_names, list) or not 1 <= len(bone_names) <= _MAX_BONE_PAGE:",
         "    if False:",
         (
-            f"{POSET}::test_a_malformed_bone_name_filter_is_refused[value0]",
-            f"{POSET}::test_a_malformed_bone_name_filter_is_refused[CHAR1_head_jnt]",
+            f"{LISTT}::test_a_malformed_bone_name_filter_is_refused[value0]",
+            f"{LISTT}::test_a_malformed_bone_name_filter_is_refused[CHAR1_head_jnt]",
         ),
     ),
     Revert(
@@ -7381,8 +7446,8 @@ REVERTS: list[Revert] = [
         "        if not isinstance(name, str) or not name.strip():",
         "        if False:",
         (
-            f"{POSET}::test_a_malformed_bone_name_filter_is_refused[value1]",
-            f"{POSET}::test_a_malformed_bone_name_filter_is_refused[value2]",
+            f"{LISTT}::test_a_malformed_bone_name_filter_is_refused[value1]",
+            f"{LISTT}::test_a_malformed_bone_name_filter_is_refused[value2]",
         ),
     ),
     Revert(
@@ -7391,7 +7456,7 @@ REVERTS: list[Revert] = [
         "    if bone_names is None:\n        return bones",
         "    if bone_names is None:\n        return bones[:1]",
         (
-            f"{POSET}::test_no_filter_still_lists_every_bone",
+            f"{LISTT}::test_no_filter_still_lists_every_bone",
             f"{CRFT}::test_selected_bones_returns_every_bone_in_armature_order_when_unfiltered",
         ),
     ),
@@ -7483,8 +7548,8 @@ REVERTS: list[Revert] = [
         # surface moved and the number did not - has to be re-pointed at the new pair.
         "addon surface: the dispatch table moved while the protocol number stayed where it was",
         ADDON_MANAGER,
+        "EXPECTED_ADDON_PROTOCOL_VERSION = 39",
         "EXPECTED_ADDON_PROTOCOL_VERSION = 38",
-        "EXPECTED_ADDON_PROTOCOL_VERSION = 37",
         (
             f"{SURFT}::test_snapshot_records_the_protocol_version_the_server_expects",
             f"{SURFT}::test_both_protocol_constants_agree",
@@ -7644,7 +7709,7 @@ REVERTS: list[Revert] = [
     ),
     # --- what a socket the peer already retired, and a handshake that never ran, may claim ----
     Revert(
-        # Emptying the set is the honest revert: the retry stays, and nothing qualifies for it.
+        # Emptying the set is the accurate revert: the retry stays, and nothing qualifies for it.
         # Widening it instead would be the dangerous direction, which the mutating-command node
         # beside this one is what catches.
         "transport: no command is worth resending, so a retired socket fails the call that found it",
@@ -7673,13 +7738,15 @@ REVERTS: list[Revert] = [
     ),
     # --- a rotation that cannot move the bone it names, and a rig framed on its silhouette ----
     Revert(
-        # The notice is the only channel that can say it: the pose matrix genuinely changed, the
-        # keys genuinely landed, and every other field in the reply reports a success.
+        # The notice is the only channel that can say it: the pose matrix changed, the
+        # keys landed, and every other field in the reply reports a success. Only LOCAL and
+        # LOCAL_WITH_PARENT resolve `Y` to the bone's own length, so skipping the space check
+        # silences every roll notice this file makes.
         "pose: a rotation about the bone's own length axis is reported as if it moved something",
         ADDON_POSING,
         "    if space not in _BONE_LOCAL_SPACES:\n        return []\n",
         "    if True:\n        return []\n",
-        (f"{POSET}::test_a_rotation_about_the_bones_own_length_axis_says_the_bone_will_not_move",),
+        (f"{POSET}::test_a_roll_that_moves_nothing_measurable_warns_and_quotes_what_it_measured",),
     ),
     Revert(
         # Dropping the expansion leaves the armature's own bounds, which are its bones and not
@@ -7725,6 +7792,486 @@ REVERTS: list[Revert] = [
         "        if not meshes:\n",
         "        if False:\n",
         (f"{CAMT}::test_handler_framing_refuses_every_unresolvable_armature_name_before_touching_the_camera",),
+    ),
+    # --- validate_scene pages its findings, and bounds one finding's evidence ---
+    Revert(
+        "scene validation: the preflight forwards every page request as the first page",
+        SERVER_SCENE_TOOL,
+        '{"scene_name": scene_name, "scope": scope, "max_findings": max_findings, "offset": offset},',
+        '{"scene_name": scene_name, "scope": scope, "max_findings": max_findings, "offset": 0},',
+        (f"{SVT}::test_validate_scene_dispatches_scope_max_findings_and_offset",),
+    ),
+    Revert(
+        # The tool's body forwards straight to the add-on, so the declared schema is the only
+        # place a page request out of range is refused before a round trip is spent on it.
+        "scene validation: offset is declared unbounded, so a negative page reaches the socket",
+        SERVER_SCENE_TOOL,
+        "    offset: Annotated[int, Field(ge=0, le=9999)] = 0,\n",
+        "    offset: int = 0,\n",
+        (f"{SVT}::test_validate_scene_offset_schema_rejects_out_of_range",),
+    ),
+    Revert(
+        "scene validation: an offset out of range is discovered after every domain has been walked",
+        ADDON_SCENE,
+        '        if not 0 <= int(offset) <= 9999:\n            raise ValueError("offset must be in [0, 9999]")\n',
+        '        if False:\n            raise ValueError("offset must be in [0, 9999]")\n',
+        (f"{SVT}::test_validate_scene_rejects_out_of_range_offset_before_scanning_anything",),
+    ),
+    Revert(
+        # The conflation `next_offset` pointed at nothing under: a domain that stopped at its own
+        # internal cap is unreachable by any offset of this call, so reporting it on `truncated`
+        # sent the caller after a page that does not exist.
+        "scene validation: a domain that capped itself is reported as a cut page again",
+        ADDON_SCENE,
+        '            "truncated": truncated,\n',
+        '            "truncated": truncated or domains_truncated,\n',
+        (f"{SVT}::test_validate_scene_separates_a_cut_page_from_a_domain_that_capped_itself",),
+    ),
+    Revert(
+        # The reply advertised `next_offset` while neither side accepted an offset, so every
+        # resumed page handed back the findings the first page had already shown.
+        "scene validation: the findings page always starts at the first finding",
+        ADDON_SCENE,
+        "        start, end, truncated, next_offset = paginate(len(findings), int(offset), int(max_findings), 1000)",
+        "        start, end, truncated, next_offset = paginate(len(findings), 0, int(max_findings), 1000)",
+        (f"{SVT}::test_validate_scene_offset_returns_the_next_findings_and_a_matching_next_offset",),
+    ),
+    Revert(
+        # A sub-validator asked for `max_findings` alone cannot fill a page that starts past it:
+        # it returns exactly what page one already showed, and the resumed page comes back empty.
+        "scene validation: each domain is asked only for one page's worth of findings",
+        ADDON_SCENE,
+        "        domain_limit = min(int(offset) + int(max_findings), 1000)",
+        "        domain_limit = int(max_findings)",
+        (f"{SVT}::test_validate_scene_asks_each_domain_for_enough_findings_to_fill_a_resumed_page",),
+    ),
+    Revert(
+        # `paginate` clamps the start to the total, so an over-run reads as the end of the list.
+        # Echoing the request back instead reports a page starting where no finding is.
+        "scene validation: an offset past the last finding is echoed back as where the page starts",
+        ADDON_SCENE,
+        '            "offset": start,\n',
+        '            "offset": int(offset),\n',
+        (f"{SVT}::test_validate_scene_offset_past_the_findings_returns_an_empty_final_page",),
+    ),
+    Revert(
+        # One OVERLAPPING_UVS finding carries every overlapping face pair it found, and the
+        # envelope cuts the longest list first - so that one finding used to push every other
+        # domain's findings off the wire.
+        "scene validation: a finding's list evidence is published whole, however long it is",
+        ADDON_SCENE,
+        "    if isinstance(evidence, list) and len(evidence) > _MAX_FINDING_EVIDENCE_ITEMS:\n",
+        "    if False:\n",
+        (f"{SVT}::test_validate_scene_bounds_one_findings_evidence_without_starving_the_others",),
+    ),
+    # --- deleting an object a session made is core work, not an authoring bundle's ---
+    Revert(
+        # The move from `scene_authoring.py` is across two files, which one anchor cannot
+        # express; what a row can revert is the registration that puts the tool on the core
+        # surface. Without it a session that made a scratch object has no way to take it back
+        # out - `manage_scene_collections` refuses to unlink an object from its last collection -
+        # so the object is saved into the shot for good, which is the state this replaced.
+        "server tools: remove_scene_objects is not registered by the core scene module",
+        SERVER_SCENE_TOOL,
+        "@mcp.tool()\nasync def remove_scene_objects(",
+        "async def remove_scene_objects(",
+        (f"{BUNT}::test_removing_a_named_object_is_core_not_an_authoring_bundle",),
+    ),
+    Revert(
+        # `reset_scene` is marked by name in `_DESTRUCTIVE_TOOLS`; this one earns the hint from
+        # its prefix alone, because `confirm_remove` is not one of the conditional flags. Drop
+        # the prefix and a core process deletes objects without warning first.
+        "server tools: the remove_ prefix stops earning the destructive hint",
+        SERVER_DOCUMENTATION,
+        '    "remove_",\n',
+        "",
+        (f"{BUNT}::test_remove_scene_objects_advertises_its_destructiveness_from_the_core_surface",),
+    ),
+    # --- a new camera aims at a bone on the rig, and leaves no half-built camera behind ---
+    Revert(
+        # A bone names where on the target to look, so it travels with the object rather than
+        # competing with it. Counted as a fifth source, naming both is refused and the aim the
+        # parameter exists for cannot be asked for at all.
+        "camera: a bone competes with the object it qualifies instead of travelling with it",
+        SERVER_CAMERA_CORE_TOOL,
+        "    orientations = [rotation_euler, rotation_quaternion, target_object_name, target_point]",
+        "    orientations = [rotation_euler, rotation_quaternion, target_object_name, target_point, target_bone_name]",
+        (f"{CAMT}::test_create_camera_treats_a_bone_as_a_qualifier_of_its_object_not_a_fifth_source",),
+    ),
+    Revert(
+        # A character rig's origin is the floor under the character, so an object-only aim
+        # frames the boots and misses the face the shot was set up for.
+        "camera: a named bone is ignored, so the camera aims at the rig's origin",
+        ADDON_CAMERA_SHARED,
+        "    if not target_bone_name:\n",
+        "    if True:\n",
+        (f"{CAMT}::test_handler_create_camera_aims_at_the_named_bone_not_the_rig_origin",),
+    ),
+    Revert(
+        # Falling back to the origin renders the misaimed shot the typo asked for, and reports
+        # it as a success. The raise is left in place but unreachable, so the reverted form is
+        # the silent fallback rather than a crash on the missing bone.
+        "camera: a bone the armature does not have falls back to the origin instead of refusing",
+        ADDON_CAMERA_SHARED,
+        '    if target.type != "ARMATURE" or bone is None:\n',
+        (
+            '    if target.type != "ARMATURE" or bone is None:\n'
+            "        return target.matrix_world.translation.copy()\n"
+            "    if False:\n"
+        ),
+        (f"{CAMT}::test_handler_create_camera_refuses_a_bone_the_armature_does_not_have",),
+    ),
+    Revert(
+        # Optics and the aim are only checkable against the camera they are being written to, so
+        # both can still refuse after the datablocks exist. A direct caller - the real-Blender
+        # smoke scripts - has no transaction to unwind with, and the refusal strands a
+        # half-built camera plus an orphan `<name> Data` under a name the next attempt cannot
+        # reuse cleanly.
+        "camera: a refused configuration strands the camera object and its data in the file",
+        ADDON_CAMERA_CORE,
+        (
+            "            bpy.data.objects.remove(obj, do_unlink=True)\n"
+            "            bpy.data.cameras.remove(data, do_unlink=True)\n"
+            "            raise\n"
+        ),
+        "            raise\n",
+        (f"{CAMT}::test_handler_create_camera_removes_both_datablocks_when_configuration_is_refused",),
+    ),
+    # --- a cycle's period is readable without deleting the cycle to produce it ---
+    Revert(
+        # Before INSPECT existed the only reply carrying a period was the one that deleted the
+        # cycle to produce it: read the number, then cycle the action again - three calls, and a
+        # window in which the shot was not looping at all. Folding INSPECT into the REMOVE
+        # branch is that dance written back.
+        "animation: reading a cycle's period deletes the cycle to produce it again",
+        ADDON_ANIMATION,
+        '            elif operation == "REMOVE":\n',
+        '            elif operation in {"REMOVE", "INSPECT"}:\n',
+        (f"{ANIMT}::test_inspect_reports_the_period_without_destroying_the_cycle",),
+    ),
+    Revert(
+        # "This curve carries no cycle" is exactly what an INSPECT caller is asking, and a flag
+        # asserted rather than read answers it wrongly while looking right.
+        "animation: every inspected curve is reported as carrying a cycle",
+        ADDON_ANIMATION,
+        '        record["has_cycles_modifier"] = modifier is not None\n',
+        '        record["has_cycles_modifier"] = True\n',
+        (f"{ANIMT}::test_inspect_reports_a_curve_that_carries_no_cycle_where_remove_omits_it",),
+    ),
+    Revert(
+        # SET reports back the modes and counts the caller asked for, which is honest only
+        # because the call just wrote them. An INSPECT echoing the same arguments reports a
+        # cycle nobody authored - this tool's defaults, dressed as the curve's state.
+        "animation: an inspection echoes this call's argument defaults instead of the live modifier",
+        ADDON_ANIMATION,
+        '    if operation == "INSPECT":\n        modes, cycles, restricted = _live_cycle_state(modifier)\n',
+        "    if False:\n        modes, cycles, restricted = _live_cycle_state(modifier)\n",
+        (f"{ANIMT}::test_inspect_reads_the_modifier_that_is_there_not_this_calls_defaults",),
+    ),
+    Revert(
+        # A restricted range is something to write and INSPECT writes nothing, but
+        # expected_period_frames is an assertion about what is already there - the one
+        # cycle-describing argument an inspection can honour. Refusing it the way REMOVE does
+        # puts the measurement back behind a write.
+        "animation: INSPECT refuses the expected period it is able to assert",
+        ADDON_ANIMATION,
+        '        if operation == "REMOVE" and (restricted is not None or expected_period_frames is not None):\n',
+        '        if operation != "SET" and (restricted is not None or expected_period_frames is not None):\n',
+        (f"{ANIMT}::test_inspect_asserts_an_expected_period_and_still_writes_nothing",),
+    ),
+    Revert(
+        # The two measured notices are pure readings of the records: "these curves do not share
+        # one period" is the diagnosis an inspection came for, and asking for it must not
+        # require writing a modifier first.
+        "animation: an inspection warns about nothing, the way a removal does",
+        ADDON_ANIMATION,
+        '    if operation == "INSPECT":\n        return [warning for warning in measured if warning is not None]\n',
+        '    if operation == "INSPECT":\n        return []\n',
+        (f"{ANIMT}::test_inspect_says_when_the_selected_curves_do_not_share_one_period",),
+    ),
+    Revert(
+        # The tool-side half of the same rule: INSPECT creates nothing, so every argument that
+        # describes a new cycle is a typo - bar the one that only asserts a measurement.
+        "animation: the cycle tool refuses an expected period under INSPECT as well as REMOVE",
+        SERVER_ANIMATION_TOOL,
+        '                ("expected_period_frames", operation == "REMOVE" and expected_period_frames is not None),\n',
+        '                ("expected_period_frames", expected_period_frames is not None),\n',
+        (f"{ANIMT}::test_the_cycle_tool_lets_inspect_assert_a_period_and_refuses_what_it_cannot_write",),
+    ),
+    # --- an edited key that redefines a cycled curve's period says so, once, measured first ---
+    Revert(
+        # The third way into the trap the two keying tools already guard, and the quietest:
+        # the key lands, every field of the reply reads as success, and the curve's period has
+        # become the distance to the new frame.
+        "animation: an edited key past a cycle's extent is written in silence",
+        ADDON_ANIMATION,
+        "        warnings = _edit_cycle_warnings(bag, expanded)\n",
+        "        warnings = []\n",
+        (f"{ANIMT}::test_an_edited_key_outside_a_cycle_reports_the_period_it_redefines",),
+    ),
+    Revert(
+        # A notice on every key of a cycled curve is noise, and noise is what teaches an agent
+        # to skip the one notice that was measured.
+        "animation: every key on a cycled curve warns, not only one landing outside the cycle",
+        ADDON_ANIMATION,
+        "        if first - _KEY_FRAME_TOLERANCE <= frame <= last + _KEY_FRAME_TOLERANCE:\n",
+        "        if False:\n",
+        (f"{ANIMT}::test_an_edited_key_inside_the_cycle_or_off_a_cycled_curve_stays_quiet",),
+    ),
+    Revert(
+        # Measured after the loop instead of before it, the batch's own inserts have already
+        # stretched the extent every frame is judged against, so the two keys that stretched it
+        # both read as comfortably inside a cycle that did not exist when the call began.
+        "animation: the cycle notice is measured after the batch has finished inserting",
+        ADDON_ANIMATION,
+        '            "warnings": warnings,\n',
+        '            "warnings": _edit_cycle_warnings(bag, expanded),\n',
+        (f"{ANIMT}::test_the_cycle_notice_is_measured_before_the_batch_starts_inserting",),
+    ),
+    # --- a roll is judged by the travel it was measured to cause, not by the axis it names ---
+    Revert(
+        # The unmeasured notice this replaced: on one real rig a 30-degree head roll moved the
+        # bone's tail 0.000 cm and the face 6.47 cm, and the notice called that a mistake -
+        # which taught the agent these warnings were noise, and it then dismissed a correct,
+        # quantitative cycle warning and lost a thirteen-key walk.
+        "pose: a roll is called inert from the axis alone, without measuring what it carries",
+        ADDON_POSING,
+        (
+            '        if travel_m > max(_TWIST_TRAVEL_FLOOR_M, measured["length_m"] * _TWIST_TRAVEL_FRACTION):\n'
+            "            continue\n"
+        ),
+        "        if False:\n            continue\n",
+        (f"{POSET}::test_a_roll_that_swings_an_offset_child_bone_says_nothing",),
+    ),
+    Revert(
+        # A jaw or a head bone often has no child bone at all: every part of it an audience sees
+        # is skin, so the rest hierarchy alone cannot tell it from a relay bone that really does
+        # carry nothing.
+        "pose: the roll radius is read off the rest hierarchy alone, ignoring the skin",
+        ADDON_POSING,
+        "    skinned, weighted, bound_meshes, bounded = _skinned_twist_radius(pose_bone, meshes, origin, axis)\n",
+        "    skinned, weighted, bound_meshes, bounded = 0.0, 0, 0, False\n",
+        (f"{POSET}::test_a_roll_that_carries_skinned_vertices_off_the_axis_says_nothing",),
+    ),
+    Revert(
+        # Not proving the skin stays put is not the same as proving it moves. With no mesh bound
+        # under this bone's name there is nothing to read, and the notice has to say so rather
+        # than report the zero vertices it never looked at as a measurement.
+        "pose: a roll notice reports a vertex count it never took instead of naming the skin unmeasured",
+        ADDON_POSING,
+        '    if witnesses["meshes"] == 0:\n',
+        "    if False:\n",
+        (f"{POSET}::test_a_deforming_bone_with_no_reachable_mesh_says_what_it_did_not_measure",),
+    ),
+    Revert(
+        # The judgement is made per rolled bone and a call may pose 500 of them, so a
+        # million-vertex body cannot be walked once per roll. Unbounded, the scan also stops
+        # disclosing that its radius is a floor rather than a maximum.
+        "pose: the twist vertex scan is unbounded, so it never reports its radius as a floor",
+        ADDON_POSING,
+        "            if examined >= _MAX_TWIST_VERTICES or weighted >= _MAX_TWIST_WEIGHTED_VERTICES:\n",
+        "            if False:\n",
+        (f"{POSET}::test_a_bounded_vertex_scan_says_its_radius_is_a_floor",),
+    ),
+    Revert(
+        # Warnings are lifted whole into the envelope and never paged, so one notice per posed
+        # bone spends the reply budget on them - the same bound, and the same revert, as the
+        # per-bone cycle notices above.
+        "pose: the roll notices are unbounded, so a 500-bone pose spends the reply budget on them",
+        ADDON_POSING,
+        "        for pose_bone, degrees, travel_m, measured in silent[:_MAX_CYCLE_WARNINGS]\n",
+        "        for pose_bone, degrees, travel_m, measured in silent\n",
+        (f"{POSET}::test_a_whole_rig_rolled_about_its_own_length_counts_the_bones_it_cannot_name",),
+    ),
+    # --- the probe answers which axis moves a bone, and hands back the pose it borrowed ---
+    Revert(
+        # A witness read at its head sits on the axis of every turn about the probed bone, so
+        # every axis reports the same zero and the reply cannot tell a roll from a swing - which
+        # is the one distinction this tool exists to draw.
+        "pose: the probe reads its witness at the head, which no turn of the bone moves",
+        ADDON_POSING,
+        '    if position == "TAIL":\n        return to_world @ witness.tail\n',
+        '    if position == "TAIL":\n        return to_world @ witness.head\n',
+        (f"{POSET}::test_the_probe_separates_the_axis_that_swings_a_bone_from_the_one_that_only_rolls_it",),
+    ),
+    Revert(
+        # The sign is the half of the answer a magnitude cannot carry: it is what says which way
+        # round to roll a wrist to turn the palm outward, rather than only that it moved.
+        "pose: a reference component is published as a magnitude, so it cannot say which way",
+        ADDON_POSING,
+        "            name: round(travel.dot(direction), _PROBE_DECIMALS) for name, direction in references.items()\n",
+        (
+            "            name: round(abs(travel.dot(direction)), _PROBE_DECIMALS)"
+            " for name, direction in references.items()\n"
+        ),
+        (f"{POSET}::test_the_sign_of_a_reference_component_follows_the_sign_of_the_turn",),
+    ),
+    Revert(
+        # A shoulder read at the shoulder answers almost nothing: the lever arm is the hand, so
+        # the default witness is the farthest descendant and the probed bone itself is the
+        # fallback for a bone that carries no descendant at all.
+        "pose: the probe reads every bone at itself instead of through the farthest thing it carries",
+        ADDON_POSING,
+        '    if not descendants:\n        return pose_bone, "probed_bone"\n',
+        '    if True:\n        return pose_bone, "probed_bone"\n',
+        (f"{POSET}::test_the_probe_defaults_to_the_farthest_descendant_and_names_how_it_chose",),
+    ),
+    Revert(
+        # `set_character_pose`'s pose is its deliverable, so it keeps it; a probe's turn is
+        # scaffolding for the measurement. Keeping it corrupts the pose the call was made to
+        # explain, and the command is read-only, so no transaction puts it back.
+        "pose: a probe keeps its last trial turn the way a pose call keeps its pose",
+        ADDON_POSING,
+        "                with restored_bone_pose(armature, [pose_bone.name]):\n",
+        "                with restored_bone_pose(armature, [pose_bone.name], only_on_error=True):\n",
+        (f"{POSET}::test_the_probe_hands_the_pose_back_untouched",),
+    ),
+    Revert(
+        # The same unwind the keying rows revert, reached from the read-only side: a probe runs
+        # outside `mutation_transaction`, so this except branch is the only thing that hands the
+        # rig back when the depsgraph raises mid-measurement.
+        "pose: a probe that raises part way through leaves its trial turn on the bone",
+        ADDON_POSING,
+        "    try:\n        yield\n    except BaseException:\n        restore()\n        raise\n",
+        "    try:\n        yield\n    except BaseException:\n        raise\n",
+        (f"{POSET}::test_a_probe_that_raises_part_way_through_still_hands_the_pose_back",),
+    ),
+    Revert(
+        # Six named directions in and one silently ignored is a wrong answer nobody can see:
+        # a zero vector normalises to nothing, and every component measured along it is zero.
+        "pose: a reference direction naming no direction is normalised instead of refused",
+        ADDON_POSING,
+        "        if vector.length <= _AIM_MIN_LENGTH:\n",
+        "        if False:\n",
+        (f"{POSET}::test_a_probe_refuses_a_direction_that_names_no_direction_by_name",),
+    ),
+    Revert(
+        # Two identical probes report the same travel twice and answer nothing, while costing
+        # the rig a second trial turn.
+        "pose: a probe accepts the same axis twice and measures it twice",
+        ADDON_POSING,
+        '    _unique_names(listed, "probe axes")\n',
+        "",
+        (f"{POSET}::test_a_probe_refuses_a_repeated_axis_and_an_unknown_one_before_touching_the_bone",),
+    ),
+    # --- the mounted tool names are an opt-in page, read off this process's own registry ---
+    Revert(
+        # Every name costs bytes in a reply most callers make for the version verdict alone; the
+        # counts and the bundle summary are what the plain call is for.
+        "get_addon_status: the mounted tool names ship on every status call, asked for or not",
+        SERVER_CORE_TOOL,
+        (
+            "    if mounted_tools:\n"
+            '        payload["mounted_tools"] = _mounted_tools_page(mounted, limit=tool_limit, offset=tool_offset)\n'
+        ),
+        '    payload["mounted_tools"] = _mounted_tools_page(mounted, limit=tool_limit, offset=tool_offset)\n',
+        (f"{CORET}::test_get_addon_status_keeps_the_mounted_tool_names_opt_in",),
+    ),
+    Revert(
+        # The catalog is every tool the project defines; the registry is what this process will
+        # answer to. A caller chasing a tool its build does not carry is asking the second
+        # question, and the catalog answers it wrongly while looking right.
+        "get_addon_status: the tool names come from the project catalog, not this process's registry",
+        SERVER_CORE_TOOL,
+        "    names = sorted(mounted)\n",
+        "    names = sorted(known_tool_names())\n",
+        (f"{CORET}::test_get_addon_status_enumerates_exactly_the_tools_this_process_registered",),
+    ),
+    Revert(
+        # The registry's own order is import order, which shifts with the selection, so a paged
+        # walk of it repeats and skips names. Reversed rather than the set's own iteration
+        # order: that order depends on the interpreter's hash seed, and this row's verdict
+        # must not.
+        "get_addon_status: the tool names are paged in an order the next call need not repeat",
+        SERVER_CORE_TOOL,
+        "    names = sorted(mounted)\n",
+        "    names = sorted(mounted, reverse=True)\n",
+        (f"{CORET}::test_get_addon_status_pages_the_tool_names_deterministically",),
+    ),
+    Revert(
+        # A page that ends on the total and still asks to be continued sends the caller back to
+        # the same empty page for ever, which is what `next_offset` is looped on.
+        "get_addon_status: a page ending on the last name still asks to be continued",
+        SERVER_CORE_TOOL,
+        "    truncated = resume < len(names)\n",
+        "    truncated = resume <= len(names)\n",
+        (f"{CORET}::test_get_addon_status_reports_an_offset_past_the_last_name_as_the_end",),
+    ),
+    # --- an INSPECT cycle call reads, and a probe restores what it borrowed ---
+    Revert(
+        # Dispatched as a write, an inspection pays for a snapshot, a diff and an undo
+        # checkpoint to report a number it only read.
+        "dispatch: an INSPECT cycle call is dispatched as a write",
+        ADDON_SERVER_CORE,
+        (
+            '        "set_action_cycle": CommandSpec(\n'
+            '            read_only_when=lambda params: str(params.get("operation", "SET")).upper() == "INSPECT"\n'
+            "        ),\n"
+        ),
+        '        "set_action_cycle": CommandSpec(),\n',
+        (
+            f"{DRT}::test_the_params_decide_whether_these_commands_read_or_write[set_action_cycle-reading14-writing14]",
+            f"{DRT}::test_the_params_decide_whether_these_commands_read_or_write[set_action_cycle-reading15-writing15]",
+        ),
+    ),
+    Revert(
+        # The probe turns the bone, measures, and puts the pose back inside its own call, so
+        # there is no net mutation for a transaction to snapshot - and the snapshot it would
+        # take sits around every trial turn of a read-only question.
+        "dispatch: the bone-axis probe is dispatched as a mutation",
+        ADDON_SERVER_CORE,
+        '        "probe_bone_axis": CommandSpec(read_only=True),\n',
+        '        "probe_bone_axis": CommandSpec(),\n',
+        (
+            f"{DRT}::test_these_commands_run_outside_the_transaction"
+            "[probe_bone_axis-restores its own trial pose, so there is no net mutation to snapshot]",
+        ),
+    ),
+    # --- the mount state is on every status call; the per-name verdict is the opt-in one ---
+    Revert(
+        # The plain call is the setup check, and `capability_count` beside a short tool list
+        # already read as a registration fault: this block is what explains the gap. Gating it
+        # on `detail` leaves the explanation behind the same flag as the thing it explains.
+        "get_addon_status: the mount state is withheld unless the caller asks for detail",
+        SERVER_CORE_TOOL,
+        '        "toolsets": _toolset_payload(mounted),\n    }\n    if tool_name is not None:\n',
+        (
+            "    }\n"
+            "    if detail:\n"
+            '        payload["toolsets"] = _toolset_payload(mounted)\n'
+            "    if tool_name is not None:\n"
+        ),
+        (f"{CORET}::test_get_addon_status_reports_the_mount_state_without_being_asked",),
+    ),
+    Revert(
+        # The variable is set whole, not appended to, so suggesting the bare bundle silently
+        # unmounts the mode the session is running: the remedy for one missing tool would cost
+        # the agent every other tool it was using.
+        "get_addon_status: the suggested toolset drops the selection already in force",
+        SERVER_CORE_TOOL,
+        '    return f"{current},{bundle}" if current else bundle\n',
+        "    return bundle\n",
+        (f"{CORET}::test_tool_lookup_appends_the_missing_bundle_to_the_selection_already_in_force",),
+    ),
+    Revert(
+        # Four situations hide behind one "unknown tool" error - mounted, unmounted, server
+        # older than the add-on, and a typo - and they call for opposite responses. Folding the
+        # stale-server case into the unknown one tells the caller to fix a spelling that is right.
+        "get_addon_status: a server older than its add-on is reported as an unknown name",
+        SERVER_CORE_TOOL,
+        "    elif addon_command:\n",
+        "    elif False:\n",
+        (f"{CORET}::test_tool_lookup_separates_an_unmounted_tool_from_an_unknown_one",),
+    ),
+    Revert(
+        # Bundles overlap - `lighting` and `lighting-construction` share a module - so summing
+        # the per-bundle counts counts the shared tools twice and reports more absent tools than
+        # the catalog has.
+        "get_addon_status: the absent-tool count sums overlapping bundles instead of naming distinct tools",
+        SERVER_CORE_TOOL,
+        '        "unmounted_tool_count": len(known_tool_names() - mounted),\n',
+        '        "unmounted_tool_count": sum(unmounted.values()),\n',
+        (f"{CORET}::test_toolset_payload_counts_what_a_selection_left_out",),
     ),
 ]
 

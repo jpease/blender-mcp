@@ -365,20 +365,35 @@ class _FakeModifierStack(list):
 
 
 class _FakeKey:
-    """One keyframe point; `set_action_cycle` reads the frame it sits on, nothing else."""
+    """One keyframe point: the frame it sits on, the value it holds, and the style written to it."""
 
-    def __init__(self, frame) -> None:
-        self.co = (float(frame), 0.0)
+    def __init__(self, frame, value=0.0) -> None:
+        self.co = [float(frame), float(value)]
+
+
+class _FakeKeyPoints(list):
+    """`fcurve.keyframe_points`, with the two mutators `edit_keyframes` drives."""
+
+    def insert(self, frame, value, options=None):
+        point = _FakeKey(frame, value)
+        self.append(point)
+        return point
+
+    def remove(self, point, fast=False):
+        list.remove(self, point)
 
 
 class _FakeCurve:
     def __init__(self, data_path, array_index, *, cyclic=False, frames=(1.0, 25.0)) -> None:
         self.data_path = data_path
         self.array_index = array_index
-        self.keyframe_points = [_FakeKey(frame) for frame in frames]
+        self.keyframe_points = _FakeKeyPoints(_FakeKey(frame) for frame in frames)
         self.modifiers = _FakeModifierStack()
         if cyclic:
             self.modifiers.new(type="CYCLES")
+
+    def update(self):
+        """Blender recomputes handles here; nothing this suite asserts depends on that."""
 
 
 def _cycle_handler(monkeypatch, curves):
@@ -413,7 +428,7 @@ def test_a_cycle_prefix_that_names_no_curve_is_refused(monkeypatch) -> None:
     A prefix matching nothing reported success having made nothing cyclic.
 
     The caller's next move is playback, and an action that does not loop looks identical to
-    one whose modifiers were never asked for - so the typo surfaced frames later, if at all.
+    one whose modifiers were never asked for - so the typo showed up frames later, if at all.
     """
     handler, target = _cycle_handler(monkeypatch, [_FakeCurve("location", index) for index in range(3)])
 
@@ -838,3 +853,244 @@ def test_an_unscoped_cycle_names_the_parameter_that_narrows_it(monkeypatch) -> N
     assert any("no offset to resume from" in warning for warning in unscoped["warnings"])
     # A call that already narrowed has used the remedy; repeating it would be noise on the wire.
     assert scoped["warnings"] == []
+
+
+def test_inspect_reports_the_period_without_destroying_the_cycle(monkeypatch) -> None:
+    """
+    Reading what a cycle repeats used to mean deleting it: only REMOVE echoed `period_frames`.
+
+    A rehearsal asking "what does this walk loop at?" had to un-cycle the action, read the
+    number out of the reply, and cycle it again - three calls and a window in which the shot
+    was not looping at all.
+    """
+    curve = _FakeCurve("location", 0, frames=(1.0, 25.0))
+    handler, target = _cycle_handler(monkeypatch, [curve])
+    handler.set_action_cycle(target, "Walk", action_slot_identifier="OBRig")
+
+    inspected = handler.set_action_cycle(target, "Walk", "INSPECT", action_slot_identifier="OBRig")
+
+    record = inspected["modifiers"][0]
+    assert record["period_frames"] == pytest.approx(24.0)
+    assert (record["first_key_frame"], record["last_key_frame"]) == (1.0, 25.0)
+    assert record["has_cycles_modifier"] is True
+    assert [modifier.type for modifier in curve.modifiers] == ["CYCLES"], "INSPECT removed the cycle it read"
+    assert inspected["changed_resources"] == [], "an inspection that changed nothing must claim nothing"
+
+
+def test_inspect_reports_a_curve_that_carries_no_cycle_where_remove_omits_it(monkeypatch) -> None:
+    """A curve carrying no cycle is what an INSPECT caller is asking about, not what it skips."""
+    curves = [_FakeCurve("location", 0, cyclic=True), _FakeCurve("location", 1)]
+    handler, target = _cycle_handler(monkeypatch, curves)
+
+    inspected = handler.set_action_cycle(target, "Walk", "INSPECT", action_slot_identifier="OBRig")
+    removed = handler.set_action_cycle(target, "Walk", "REMOVE", action_slot_identifier="OBRig")
+
+    assert [(record["array_index"], record["has_cycles_modifier"]) for record in inspected["modifiers"]] == [
+        (0, True),
+        (1, False),
+    ]
+    uncycled = inspected["modifiers"][1]
+    # It still has an extent - that is the period it *would* repeat - but no modifier to repeat it.
+    assert uncycled["period_frames"] == pytest.approx(24.0)
+    assert (uncycled["mode_after"], uncycled["cycles_after"]) == (None, None)
+    # REMOVE answers the same question by silence, which is the shape INSPECT must not inherit.
+    assert [record["array_index"] for record in removed["modifiers"]] == [0]
+
+
+def test_inspect_reads_the_modifier_that_is_there_not_this_calls_defaults(monkeypatch) -> None:
+    """An inspection echoing its own argument defaults would report a cycle nobody authored."""
+    curve = _FakeCurve("location", 0, frames=(1.0, 25.0))
+    handler, target = _cycle_handler(monkeypatch, [curve])
+    handler.set_action_cycle(
+        target,
+        "Walk",
+        mode_after="REPEAT",
+        cycles_after=3,
+        frame_start=1.0,
+        frame_end=97.0,
+        action_slot_identifier="OBRig",
+    )
+
+    record = handler.set_action_cycle(target, "Walk", "INSPECT", action_slot_identifier="OBRig")["modifiers"][0]
+
+    # mode_after defaults to REPEAT_OFFSET on the inspecting call; the answer is the curve's REPEAT.
+    assert record["mode_after"] == "REPEAT"
+    assert record["cycles_after"] == 3
+    assert record["restricted_range"] == {
+        "frame_start": 1.0,
+        "frame_end": 97.0,
+        "blend_in": 0.0,
+        "blend_out": 0.0,
+    }
+    assert record["repeat_end_frame"] == pytest.approx(25.0 + 3 * 24.0)
+
+
+def test_inspect_asserts_an_expected_period_and_still_writes_nothing(monkeypatch) -> None:
+    """The one cycle-describing argument an inspection can honour: it refuses instead of creating."""
+    curve = _FakeCurve("location", 0, cyclic=True, frames=(1.0, 61.0))
+    handler, target = _cycle_handler(monkeypatch, [curve])
+
+    with pytest.raises(ValueError, match="expected_period_frames=24"):
+        handler.set_action_cycle(target, "Walk", "INSPECT", expected_period_frames=24.0, action_slot_identifier="OBRig")
+    with pytest.raises(ValueError, match="INSPECT reads the cycle already on these curves"):
+        handler.set_action_cycle(
+            target, "Walk", "INSPECT", frame_start=1.0, frame_end=25.0, action_slot_identifier="OBRig"
+        )
+
+    matched = handler.set_action_cycle(
+        target, "Walk", "INSPECT", expected_period_frames=60.0, action_slot_identifier="OBRig"
+    )
+    assert matched["modifiers"][0]["period_frames"] == pytest.approx(60.0)
+    assert len(curve.modifiers) == 1, "an inspection changed the modifier stack"
+    assert curve.modifiers[0].use_restricted_range is False
+
+
+def test_inspect_says_when_the_selected_curves_do_not_share_one_period(monkeypatch) -> None:
+    """
+    "These curves do not share one period" is the diagnosis an inspection came for.
+
+    It is measured from the records alone, so it costs an INSPECT nothing - while the notices
+    that describe `cycles_after` or a restricted range describe arguments INSPECT never wrote.
+    """
+    curves = [
+        _FakeCurve("location", 0, cyclic=True, frames=(1.0, 25.0)),
+        _FakeCurve('pose.bones["arm"].rotation_quaternion', 0, cyclic=True, frames=(1.0, 162.0)),
+    ]
+    handler, target = _cycle_handler(monkeypatch, curves)
+
+    inspected = handler.set_action_cycle(target, "Walk", "INSPECT", action_slot_identifier="OBRig")
+
+    disagreement = next(warning for warning in inspected["warnings"] if "do not share one cycle period" in warning)
+    assert "24 frames" in disagreement and "161 frames" in disagreement
+    assert not any(warning.startswith(("cycles_", "frame_", "mode_")) for warning in inspected["warnings"])
+
+
+def test_the_cycle_tool_lets_inspect_assert_a_period_and_refuses_what_it_cannot_write(monkeypatch) -> None:
+    """INSPECT creates nothing, so every argument that describes a new cycle is a typo - bar one."""
+    connection = _Connection()
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+    target = animation.AnimationTarget(type="OBJECT", name="Rig")
+
+    with pytest.raises(ToolError, match="INSPECT only reads the cycle already there and cannot apply frame_start"):
+        asyncio.run(animation.set_action_cycle(None, target, "Walk", "INSPECT", frame_start=1.0, frame_end=25.0))
+    with pytest.raises(ToolError, match="cannot apply blend_in"):
+        asyncio.run(animation.set_action_cycle(None, target, "Walk", "INSPECT", blend_in=2.0))
+    assert connection.calls == []
+
+    asyncio.run(animation.set_action_cycle(None, target, "Walk", "INSPECT", expected_period_frames=24.0))
+
+    _command, params = connection.calls[0]
+    assert params["operation"] == "INSPECT"
+    assert params["expected_period_frames"] == pytest.approx(24.0)
+    advertised = animation.mcp._tool_manager._tools["set_action_cycle"].parameters["properties"]
+    assert advertised["operation"]["enum"] == ["SET", "REMOVE", "INSPECT"]
+
+
+def _edit_handler(monkeypatch, curves):
+    """
+    Load the animation handlers over an object whose assigned Action already holds `curves`.
+
+    Args:
+        monkeypatch: pytest's monkeypatch fixture.
+        curves: The F-Curves in the object's slot before this call keys anything.
+
+    Returns:
+        tuple: The bound handler mixin, the target spec, and the channelbag the edits land in.
+
+    """
+    bag = types.SimpleNamespace(slot_handle=7, fcurves=_FakeFCurves(curves))
+    slot = types.SimpleNamespace(identifier="OBRig", handle=7, target_id_type="OBJECT")
+    strip = types.SimpleNamespace(channelbags=[bag])
+    action = types.SimpleNamespace(
+        name="Walk", users=1, is_action_layered=True, slots=[slot], layers=[types.SimpleNamespace(strips=[strip])]
+    )
+    rig = _FakeStruct(
+        properties={"location": _FakeRnaProperty(array_length=3)},
+        values={"location": (0.0, 0.0, 0.0), "name": "Rig", "id_type": "OBJECT"},
+    )
+    rig.animation_data = types.SimpleNamespace(action=action, action_slot=slot)
+    rig.animation_data_create = lambda: rig.animation_data
+    addon, _bpy = _load_addon(
+        monkeypatch,
+        data={"objects": types.SimpleNamespace(get=lambda name: rig if name == "Rig" else None)},
+    )
+    return addon.handlers.animation.AnimationHandlersMixin(), {"type": "OBJECT", "name": "Rig"}, bag
+
+
+class _FakeFCurves(list):
+    """`channelbag.fcurves`: found by (data_path, array_index), created on demand."""
+
+    def find(self, data_path, index=0):
+        return next((curve for curve in self if curve.data_path == data_path and curve.array_index == index), None)
+
+    def new(self, data_path, index=0, group_name=""):
+        curve = _FakeCurve(data_path, index, frames=())
+        self.append(curve)
+        return curve
+
+    def remove(self, curve):
+        list.remove(self, curve)
+
+
+def test_an_edited_key_outside_a_cycle_reports_the_period_it_redefines(monkeypatch) -> None:
+    """
+    The third way into the trap the two keying tools already guard, and the quietest.
+
+    `edit_keyframes` is what an agent reaches for to touch one exact channel, which is exactly
+    when a stray frame number lands on a cycled curve. It wrote the key, reported success, and
+    carried no warnings key at all - while the curve's period had become the distance to the
+    new frame.
+    """
+    curve = _FakeCurve("location", 1, cyclic=True, frames=(1.0, 17.0))
+    handler, target, _bag = _edit_handler(monkeypatch, [curve])
+
+    result = handler.edit_keyframes(target, [{"data_path": "location", "array_index": 1, "frame": 199, "value": 2.1}])
+
+    warning = next(text for text in result["warnings"] if "cycles over" in text)
+    assert "location[1] is keyed at frame 199" in warning
+    assert "frames 1-17" in warning
+    assert "period becomes 198 frames instead of 16" in warning
+    # It warns and keys: extending a cycle deliberately is legitimate authoring.
+    assert [point.co[0] for point in curve.keyframe_points] == [1.0, 17.0, 199.0]
+
+
+def test_an_edited_key_inside_the_cycle_or_off_a_cycled_curve_stays_quiet(monkeypatch) -> None:
+    """The notice has to be rare enough to read, and a deletion never stretches a period."""
+    cycled = _FakeCurve("location", 1, cyclic=True, frames=(1.0, 17.0))
+    plain = _FakeCurve("location", 0, frames=(1.0, 17.0))
+    handler, target, _bag = _edit_handler(monkeypatch, [cycled, plain])
+
+    inside = handler.edit_keyframes(target, [{"data_path": "location", "array_index": 1, "frame": 9, "value": 2.1}])
+    uncycled = handler.edit_keyframes(target, [{"data_path": "location", "array_index": 0, "frame": 199, "value": 3.0}])
+    deleted = handler.edit_keyframes(
+        target, [{"operation": "REMOVE", "data_path": "location", "array_index": 1, "frame": 400}]
+    )
+
+    assert inside["warnings"] == []
+    assert uncycled["warnings"] == []
+    assert deleted["warnings"] == [], "a REMOVE narrows an extent rather than widening one"
+
+
+def test_the_cycle_notice_is_measured_before_the_batch_starts_inserting(monkeypatch) -> None:
+    """
+    One batch, two keys past the cycle: the first insert must not redefine what the second is judged against.
+
+    Measured inside the loop, the frame-199 key stretches the extent to 1-199 and the frame-100
+    key that follows it reads as comfortably inside a cycle that did not exist when the call
+    began - the batch stretches the period and reports one of the two keys that did it.
+    """
+    curve = _FakeCurve("location", 1, cyclic=True, frames=(1.0, 17.0))
+    handler, target, _bag = _edit_handler(monkeypatch, [curve])
+
+    result = handler.edit_keyframes(
+        target,
+        [
+            {"data_path": "location", "array_index": 1, "frame": 199, "value": 2.1},
+            {"data_path": "location", "array_index": 1, "frame": 100, "value": 1.4},
+        ],
+    )
+
+    # One warning per channel, naming the first frame that left the cycle behind.
+    assert len(result["warnings"]) == 1, result["warnings"]
+    assert "keyed at frame 199" in result["warnings"][0]
+    assert [point.co[0] for point in curve.keyframe_points] == [1.0, 17.0, 199.0, 100.0]

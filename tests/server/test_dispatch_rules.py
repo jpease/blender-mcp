@@ -3,10 +3,11 @@ The routing decision `_run_handler` makes before it calls a handler.
 
 Two questions are answered from the command type and its params alone: is this
 call read-only, and does it run outside `mutation_transaction`? They used to be
-fifty lines of `or` inside `_run_handler`, reachable only by calling a handler
-through a fake `bpy`, so the params-dependent rows - an `INSPECT` cache call, a
-dry-run sewing preview, an instancer call that names no source - were never
-exercised on their own. They are predicates now, so each row is one assertion.
+a chain of `or` conditions inside `_run_handler`, reachable only by calling a
+handler through a fake `bpy`, so the params-dependent rows - an `INSPECT` cache
+call, a dry-run sewing preview, an instancer call that names no source - were
+never exercised on their own. They are predicates now, so each row is one
+assertion.
 
 The bypass that is *not* about read-only-ness (session swaps, the library
 commands) is covered end to end in `tests/test_transaction_session_swap.py`;
@@ -39,6 +40,10 @@ _PARAMS_DECIDE = [
     ("manage_geometry_nodes_bake", {}, {"action": "BAKE"}),
     ("manage_procedural_instances", {}, {"source_name": "Rock"}),
     ("manage_procedural_instances", {"pick_instance": None}, {"realize_instances": False}),
+    # `operation`, not `action`: INSPECT reads the cycle already there, SET writes a modifier,
+    # and omitting the parameter means SET.
+    ("set_action_cycle", {"operation": "INSPECT"}, {}),
+    ("set_action_cycle", {"operation": "inspect"}, {"operation": "REMOVE"}),
 ]
 
 
@@ -98,6 +103,7 @@ def test_an_unlisted_command_is_a_write(server: object) -> None:
         ("open_shot", "a swap: after a load every id looks new and a rollback would empty the file"),
         ("reload_library", "replaces linked datablocks in place, which a rollback would delete"),
         ("unlink_libraries", "fires no handler, so this routing is the only thing protecting it"),
+        ("probe_bone_axis", "restores its own trial pose, so there is no net mutation to snapshot"),
     ],
 )
 def test_these_commands_run_outside_the_transaction(server: object, cmd_type: str, why: str) -> None:

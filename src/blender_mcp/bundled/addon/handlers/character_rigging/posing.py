@@ -17,16 +17,19 @@ import bpy
 import mathutils
 
 from ...helpers import paginate, sync_from_editmode
-from ..action_assignment import action_fcurve_collections, assign_named_action
+from ..action_assignment import action_fcurve_collections, assign_named_action, cycled_curve_extent
 from ..key_style import KeyStyle, style_point
 from .axes import (
+    _AIM_MIN_LENGTH,
     _AXIS_INDEX,
     _BASIS_VECTORS,
+    _BONE_POSITIONS,
     _LENGTH_AXIS,
     _aim_pose_matrix,
     _reject_singular,
     _rest_aim_axes,
     _rest_axes,
+    _signed_axis,
     _unit_axis_and_angle,
     _validated_aim,
     _validated_rotate,
@@ -39,9 +42,13 @@ from .primitives import (
     _matrix_list,
     _override_property_warning,
     _plain,
+    _required_name,
     _selected_bones,
+    _unique_names,
     _validate_limit_offset,
+    _vector,
 )
+from .references import _mesh_uses_armature_data
 
 _POSE_SPACES = {"LOCAL", "LOCAL_WITH_PARENT", "POSE", "WORLD"}
 # LOCAL is the only pose space that is relative to the parent: it is `pose_bone.matrix_basis`,
@@ -54,7 +61,7 @@ _ROTATION_CHANNEL_WIDTH = {"rotation_quaternion": 4, "rotation_axis_angle": 4, "
 # Frames compare as floats; a key at 12 and a request at 12.0000001 are the same key.
 _FRAME_TOLERANCE = 1e-6
 # One call may pose 500 bones, and the envelope lifts warnings whole rather than paging them,
-# so the per-bone cycle notices are named up to this many and then counted.
+# so every per-bone notice list below names up to this many bones and then counts the rest.
 _MAX_CYCLE_WARNINGS = 4
 # How many of one bone's custom properties a page carries. A face control bone can hold 199
 # sliders, which is more than the 8 KiB reply budget fits whole, so the page is bounded here
@@ -225,6 +232,25 @@ _INERT_ROTATION_MINIMUM_DEGREES = 0.5
 # The spaces whose axis letters resolve to the bone's own rest basis, and so the only two in
 # which "Y" names this bone's length rather than the armature's or the scene's axis.
 _BONE_LOCAL_SPACES = frozenset({"LOCAL", "LOCAL_WITH_PARENT"})
+# How far the furthest witness has to travel before a roll counts as having moved something,
+# as a fraction of the rolled bone's own world length. A roll about the length axis carries a
+# point at perpendicular distance r through 2*r*sin(theta/2): zero only where every witness sits
+# on the axis. A relay bone carries nothing off its axis and a head bone carries a face 6.47 cm
+# off it, and those are the same arithmetic with a different radius - so the radius, not the
+# bone's job, is what decides whether the caller made a mistake. One percent of the bone's own
+# length keeps a 5 mm finger and a 2 m spine judged the same way, which a scene-sized threshold
+# would not.
+_TWIST_TRAVEL_FRACTION = 0.01
+# The floor under that fraction, so a hair-thin or zero-length bone cannot make a sub-micrometre
+# travel count as visible motion.
+_TWIST_TRAVEL_FLOOR_M = 1e-5
+# What the skinning scan may look at before it stops and says so. The judgement is made per
+# rolled bone and a call may pose 500 of them, on top of the view-layer update `_apply_pose_specs`
+# already spends per bone, so an unbounded walk of a million-vertex body would cost more than the
+# warning is worth. When either bound is hit the radius is a floor rather than a maximum, and the
+# notice says so instead of quietly under-reporting.
+_MAX_TWIST_VERTICES = 20_000
+_MAX_TWIST_WEIGHTED_VERTICES = 512
 
 
 def _rotation_axis_angle(spec):
@@ -290,55 +316,259 @@ def _length_axis_twist_degrees(spec):
     return math.degrees(abs(angle))
 
 
-def _twist_notice(pose_bone, degrees, space):
+def _perpendicular_radius(point, origin, axis):
     """
-    Word the notice for one bone rotated about its own length, claiming only what was measured.
-
-    This reads the rest hierarchy, not the evaluated mesh, and the difference decides whether a
-    roll is a mistake. It is one on a relay bone whose job is to swing a forearm. It is the
-    intended motion on a head bone whose length axis is the character's up: measured on one such
-    rig, 30 degrees moved the tail 0.000 cm and the face 6.47 cm, and a notice that concluded
-    "nothing swings" was wrong about the only part the audience sees. So the notice states the
-    tail and child-head result it actually derived, and says what deforming geometry does with a
-    roll rather than implying it does nothing.
+    Measure how far one point sits off the line through `origin` along `axis`.
 
     Args:
-        pose_bone: The bone rotated, read for whether it deforms geometry.
+        point: The world-space point to measure.
+        origin: A world-space point on the line - the rolled bone's head.
+        axis: The line's unit direction - the rolled bone's world-space length direction.
+
+    Returns:
+        float: The perpendicular distance in metres, which is the radius this point swings on
+        when the bone rolls about its own length.
+
+    """
+    offset = point - origin
+    return (offset - axis * offset.dot(axis)).length
+
+
+def _skinned_twist_radius(pose_bone, meshes, origin, axis):
+    """
+    Measure how far the geometry weighted to this bone reaches off its length axis.
+
+    The base mesh, not the evaluated one: the question is where a vertex sits relative to the
+    bone that carries it, which the rest positions answer, and evaluating a deformed mesh per
+    posed bone per frame is exactly the cost this warning cannot afford.
+
+    Args:
+        pose_bone: The bone being rolled; its name is the vertex group that weights to it.
+        meshes: The bound meshes to scan, empty for a bone that deforms nothing.
+        origin: The bone's world-space head.
+        axis: The bone's world-space unit length direction.
+
+    Returns:
+        tuple: the largest perpendicular distance found in metres, how many weighted vertices
+        it was taken over, how many bound meshes carry a vertex group for this bone, and whether
+        the scan stopped on one of its own bounds rather than reaching the end.
+
+    """
+    radius = 0.0
+    weighted = 0
+    examined = 0
+    bound_meshes = 0
+    for mesh_obj in meshes:
+        group = mesh_obj.vertex_groups.get(pose_bone.name)
+        if group is None:
+            continue
+        bound_meshes += 1
+        to_world = mesh_obj.matrix_world
+        for vertex in mesh_obj.data.vertices:
+            if examined >= _MAX_TWIST_VERTICES or weighted >= _MAX_TWIST_WEIGHTED_VERTICES:
+                return radius, weighted, bound_meshes, True
+            examined += 1
+            if not any(item.group == group.index and item.weight > 0.0 for item in vertex.groups):
+                continue
+            weighted += 1
+            radius = max(radius, _perpendicular_radius(to_world @ vertex.co, origin, axis))
+    return radius, weighted, bound_meshes, False
+
+
+def _twist_witnesses(armature, pose_bone, meshes):
+    """
+    Measure how far the furthest thing this bone carries sits off its own length axis.
+
+    That radius is the whole question a roll warning turns on, and it is a property of the rest
+    rig and the skinning rather than of the frame - which is why `_TwistWitnesses` measures it
+    once per bone per call and every frame of a stride reuses the answer.
+
+    Args:
+        armature: The armature being posed, for the world matrix a scaled rig needs - its bones
+            are longer or shorter in the scene than their rest lengths say.
+        pose_bone: The bone about to be rolled.
+        meshes: The bound meshes to scan for vertices weighted to it, empty when the bone
+            deforms nothing.
+
+    Returns:
+        dict: radius_m (the largest perpendicular distance any witness sits at), length_m (the
+        bone's own world length), bone_ends (how many descendant bone heads and tails were
+        measured), vertices (how many weighted vertices were measured), meshes (how many bound
+        meshes carry a vertex group for this bone), bounded (whether the vertex scan stopped on
+        its own bound) and deforms (whether the bone is flagged to deform geometry).
+
+    """
+    bone = pose_bone.bone
+    to_world = armature.matrix_world
+    origin = to_world @ bone.head_local
+    along = (to_world @ bone.tail_local) - origin
+    record = {
+        "radius_m": 0.0,
+        "length_m": along.length,
+        "bone_ends": 0,
+        "vertices": 0,
+        "meshes": 0,
+        "bounded": False,
+        "deforms": bool(getattr(bone, "use_deform", False)),
+    }
+    if along.length <= _AIM_MIN_LENGTH:
+        # A bone with no length has no length axis, so there is no roll to measure against it.
+        return record
+    axis = along.normalized()
+    # The bone's own tail lies on the line head-to-tail by construction, so its perpendicular
+    # radius is exactly zero: the maximum starts there, and only a descendant end or a weighted
+    # vertex sitting off the axis can raise it.
+    radius = 0.0
+    for child in bone.children_recursive:
+        for point in (child.head_local, child.tail_local):
+            radius = max(radius, _perpendicular_radius(to_world @ point, origin, axis))
+        record["bone_ends"] += 2
+    skinned, weighted, bound_meshes, bounded = _skinned_twist_radius(pose_bone, meshes, origin, axis)
+    record.update({"vertices": weighted, "meshes": bound_meshes, "bounded": bounded})
+    record["radius_m"] = max(radius, skinned)
+    return record
+
+
+class _TwistWitnesses:
+    """
+    One call's memo of how far a roll of each bone would carry the things that bone carries.
+
+    A batched keying call runs the roll check once a frame for as many as 500 bones, and the
+    answer cannot change between frames: the radius comes from the rest hierarchy and the
+    skinning, not from the pose. Measuring it per frame would put a vertex scan behind every one
+    of the 250-frame ceiling's writes, so it is measured once per bone and recalled after that.
+    """
+
+    def __init__(self, armature):
+        self._armature = armature
+        self._meshes = None
+        self._by_bone = {}
+
+    @property
+    def meshes(self):
+        """The meshes this armature deforms, found once: `_mesh_uses_armature_data` is itself a scan."""
+        if self._meshes is None:
+            self._meshes = [
+                obj for obj in bpy.data.objects if obj.type == "MESH" and _mesh_uses_armature_data(obj, self._armature)
+            ]
+        return self._meshes
+
+    def witnesses(self, pose_bone):
+        """
+        Measure, or recall, what one bone carries off its own length axis.
+
+        Args:
+            pose_bone: The bone about to be rolled.
+
+        Returns:
+            dict: `_twist_witnesses`' record for it.
+
+        """
+        record = self._by_bone.get(pose_bone.name)
+        if record is None:
+            # The mesh scan is the expensive half, so a bone that deforms nothing never asks for
+            # the bound-mesh list and a rig with no skinned bone rolled never builds it.
+            deforms = bool(getattr(pose_bone.bone, "use_deform", False))
+            record = _twist_witnesses(self._armature, pose_bone, self.meshes if deforms else ())
+            self._by_bone[pose_bone.name] = record
+        return record
+
+
+def _twist_travel_m(radius_m, degrees):
+    """
+    Work out how far a point at `radius_m` off the axis moves when the bone rolls `degrees`.
+
+    Exact rather than sampled: a rotation carries a point at perpendicular distance r along a
+    chord of 2*r*sin(theta/2), so the travel needs no trial pose, no depsgraph round trip and no
+    `to_mesh()` - which is what makes measuring it affordable enough to gate a warning on.
+
+    Args:
+        radius_m: The witness's perpendicular distance from the axis, in metres.
+        degrees: How far the bone is rolled about its length.
+
+    Returns:
+        float: The distance the witness travels, in metres.
+
+    """
+    return 2.0 * radius_m * math.sin(math.radians(abs(degrees)) / 2.0)
+
+
+def _twist_examination(witnesses):
+    """
+    Say what the roll measurement looked at, and what it did not look at.
+
+    A warning that names its evidence can be checked; one that asserts an outcome it never
+    computed trains the reader to skip every warning the tool sends, which is the failure this
+    sentence exists to prevent.
+
+    Args:
+        witnesses: `_twist_witnesses`' record for the rolled bone.
+
+    Returns:
+        str: One sentence naming the witnesses measured, and naming the skin when the skin was
+        not reachable rather than ruling on it.
+
+    """
+    measured = f"Measured against the bone's own tail and {witnesses['bone_ends']} descendant bone end(s)"
+    if not witnesses["deforms"]:
+        return f"{measured}; this bone deforms no geometry, so what it moves, it moves through a child or a constraint."
+    if witnesses["meshes"] == 0:
+        return (
+            f"{measured}. This bone is flagged to deform geometry, but no mesh bound to this armature carries a "
+            "vertex group named after it, so nothing about the skin was measured here."
+        )
+    bounded = (
+        " The vertex scan stopped on its own bound, so this is a floor: a vertex further off the axis may exist."
+        if witnesses["bounded"]
+        else ""
+    )
+    return (
+        f"{measured}, plus {witnesses['vertices']} vertices weighted to it across "
+        f"{witnesses['meshes']} bound mesh(es).{bounded}"
+    )
+
+
+def _twist_notice(pose_bone, degrees, space, travel_m, witnesses):
+    """
+    Word the notice for a roll that moves nothing this call could measure.
+
+    The previous wording asserted in prose that "the bone's tail - and every child bone's head,
+    which sits on it - stay exactly where they are", which the code never computed and which is
+    false for an unconnected child offset from the axis. Measured on one real rig, a 30-degree
+    head roll moved the tail 0.000 cm and the face 6.47 cm, so the notice fired on a correct
+    pose - and an agent that had learned the warnings were noise then dismissed a correct,
+    quantitative cycle warning and lost a thirteen-key walk. Every number here is measured.
+
+    Args:
+        pose_bone: The bone rolled.
         degrees: How far the entry turns it about its length axis.
         space: The call's pose space, whose axis letters the notice quotes.
+        travel_m: How far the furthest measured witness moves, in metres.
+        witnesses: `_twist_witnesses`' record for the bone, for scale and for evidence.
 
     Returns:
         str: The notice.
 
     """
-    deforms = bool(getattr(getattr(pose_bone, "bone", None), "use_deform", False))
-    consequence = (
-        "This bone deforms geometry, and that geometry rolls with it - on a head or neck bone whose length axis "
-        "is the character's up, that roll is the turn you asked for. Measure the mesh, or render, before "
-        "treating this as a mistake."
-        if deforms
-        else "This bone deforms no geometry, so whatever it moves, it moves through a child bone or a constraint."
-    )
     return (
         f"Bone '{pose_bone.name}': {degrees:.4g} degrees about the bone's own length axis "
-        f"({_LENGTH_AXIS} in {space} space, the axis running head to tail) is a roll. Measured from the rest "
-        "hierarchy: the bone's tail - and every child bone's head, which sits on it - stay exactly where they "
-        f"are, so no child bone swings and this joint does not bend. {consequence} If a bend was intended, "
-        "rotate about one of the bone's other two axes; list_character_bones(rest_axes=True) reports where each "
-        "one points."
+        f"({_LENGTH_AXIS} in {space} space, the axis running head to tail) moves the furthest thing measured by "
+        f"{travel_m:.6g} m, on a bone {witnesses['length_m']:.6g} m long. {_twist_examination(witnesses)} If a "
+        "bend was intended, rotate about one of the bone's other two axes; list_character_bones(rest_axes=True) "
+        "reports where each one points."
     )
 
 
-def _inert_rotation_warnings(prepared, space):
+def _inert_rotation_warnings(prepared, space, witnesses):
     """
-    Say which of this call's rotations turn a bone about its own length.
+    Say which of this call's rolls moved nothing, having measured what each of them would move.
 
     A bone's own +Y runs head to tail (`_LENGTH_AXIS`), so a rotation about it rolls the bone
-    where it stands: the call succeeds, the keys land, and the bone's tail and every child's
-    head stay exactly put. That is silent in every other channel this handler reports - the pose
-    matrix genuinely changed - which is why it is worth a warning rather than leaving the caller
-    to measure the tail themselves. What the roll does to skinned geometry is `_twist_notice`'s
-    to say, and is not the same answer on every bone.
+    where it stands. Whether that is a mistake depends entirely on what sits off the axis: a
+    relay bone carries nothing and the joint simply fails to bend, while a head bone carries the
+    whole face and the roll is the turn the caller asked for. Only the first is worth a warning,
+    so the candidate filter is the cheap arithmetic on the entry and the verdict is the measured
+    travel - a warning that fires here means something really did not move.
 
     Only LOCAL and LOCAL_WITH_PARENT are judged: in those spaces the axis letters resolve to
     the bone's own rest basis, so `Y` is the bone's length. Under POSE and WORLD the same letter
@@ -347,16 +577,40 @@ def _inert_rotation_warnings(prepared, space):
     Args:
         prepared: `(pose_bone, spec, matrix or None)` triples from `_validate_pose_specs`.
         space: The call's pose space.
+        witnesses: The call's `_TwistWitnesses`, which measures each bone once and recalls it.
 
     Returns:
-        list[str]: One notice per bone whose rotation is a roll about its own length, in the
-        order posed.
+        list[str]: One notice per bone whose roll moved less than the visible threshold, in the
+        order posed, bounded by `_MAX_CYCLE_WARNINGS` with one counted summary for the rest -
+        warnings are lifted whole into the envelope and never paged, so 500 posed bones must not
+        be able to spend the reply budget on them.
 
     """
     if space not in _BONE_LOCAL_SPACES:
         return []
-    turns = ((pose_bone, _length_axis_twist_degrees(spec)) for pose_bone, spec, _matrix in prepared)
-    return [_twist_notice(pose_bone, degrees, space) for pose_bone, degrees in turns if degrees is not None]
+    silent = []
+    for pose_bone, spec, _matrix in prepared:
+        degrees = _length_axis_twist_degrees(spec)
+        if degrees is None:
+            continue
+        measured = witnesses.witnesses(pose_bone)
+        travel_m = _twist_travel_m(measured["radius_m"], degrees)
+        if travel_m > max(_TWIST_TRAVEL_FLOOR_M, measured["length_m"] * _TWIST_TRAVEL_FRACTION):
+            continue
+        silent.append((pose_bone, degrees, travel_m, measured))
+    notices = [
+        _twist_notice(pose_bone, degrees, space, travel_m, measured)
+        for pose_bone, degrees, travel_m, measured in silent[:_MAX_CYCLE_WARNINGS]
+    ]
+    remainder = [pose_bone.name for pose_bone, _degrees, _travel, _measured in silent[_MAX_CYCLE_WARNINGS:]]
+    if remainder:
+        listed = ", ".join(remainder[:_MAX_CYCLE_WARNINGS])
+        trailing = f" and {len(remainder) - _MAX_CYCLE_WARNINGS} more" if len(remainder) > _MAX_CYCLE_WARNINGS else ""
+        notices.append(
+            f"{len(remainder)} further bone(s) were rolled about their own length axis and moved nothing this "
+            f"call could measure: {listed}{trailing}."
+        )
+    return notices
 
 
 def _resolved_target(armature, pose_bone, spec, space, prepared_matrix):
@@ -620,12 +874,10 @@ def _cycle_extension_warnings(action, prepared, frame):
             bone = owners.get(curve.data_path)
             if bone is None or bone in stretched:
                 continue
-            if not any(modifier.type == "CYCLES" for modifier in curve.modifiers):
+            extent = cycled_curve_extent(curve)
+            if extent is None:
                 continue
-            frames = [float(point.co[0]) for point in curve.keyframe_points]
-            if len(frames) <= 1:
-                continue
-            first, last = min(frames), max(frames)
+            first, last = extent
             if first - _FRAME_TOLERANCE <= frame <= last + _FRAME_TOLERANCE:
                 continue
             stretched[bone] = (curve.data_path, first, last)
@@ -1026,6 +1278,9 @@ def _key_pose_frames(armature, action, prepared_frames, space, keying_policy, st
     records = []
     per_frame_warnings = []
     styled = 0
+    # What a roll of a given bone would move is a fact about the rest rig and the skinning, so
+    # it is measured once here and recalled at every frame rather than re-scanned per frame.
+    witnesses = _TwistWitnesses(armature)
     for frame, prepared in prepared_frames:
         _place_playhead(scene, frame)
         if keying_policy != "REMOVE":
@@ -1035,7 +1290,8 @@ def _key_pose_frames(armature, action, prepared_frames, space, keying_policy, st
             # and the stretched cycle is invisible again. REMOVE narrows an extent rather than
             # widening one, and has no key landing outside anything.
             per_frame_warnings.append(
-                _cycle_extension_warnings(action, prepared, frame) + _inert_rotation_warnings(prepared, space)
+                _cycle_extension_warnings(action, prepared, frame)
+                + _inert_rotation_warnings(prepared, space, witnesses)
             )
         written = _write_pose_keys(action, prepared, frame, keying_policy)
         if keying_policy != "REMOVE":
@@ -1212,6 +1468,217 @@ def _bone_custom_properties(pose_bone, offset):
     return records, len(names), consumed if consumed < len(names) else None
 
 
+# --- Measuring what an axis actually does, rather than reading it off the rest pose ---------
+#
+# `list_character_bones(rest_axes=True)` reports nine numbers off `bone.matrix_local`. They name
+# directions at rest, not rotations; they carry no witness and therefore no lever arm; and under
+# POSE and WORLD a `rotate.axis` letter names the armature's or the scene's axis rather than the
+# bone's. Constraints, drivers and IK can also null or invert a channel without appearing in any
+# of it. So which axis swings a limb, and which sign of a roll turns a palm outward, is a
+# measurement: turn the bone, read where a witness went, and put the pose back.
+
+
+# The six signed axes are a whole basis, so a seventh entry could only repeat one - and one call
+# answering the basis is what saves an agent three round trips per bone.
+_MAX_PROBE_AXES = 6
+# How many named world directions one probe may decompose its travel against. Each costs a
+# signed number per probed axis in the reply, and the question "which way does this go" has
+# never needed more than a handful of named directions to answer.
+_MAX_PROBE_REFERENCES = 6
+# Past a half turn a probe stops measuring a direction and starts measuring a fold-back: the
+# chord shortens again, and the sign of the answer is no longer the sign of the rotation.
+_MAX_PROBE_DEGREES = 180.0
+# Six decimals is a micrometre at rig scale - far finer than any pose an animator judges - and a
+# full float expansion of six axes' worth of points and travel would spend most of the reply on
+# encoding noise.
+_PROBE_DECIMALS = 6
+
+
+def _rounded_point(vector):
+    return [round(float(value), _PROBE_DECIMALS) for value in vector]
+
+
+def _validated_probe_axes(axes, bone_name):
+    """
+    Check the axis letters one probe will try, before the bone is touched.
+
+    Args:
+        axes: The raw `axes` argument.
+        bone_name: The bone being probed, for the error message.
+
+    Returns:
+        list[str]: The signed axis names, in the order given.
+
+    Raises:
+        ValueError: If `axes` is not a list of between one and `_MAX_PROBE_AXES` signed axis
+            names, if one of them is not a signed axis, or if one is named twice - two identical
+            probes would report the same travel twice and answer nothing.
+
+    """
+    if isinstance(axes, str) or not isinstance(axes, (list, tuple)):
+        raise ValueError("axes must be a list of signed axis names")
+    listed = list(axes)
+    if not 1 <= len(listed) <= _MAX_PROBE_AXES:
+        raise ValueError(f"axes takes 1 to {_MAX_PROBE_AXES} signed axis names")
+    for name in listed:
+        _signed_axis(name, f"axes entry for '{bone_name}'")
+    _unique_names(listed, "probe axes")
+    return listed
+
+
+def _probe_degrees(degrees):
+    """
+    Check the angle a probe turns the bone by.
+
+    Args:
+        degrees: The raw `degrees` argument, signed.
+
+    Returns:
+        float: The angle, in degrees.
+
+    Raises:
+        ValueError: If it is not finite, too small for the travel to stand clear of float noise,
+            or past the half turn at which the chord starts shortening again.
+
+    """
+    turn = _finite(degrees, "degrees")
+    if abs(turn) < _INERT_ROTATION_MINIMUM_DEGREES:
+        raise ValueError(
+            f"degrees of {turn:g} is too small to measure: give the probe at least "
+            f"{_INERT_ROTATION_MINIMUM_DEGREES:g} degrees to turn the bone by"
+        )
+    if abs(turn) > _MAX_PROBE_DEGREES:
+        raise ValueError(f"degrees of {turn:g} is past the half turn a probe can read a direction from")
+    return turn
+
+
+def _validated_reference_directions(reference_directions):
+    """
+    Resolve the caller's named world directions into unit vectors.
+
+    Args:
+        reference_directions: `{name: (x, y, z)}` in world space, or None.
+
+    Returns:
+        dict: Each name mapped to its unit `mathutils.Vector`, empty when none were given.
+
+    Raises:
+        ValueError: If the mapping is not an object, names more than `_MAX_PROBE_REFERENCES`
+            directions, or if one entry is not three finite numbers or names no direction at
+            all - each refusal names the entry, because a caller passing six of them cannot
+            otherwise tell which one was wrong.
+
+    """
+    if not reference_directions:
+        return {}
+    if not isinstance(reference_directions, dict):
+        raise ValueError("reference_directions must be an object mapping names to world-space vectors")
+    if len(reference_directions) > _MAX_PROBE_REFERENCES:
+        raise ValueError(f"reference_directions takes at most {_MAX_PROBE_REFERENCES} named directions")
+    resolved = {}
+    for name, values in reference_directions.items():
+        vector = _vector(values, f"reference_directions['{name}']")
+        if vector.length <= _AIM_MIN_LENGTH:
+            raise ValueError(f"reference_directions['{name}'] must be a non-zero vector")
+        resolved[name] = vector.normalized()
+    return resolved
+
+
+def _probe_witness_bone(armature, pose_bone, witness_bone_name):
+    """
+    Choose the bone whose travel answers the probe, and say how it was chosen.
+
+    A rotation is only readable through something it carries, and the further that something
+    sits from the axis the larger the lever arm - so the default is the bone's farthest
+    descendant, which is the hand at the end of an arm rather than the shoulder beside it.
+
+    Args:
+        armature: The armature being probed.
+        pose_bone: The bone the probe turns.
+        witness_bone_name: An explicit witness, or None to choose one.
+
+    Returns:
+        tuple: the witness pose bone, and how it was chosen - "explicit", "farthest_descendant",
+        or "probed_bone" when the bone has no descendants to read it through.
+
+    Raises:
+        ValueError: If an explicit witness names a bone the armature does not have.
+
+    """
+    if witness_bone_name is not None:
+        witness = armature.pose.bones.get(_required_name(witness_bone_name, "witness_bone_name"))
+        if witness is None:
+            raise ValueError(f"Pose bone not found: {witness_bone_name}")
+        return witness, "explicit"
+    head = pose_bone.bone.head_local
+    descendants = list(pose_bone.bone.children_recursive)
+    if not descendants:
+        return pose_bone, "probed_bone"
+    # Farthest by rest distance from the probed bone's head, ties broken by name: two bones at
+    # the same distance must not make the same probe answer differently between calls.
+    farthest = min(descendants, key=lambda bone: (-(bone.tail_local - head).length, bone.name))
+    return armature.pose.bones[farthest.name], "farthest_descendant"
+
+
+def _probe_witness_point(armature, witness, position):
+    """
+    Read where the witness sits in the world right now.
+
+    Pose bones are read live rather than through `evaluated_get`: `PoseBone.head`/`tail` already
+    carry whatever the last view-layer update solved, constraints and drivers included, which is
+    exactly the part of the answer a rest reading cannot give.
+
+    Args:
+        armature: The armature being probed, for its world matrix.
+        witness: The witness pose bone.
+        position: HEAD, TAIL or CENTER.
+
+    Returns:
+        mathutils.Vector: The witness point in world space.
+
+    """
+    to_world = armature.matrix_world
+    if position == "HEAD":
+        return to_world @ witness.head
+    if position == "TAIL":
+        return to_world @ witness.tail
+    return ((to_world @ witness.head) + (to_world @ witness.tail)) * 0.5
+
+
+def _probe_record(axis, degrees, before, after, references):
+    """
+    Report what one probed axis did to the witness.
+
+    Args:
+        axis: The signed axis turned about, in the call's pose space.
+        degrees: The signed angle applied.
+        before: The witness's world point before the turn.
+        after: The witness's world point with the turn applied.
+        references: The caller's named unit directions, possibly empty.
+
+    Returns:
+        dict: axis, degrees, witness_before_world, witness_after_world, travel_world, travel_m,
+        and - only when directions were named - reference_components_m, the signed metres the
+        witness moved along each of them. The sign is the half of the answer a magnitude cannot
+        carry: it is what says which way round to roll a wrist to turn the palm outward.
+
+    """
+    travel = after - before
+    record = {
+        "axis": axis,
+        "degrees": degrees,
+        "witness_before_world": _rounded_point(before),
+        "witness_after_world": _rounded_point(after),
+        "travel_world": _rounded_point(travel),
+        "travel_m": round(travel.length, _PROBE_DECIMALS),
+    }
+    if references:
+        record["reference_components_m"] = {
+            name: round(travel.dot(direction), _PROBE_DECIMALS) for name, direction in references.items()
+        }
+    return record
+
+
 class PoseAnimationHandlersMixin:
     """Apply pose-space transforms and author named animation actions."""
 
@@ -1274,6 +1741,72 @@ class PoseAnimationHandlersMixin:
         }
         return reply
 
+    def probe_bone_axis(
+        self,
+        armature_object_name,
+        bone_name,
+        axes,
+        degrees=15.0,
+        space="LOCAL",
+        witness_bone_name=None,
+        witness_bone_position="TAIL",
+        reference_directions=None,
+    ):
+        """Turn one bone about each named axis in turn, measure where a witness went, restore the pose."""
+        armature = _posable_armature(armature_object_name, "probe a bone axis")
+        if space not in _POSE_SPACES:
+            raise ValueError(f"Unsupported pose space: {space}")
+        pose_bone = armature.pose.bones.get(_required_name(bone_name, "bone_name"))
+        if pose_bone is None:
+            raise ValueError(f"Pose bone not found: {bone_name}")
+        if witness_bone_position not in _BONE_POSITIONS:
+            raise ValueError(f"witness_bone_position must be one of {', '.join(_BONE_POSITIONS)}")
+        # Everything is checked before the bone is turned: a probe is read-only, so it runs
+        # outside `mutation_transaction` and a refusal part way through would leave the rig
+        # holding a trial pose with nothing to roll it back.
+        turn = _probe_degrees(degrees)
+        listed = _validated_probe_axes(axes, pose_bone.name)
+        references = _validated_reference_directions(reference_directions)
+        witness, witness_source = _probe_witness_bone(armature, pose_bone, witness_bone_name)
+        bpy.context.view_layer.update()
+        # Built before the first turn, so every axis is measured from the same starting pose
+        # rather than from whatever the previous axis left behind.
+        prepared = [
+            _validate_pose_specs(
+                armature, [{"bone_name": pose_bone.name, "rotate": {"axis": axis, "degrees": turn}}], space
+            )
+            for axis in listed
+        ]
+        before = _probe_witness_point(armature, witness, witness_bone_position)
+        records = []
+        for axis, entries in zip(listed, prepared, strict=True):
+            try:
+                with restored_bone_pose(armature, [pose_bone.name]):
+                    _apply_pose_specs(armature, entries, space)
+                    after = _probe_witness_point(armature, witness, witness_bone_position)
+            finally:
+                # The restore writes channels without re-solving, so the scene is evaluated again
+                # here - on the way out of a failure as much as a success. Otherwise the next
+                # axis, or whatever the caller reads next, sees the trial pose this call already
+                # handed back, and the restore is only half a restore.
+                bpy.context.view_layer.update()
+            records.append(_probe_record(axis, turn, before, after, references))
+        to_world = armature.matrix_world
+        return {
+            "armature_object": armature.name,
+            "bone": pose_bone.name,
+            "space": space,
+            "degrees": turn,
+            "bone_length_m": round(
+                ((to_world @ pose_bone.bone.tail_local) - (to_world @ pose_bone.bone.head_local)).length,
+                _PROBE_DECIMALS,
+            ),
+            "witness_bone": witness.name,
+            "witness_bone_position": witness_bone_position,
+            "witness_bone_source": witness_source,
+            "axes": records,
+        }
+
     def set_character_pose(
         self,
         armature_object_name,
@@ -1307,7 +1840,8 @@ class PoseAnimationHandlersMixin:
             # reply budget shortens, so this is what still names every bone the call posed.
             "changed_bones": [record["bone"] for record in records],
             "bones": records,
-            "warnings": _bare_write_warnings(armature, custom_properties) + _inert_rotation_warnings(prepared, space),
+            "warnings": _bare_write_warnings(armature, custom_properties)
+            + _inert_rotation_warnings(prepared, space, _TwistWitnesses(armature)),
             "changed_objects": [armature.name],
         }
 

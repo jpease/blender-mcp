@@ -90,7 +90,7 @@ def test_handshake_re_raises_a_transport_failure_instead_of_reporting_a_version(
     A round trip that never completed says nothing about the installed addon.
 
     Rendering it as a handshake published `up_to_date=False` with no protocol and no
-    capabilities - the same shape a genuinely missing addon produces - so `get_addon_status`
+    capabilities - the same shape an actually missing addon produces - so `get_addon_status`
     told agents to reinstall a current addon whenever one socket went away.
     """
     blender = MagicMock()
@@ -135,7 +135,7 @@ def _stale_addon_source() -> str:
     from blender_mcp import addon_manager as am
 
     # Derive the stale marker from the current expected version so this helper
-    # keeps producing a genuinely outdated file across protocol bumps.
+    # keeps producing an outdated file across protocol bumps.
     return (
         (am.get_bundled_addon_path() / "__init__.py")
         .read_text(encoding="utf-8")

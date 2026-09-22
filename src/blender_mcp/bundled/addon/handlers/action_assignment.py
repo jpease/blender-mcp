@@ -59,6 +59,34 @@ def action_fcurve_collections(action, slot=None):
     return [] if legacy is None else [legacy]
 
 
+def cycled_curve_extent(curve):
+    """
+    Report the frames one curve already repeats, when a Cycles modifier makes it repeat at all.
+
+    A Cycles F-Modifier repeats its own curve's first-to-last key extent and nothing else, so a
+    key written outside that extent silently redefines the period - the trap that cost a walk
+    cycle its interior repeats. Every handler that writes a key asks the same question of the
+    same objects, so the question is asked in one place; each caller keeps its own frame
+    tolerance, because a frame compared against this extent is compared in that caller's units.
+
+    Args:
+        curve: The F-Curve to read. Its keys and modifiers are read, never written.
+
+    Returns:
+        tuple[float, float] | None: The first and last key frames this curve repeats, or None
+        when it carries no Cycles modifier, has fewer than two keys, or spans no frames at all -
+        in every one of those cases there is no established period for a new key to redefine.
+
+    """
+    if not any(modifier.type == "CYCLES" for modifier in curve.modifiers):
+        return None
+    frames = [float(point.co[0]) for point in curve.keyframe_points]
+    if len(frames) <= 1:
+        return None
+    first, last = min(frames), max(frames)
+    return None if first == last else (first, last)
+
+
 def _refuse_displacement(id_owner, action_name):
     """
     Refuse to unassign an action that holds keys.

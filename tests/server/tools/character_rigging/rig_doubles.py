@@ -369,10 +369,16 @@ class _PoseBone:
     a matrix round trip would canonicalise both away.
     """
 
-    def __init__(self, name, rest_relative=None, parent=None, rotation_mode="QUATERNION", use_deform=True) -> None:
+    def __init__(
+        self, name, rest_relative=None, parent=None, rotation_mode="QUATERNION", use_deform=True, length=0.1
+    ) -> None:
         self.name = name
         self.use_deform = use_deform
         self.parent = parent
+        self.length = float(length)
+        self.children: list = []
+        if parent is not None:
+            parent.children.append(self)
         self.rest_relative = rest_relative or _Matrix.Identity(4)
         self.rotation_mode = rotation_mode
         self.location = _Vector((0.0, 0.0, 0.0))
@@ -390,9 +396,46 @@ class _PoseBone:
         return [self.parent, *self.parent.parent_recursive] if self.parent else []
 
     @property
+    def children_recursive(self) -> list:
+        return [node for child in self.children for node in (child, *child.children_recursive)]
+
+    @property
+    def head_local(self) -> _Vector:
+        """The bone's rest head in armature space."""
+        return self.rest_pose.translation
+
+    @property
+    def tail_local(self) -> _Vector:
+        """The bone's rest tail: its own +Y runs head to tail, as Blender builds every bone."""
+        return self.head_local + self.rest_pose.to_3x3().col[1].normalized() * self.length
+
+    @property
     def bone(self) -> types.SimpleNamespace:
-        """The rest bone behind the pose bone: `matrix_local` is its armature-space rest."""
-        return types.SimpleNamespace(name=self.name, matrix_local=self.rest_pose, use_deform=self.use_deform)
+        """
+        The rest bone behind the pose bone: `matrix_local` is its armature-space rest.
+
+        `head_local`, `tail_local` and `children_recursive` are the rest facts the twist
+        measurement reads - where the bone's length axis runs, and what hangs off it.
+        """
+        return types.SimpleNamespace(
+            name=self.name,
+            matrix_local=self.rest_pose,
+            use_deform=self.use_deform,
+            length=self.length,
+            head_local=self.head_local,
+            tail_local=self.tail_local,
+            children_recursive=[child.bone for child in self.children_recursive],
+        )
+
+    @property
+    def head(self) -> _Vector:
+        """Where the posed bone's head sits in armature space, as `PoseBone.head` reports it."""
+        return self.matrix.translation
+
+    @property
+    def tail(self) -> _Vector:
+        """Where the posed bone's tail sits: its head, plus its own posed +Y over its length."""
+        return self.head + self.matrix.to_3x3().col[1].normalized() * self.length
 
     @property
     def rest_pose(self) -> _Matrix:
@@ -519,6 +562,82 @@ def _convert_space(pose_bone, matrix, from_space, to_space, rig):
     return from_pose[to_space](to_pose[from_space](matrix))
 
 
+class _SceneObjects(dict):
+    """
+    `bpy.data.objects`: name lookups, and an iteration that yields the objects themselves.
+
+    A plain dict iterates its keys, which is not what Blender's collection does - and the twist
+    measurement finds the meshes bound to a rig by walking `bpy.data.objects` and reading each
+    one's `type`, so a name-yielding stand-in would make that scan fail rather than find nothing.
+    """
+
+    def __iter__(self):
+        return iter(self.values())
+
+
+class _VertexGroups(list):
+    """`Object.vertex_groups`: a sequence that also resolves a group by name."""
+
+    def get(self, name, default=None):
+        return next((group for group in self if group.name == name), default)
+
+
+def _skinned_mesh(name, armature_obj, weights, *, matrix_world=None, groups=None):
+    """
+    Build a mesh bound to a rig, with named vertex groups weighting its vertices to bones.
+
+    Args:
+        name: The mesh object's name.
+        armature_obj: The rig it is parented to, which is how `_mesh_uses_armature_data` finds it.
+        weights: `{bone_name: [(x, y, z), ...]}` - the rest positions weighted to each bone.
+        matrix_world: The mesh object's own matrix; identity when omitted.
+        groups: Extra vertex group names the mesh carries but weights nothing to, for the case
+            where a group exists and no vertex uses it.
+
+    Returns:
+        types.SimpleNamespace: The mesh object.
+
+    """
+    names = list(dict.fromkeys([*weights, *(groups or ())]))
+    vertex_groups = _VertexGroups(types.SimpleNamespace(name=group, index=index) for index, group in enumerate(names))
+    vertices = []
+    for group, points in weights.items():
+        index = names.index(group)
+        for point in points:
+            vertices.append(
+                types.SimpleNamespace(
+                    index=len(vertices),
+                    co=_Vector(point),
+                    groups=[types.SimpleNamespace(group=index, weight=1.0)],
+                )
+            )
+    return types.SimpleNamespace(
+        name=name,
+        type="MESH",
+        parent=armature_obj,
+        modifiers=[],
+        vertex_groups=vertex_groups,
+        data=types.SimpleNamespace(vertices=vertices),
+        matrix_world=matrix_world or _Matrix.Identity(4),
+    )
+
+
+class _Rig(types.SimpleNamespace):
+    """
+    The armature object, compared and hashed by identity as a Blender ID is.
+
+    `SimpleNamespace` trades `__hash__` for value equality, and the handlers put objects in sets
+    - `_armature_users` collects the rigs sharing an armature datablock that way - so a rig
+    built as a bare namespace is a `TypeError` rather than a scene one of them can be found in.
+    """
+
+    def __hash__(self) -> int:
+        return object.__hash__(self)
+
+    def __eq__(self, other: object) -> bool:
+        return self is other
+
+
 def _posing(monkeypatch, bones, *, matrix_world=None, objects=None):
     """
     Load the addon against a rig whose bones compose like Blender's and report the pieces.
@@ -534,7 +653,7 @@ def _posing(monkeypatch, bones, *, matrix_world=None, objects=None):
 
     """
     animation = _AnimationData()
-    rig = types.SimpleNamespace(
+    rig = _Rig(
         name="CHAR1_rig",
         type="ARMATURE",
         data=types.SimpleNamespace(name="CHAR1_rigData", pose_position="POSE", bones=[]),
@@ -545,7 +664,7 @@ def _posing(monkeypatch, bones, *, matrix_world=None, objects=None):
     rig.convert_space = lambda pose_bone, matrix, from_space, to_space: _convert_space(
         pose_bone, matrix, from_space, to_space, rig
     )
-    scene_objects = {"CHAR1_rig": rig, **(objects or {})}
+    scene_objects = _SceneObjects({"CHAR1_rig": rig, **(objects or {})})
     addon, bpy = _load_addon(monkeypatch, data={"objects": scene_objects, "actions": _Actions()})
     bpy.context.view_layer = types.SimpleNamespace(update=lambda: None)
     bpy.context.scene.frame_current = 1

@@ -7,6 +7,7 @@ import re
 
 import bpy
 
+from .action_assignment import cycled_curve_extent
 from .key_style import KeyStyle, style_point
 
 _TARGET_COLLECTIONS = {
@@ -30,10 +31,16 @@ _CYCLE_MODES = frozenset({"NONE", "REPEAT", "REPEAT_OFFSET", "MIRROR"})
 # expected_period_frames refusal names, before each summarises the rest: enough to identify
 # what disagrees, few enough to stay inside the reply budget.
 _MAX_LISTED_PERIODS = 3
-# How close a curve's measured extent must sit to a caller's `expected_period_frames` to count
-# as the same period: the same absolute epsilon `_find_key` compares frames with, because a
-# period is the difference of two key frames and inherits their precision.
-_CYCLE_PERIOD_TOLERANCE = 1e-6
+# The absolute frame epsilon two frames are the same frame within: `_find_key` matches an
+# existing key with it, `_refuse_period_mismatch` compares a caller's `expected_period_frames`
+# against a measured extent with it (a period is the difference of two key frames and inherits
+# their precision), and `_edit_cycle_warnings` decides with it whether a new key lands inside
+# the extent a cycle already repeats.
+_KEY_FRAME_TOLERANCE = 1e-6
+_CYCLE_PERIOD_TOLERANCE = _KEY_FRAME_TOLERANCE
+# One call may edit 1000 keys, and the envelope lifts warnings whole rather than paging them,
+# so the per-channel cycle notices are named up to this many and then counted.
+_MAX_CYCLE_WARNINGS = 4
 # The data-path prefix every pose-bone curve carries. Curves under it live on the armature
 # *object*, never on the armature datablock, which is the distinction `_object_route_hint`
 # exists to spell out.
@@ -627,7 +634,7 @@ def _expanded_edit(owner, edit):
 
 
 def _find_key(fcurve, frame):
-    return next((point for point in fcurve.keyframe_points if abs(point.co[0] - frame) <= 1e-6), None)
+    return next((point for point in fcurve.keyframe_points if abs(point.co[0] - frame) <= _KEY_FRAME_TOLERANCE), None)
 
 
 def _driver_fcurve(owner, data_path, index):
@@ -1070,7 +1077,44 @@ def _apply_cycle_range(modifier, restricted):
     modifier.use_restricted_range = True
 
 
-def _cycle_record(curve, operation, modes, cycles, restricted=None):
+def _live_cycle_state(modifier):
+    """
+    Read one Cycles modifier exactly as it stands, for an INSPECT that writes nothing.
+
+    SET reports back the modes and counts the caller asked for, which is honest only because
+    the call just wrote them. INSPECT asks the opposite question - what is on this curve
+    already - so its record has to come off the modifier rather than off the arguments, whose
+    values here are nothing but this tool's defaults.
+
+    Args:
+        modifier: The curve's CYCLES F-Modifier, or None when it carries none.
+
+    Returns:
+        tuple: ((mode_before, mode_after), (cycles_before, cycles_after), restricted_range or
+        None). A curve with no modifier reports no modes and no counts: nothing extrapolates,
+        so there is no direction to describe and no repeat for a count to bound.
+
+    """
+    if modifier is None:
+        return (None, None), (0, 0), None
+    restricted = (
+        {
+            "frame_start": float(modifier.frame_start),
+            "frame_end": float(modifier.frame_end),
+            "blend_in": float(modifier.blend_in),
+            "blend_out": float(modifier.blend_out),
+        }
+        if modifier.use_restricted_range
+        else None
+    )
+    return (
+        (modifier.mode_before, modifier.mode_after),
+        (modifier.cycles_before, modifier.cycles_after),
+        restricted,
+    )
+
+
+def _cycle_record(curve, operation, modes, cycles, restricted=None, modifier=None):
     """
     Describe one curve's cycle, including the period it will actually repeat at.
 
@@ -1080,33 +1124,48 @@ def _cycle_record(curve, operation, modes, cycles, restricted=None):
     different, longer span than the rest of the rig without anything having been asked for.
 
     Args:
-        curve: The curve just cycled or un-cycled.
-        operation: SET or REMOVE; a removed cycle has no modes and no repeat bounds.
-        modes: (mode_before, mode_after) as requested.
-        cycles: (cycles_before, cycles_after) as requested; 0 is Blender's unlimited.
-        restricted: The window the modifier was confined to, or None for the whole timeline.
+        curve: The curve just cycled, un-cycled, or merely read.
+        operation: SET, REMOVE or INSPECT. A removed cycle has no modes and no repeat bounds;
+            an inspected one describes the modifier that is there, not the arguments.
+        modes: (mode_before, mode_after) as requested; ignored under INSPECT.
+        cycles: (cycles_before, cycles_after) as requested, 0 being Blender's unlimited;
+            ignored under INSPECT.
+        restricted: The window the modifier was confined to, or None for the whole timeline;
+            ignored under INSPECT.
+        modifier: The curve's live CYCLES F-Modifier, or None when it has none. Read only
+            under INSPECT, which is the one operation whose answer is the current state.
 
     Returns:
         dict: data_path, array_index, mode_before, mode_after, first_key_frame,
         last_key_frame, period_frames (None when the curve has fewer than two keys), plus
-        restricted_range when one was given and repeat_start_frame/repeat_end_frame when a
-        finite count bounds a direction that extrapolates at all.
+        restricted_range when one is in force and repeat_start_frame/repeat_end_frame when a
+        finite count bounds a direction that extrapolates at all. INSPECT adds
+        has_cycles_modifier, cycles_before and cycles_after, so a curve that repeats nothing
+        is reported as such instead of being left out of the reply.
 
     """
+    if operation == "INSPECT":
+        modes, cycles, restricted = _live_cycle_state(modifier)
     mode_before, mode_after = modes
     cycles_before, cycles_after = (int(count) for count in cycles)
     extent, period = _curve_period(curve)
     record = {
         "data_path": curve.data_path,
         "array_index": curve.array_index,
-        "mode_before": mode_before if operation == "SET" else None,
-        "mode_after": mode_after if operation == "SET" else None,
+        "mode_before": mode_before if operation != "REMOVE" else None,
+        "mode_after": mode_after if operation != "REMOVE" else None,
         "first_key_frame": extent[0] if extent else None,
         "last_key_frame": extent[1] if extent else None,
         "period_frames": period,
     }
-    if operation != "SET":
+    if operation == "REMOVE":
         return record
+    if operation == "INSPECT":
+        record["has_cycles_modifier"] = modifier is not None
+        record["cycles_before"] = cycles_before if modifier is not None else None
+        record["cycles_after"] = cycles_after if modifier is not None else None
+        if modifier is None:
+            return record
     if restricted is not None:
         record["restricted_range"] = dict(restricted)
     if extent is None or period is None:
@@ -1285,9 +1344,16 @@ def _cycle_warnings(records, operation, cycles, modes, restricted=None):
     """
     Every non-fatal notice one cycle call owes its caller.
 
+    Two of these are pure readings of the records and nothing else: whether a curve has an
+    extent to repeat at all, and whether the selected curves agree on one. They are the answer
+    an INSPECT came for - "these curves do not share one period" is the diagnosis, and asking
+    for it must not require writing a modifier. The rest describe arguments SET wrote, so an
+    operation that wrote none has nothing to say about them.
+
     Args:
         records: The per-curve records this call built.
-        operation: SET or REMOVE; a removal cycles nothing, so it warns about nothing.
+        operation: SET, REMOVE or INSPECT. A removal cycles nothing, so it warns about
+            nothing; an inspection warns only about what it measured.
         cycles: (cycles_before, cycles_after) as requested; 0 is unlimited.
         modes: (mode_before, mode_after) as requested.
         restricted: The window the modifier was confined to, or None for the whole timeline.
@@ -1296,13 +1362,15 @@ def _cycle_warnings(records, operation, cycles, modes, restricted=None):
         list[str]: The warnings, in the order a caller needs them.
 
     """
-    if operation != "SET":
+    if operation == "REMOVE":
         return []
+    measured = (_unrepeatable_warning(records), _period_disagreement_warning(records))
+    if operation == "INSPECT":
+        return [warning for warning in measured if warning is not None]
     cycles_before, cycles_after = cycles
     mode_before, mode_after = modes
     candidates = (
-        _unrepeatable_warning(records),
-        _period_disagreement_warning(records),
+        *measured,
         _finite_repeat_warning(records, cycles_after, "repeat_end_frame", "cycles_after", "the last repeat ends at"),
         _finite_repeat_warning(
             records, cycles_before, "repeat_start_frame", "cycles_before", "the first repeat starts at"
@@ -1313,6 +1381,71 @@ def _cycle_warnings(records, operation, cycles, modes, restricted=None):
         _inert_count_warning(mode_before, cycles_before, "mode_before", "cycles_before"),
     )
     return [warning for warning in candidates if warning is not None]
+
+
+def _edit_cycle_warnings(bag, expanded):
+    """
+    Warn once per channel whose upserted key lands outside a cycle that channel already repeats.
+
+    This is the third way into the same trap `keyframe_character_pose` and
+    `keyframe_object_transform` already guard: a Cycles modifier repeats its own curve's
+    first-to-last key extent, so one key written past that extent redefines the period without
+    touching the modifier, and every reply still read as success. `edit_keyframes` is the path
+    an agent reaches for when it wants one exact channel, which is precisely when a stray frame
+    number lands on a cycled curve. Extending a cycle on purpose is legitimate authoring, so
+    this warns and keys rather than refusing.
+
+    Args:
+        bag: The channelbag this call is about to write into. Measured before the first insert,
+            because an insert moves the very extent the new frame would be compared against.
+        expanded: The validated (operation, data_path, array_index, frame, ...) edits. REMOVE
+            narrows an extent rather than widening one, so it is skipped: deleting a key can
+            shorten a period but never stretch it past where keys already are.
+
+    Returns:
+        list[str]: One warning per affected channel, naming the frame, the extent it fell
+        outside and the period that extent becomes, bounded by `_MAX_CYCLE_WARNINGS` with one
+        counted line for the rest. Warnings are lifted whole into the envelope and never paged,
+        so a 1000-edit batch must not be able to spend the reply budget on them.
+
+    """
+    extents = {}
+    stretched = {}
+    for operation, data_path, index, frame, *_rest in expanded:
+        if operation == "REMOVE":
+            continue
+        identity = (data_path, index)
+        if identity not in extents:
+            curve = bag.fcurves.find(data_path, index=index)
+            extents[identity] = cycled_curve_extent(curve) if curve is not None else None
+        extent = extents[identity]
+        if extent is None or identity in stretched:
+            continue
+        first, last = extent
+        if first - _KEY_FRAME_TOLERANCE <= frame <= last + _KEY_FRAME_TOLERANCE:
+            continue
+        stretched[identity] = (first, last, frame)
+    affected = list(stretched)
+    warnings = []
+    for identity in affected[:_MAX_CYCLE_WARNINGS]:
+        data_path, index = identity
+        first, last, frame = stretched[identity]
+        warnings.append(
+            f"{data_path}[{index}] is keyed at frame {frame:g}, outside the frames {first:g}-{last:g} it already "
+            f"cycles over. A Cycles modifier repeats its own curve's key extent, so this channel's period becomes "
+            f"{max(last, frame) - min(first, frame):g} frames instead of {last - first:g}; under REPEAT_OFFSET "
+            "each repeat then carries that much further, so a travelling root stops arriving where the cycle put "
+            "it. Key it inside the cycle, or re-cycle the action deliberately."
+        )
+    remainder = affected[_MAX_CYCLE_WARNINGS:]
+    if remainder:
+        listed = ", ".join(f"{path}[{index}]" for path, index in remainder[:_MAX_CYCLE_WARNINGS])
+        trailing = f" and {len(remainder) - _MAX_CYCLE_WARNINGS} more" if len(remainder) > _MAX_CYCLE_WARNINGS else ""
+        warnings.append(
+            f"{len(remainder)} further channel(s) are keyed outside the cycle their own curves carry, stretching "
+            f"it the same way: {listed}{trailing}."
+        )
+    return warnings
 
 
 class AnimationHandlersMixin:
@@ -1426,6 +1559,9 @@ class AnimationHandlersMixin:
         expanded = [item for edit in edits for item in _expanded_edit(owner, edit)]
         selected, slot = _resolved_edit_action(owner, action_name, replace_active_action, allow_shared_action)
         bag = _channelbag(selected, slot, create=True)
+        # Measured before the loop: the first insert moves the extent a later edit's frame
+        # would otherwise be compared against, and would report itself as inside the cycle.
+        warnings = _edit_cycle_warnings(bag, expanded)
         changed = []
         for operation, data_path, index, frame, value, style, group in expanded:
             fcurve = bag.fcurves.find(data_path, index=index)
@@ -1462,6 +1598,7 @@ class AnimationHandlersMixin:
             "action": selected.name,
             "slot": slot.identifier,
             "changed_keyframes": changed,
+            "warnings": warnings,
             "changed_resources": [owner.name, selected.name],
         }
 
@@ -1561,12 +1698,12 @@ class AnimationHandlersMixin:
         data_path_prefix=None,
         action_slot_identifier=None,
     ):
-        """Add, update or remove the Cycles F-Modifier on an action slot's curves."""
+        """Add, update, remove or read back the Cycles F-Modifier on an action slot's curves."""
         owner, target_type = _target(target)
         _refuse_pose_bone_on_non_object(target_type, data_path_prefix)
         operation = str(operation).upper()
-        if operation not in {"SET", "REMOVE"}:
-            raise ValueError("operation must be SET or REMOVE")
+        if operation not in {"SET", "REMOVE", "INSPECT"}:
+            raise ValueError("operation must be SET, REMOVE or INSPECT")
         for label, mode in (("mode_before", mode_before), ("mode_after", mode_after)):
             if mode not in _CYCLE_MODES:
                 raise ValueError(f"{label} must be one of {sorted(_CYCLE_MODES)}")
@@ -1575,6 +1712,12 @@ class AnimationHandlersMixin:
             # Ignoring them would report a success that did none of what the call described.
             raise ValueError(
                 "REMOVE deletes the Cycles modifier and applies no expected_period_frames and no restricted range"
+            )
+        if operation == "INSPECT" and restricted is not None:
+            # A window is something to write, and INSPECT writes nothing; expected_period_frames
+            # is not, so it stays accepted below and asserts the period without creating one.
+            raise ValueError(
+                "INSPECT reads the cycle already on these curves and creates none, so it applies no restricted range"
             )
         action = bpy.data.actions.get(_required_name(action_name, "action_name"))
         if action is None:
@@ -1602,11 +1745,7 @@ class AnimationHandlersMixin:
         records = []
         for curve in selected:
             modifier = next((item for item in curve.modifiers if item.type == "CYCLES"), None)
-            if operation == "REMOVE":
-                if modifier is None:
-                    continue
-                curve.modifiers.remove(modifier)
-            else:
+            if operation == "SET":
                 if modifier is None:
                     modifier = curve.modifiers.new(type="CYCLES")
                 modifier.mode_before = mode_before
@@ -1615,8 +1754,22 @@ class AnimationHandlersMixin:
                 modifier.cycles_before = int(cycles_before)
                 modifier.cycles_after = int(cycles_after)
                 _apply_cycle_range(modifier, restricted)
+            elif operation == "REMOVE":
+                if modifier is None:
+                    continue
+                curve.modifiers.remove(modifier)
+            # INSPECT touches nothing, and skips no curve either: "this curve carries no cycle"
+            # is exactly what an INSPECT caller is asking, and REMOVE's omission above would
+            # answer it by silence. Its records carry has_cycles_modifier to say so.
             records.append(
-                _cycle_record(curve, operation, (mode_before, mode_after), (cycles_before, cycles_after), restricted)
+                _cycle_record(
+                    curve,
+                    operation,
+                    (mode_before, mode_after),
+                    (cycles_before, cycles_after),
+                    restricted,
+                    modifier,
+                )
             )
         return {
             "action": action.name,
@@ -1629,7 +1782,7 @@ class AnimationHandlersMixin:
             "warnings": _cycle_warnings(
                 records, operation, (cycles_before, cycles_after), (mode_before, mode_after), restricted
             ),
-            "changed_resources": [action.name],
+            "changed_resources": [] if operation == "INSPECT" else [action.name],
         }
 
     def manage_nla_tracks(

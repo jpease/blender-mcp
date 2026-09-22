@@ -120,6 +120,36 @@ def test_create_camera_forwards_its_aim_fields_under_the_shared_target_spelling(
     assert by_object["target_point"] is None
 
 
+def test_create_camera_treats_a_bone_as_a_qualifier_of_its_object_not_a_fifth_source(monkeypatch) -> None:
+    """A bone names where on the target to look, so it travels with the object and never alone."""
+    connection = _StubConnection()
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+
+    with pytest.raises(ToolError, match="target_bone_name requires target_object_name"):
+        _run(
+            camera.create_camera,
+            scene_name="Scene",
+            collection_name="Cameras",
+            name="Hero",
+            target_bone_name="head",
+        )
+
+    assert connection.calls == []
+
+    _run(
+        camera.create_camera,
+        scene_name="Scene",
+        collection_name="Cameras",
+        name="Hero",
+        target_object_name="HeroRig",
+        target_bone_name="head",
+    )
+
+    _command, params = connection.calls[0]
+    assert params["target_object_name"] == "HeroRig"
+    assert params["target_bone_name"] == "head"
+
+
 def test_point_camera_at_preflights_target_source_before_dispatch(monkeypatch) -> None:
     connection = _StubConnection()
     monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
@@ -132,13 +162,13 @@ def test_point_camera_at_preflights_target_source_before_dispatch(monkeypatch) -
             target_object_name="Target",
             target_point=(0, 0, 0),
         )
-    with pytest.raises(ToolError, match="subtarget requires target_object_name"):
+    with pytest.raises(ToolError, match="target_bone_name requires target_object_name"):
         _run(
             camera.point_camera_at,
             scene_name="Scene",
             camera_name="Hero",
             target_point=(0, 0, 0),
-            subtarget="Head",
+            target_bone_name="Head",
         )
 
     assert connection.calls == []
@@ -486,6 +516,182 @@ def test_handler_point_camera_at_rejects_a_placement_on_the_aim_point(monkeypatc
 
     with pytest.raises(ValueError, match=r"\[1.0, 2.0, 3.0\] and the aim target \[1.0, 2.0, 3.0\]"):
         handler.point_camera_at("Scene", "Hero", target_point=(1.0, 2.0, 3.0), camera_location=(1.0, 2.0, 3.0))
+
+
+def _creation_handler(monkeypatch):
+    """Build the rig, the collection and the datablock tables `create_camera` writes through."""
+
+    class Vector(tuple):
+        """The slice of mathutils.Vector camera creation reads: aim arithmetic and a copy."""
+
+        def __sub__(self, other):
+            return Vector(mine - theirs for mine, theirs in zip(self, other, strict=True))
+
+        def __add__(self, other):
+            return Vector(mine + theirs for mine, theirs in zip(self, other, strict=True))
+
+        @property
+        def length_squared(self):
+            return sum(component * component for component in self)
+
+        def copy(self):
+            """Return an independent copy, as Blender's Vector does."""
+            return Vector(self)
+
+        def to_track_quat(self, _forward, _up):
+            """Return a rotation that remembers the direction it was built from."""
+            return TrackQuaternion(self)
+
+    class TrackQuaternion:
+        """The rotation `to_track_quat` returns, carrying the aim direction it encodes."""
+
+        def __init__(self, direction) -> None:
+            self.direction = direction
+            self.w, self.x, self.y, self.z = 1.0, *direction
+
+    class RigMatrix:
+        """A pure translation, which is all an armature's world transform has to be here."""
+
+        def __init__(self, offset) -> None:
+            self.translation = Vector(offset)
+
+        def __matmul__(self, vector):
+            return self.translation + Vector(vector)
+
+    class CameraMatrix(list):
+        """The 4x4 the creation reply serializes: rows of floats plus one decompose."""
+
+        def __init__(self) -> None:
+            super().__init__([[0.0, 0.0, 0.0, 0.0] for _row in range(4)])
+
+        def decompose(self):
+            """Split into location, rotation and scale, as Blender's Matrix does."""
+            return Vector((0.0, 0.0, 0.0)), Vector((1.0, 0.0, 0.0, 0.0)), Vector((1.0, 1.0, 1.0))
+
+    class CameraData:
+        """The slice of bpy.types.Camera the optics patch and the settings report touch."""
+
+        def __init__(self, name) -> None:
+            self.name = name
+            self.type = "PERSP"
+            self.lens = 50.0
+            self.clip_start = 0.1
+            self.clip_end = 100.0
+            self.dof = types.SimpleNamespace(use_dof=False, focus_distance=10.0, focus_object=None)
+
+    class CameraObject:
+        """The slice of bpy.types.Object a freshly created camera is written through."""
+
+        def __init__(self, name, data) -> None:
+            self.name = name
+            self.data = data
+            self.type = "CAMERA"
+            self.location = Vector((0.0, 0.0, 0.0))
+            self.scale = Vector((1.0, 1.0, 1.0))
+            self.rotation_mode = "XYZ"
+            self.rotation_euler = Vector((0.0, 0.0, 0.0))
+            self.rotation_quaternion = None
+            self.matrix_basis = CameraMatrix()
+            self.matrix_world = CameraMatrix()
+
+    class Datablocks(dict):
+        """The slice of a bpy.data collection creation uses: allocate, look up, and remove."""
+
+        def __init__(self, factory) -> None:
+            super().__init__()
+            self.factory = factory
+
+        def new(self, *arguments):
+            """Allocate a datablock under the requested name, as bpy.data collections do."""
+            datablock = self.factory(*arguments)
+            self[datablock.name] = datablock
+            return datablock
+
+        def remove(self, datablock, do_unlink=True):
+            """Delete the datablock, as bpy.data collections do."""
+            self.pop(datablock.name, None)
+
+    class Children(dict):
+        """The scene's child-collection list, which is addressed by name and linked into."""
+
+        def link(self, collection):
+            """Link the collection under the scene, as bpy_prop_collection does."""
+            self[collection.name] = collection
+
+    objects = Datablocks(CameraObject)
+    cameras = Datablocks(CameraData)
+    collections = Datablocks(
+        lambda name: types.SimpleNamespace(name=name, objects=types.SimpleNamespace(link=lambda obj: None))
+    )
+    # A character rig: its origin is on the floor and its head bone is at eye height, which is the
+    # whole point - aiming at the object and aiming at the bone must not come out the same.
+    rig = types.SimpleNamespace(
+        name="HeroRig",
+        type="ARMATURE",
+        matrix_world=RigMatrix((2.0, 0.0, 0.0)),
+        pose=types.SimpleNamespace(
+            bones={"head": types.SimpleNamespace(matrix=types.SimpleNamespace(translation=Vector((0.0, 0.0, 1.7))))}
+        ),
+    )
+    objects["HeroRig"] = rig
+    scene = types.SimpleNamespace(
+        name="Scene",
+        camera=None,
+        objects=objects,
+        collection=types.SimpleNamespace(children=Children()),
+    )
+    addon, bpy_stub = _load_addon(
+        monkeypatch,
+        data={"scenes": {"Scene": scene}, "objects": objects, "cameras": cameras, "collections": collections},
+    )
+    monkeypatch.setattr(sys.modules["mathutils"], "Vector", Vector, raising=False)
+    handler = sys.modules[f"{addon.__name__}.handlers.camera.core"]._CoreMixin()
+    return handler, bpy_stub, objects, cameras
+
+
+def test_handler_create_camera_aims_at_the_named_bone_not_the_rig_origin(monkeypatch) -> None:
+    """A rig's origin is the floor under the character, so an object-only aim misses the face."""
+    handler, _bpy, objects, _cameras = _creation_handler(monkeypatch)
+
+    handler.create_camera("Scene", "Cameras", "Bone Cam", location=(2.0, -4.0, 1.7), target_object_name="HeroRig")
+    handler.create_camera(
+        "Scene",
+        "Cameras",
+        "Face Cam",
+        location=(2.0, -4.0, 1.7),
+        target_object_name="HeroRig",
+        target_bone_name="head",
+    )
+
+    at_origin = objects["Bone Cam"].rotation_quaternion.direction
+    at_bone = objects["Face Cam"].rotation_quaternion.direction
+    # The rig origin is 1.7 m below the camera; the head bone is level with it.
+    assert at_origin == pytest.approx((0.0, 4.0, -1.7))
+    assert at_bone == pytest.approx((0.0, 4.0, 0.0))
+
+
+def test_handler_create_camera_refuses_a_bone_the_armature_does_not_have(monkeypatch) -> None:
+    """Silently falling back to the origin would render the misaimed shot the typo asked for."""
+    handler, _bpy, objects, cameras = _creation_handler(monkeypatch)
+
+    with pytest.raises(ValueError, match="target_bone_name 'skull' does not exist on armature target 'HeroRig'"):
+        handler.create_camera("Scene", "Cameras", "Face Cam", target_object_name="HeroRig", target_bone_name="skull")
+
+    assert "Face Cam" not in objects
+    assert "Face Cam Data" not in cameras
+
+
+def test_handler_create_camera_removes_both_datablocks_when_configuration_is_refused(monkeypatch) -> None:
+    """A refusal after the object exists must not leave the camera and its data orphaned."""
+    handler, _bpy, objects, cameras = _creation_handler(monkeypatch)
+
+    with pytest.raises(ValueError, match="panorama_type requires projection='PANO'"):
+        handler.create_camera(
+            "Scene", "Cameras", "Pano Cam", optics={"panorama_type": "EQUIRECTANGULAR"}, target_point=(0.0, 0.0, 0.0)
+        )
+
+    assert "Pano Cam" not in objects
+    assert "Pano Cam Data" not in cameras
 
 
 def test_frame_camera_on_objects_frames_bones_objects_armatures_or_their_union(monkeypatch) -> None:

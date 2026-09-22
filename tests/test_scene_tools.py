@@ -198,7 +198,7 @@ def test_remove_scene_objects_dispatches_named_objects(stub_blender_connection: 
     """A confirmed removal reaches the addon under its own command name, with the names."""
     connection = stub_blender_connection()
 
-    result = asyncio.run(scene_authoring.remove_scene_objects(ctx=None, object_names=["Cube"], confirm_remove=True))
+    result = asyncio.run(scene.remove_scene_objects(ctx=None, object_names=["Cube"], confirm_remove=True))
 
     assert connection.calls[0] == (
         "remove_scene_objects",
@@ -213,7 +213,7 @@ def test_remove_scene_objects_requires_exactly_one_selector(stub_blender_connect
     connection = stub_blender_connection()
 
     with pytest.raises(ValueError, match="exactly one"):
-        asyncio.run(scene_authoring.remove_scene_objects(ctx=None, confirm_remove=True))
+        asyncio.run(scene.remove_scene_objects(ctx=None, confirm_remove=True))
 
     assert connection.calls == []
 

@@ -740,6 +740,7 @@
       "rotation_euler",
       "rotation_quaternion",
       "scene_name",
+      "target_bone_name",
       "target_object_name",
       "target_point"
     ],
@@ -2020,7 +2021,7 @@
       "camera_location",
       "camera_name",
       "scene_name",
-      "subtarget",
+      "target_bone_name",
       "target_object_name",
       "target_point"
     ],
@@ -2063,6 +2064,16 @@
       "output_policy",
       "smooth_modifier_name",
       "subdivision_modifier_name"
+    ],
+    "probe_bone_axis": [
+      "armature_object_name",
+      "axes",
+      "bone_name",
+      "degrees",
+      "reference_directions",
+      "space",
+      "witness_bone_name",
+      "witness_bone_position"
     ],
     "project_mesh_elements": [
       "backface_policy",
@@ -2551,9 +2562,10 @@
     ],
     "validate_scene": [
       "max_findings",
+      "offset",
       "scene_name",
       "scope"
     ]
   },
-  "protocol_version": 38
+  "protocol_version": 39
 }

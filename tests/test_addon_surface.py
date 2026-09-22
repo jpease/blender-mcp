@@ -5,7 +5,7 @@ An agent asked for `solve_bone_reach` and was told `'solve_bone_reach' is not
 supported by the installed Blender addon (protocol 31)`, concluded the feature did
 not exist in the project, and worked around it. It did exist: the handler landed in
 `0e5c461` (2026-09-20), while `ADDON_PROTOCOL_VERSION` had last moved to 31 in
-`2852803` (2026-09-15). So the installed add-on was a genuine protocol-31 build that
+`2852803` (2026-09-15). So the installed add-on was an actual protocol-31 build that
 simply predated the command, the handshake compared 31 against an expected 31, and
 `up_to_date` came back True - nothing anywhere suggested reinstalling. The runtime
 guards behaved correctly; what failed was the freshness signal, because an integer

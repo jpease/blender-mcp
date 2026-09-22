@@ -221,6 +221,86 @@ async def list_character_bones(
 
 
 @mcp.tool()
+async def probe_bone_axis(
+    ctx: Context,
+    armature_object_name: str,
+    bone_name: Annotated[str, Field(min_length=1, max_length=63)],
+    axes: Annotated[list[_SignedAxis], Field(min_length=1, max_length=6)],
+    degrees: Annotated[float, Field(ge=-180.0, le=180.0)] = 15.0,
+    space: Literal["LOCAL", "LOCAL_WITH_PARENT", "POSE", "WORLD"] = "LOCAL",
+    witness_bone_name: Annotated[str, Field(min_length=1, max_length=63)] | None = None,
+    witness_bone_position: Literal["HEAD", "TAIL", "CENTER"] = "TAIL",
+    reference_directions: Annotated[dict[str, tuple[float, float, float]], Field(max_length=6)] | None = None,
+) -> dict:
+    """
+    Turn a bone about each named axis and report where that actually carried a witness bone.
+
+    Which local axis swings a limb, and which sign of a roll turns a palm outward, is not
+    derivable from ``list_character_bones(rest_axes=True)``: those nine numbers are a rest
+    reading of the bone's matrix, they name directions rather than rotations, and they carry no
+    witness and therefore no lever arm. Constraints, drivers and IK can also null or invert a
+    channel without appearing in them at all. This measures it instead - it applies the turn,
+    reads the witness where the rig actually put it, and hands the pose straight back, so the
+    rig is exactly as it was found whether the probe succeeds or raises.
+
+    One call answers a whole basis: pass ``axes=["X", "Z", "-Z"]`` rather than probing three
+    times. Each axis is turned from the same starting pose, so the entries are comparable - the
+    one with the largest ``travel_m`` is the axis that swings this bone, and a length axis
+    answers near zero because a roll carries nothing that sits on it.
+
+    Args:
+        ctx: MCP request context.
+        armature_object_name: An existing object of type ARMATURE with pose_position='POSE'.
+        bone_name: The bone to turn. Nothing else on the rig is touched.
+        axes: The signed axes to try, one entry per probe, named twice is refused. They mean
+            exactly what ``set_character_pose``'s ``rotate.axis`` means in the same ``space``,
+            so an answer here transfers to a pose call unchanged.
+        degrees: How far to turn the bone for the measurement, signed. Fifteen degrees is large
+            enough to stand clear of float noise on a finger bone and small enough that a
+            constrained rig does not hit a limit part way through; reverse the sign to see a
+            component's sign reverse with it. A turn under half a degree is refused, because
+            its travel would not stand clear of float noise.
+        space: The space the axis letters are read in. Under LOCAL and LOCAL_WITH_PARENT a
+            letter is the bone's own rest axis; under POSE it is the armature's and under WORLD
+            the scene's, which is why the same letter answers differently in each.
+        witness_bone_name: The bone whose travel is measured. Omitted, the probe picks this
+            bone's farthest descendant - the hand at the end of an arm rather than the shoulder
+            beside it - and falls back to the probed bone when it has no descendants. The reply
+            always names which bone was used and how it was chosen.
+        witness_bone_position: Which end of the witness bone is followed.
+        reference_directions: World-space directions to decompose the travel against, by
+            caller-chosen name, such as ``{"camera_right": [1, 0, 0], "up": [0, 0, 1]}``. Each
+            answers a signed number of metres, which is what settles which way round to roll a
+            wrist rather than merely how far it moves. An entry that names no direction, or one
+            that is not three finite numbers, is refused by name.
+
+    Returns:
+        armature_object, bone, space, the degrees applied, bone_length_m for scale, and
+        witness_bone with witness_bone_position and witness_bone_source ("explicit",
+        "farthest_descendant", or "probed_bone" when the bone carries nothing else). axes then
+        carries one entry per probed axis, in the order asked: axis, degrees,
+        witness_before_world and witness_after_world (the witness point in world space before
+        and after that turn), travel_world (the difference), travel_m (its length), and, where
+        directions were named, reference_components_m mapping each name to the signed metres the
+        witness moved along it.
+
+    """
+    return await call_blender(
+        "probe_bone_axis",
+        {
+            "armature_object_name": armature_object_name,
+            "bone_name": bone_name,
+            "axes": axes,
+            "degrees": degrees,
+            "space": space,
+            "witness_bone_name": witness_bone_name,
+            "witness_bone_position": witness_bone_position,
+            "reference_directions": reference_directions,
+        },
+    )
+
+
+@mcp.tool()
 async def set_character_pose(
     ctx: Context,
     armature_object_name: str,

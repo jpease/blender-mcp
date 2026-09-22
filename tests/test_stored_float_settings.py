@@ -57,7 +57,7 @@ def test_a_stored_setting_matches_the_request_that_produced_it(proxy_rigs: Modul
 
 
 def test_the_float32_round_trip_is_what_made_exact_comparison_wrong(proxy_rigs: ModuleType) -> None:
-    """The tolerance is not decoration: 4.1 genuinely does not survive the round trip."""
+    """The tolerance is not decoration: 4.1 does not survive the round trip."""
     stored = _as_stored(4.1)
 
     # The inexactness is the point being asserted, not an accident.

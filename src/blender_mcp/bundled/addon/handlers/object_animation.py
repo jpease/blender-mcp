@@ -8,7 +8,13 @@ from contextlib import suppress
 import bpy
 import mathutils
 
-from .action_assignment import ACTION_POLICIES, action_fcurve_collections, assign_named_action, assigned_slot_identifier
+from .action_assignment import (
+    ACTION_POLICIES,
+    action_fcurve_collections,
+    assign_named_action,
+    assigned_slot_identifier,
+    cycled_curve_extent,
+)
 from .key_style import KeyStyle, style_point
 from .scene import _object, _required_name
 from .scene_physics import _scene, _scene_fps
@@ -136,6 +142,10 @@ def _cycled_extent(obj, data_path):
     """
     Measure the key extent a cycling channel already repeats, if it cycles at all.
 
+    One channel is several curves - `location` is three - and each carries its own modifier and
+    its own keys, so the extent this channel repeats is the union of the cycling ones. A curve
+    that cycles nothing contributes nothing: it has no period for a new key to redefine.
+
     Args:
         obj: The object about to be keyed.
         data_path: The channel this call writes.
@@ -145,16 +155,15 @@ def _cycled_extent(obj, data_path):
         when none of them carries a Cycles modifier or they hold one frame between them.
 
     """
-    frames = []
     _action, curves = _action_fcurves(obj)
-    for curve in curves:
-        if curve.data_path != data_path or not any(modifier.type == "CYCLES" for modifier in curve.modifiers):
-            continue
-        frames.extend(float(point.co[0]) for point in curve.keyframe_points)
-    if len(frames) <= 1:
+    extents = [
+        extent
+        for curve in curves
+        if curve.data_path == data_path and (extent := cycled_curve_extent(curve)) is not None
+    ]
+    if not extents:
         return None
-    first, last = min(frames), max(frames)
-    return None if first == last else (first, last)
+    return min(first for first, _last in extents), max(last for _first, last in extents)
 
 
 def _cycle_extension_warnings(prepared):

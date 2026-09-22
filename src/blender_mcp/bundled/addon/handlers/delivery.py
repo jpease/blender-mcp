@@ -62,7 +62,7 @@ def _is_relative(raw: object) -> bool:
         raw: The path as Blender reported it.
 
     Returns:
-        bool: True for a genuine Blender-relative path.
+        bool: True for an actual Blender-relative path.
 
     """
     return relative_link_body(strip_unsafe(raw)) is not None

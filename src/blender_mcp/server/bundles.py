@@ -3,7 +3,7 @@ Tool bundles: which domain modules a server process registers.
 
 A client carries every advertised tool definition in the model's context on every turn, so
 each tool costs context for the whole session, not once at startup. With every bundle
-registered (301 tools, per `scripts/measure_catalog.py all`) that alone can fill a client's
+registered (302 tools, per `scripts/measure_catalog.py all`) that alone can fill a client's
 context. `BLENDER_MCP_TOOLSETS` selects a subset per process. A test parses the tool count
 above; get byte figures from `scripts/measure_catalog.py` instead, since they go stale.
 
@@ -61,7 +61,11 @@ _BUNDLES_BASE: Mapping[str, tuple[str, ...]] = MappingProxyType(
 )
 
 # `texture-lighting` is a deprecated alias so existing client configs keep working. Built from
-# the split bundles so it cannot drift from them.
+# the split bundles so it cannot drift from them. It is excluded from `CANONICAL_BUNDLES`
+# because it names no tool the split bundles do not, and a report that listed both would
+# offer an agent two spellings of one choice.
+DEPRECATED_BUNDLE_ALIASES: frozenset[str] = frozenset({"texture-lighting"})
+
 BUNDLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         **_BUNDLES_BASE,
@@ -70,6 +74,9 @@ BUNDLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
         ),
     }
 )
+
+# Every bundle an agent should be offered by name, alias-free.
+CANONICAL_BUNDLES: tuple[str, ...] = tuple(name for name in BUNDLES if name not in DEPRECATED_BUNDLE_ALIASES)
 
 # Import these rather than respelling them. `scripts/measure_catalog.py` cannot; see why there.
 TOOLSETS_ENV_VAR = "BLENDER_MCP_TOOLSETS"
@@ -107,7 +114,7 @@ def _check_modes_are_well_formed() -> None:
     Validate MODES against BUNDLES and ALL_SENTINEL at import time.
 
     Raises rather than asserts so the check survives `python -O`. Otherwise a bad MODES edit
-    fails later and obscurely: a mode silently shadows a bundle, or a missing bundle surfaces
+    fails later and obscurely: a mode silently shadows a bundle, or a missing bundle shows up
     as a bare `KeyError`.
 
     Raises:
@@ -167,6 +174,41 @@ def _expand_modes(names: Iterable[str]) -> tuple[str, ...]:
     return _ordered_unique(bundle for name in names for bundle in MODES.get(name, (name,)))
 
 
+def resolve_toolset_bundles(raw_value: str | None) -> tuple[str, ...]:
+    """
+    Resolve a raw `BLENDER_MCP_TOOLSETS` value into the bundle names it selects.
+
+    `core` is not among them: it is implicit and always mounted, and naming it here would
+    imply it could be deselected. `all` expands to every canonical bundle, so the deprecated
+    alias never appears unless it was the thing asked for.
+
+    Args:
+        raw_value: The raw environment variable value, or None if unset.
+
+    Returns:
+        Bundle names, modes expanded, in first-seen order with repeats collapsed.
+
+    Raises:
+        ValueError: If a requested name is not a known mode or bundle.
+
+    """
+    requested = [name.strip() for name in (raw_value or "").split(",") if name.strip()]
+    if not requested:
+        return ()
+    # Before the `all` check, so `all,rendring` still reports the typo.
+    known = set(BUNDLES) | set(MODES)
+    unknown = sorted({name for name in requested if name not in known and name.lower() != ALL_SENTINEL})
+    if unknown:
+        raise ValueError(
+            f"Unknown {TOOLSETS_ENV_VAR} name(s): {', '.join(unknown)}. "
+            f"Available modes: {_format_names(MODES)}. "
+            f"Available bundles: {_format_names(BUNDLES)}, or {ALL_SENTINEL!r}."
+        )
+    if any(name.lower() == ALL_SENTINEL for name in requested):
+        return CANONICAL_BUNDLES
+    return _expand_modes(requested)
+
+
 def resolve_toolset_modules(raw_value: str | None) -> tuple[str, ...]:
     """
     Resolve a raw `BLENDER_MCP_TOOLSETS` value into the tool submodules to import.
@@ -185,21 +227,5 @@ def resolve_toolset_modules(raw_value: str | None) -> tuple[str, ...]:
         ValueError: If a requested name is not a known mode or bundle.
 
     """
-    requested = [name.strip() for name in (raw_value or "").split(",") if name.strip()]
-    if not requested:
-        return CORE_MODULES
-    # Before the `all` check, so `all,rendring` still reports the typo.
-    known = set(BUNDLES) | set(MODES)
-    unknown = sorted({name for name in requested if name not in known and name.lower() != ALL_SENTINEL})
-    if unknown:
-        raise ValueError(
-            f"Unknown {TOOLSETS_ENV_VAR} name(s): {', '.join(unknown)}. "
-            f"Available modes: {_format_names(MODES)}. "
-            f"Available bundles: {_format_names(BUNDLES)}, or {ALL_SENTINEL!r}."
-        )
-
-    if any(name.lower() == ALL_SENTINEL for name in requested):
-        return ALL_MODULES
-
-    bundle_names = _expand_modes(requested)
+    bundle_names = resolve_toolset_bundles(raw_value)
     return _ordered_unique(CORE_MODULES + tuple(module for name in bundle_names for module in BUNDLES[name]))

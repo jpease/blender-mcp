@@ -79,6 +79,7 @@ async def create_camera(
     rotation_quaternion: tuple[float, float, float, float] | None = None,
     target_object_name: str | None = None,
     target_point: tuple[float, float, float] | None = None,
+    target_bone_name: str | None = None,
     optics: CameraOpticsPatch | None = None,
     make_active: bool = False,
 ) -> dict:
@@ -89,6 +90,11 @@ async def create_camera(
     Supply at most one of rotation_euler, rotation_quaternion, target_object_name, or target_point.
     The camera is not selected and does not become the scene camera unless ``make_active`` is true.
     Panoramic settings are capability-checked against the running Blender build.
+
+    ``target_bone_name`` qualifies ``target_object_name`` rather than competing with it: naming
+    only the object aims at its origin, which on a character rig is the floor under it, so name
+    ``target_bone_name`` to aim at a bone on it. The bone's evaluated world head is used, its
+    posed position at the current frame.
     """
     orientations = [rotation_euler, rotation_quaternion, target_object_name, target_point]
     if sum(value is not None for value in orientations) > 1:
@@ -96,6 +102,8 @@ async def create_camera(
             "Supply only one orientation source: rotation_euler, rotation_quaternion, "
             "target_object_name, or target_point"
         )
+    if target_bone_name is not None and target_object_name is None:
+        raise ToolError("target_bone_name requires target_object_name")
     if optics is not None and optics.projection is not None and optics.projection != projection:
         raise ToolError("projection conflicts with optics.projection; supply projection in only one place")
     return await call_blender(
@@ -110,6 +118,7 @@ async def create_camera(
             "rotation_quaternion": rotation_quaternion,
             "target_object_name": target_object_name,
             "target_point": target_point,
+            "target_bone_name": target_bone_name,
             "optics": dump_input(optics),
             "make_active": make_active,
         },
@@ -188,7 +197,9 @@ async def configure_camera_dof(
 
     Supply at most one focus intent: an existing object, a positive distance, or a world-space point.
     A point creates (or explicitly reuses) a tagged focus Empty. Object focus and aim targets remain
-    separate dependencies. The visible result still depends on the render engine and sampling.
+    separate dependencies. This tool never enables depth of field itself: pass ``patch={"use_dof": true}``,
+    or the focus lands on a switch the render ignores, which the reply warns about. The visible result
+    still depends on the render engine and sampling.
     """
     if sum(value is not None for value in (focus_object_name, focus_distance, focus_point)) > 1:
         raise ToolError("Supply at most one focus intent: focus object, focus distance, or focus point")

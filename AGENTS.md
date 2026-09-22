@@ -145,21 +145,25 @@ Audit date: 2026-08-29
 
 At the time of this audit the MCP exposed **45 registered tools**, and every one of them plus its
 Blender-side handler was reviewed for correctness, reliability, Blender API usage, agent usability,
-and production workflow coverage. **That count is historical: the surface is now 301 tools**, and a
+and production workflow coverage. **That count is historical: the surface is now 302 tools**, and a
 server process registers only a subset of them.
 
 Read the count below as "what this audit covered", never as "what a session sees". Two different
 numbers are routinely mistaken for each other and for this one:
 
-- **301** — every tool in the catalog, registered only with `BLENDER_MCP_TOOLSETS=all`.
-- **~34** — the default `core` bundle a process registers when `BLENDER_MCP_TOOLSETS` is unset:
+- **302** — every tool in the catalog, registered only with `BLENDER_MCP_TOOLSETS=all`.
+- **35** — the default `core` bundle a process registers when `BLENDER_MCP_TOOLSETS` is unset:
   scene inspection, object editing, viewport, animation, file lifecycle/linking. Camera, rendering,
   lighting, world, character posing, texture, retopology and the simulation domains are **absent by
-  design**, not missing. `shot` (76 tools) adds camera, lighting, rendering and character posing;
+  design**, not missing. `shot` (78 tools) adds camera, lighting, rendering and character posing;
   see the Tool Bundles table in `README.md`.
-- **~297** — `get_addon_status`'s `capability_count`: Blender-side socket commands the add-on
+- **298** — `get_addon_status`'s `capability_count`: Blender-side socket commands the add-on
   dispatches, which is a different surface from the MCP tools a client mounts. A full
   `capability_count` alongside a short tool list is the expected shape, not a registration fault.
+
+A session no longer has to guess which of the three it is looking at:
+`get_addon_status(mounted_tools=True)` pages the MCP tool names this process actually registered,
+and `get_addon_status(tool_name=...)` still gives the verdict on one name.
 
 - `poetry run pytest -q`: **133 passed**
 - No live Blender/GPU validation was completed; modifier geometry, imports, and viewport rendering are code/test verified only.
@@ -204,7 +208,7 @@ numbers are routinely mistaken for each other and for this one:
 | High | Geometry-nodes builders ignore every referenced object's world transform | **Pending** | `transform_space` is never set on any `GeometryNodeObjectInfo`/`CollectionInfo` in the handler package (`handlers/geometry_nodes/workflows.py:118-123,632,714,952,991,1355`), so every cross-object reference reads ORIGINAL coordinates. Live-confirmed: a boolean cutter yields 0 verts whether it sits on the target or 5 units away, and the radial builder puts an instance centroid at the modifier object's location rather than the documented pivot. `create_curve_generator` additionally *documents* the opposite (`workflows.py:781-783`). Set `transform_space = "RELATIVE"` where the docstring promises world space, and smoke-cover it. |
 | High | `create_curve_generator`'s `radius` is inert on Blender 5.2 | **Pending** | `GeometryNodeCurveToMesh` no longer scales its profile by the curve radius attribute - the node's `Scale` input does, and the builder never touches it (`handlers/geometry_nodes/workflows.py:694-705,729`). Live-confirmed: driving the modifier's Radius input from 0.05 to 0.5 left evaluated bounds bit-identical, so every cable/pipe/rail is ~1 unit thick regardless of the request. Wire `Scale`, and add the domain's first smoke script. |
 | High | Two retopology `apply=True` paths report success after a cancelled operator | **Pending** | `configure_surface_projection` (`handlers/retopology/editing.py:173`) and `transfer_mesh_attributes` (`handlers/retopology/production.py:129`) call `helpers.apply_modifier`, which discards `bpy.ops.object.modifier_apply`'s return value, so a CANCELLED apply yields `ok: true` with `"applied": true` and `"modifier": None`. The domain already owns the checked helper two files away (`handlers/retopology/advanced.py:436-441`); use it. Contradicts this document's own operator-result rule. |
-| High | `create_camera` leaves orphan datablocks when it rejects its own arguments | **Pending** | The object and camera datablock are created and linked (`handlers/camera/core.py:107-109`) before `_validate_optics` (`:111`) and `_look_quaternion` (`:122`) can raise, and both are reachable (a PANO/`panorama_type` mismatch, a camera coincident with its aim target). There is no `try`/`except`, so the client gets an error envelope plus an orphan object and an orphan `<name> Data`. Validate before creating, or roll back in a `finally`. |
+| High | ~~`create_camera` leaves orphan datablocks when it rejects its own arguments~~ | **Solved** | The camera datablock and object were created and linked before `_validate_optics` and `_look_quaternion` could raise, with no `try`/`except`, so a PANO/`panorama_type` mismatch or a camera coincident with its aim target left an orphan object and an orphan `<name> Data` behind the error envelope. Live dispatch rolled that back through `mutation_transaction`; a direct mixin call - which is how every `tests/blender_*_smoke.py` drives the handler - did not. `create_camera` now wraps link-through-configuration and removes both datablocks before re-raising (`handlers/camera/core.py`), the same idiom `configure_camera_dof` already used two functions away. `tests/server/tools/camera/test_tools.py::test_handler_create_camera_removes_both_datablocks_when_configuration_is_refused` is falsified by stripping the two `remove()` lines, and `tests/blender_camera_smoke.py` asserts against real Blender that a refused `panorama_type` leaves neither datablock in `bpy.data`. |
 | High | Poly Haven networking and temporary-file handling | **Pending** | Add connect/read timeouts to every request, call `raise_for_status`, stream downloads, enforce byte limits, and clean paths in `finally`. Replace private `tempfile._cleanup()` with explicit cleanup. Pack HDRIs or retain a stable source path before deleting their temporary file. |
 | High | Poly Haven world/material/import behavior is destructive or inaccurate | **Pending** | Use `bpy.context.scene.world`, not `bpy.data.worlds[0]`; preserve or explicitly replace the selected world's nodes. Do not silently delete every material slot in `apply_polyhaven_texture`; accept an explicit replacement policy or target slot. Detect imported objects by diffing `bpy.data.objects`, validate operator completion, and return actual imported names. Do not report `asset_id` as a changed object for materials or models. |
 | Medium | Poly Haven catalog cannot be paged | **Pending** | Replace the hard-coded first 20 entries with deterministic `limit`/`offset` pagination and return `truncated` and `next_offset`. Because the endpoint has no text query, rename `search_polyhaven_assets` to `list_polyhaven_assets` or retain the old name only as a compatibility alias. |

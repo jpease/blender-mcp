@@ -391,7 +391,7 @@ def test_addon_failure_reaches_the_client_as_a_tool_error_unchanged(monkeypatch,
     from the message, so nothing on the way out may add to it. The test runs FastMCP's own
     `Tool.run` conversion.
 
-    The raised type is `BlenderOperationError` on purpose. A plain `ValueError` also surfaces as
+    The raised type is `BlenderOperationError` on purpose. A plain `ValueError` also shows up as
     `ToolError` - FastMCP converts anything a tool raises - so it cannot tell the dispatch's own
     conversion from FastMCP's, and the revert-matrix row for that conversion survived being
     reverted while this test kept passing.

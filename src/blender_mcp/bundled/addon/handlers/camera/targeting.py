@@ -29,6 +29,7 @@ from ._shared import (
     _restore_constraint,
     _scene,
     _snapshot_constraint,
+    _target_world_point,
     _transform_info,
     _update_view_layer,
     _vector,
@@ -54,16 +55,6 @@ _MAXIMUM_MARGIN = 0.9
 # same floor _look_quaternion applies to its aim direction, so a camera placement this handler
 # accepts can never be rejected a line later by the aim it was computed for.
 _COINCIDENT_DISTANCE_SQUARED = 1e-16
-
-
-def _target_world_point(target, subtarget=None):
-    if not subtarget:
-        return target.matrix_world.translation.copy()
-    bones = getattr(getattr(target, "pose", None), "bones", None)
-    bone = bones.get(subtarget) if bones is not None else None
-    if target.type != "ARMATURE" or bone is None:
-        raise ValueError(f"Bone subtarget '{subtarget}' does not exist on armature target '{target.name}'")
-    return target.matrix_world @ bone.matrix.translation
 
 
 def _set_world_rotation(obj, rotation):
@@ -416,17 +407,21 @@ class _TargetingMixin:
         camera_name,
         target_object_name=None,
         target_point=None,
-        subtarget=None,
+        target_bone_name=None,
         camera_location=None,
     ):
         scene = _scene(scene_name)
         camera = _camera(camera_name, scene=scene)
         if (target_object_name is None) == (target_point is None):
             raise ValueError("Supply exactly one of target_object_name or target_point")
-        if subtarget and target_object_name is None:
-            raise ValueError("subtarget requires target_object_name")
+        if target_bone_name and target_object_name is None:
+            raise ValueError("target_bone_name requires target_object_name")
         target = _object(target_object_name, scene=scene) if target_object_name is not None else None
-        point = _target_world_point(target, subtarget) if target is not None else _vector(target_point, "target_point")
+        point = (
+            _target_world_point(target, target_bone_name)
+            if target is not None
+            else _vector(target_point, "target_point")
+        )
         placement = _vector(camera_location, "camera_location") if camera_location is not None else None
         if placement is not None:
             if (point - placement).length_squared <= _COINCIDENT_DISTANCE_SQUARED:

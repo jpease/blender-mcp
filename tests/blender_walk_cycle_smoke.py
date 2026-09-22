@@ -46,7 +46,7 @@ SWING_FRAMES = range(13, 25)
 CYCLE_TRAVEL_M = 1.0
 # The plant sits ahead of the hip's starting position, the way a real contact does: the leg
 # reaches forward at contact and is behind the body by toe-off. Placing it under the hip instead
-# puts the frame-12 target outside the leg's reach and the solve would honestly report that.
+# puts the frame-12 target outside the leg's reach and the solve would report that.
 PLANT_POINT = (0.35, -0.12, 0.1)
 
 

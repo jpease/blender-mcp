@@ -851,45 +851,241 @@ refuses(
     "The bone's other axes at rest:",
 )
 
-# --- A rotation about a bone's own length axis moves nothing, and the reply says so ----------
+# --- A roll warns only when the rig really carries nothing off the axis it turns about -------
 #
 # The failure this covers is silent in every other channel: the call succeeds, the keys land,
-# the pose matrix genuinely changes, and the joint does not bend. Measured here against the
-# real API rather than trusted from the handler's arithmetic - the bone's own tail, in world
-# space, is what does or does not move.
+# the pose matrix changes, and the joint does not bend. The trap on the other side is worse -
+# the same arithmetic on a head bone is the intended head turn, and a notice that fired there
+# taught an agent that these warnings were noise. Measured here against the real API: what
+# moves, in world space, is what decides which of the two this is.
 
 
 def tail_world(rig, bone_name):
     return rig.matrix_world @ rig.pose.bones[bone_name].tail.copy()
 
 
+def bone_head_world(rig, bone_name):
+    return rig.matrix_world @ rig.pose.bones[bone_name].head.copy()
+
+
 def twist_notices(reply):
     return [warning for warning in reply["warnings"] if "length axis" in warning]
 
 
+ROLL_DEGREES = 60.0
 rest_pose(batch_rig)
-rest_tail = tail_world(batch_rig, "neck")
-rest_child_head = batch_rig.matrix_world @ batch_rig.pose.bones["head"].head.copy()
-rolled = handler.set_character_pose(batch_rig.name, [{"bone_name": "neck", "rotate": {"axis": "-Y", "degrees": 60.0}}])
-roll_tail_travel = (tail_world(batch_rig, "neck") - rest_tail).length
-roll_child_travel = ((batch_rig.matrix_world @ batch_rig.pose.bones["head"].head.copy()) - rest_child_head).length
+rest_neck_tail = tail_world(batch_rig, "neck")
+rest_child_head = bone_head_world(batch_rig, "head")
+rest_child_tail = tail_world(batch_rig, "head")
+rest_head_tail = rest_child_tail
+
+# The neck's child `head` runs out along +X from the neck's tail, so a roll of the neck leaves
+# the neck's tail and the child's head exactly put and still swings the child's far end.
+carrier = handler.set_character_pose(
+    batch_rig.name, [{"bone_name": "neck", "rotate": {"axis": "-Y", "degrees": ROLL_DEGREES}}]
+)
+roll_tail_travel = (tail_world(batch_rig, "neck") - rest_neck_tail).length
+roll_child_head_travel = (bone_head_world(batch_rig, "head") - rest_child_head).length
+roll_child_tail_travel = (tail_world(batch_rig, "head") - rest_child_tail).length
 rest_pose(batch_rig)
-bent = handler.set_character_pose(batch_rig.name, [{"bone_name": "neck", "rotate": {"axis": "X", "degrees": 60.0}}])
-bend_tail_travel = (tail_world(batch_rig, "neck") - rest_tail).length
+bent = handler.set_character_pose(
+    batch_rig.name, [{"bone_name": "neck", "rotate": {"axis": "X", "degrees": ROLL_DEGREES}}]
+)
+bend_tail_travel = (tail_world(batch_rig, "neck") - rest_neck_tail).length
+rest_pose(batch_rig)
+
+# `head` is the chain's leaf: nothing hangs off its length axis and no mesh is bound to this
+# rig, so its roll really does move everything this call can reach by nothing at all.
+barren = handler.set_character_pose(
+    batch_rig.name, [{"bone_name": "head", "rotate": {"axis": "Y", "degrees": ROLL_DEGREES}}]
+)
+barren_tail_travel = (tail_world(batch_rig, "head") - rest_head_tail).length
 rest_pose(batch_rig)
 
 assert roll_tail_travel < POSITION_TOLERANCE, f"a length-axis roll moved the tail {roll_tail_travel} m"
-assert roll_child_travel < POSITION_TOLERANCE, f"a length-axis roll moved the child's head {roll_child_travel} m"
+assert roll_child_head_travel < POSITION_TOLERANCE, (
+    f"a length-axis roll moved the child's head {roll_child_head_travel} m"
+)
+assert roll_child_tail_travel > 0.5 * batch_rig.pose.bones["head"].length, (
+    f"the child's far end barely moved ({roll_child_tail_travel} m); this roll carries nothing and proves nothing"
+)
 assert bend_tail_travel > 0.1 * batch_rig.pose.bones["neck"].length, (
     f"a perpendicular rotation barely moved the tail ({bend_tail_travel} m); the comparison proves nothing"
 )
-assert len(twist_notices(rolled)) == 1, f"the roll was not reported: {rolled['warnings']}"
-assert "neck" in twist_notices(rolled)[0]
+assert barren_tail_travel < POSITION_TOLERANCE, f"the leaf bone's own roll moved its tail {barren_tail_travel} m"
+
+assert twist_notices(carrier) == [], (
+    f"a roll that swung the child bone {roll_child_tail_travel:.4f} m was called inert: {carrier['warnings']}"
+)
 assert twist_notices(bent) == [], f"a rotation that bends the joint was called a twist: {bent['warnings']}"
+assert len(twist_notices(barren)) == 1, f"the roll that moved nothing was not reported: {barren['warnings']}"
+barren_notice = twist_notices(barren)[0]
+assert "head" in barren_notice
+assert "moves the furthest thing measured by 0 m" in barren_notice, barren_notice
+assert "no mesh bound to this armature carries a vertex group named after it" in barren_notice, barren_notice
+
+# --- The probe measures which axis swings a bone, because no rest reading can say -------------
+#
+# `rest_axes` names directions at rest: it carries no witness, so it cannot say how far anything
+# travels, and a constraint or a driver can null a channel without appearing in it at all.
+# Measured here against the real API - the trial turn is applied, the witness is read where
+# Blender put it, and the pose has to come back to the channel values it arrived on.
+
+PROBE_DEGREES = 20.0
+WORLD_REFERENCES = {"world_x": [1.0, 0.0, 0.0], "world_y": [0.0, 1.0, 0.0], "world_z": [0.0, 0.0, 1.0]}
+rest_pose(batch_rig)
+bpy.context.scene.frame_set(1)
+probe_before = [list(row) for row in batch_rig.pose.bones["neck"].matrix_basis]
+probed = handler.probe_bone_axis(
+    batch_rig.name, "neck", ["X", "Y", "Z"], degrees=PROBE_DEGREES, reference_directions=WORLD_REFERENCES
+)
+probe_after = [list(row) for row in batch_rig.pose.bones["neck"].matrix_basis]
+probe_travel = {record["axis"]: record["travel_m"] for record in probed["axes"]}
+forward = next(record for record in probed["axes"] if record["axis"] == "X")["reference_components_m"]
+strongest = max(forward, key=lambda name: abs(forward[name]))
+backward = handler.probe_bone_axis(
+    batch_rig.name, "neck", ["X"], degrees=-PROBE_DEGREES, reference_directions=WORLD_REFERENCES
+)["axes"][0]["reference_components_m"]
+
+assert probed["witness_bone"] == "head", probed
+assert probed["witness_bone_source"] == "farthest_descendant", probed
+assert probed["witness_bone_position"] == "TAIL", probed
+assert probe_travel["X"] > 3.0 * probe_travel["Y"], (
+    f"the swinging axis must out-travel the length axis by more than noise: {probe_travel}"
+)
+assert probe_travel["Z"] > 3.0 * probe_travel["Y"], f"only one axis swung the witness: {probe_travel}"
+assert abs(forward[strongest]) > 0.01, f"no named direction caught the travel: {forward}"
+# A turn and its reverse carry the witness through mirrored chords rather than opposite vectors,
+# so the contract is the sign - which is the half of the answer "how far" cannot give.
+assert forward[strongest] * backward[strongest] < 0.0, (
+    f"reversing the turn did not reverse the {strongest} component: {forward[strongest]} vs {backward[strongest]}"
+)
+for row_before, row_after in zip(probe_before, probe_after, strict=True):
+    for value_before, value_after in zip(row_before, row_after, strict=True):
+        assert abs(value_before - value_after) < POSITION_TOLERANCE, (
+            f"the probe left the bone posed: {probe_before} became {probe_after}"
+        )
+
+# --- A rotate on a QUATERNION bone moves skinned geometry exactly as the Euler channel does ---
+#
+# A rehearsal measured a jaw bone moving skin through raw `rotation_euler` and not moving it at
+# all through `set_character_pose`'s `rotate`, on a bone in QUATERNION mode - which would mean
+# `rotate` composes differently depending on a bone's rotation mode. Channel values cannot
+# settle that (the two channels are different channels by construction), so this measures the
+# only thing an audience sees: where the deformed vertices end up, read off the depsgraph.
+
+
+def skin_to_bone(rig, bone_name, name):
+    """Bind a small box to one bone at full weight, so its vertices report that bone's motion."""
+    mesh = bpy.data.meshes.new(f"{name}Mesh")
+    head = rig.pose.bones[bone_name].head.copy()
+    corners = [(x, y, z) for x in (-0.05, 0.05) for y in (-0.05, 0.05) for z in (0.0, 0.12)]
+    mesh.from_pydata([tuple(head + Vector(corner)) for corner in corners], [], [])
+    mesh.update()
+    skin = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(skin)
+    # The vertices were built from the bone's armature-space head, so the object has to stand in
+    # the rig's own frame for them to land on the bone in world space. Without it the skin sits
+    # metres from the bone it is weighted to, and anything measuring a radius off that axis -
+    # the roll notice does - measures the gap between the two frames instead.
+    skin.matrix_world = rig.matrix_world.copy()
+    indices = [vertex.index for vertex in mesh.vertices]
+    skin.vertex_groups.new(name=bone_name).add(indices, 1.0, "REPLACE")  # pyright: ignore[reportArgumentType]
+    skin.modifiers.new("Armature", "ARMATURE").object = rig
+    bpy.context.view_layer.update()
+    return skin
+
+
+def deformed_points(skin):
+    """World-space vertex positions after the armature modifier has actually run."""
+    evaluated = skin.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    mesh = evaluated.to_mesh()
+    try:
+        return [evaluated.matrix_world @ vertex.co.copy() for vertex in mesh.vertices]
+    finally:
+        evaluated.to_mesh_clear()
+
+
+def travel(before, after):
+    return max((a - b).length for b, a in zip(before, after, strict=True))
+
+
+JAW_DEGREES = 25.0
+jaw_rig = build_rig("SmokeJawRig", (-0.4, 0.2, 0.0), -0.9)
+jaw_skin = skin_to_bone(jaw_rig, "head", "SmokeJawSkin")
+
+rotate_by_mode = {}
+euler_by_mode = {}
+for rotation_mode in ("QUATERNION", "XYZ"):
+    jaw_rig.pose.bones["head"].rotation_mode = rotation_mode
+    rest_pose(jaw_rig)
+    rest_points = deformed_points(jaw_skin)
+    handler.set_character_pose(jaw_rig.name, [{"bone_name": "head", "rotate": {"axis": "X", "degrees": JAW_DEGREES}}])
+    rotate_by_mode[rotation_mode] = deformed_points(jaw_skin)
+    rest_pose(jaw_rig)
+    handler.set_character_pose(
+        jaw_rig.name, [{"bone_name": "head", "rotation_euler": (math.radians(JAW_DEGREES), 0.0, 0.0)}]
+    )
+    euler_by_mode[rotation_mode] = deformed_points(jaw_skin)
+    rest_pose(jaw_rig)
+
+    moved = travel(rest_points, rotate_by_mode[rotation_mode])
+    assert moved > 0.01, f"rotate moved {rotation_mode} skin {moved:.3e} m; a zero comparison proves nothing"
+    disagreement = travel(euler_by_mode[rotation_mode], rotate_by_mode[rotation_mode])
+    assert disagreement < POSITION_TOLERANCE, (
+        f"on a {rotation_mode} bone, rotate and rotation_euler put skin {disagreement:.3e} m apart"
+    )
+
+# The two modes must also agree with each other: `rotate` is stated in the call's space, so a
+# bone's storage format is not allowed to change where the geometry lands.
+across_modes = travel(rotate_by_mode["QUATERNION"], rotate_by_mode["XYZ"])
+assert across_modes < POSITION_TOLERANCE, f"rotation_mode changed where rotate put the skin, by {across_modes:.3e} m"
+
+# --- A roll of a skinned leaf bone is judged on the skin, not on the bone's empty tail -------
+#
+# `head` carries no child bone, so the rest hierarchy alone says a roll about its length moves
+# nothing. The audience disagrees: the box above is weighted to it at full weight and sits up to
+# 13 cm off that axis, so the roll carries it. Judging this one from the hierarchy is exactly
+# how the notice came to fire on correct poses.
+SKIN_ROLL_DEGREES = 45.0
+jaw_rig.pose.bones["head"].rotation_mode = "QUATERNION"
+rest_pose(jaw_rig)
+skin_rest_points = deformed_points(jaw_skin)
+skinned_roll = handler.set_character_pose(
+    jaw_rig.name, [{"bone_name": "head", "rotate": {"axis": "Y", "degrees": SKIN_ROLL_DEGREES}}]
+)
+skin_roll_travel = travel(skin_rest_points, deformed_points(jaw_skin))
+jaw_tail_roll_travel = (tail_world(jaw_rig, "head") - (jaw_rig.matrix_world @ Vector((0.03, 0.0, 0.55)))).length
+rest_pose(jaw_rig)
+
+assert skin_roll_travel > 0.05, f"the roll moved the skin {skin_roll_travel:.3e} m; the comparison proves nothing"
+assert jaw_tail_roll_travel < POSITION_TOLERANCE, (
+    f"the rolled bone's own tail moved {jaw_tail_roll_travel:.3e} m, so this is not a pure roll"
+)
+assert twist_notices(skinned_roll) == [], (
+    f"a roll that carried skin {skin_roll_travel:.3f} m was called inert: {skinned_roll['warnings']}"
+)
+jaw_travel = travel(euler_by_mode["QUATERNION"], rotate_by_mode["QUATERNION"])
 print(
-    f"length-axis roll: tail travelled {roll_tail_travel:.3e} m, child head {roll_child_travel:.3e} m, "
-    f"notices {len(twist_notices(rolled))}; the same angle about X travelled {bend_tail_travel:.6f} m "
-    f"with {len(twist_notices(bent))} notices"
+    f"length-axis roll of 'neck': its tail travelled {roll_tail_travel:.3e} m and the child's head "
+    f"{roll_child_head_travel:.3e} m, but the child's far end {roll_child_tail_travel:.4f} m, so "
+    f"{len(twist_notices(carrier))} notices; the leaf 'head' rolled its own tail {barren_tail_travel:.3e} m "
+    f"for {len(twist_notices(barren))}; the same angle about X travelled {bend_tail_travel:.6f} m with "
+    f"{len(twist_notices(bent))}"
+)
+print(
+    f"skinned roll of {SKIN_ROLL_DEGREES} deg: tail travelled {jaw_tail_roll_travel:.3e} m and the skin "
+    f"{skin_roll_travel:.4f} m, so {len(twist_notices(skinned_roll))} notices"
+)
+print(
+    f"probe_bone_axis on 'neck' at {PROBE_DEGREES} deg, witness {probed['witness_bone']!r} "
+    f"({probed['witness_bone_source']}): travel_m "
+    + ", ".join(f"{a} {t:.4f}" for a, t in probe_travel.items())
+    + f"; {strongest} component {forward[strongest]:+.4f} reverses to {backward[strongest]:+.4f}"
+)
+print(
+    f"rotate vs rotation_euler at {JAW_DEGREES} deg on a QUATERNION bone: skin agrees to "
+    f"{jaw_travel:.3e} m; across rotation modes {across_modes:.3e} m"
 )
 print(
     f"solve_bone_reach: achieved_error_m {reach_error:.9f}, reapplied {applied_error:.9f}, "

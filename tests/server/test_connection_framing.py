@@ -437,6 +437,36 @@ def test_a_refresh_whose_round_trip_dies_leaves_the_staleness_signal_standing(
     )
 
 
+def test_a_refresh_that_reports_no_usable_session_leaves_the_staleness_signal_standing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A re-handshake that completes but names half a session pair leaves the signal set.
+
+    The other failure path is a dead round trip, which raises and is caught. This one
+    succeeds: the addon answers, and the answer carries no session id or no epoch - which is
+    what an addon too old to publish the pair, or one mid-swap, returns. Recording that as the
+    session now in force would gate every later command on the capabilities of a file that may
+    no longer be open, and nothing would ever ask again, because the signal is cleared before
+    the refresh runs.
+    """
+    _reset_handshake_state(monkeypatch, _cached())
+    monkeypatch.setattr(connection, "force_addon_handshake", lambda _blender: _cached(session_epoch=None))
+    blender = BlenderConnection(host="localhost", port=0)
+
+    connection.note_session_marker({"status": "error", "session_id": "proc-b", "session_epoch": 1})
+    assert connection._session_marker_stale.is_set() is True
+
+    connection.refresh_handshake_if_session_changed(blender)
+
+    assert connection._session_marker_stale.is_set() is True, (
+        "a refresh that learned only half a session pair must leave the signal standing"
+    )
+    assert connection._OBSERVED_MARKER["pending"] == ("proc-b", 1), (
+        "half a pair must not be recorded as the session now in force"
+    )
+
+
 def test_the_command_gate_reads_the_refreshed_capability_set(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     After a refresh, a command the new file supports is no longer refused.

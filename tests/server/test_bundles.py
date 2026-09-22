@@ -22,7 +22,15 @@ from blender_mcp.server.bundles import (
     CORE_MODULES,
     MODES,
     TOOLSETS_ENV_VAR,
+    resolve_toolset_bundles,
     resolve_toolset_modules,
+)
+from blender_mcp.server.mount_map import (
+    CORE_BUNDLE,
+    bundle_tool_names,
+    bundles_providing,
+    known_tool_names,
+    unmounted_bundle_counts,
 )
 
 # Tool modules must not be imported in-process, but these lazy packages register no tools
@@ -38,8 +46,9 @@ _CORE_TODAY = (
     "file_lifecycle",
 )
 
-# Reachable only through `scene-authoring`.
-_SCENE_AUTHORING_TOOLS = ("create_geometry_object", "reset_scene", "remove_scene_objects")
+# Reachable only through `scene-authoring`. `remove_scene_objects` is deliberately not here: a
+# session that cannot delete the objects it created leaves them in the saved shot.
+_SCENE_AUTHORING_TOOLS = ("create_geometry_object", "reset_scene")
 
 _FILE_LIFECYCLE_TOOLS = (
     "get_session_info",
@@ -308,6 +317,48 @@ def test_ast_derived_submodule_names_match_the_real_runtime_attributes() -> None
     assert not mismatches, f"AST-derived names disagree with runtime for: {mismatches}"
 
 
+@pytest.mark.parametrize("raw_value", [None, "shot", "camera-rigs", ALL_SENTINEL])
+def test_mount_map_predicts_exactly_what_a_process_registers(raw_value: str | None) -> None:
+    """
+    `mount_map`'s parse must equal the tools a real process mounts, for every kind of selection.
+
+    `get_addon_status` tells an agent which bundle would mount a tool it cannot call, and it
+    reads that from source rather than by importing (importing registers tools, which is the
+    thing a selection exists to prevent). A parse that drifted would send the agent to the
+    wrong bundle, which is worse than the silence it replaced. The `None` and `all` cases pin
+    the ends; `camera-rigs` is the selection the ambiguity was actually reported against.
+    """
+    expected = set(bundle_tool_names()[CORE_BUNDLE])
+    for bundle in resolve_toolset_bundles(raw_value):
+        expected |= bundle_tool_names()[bundle]
+    assert set(_tool_names_for_toolsets(raw_value)) == expected
+
+
+def test_mount_map_names_the_bundle_that_would_mount_an_unmounted_tool() -> None:
+    """
+    A tool absent from a selection must still be traceable to the bundle that provides it.
+
+    This is the rehearsal failure the map exists for: `create_dolly_camera_rig` is registered,
+    dispatch-wired and tested, but `shot` does not mount it, and the agent concluded it did not
+    exist. Both halves matter - the name resolves to a bundle, and that bundle is not in `shot`.
+    """
+    assert bundles_providing("create_dolly_camera_rig") == ("camera-rigs",)
+    assert "create_dolly_camera_rig" not in _tool_names_for_toolsets("shot")
+    assert unmounted_bundle_counts(_tool_names_for_toolsets("shot"))["camera-rigs"] == len(
+        bundle_tool_names()["camera-rigs"]
+    )
+
+
+def test_mount_map_knows_nothing_it_cannot_mount() -> None:
+    """
+    An unknown name must resolve to no bundle, so `in_this_build` can be trusted as a negative.
+
+    Without this the verdict "implemented but not mounted" could be returned for a typo.
+    """
+    assert bundles_providing("create_teapot") == ()
+    assert known_tool_names() == set(_tool_names_for_toolsets(ALL_SENTINEL))
+
+
 def test_texture_lighting_alias_resolves_to_the_full_pre_split_surface() -> None:
     """The retired fused bundle name stays usable, losing no capability for an existing config."""
     expected = set(BUNDLES["texture"]) | set(BUNDLES["lighting"]) | set(BUNDLES["lighting-construction"])
@@ -344,6 +395,7 @@ POSING_TOOLS = frozenset(
         "set_character_pose",
         "keyframe_character_pose",
         "list_character_bones",
+        "probe_bone_axis",
         "solve_bone_reach",
         "keyframe_bone_reach",
     }
@@ -363,9 +415,9 @@ def test_character_posing_bundle_adds_only_the_posing_tools() -> None:
 
 
 def test_character_rigging_bundle_keeps_every_rigging_tool_after_the_split() -> None:
-    """Existing `character-rigging` configs lose nothing: all 25 tools, posing included."""
+    """Existing `character-rigging` configs lose nothing: all 26 tools, posing included."""
     rigging = _tool_names_for_toolsets("character-rigging") - _tool_names_for_toolsets(None)
-    assert len(rigging) == 25
+    assert len(rigging) == 26
     assert rigging >= POSING_TOOLS | {"create_armature", "bind_mesh_to_armature", "add_pose_bone_constraint"}
 
 
@@ -481,148 +533,30 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # A ceiling, not a target: lower it when the payload shrinks. Raising it is a decision to record
 # in the commit message.
 #
-# Raised once, from 193,438, for the animation-as-editable-data work. Measured split of the
-# 8,103 bytes: 6,053 is the `BoneAim`/`BoneRotation` JSON Schema, emitted once each by
-# `set_character_pose` and `keyframe_character_pose`, which is what lets an agent aim a bone at
-# the camera instead of guessing bone-local radians; 2,050 is Eevee's ray-tracing patch, which
-# is what stops the demo set's glass rendering black without a manual trip through Blender's UI.
-# 895 bytes of Args rows that only restated the schema were deleted in the same pass.
-# Raised a second time, from 202,000, by the artefact-truth work: `inspect_delivery` joined the
-# core surface (the only tool that reads a file's external references back and answers whether
-# they travel), `render_scene` gained confirm_frame_range/persist_output/detail plus an optional
-# filepath so a render can carry its own intent, and `save_shot` gained the two provenance
-# switches. 601 of the 3,260 bytes are `save_shot`'s.
-# Raised a third time, from 205,260, by `list_character_bones(bone_names=…)`: 459 bytes that
-# turn reading three bones' rest axes off a 187-bone rig from six paginated calls (53,023
-# bytes) into one 997-byte reply.
-# Raised a fourth time, from 205,719, by two changes measured apart: 4,490 bytes are
-# `solve_bone_reach`'s `BoneReach` schema and tool description (payload_report with and without
-# that one tool), which is what turns "bend this chain until the hand lands on that point" from
-# roughly fourteen guessed `rotate` calls into one; the other 1,986 are
-# `get_viewport_screenshot`'s new `view` (ViewSpec) and `shading_override` parameters, which
-# also land in the core surface below. Measured shot payload 212,711 bytes.
-# Raised a fifth time, from 212,711, by `solve_bone_reach`'s convergence contract: 810 bytes
-# (payload_report with the tool module at HEAD and with the change) for the `tolerance_m`
-# parameter and the Returns rows naming converged/chain_reach_m/target_distance_m/
-# out_of_reach. That is what turns a bare `achieved_error_m` float into an answer an agent can
-# act on - retry, move the rig, or accept - instead of a number it has no threshold for.
-# Measured shot payload 213,521 bytes.
-# Raised a sixth time, from 213,521, by the silent-failure pass, measured per file by swapping
-# that one module back to HEAD: 1,418 bytes are `keyframe_object_transform`'s action surface
-# (action_name/action_policy/action_slot_identifier/confirm_displace_action plus the paragraph
-# naming the trap), 670 are the matching `keyframe_character_pose` policy and displacement
-# wording, 750 are `point_camera_at`'s `camera_location`, and 286 are `get_addon_status`'s two
-# new staleness fields. The first two are what stop a rig's root motion from being silently
-# discarded when a pose is keyed into a new action - the failure mode cost a shot's worth of
-# renders before anyone noticed the characters had stopped moving. Measured shot payload
-# 216,645 bytes.
-# Raised a seventh time, from 216,645, by the character-animation pass, measured per tool with
-# `payload_report(...).per_tool`: 8,330 bytes are `keyframe_bone_reach`, 3,596 `set_action_cycle`
-# and 1,659 `set_scene_frame`; the remaining 2,981 are the shared key-style vocabulary reaching
-# the tools that already keyed - Blender's real 13-member `Keyframe.interpolation` enum instead
-# of the 3 members this surface had been carrying, plus handle_left/handle_right/easing on
-# `keyframe_character_pose`, `edit_keyframes` and `bake_evaluated_animation`. That is what a
-# walk cycle costs: one call plants a foot across a frame range with real IK instead of two
-# calls and a 4x4 matrix round-trip per foot per frame, the playhead can be moved so the agent
-# can look at frame 12 instead of only frame 1, and pose keys can be shaped like every other
-# domain's. Measured shot payload 233,211 bytes.
-# Raised an eighth time, from 233,211, by the runbook-rehearsal pass - the defects a live
-# rehearsal of the walk-cycle surface actually hit. Measured per tool with
-# `payload_report(...).per_tool`, against each file's previous revision:
-#   1,056 the axis-frame work on the posing tools. A runbook read `CHAR1_head_jnt`'s reported
-#     rest axes, concluded `up_axis: "-X"`, and shipped a head tilted 90 degrees; the same
-#     file was then cached and reused. Measured on a synthetic bone carrying those exact axes,
-#     "-X" is correct and the conventions already agreed, so what is bought here is the
-#     derivation not being one: 479 is `list_character_bones` reporting the up axis it resolves
-#     to and saying which frame the nine numbers are in, 366 is `BoneAim`'s own statement that
-#     its letters are bone axes (183 apiece, once per pose tool through the shared schema), and
-#     211 is `set_character_pose` correcting "a signed bone axis name" for `rotate`, whose
-#     letters are measurably the call's `space`, not the bone's.
-#   452 `render_scene`'s paragraph on a long ANIMATION outliving the client's request timeout:
-#     the frames keep landing, so the move is `inspect_render_output`, not a re-render.
-#   252 `set_action_cycle`'s reply contract - period_frames/first_key_frame/last_key_frame and
-#     the notice that an unscoped cycle's shortened `modifiers` page cannot be resumed. Both
-#     halves are that one tool's description and do not separate at tool granularity.
-# The camera-marker retroactive-binding fix in the same pass cost nothing here: it is entirely
-# handler-side (`handlers/camera/shots.py`), with no server-tool signature or docstring change.
-# Measured shot payload 235,043 bytes.
-# Raised a ninth time, from 235,043, by the second runbook-rehearsal pass - eight defects a live
-# socket rehearsal hit, of which five cost catalog bytes. Measured per tool against HEAD with
-# `payload_report(...).per_tool`:
-#   2,690 `keyframe_character_pose`: the batched `keys=[{frame, poses}, ...]` form and its
-#     preconditions, plus `BoneAim`'s `target_bone`/`target_bone_position` through the shared
-#     schema. A thirteen-key stride was thirteen round trips, and "look at each other" aimed at
-#     an armature origin on the floor, so both characters stared at each other's feet.
-#   2,134 `set_action_cycle`: `mode_before` defaulting to NONE with its rationale,
-#     `expected_period_frames`, the restricted range, and the paragraph stating that the period
-#     is the curve's own key extent - a rehearsal measured `period_frames: 60.0` on a curve it
-#     believed was looping at 20, and the reply had reported success.
-#   1,518 `frame_camera_on_objects`: `bone_targets`, which is how a close-up is framed on a rig
-#     bone instead of on a guess about which meshes make up the region.
-#   1,311 `set_character_pose`: the same `BoneAim` growth, and the corrected axis instruction -
-#     the previous text told callers to pass `length_axis` as `track_axis`, which the tool then
-#     refused, because Blender builds every bone along its own Y.
-#   406 `list_character_bones`: `aim_axis_for_world`, the measured bone axis for each of the six
-#     world directions, which is the answer the refusal above left unreported.
-#   1,191 the file-lifecycle surface stating the path-redaction rule once per tool
-#     (`get_session_info` and `list_libraries` 302 each, `inspect_delivery` 259, `open_shot` 225,
-#     `unlink_libraries` 54, `reload_library` and `relocate_library` 49 each): a leaf-reduced
-#     path was indistinguishable from a broken one, and `is_relative: false` on it read as a
-#     defect.
-#   126 `point_camera_at`: one sentence stating that `subtarget` aims at the bone's evaluated
-#     world head, verified against real Blender rather than changed.
-# The `validate_scene` engine probe and the UV-layer staleness fix in the same pass cost nothing
-# here: both are handler-side only. Measured shot payload 244,468 bytes.
-# Raised from 245,500 by the demo-report pass, measured at 246,535 - 2,067 bytes in two parts:
-#   906 `frame_camera_on_objects`: `armature_names`, the whole-character counterpart to
-#     `bone_targets`. Without it a full-body frame is the caller enumerating every mesh a rig
-#     deforms, which it can only do by listing the scene and guessing which objects belong to
-#     the character.
-#   1,161 the aim vocabulary collapsing onto one spelling across domains - `target_point`,
-#     `target_object_name`, `target_bone_name` in place of `target`/`target_object`/
-#     `target_bone` on the pose, aim and reach models and `look_at_point`/`look_at_object_name`
-#     on `create_camera`. Longer property names, on schemas that repeat them, bought against a
-#     live agent writing `target_point` into a pose call by analogy with the camera tools and
-#     having it rejected.
-# Raised from 247,000 by the third runbook-rehearsal pass, measured at 248,603 - 1,884 bytes:
-#   1,097 `list_character_bones`: `custom_properties`/`property_offset`, and what the page
-#     carries. A rig's sliders are pose-bone custom properties, and in `shot` mode no tool
-#     reported them at all (`get_character_rig_info` is a `character-rigging` tool), so the
-#     names `keyframe_character_pose` requires had to come from a document beside the file.
-#   526 `set_action_cycle`: that pose-bone curves belong to the armature OBJECT, and that a
-#     restricted range reverts rather than holds past `frame_end` - both learned by a rehearsal,
-#     the first as thirteen refused calls, the second as a character teleporting to his mark.
-#   261 `open_shot`/`reset_session` naming what `object_count` counts, against the
-#     `datablock_object_count` it used to report under that name.
-SHOT_MODE_BYTE_CEILING = 249_000
+# Raised from 250,000 by the fifth runbook-rehearsal pass, measured at 259,274 - 9,410 bytes.
+# 4,951 is `probe_bone_axis`, the new measurement that replaces a caller's own headless
+# axis-probing script: which local axis swings a limb, and which sign of a roll turns a palm, is
+# not derivable from `list_character_bones(rest_axes=True)`'s nine rest numbers, and a cached
+# out-of-band answer goes stale silently. 699 is `create_camera`'s `target_bone_name`, without
+# which aiming at a character rig aims at its origin on the floor. The rest is the core surface
+# below, which this one inherits. Earlier increases are recorded in their own commit messages.
+SHOT_MODE_BYTE_CEILING = 259_500
 
-# The same rule for the default, core-only surface, and the same work: 166 bytes for
-# `validate_scene`'s `persistence` scope, 2,202 for `inspect_delivery`, 601 for `save_shot`'s
-# provenance switches. Raised from 69,831 by `get_viewport_screenshot`'s `view`/
-# `shading_override` parameters, the only core-surface growth in that pass: 1,986 bytes, for a
-# measured 71,817. No posing tool is in core, so none of `solve_bone_reach` is in this figure.
-# Raised again from 71,817 by the two core-surface halves of the silent-failure pass: 1,418 for
-# `keyframe_object_transform`'s action surface (`object_animation` is core, so root motion is
-# keyed from every mode) and 286 for `get_addon_status`'s missing_commands/missing_parameters,
-# which is how an agent now learns its add-on predates the server instead of concluding a tool
-# does not exist. Measured core payload 73,521 bytes.
-# Raised again from 73,521 by the core-surface half of the character-animation pass: 3,596 for
-# `set_action_cycle` (an action that does not loop is not a cycle) and 1,659 for
-# `set_scene_frame`, plus 1,058 for the widened key-style vocabulary on `edit_keyframes`,
-# `bake_evaluated_animation` and `keyframe_object_transform`. `keyframe_bone_reach` is a posing
-# tool, so none of its 8,330 bytes are in this figure. Measured core payload 79,834 bytes.
-# Unchanged by the runbook-rehearsal pass beyond `set_action_cycle`'s 252 bytes, which is the
-# only core-surface tool it touched: no posing tool is in core, and `render_scene` is not in
-# the default surface either. Measured core payload 80,158 bytes, still inside this ceiling.
-# Raised from 80,500 by the core-surface half of the second runbook-rehearsal pass: 2,134 for
-# `set_action_cycle` (`object_animation` and `animation` are core, so a cycle is set from every
-# mode) and 1,240 for the file-lifecycle surface stating the path-redaction rule once per tool.
-# The posing and camera growth of that pass is absent here, as neither bundle is core, and the
-# `validate_scene` engine probe is handler-side. Measured core payload 83,532 bytes.
-# Raised from 84,000 by the core-surface half of the third runbook-rehearsal pass, measured at
-# 84,593: the 526 bytes of `set_action_cycle` and the 261 of the file-lifecycle object counts
-# described above. `list_character_bones` is a posing tool, so its 1,097 are not in this figure.
-DEFAULT_MODE_BYTE_CEILING = 85_000
+# The same rule as above, for the default, core-only surface.
+#
+# Raised from 85,500 by the fifth runbook-rehearsal pass, measured at 89,044 - 3,829 bytes.
+# 1,788 is `remove_scene_objects`, moved out of the `scene-authoring` bundle: every other mode
+# could create scratch objects and never delete one, and `manage_scene_collections` refuses to
+# leave an object in zero collections, so a rehearsal's diagnostic objects were saved into the
+# shot as permanent orphans. 1,732 is `get_addon_status`'s paged `mounted_tools` enumeration,
+# which is how a session tells a tool it did not mount from one that does not exist - the
+# single-name `tool_name` lookup could only answer that one guess at a time. 546 is
+# `set_action_cycle`'s INSPECT operation, the non-destructive way to read a cycle's period that
+# a rehearsal previously had to obtain by deleting the cycle. 394 is `validate_scene`'s `offset`
+# and the paging contract its description now states, replacing a reply that told callers to
+# continue from an offset the schema rejected. Earlier increases are recorded in their own
+# commit messages, not here.
+DEFAULT_MODE_BYTE_CEILING = 89_250
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:
@@ -667,7 +601,7 @@ def test_all_advertises_the_tool_count_quoted_in_bundles_docs() -> None:
 
 
 def test_scene_authoring_tools_are_not_in_the_core_surface() -> None:
-    """Geometry creation and destructive scene ops must not ship in every process."""
+    """Geometry creation and the whole-scene reset must not ship in every process."""
     core_tools = _tool_names_for_toolsets(None)
     for name in _SCENE_AUTHORING_TOOLS:
         assert name not in core_tools, f"{name} is still registered by the core surface"
@@ -678,6 +612,19 @@ def test_scene_authoring_bundle_restores_them() -> None:
     authoring_tools = _tool_names_for_toolsets("scene-authoring")
     for name in _SCENE_AUTHORING_TOOLS:
         assert name in authoring_tools, f"{name} is not reachable through the scene-authoring bundle"
+
+
+def test_removing_a_named_object_is_core_not_an_authoring_bundle() -> None:
+    """
+    Every process can delete an object it created; no bundle has to be mounted for it.
+
+    `manage_scene_collections` refuses to unlink an object from its last collection and refuses
+    to remove a non-empty collection, so before this a session that made a scratch or diagnostic
+    object had no way to take it back out: it was saved into the shot for good.
+    """
+    assert "remove_scene_objects" in _tool_names_for_toolsets(None)
+    assert "remove_scene_objects" in _tool_names_for_toolsets("shot")
+    assert bundles_providing("remove_scene_objects") == (CORE_BUNDLE,)
 
 
 @functools.cache
@@ -753,18 +700,27 @@ def _tool_annotations_for_toolsets(raw_value: str | None) -> dict[str, dict[str,
 
 def test_scene_authoring_tools_advertise_their_destructiveness() -> None:
     """
-    The tools moved out of core because they are destructive must say so on the wire.
+    The tools kept out of core because they clear a scene must say so on the wire.
 
     `reset_scene` matches no destructive prefix, so only its `_DESTRUCTIVE_TOOLS` entry marks it.
     """
     annotations = _tool_annotations_for_toolsets("scene-authoring")
 
-    for name in ("reset_scene", "remove_scene_objects"):
-        assert annotations[name]["destructive"], f"{name} is destructive but does not advertise it"
-        assert not annotations[name]["read_only"], f"{name} mutates but advertises read_only"
+    assert annotations["reset_scene"]["destructive"], "reset_scene is destructive but does not advertise it"
+    assert not annotations["reset_scene"]["read_only"], "reset_scene mutates but advertises read_only"
     assert not annotations["create_geometry_object"]["destructive"], (
         "create_geometry_object adds an object; marking it destructive would devalue the hint"
     )
+
+
+def test_remove_scene_objects_advertises_its_destructiveness_from_the_core_surface() -> None:
+    """A core process still warns before deleting: the `remove_` prefix earns the hint by name."""
+    annotations = _tool_annotations_for_toolsets(None)
+
+    assert annotations["remove_scene_objects"]["destructive"], (
+        "remove_scene_objects is destructive but does not advertise it"
+    )
+    assert not annotations["remove_scene_objects"]["read_only"], "remove_scene_objects mutates but advertises read_only"
 
 
 def test_file_lifecycle_tools_are_exactly_eleven_and_reachable_from_shot_and_asset() -> None:

@@ -341,7 +341,11 @@ COMMANDS: Mapping[str, CommandSpec] = MappingProxyType(
         "inspect_animation": CommandSpec(read_only=True),
         "manage_animation_action": CommandSpec(),
         "edit_keyframes": CommandSpec(),
-        "set_action_cycle": CommandSpec(),
+        # `operation`, not `action`: INSPECT reads every selected curve's key extent and
+        # writes no modifier, so a snapshot and an undo checkpoint would buy nothing.
+        "set_action_cycle": CommandSpec(
+            read_only_when=lambda params: str(params.get("operation", "SET")).upper() == "INSPECT"
+        ),
         "bake_evaluated_animation": CommandSpec(),
         "manage_nla_tracks": CommandSpec(),
         "manage_animation_driver": CommandSpec(),
@@ -473,6 +477,10 @@ COMMANDS: Mapping[str, CommandSpec] = MappingProxyType(
         "create_rig_property_driver": CommandSpec(),
         "assign_bone_custom_shapes": CommandSpec(),
         "list_character_bones": CommandSpec(read_only=True),
+        # Read-only like `validate_character_rig`, which also samples frames it puts back: the
+        # trial rotation is restored by `restored_bone_pose` before the handler returns, so
+        # there is no net mutation for a transaction to snapshot.
+        "probe_bone_axis": CommandSpec(read_only=True),
         "set_character_pose": CommandSpec(),
         "keyframe_character_pose": CommandSpec(),
         "solve_bone_reach": CommandSpec(),

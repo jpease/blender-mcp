@@ -64,7 +64,7 @@ class SceneScale:
         bones: Bones posed in one `set_character_pose` call; the handler pages none.
         linked_datablocks: Datablocks one library links; the handler lists 100.
         mesh_vertices: Vertices in the inspected mesh; `get_mesh_data` pages 100.
-        findings: Validation findings `validate_scene` reports; it pages none.
+        findings: Validation findings `validate_scene` reports; it pages 300.
         override_objects: Objects in the overridden linked collection; the handler lists 100.
         cycle_frames: Frames in the keyed walk cycle; `keyframe_bone_reach` pages none.
 
@@ -528,6 +528,7 @@ _LIBRARY_DETAILS: Mapping[str, object] = MappingProxyType(
 _MAX_LISTED_NAMES = 10  # `handlers/linking.py:53`, the default page of datablock names
 _MESH_ELEMENT_PAGE = 100  # `tools/viewport.py get_mesh_data` default limit
 _SCENE_OBJECT_PAGE = 25  # `tools/scene.py list_scene_objects` default limit
+_VALIDATE_SCENE_PAGE = 300  # `tools/scene.py validate_scene` default max_findings
 _LIGHT_PAGE = 50  # `handlers/lighting/inspection.py:204 list_lights` default limit
 _BONE_PAGE = 100  # `tools/character_rigging/posing.py:58 list_character_bones` default limit
 
@@ -660,6 +661,12 @@ def _bone_name(index: int) -> str:
 # `handlers/character_rigging/posing.py:76 _POSE_MATRIX_DECIMALS`: the default pose record
 # rounds its one matrix; `detail=True` publishes Blender's own precision instead.
 _POSE_DECIMALS = 6
+
+
+# `handlers/character_rigging/posing.py _MAX_PROBE_REFERENCES`: the handler takes at most six
+# named world directions, and each one costs a signed number on every probed axis - so six
+# names against six axes is the widest reply `probe_bone_axis` can send.
+_PROBE_REFERENCE_NAMES = ("camera_right", "camera_up", "world_up", "facing", "stride", "lateral")
 
 
 def _bone_pose_entries(bones: int) -> list[dict[str, object]]:
@@ -1007,7 +1014,12 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "findings": [_scene_finding(index) for index in range(scale.findings)],
             "summary": {"ERROR": scale.findings, "WARNING": 0, "INFO": 0},
             "total_findings": scale.findings,
-            "truncated": False,
+            "offset": 0,
+            "limit": _VALIDATE_SCENE_PAGE,
+            "returned_count": min(scale.findings, _VALIDATE_SCENE_PAGE),
+            "truncated": scale.findings > _VALIDATE_SCENE_PAGE,
+            "next_offset": _VALIDATE_SCENE_PAGE if scale.findings > _VALIDATE_SCENE_PAGE else None,
+            "domains_truncated": False,
             "ready": False,
             "limitations": [
                 "Aggregates validate_pbr_asset, validate_lighting_setup, validate_cloth_setup, "
@@ -1061,6 +1073,24 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "mode": "LINKED_DATA",
             "objects": [{"name": "Hero_002", "data": "Hero_Mesh"}],
             "changed_objects": ["Hero_002"],
+        },
+        # `handlers/scene.py:1384 remove_scene_objects`, the core-surface way a session takes
+        # back a scratch object it made; it reports what each removal released and what stayed.
+        "remove_scene_objects": lambda _scale: {
+            "removed": ["Scratch_Proxy"],
+            "selector": None,
+            "dependencies": {
+                "Scratch_Proxy": {
+                    "children": [],
+                    "collections": ["Scratch"],
+                    "data": "Scratch_Proxy_Mesh",
+                    "data_users_before": 1,
+                    "materials": [{"name": "Hero_Skin", "users_before": 2}],
+                }
+            },
+            "retained_shared_datablocks": [{"kind": "MATERIAL", "name": "Hero_Skin", "reason": "shared users remain"}],
+            "purged_datablocks": [],
+            "changed_objects": ["Scratch_Proxy"],
         },
         "set_viewport_overlay": lambda _scale: {"toggle": "CAVITY", "enabled": True},
         "get_viewport_screenshot": lambda _scale: {
@@ -1677,6 +1707,32 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
                 "next_offset": _BONE_PAGE if scale.bones > _BONE_PAGE else None,
             },
         },
+        # `handlers/character_rigging/posing.py probe_bone_axis`, which pages nothing: the six
+        # signed axes are the whole basis, so the largest reply this tool can send is one entry
+        # per axis, each carrying two world points, a travel vector and one component per named
+        # reference direction. Bounded by the handler at six axes and six directions.
+        "probe_bone_axis": lambda _scale: {
+            "armature_object": "Hero_Rig",
+            "bone": _bone_name(3),
+            "space": "LOCAL",
+            "degrees": 15.0,
+            "bone_length_m": 0.284531,
+            "witness_bone": _bone_name(9),
+            "witness_bone_position": "TAIL",
+            "witness_bone_source": "farthest_descendant",
+            "axes": [
+                {
+                    "axis": axis,
+                    "degrees": 15.0,
+                    "witness_before_world": [0.418273, -1.203847, 1.472910],
+                    "witness_after_world": [0.463812, -1.174535, 1.469238],
+                    "travel_world": [0.045539, 0.029312, -0.003672],
+                    "travel_m": 0.054294,
+                    "reference_components_m": dict.fromkeys(_PROBE_REFERENCE_NAMES, 0.031784),
+                }
+                for axis in ("X", "-X", "Y", "-Y", "Z", "-Z")
+            ],
+        },
         # `handlers/character_rigging/posing.py:228 set_character_pose`, which pages no bones:
         # the reply budget shortens `bones`, and `changed_bones` is what stays complete.
         "set_character_pose": lambda scale: {
@@ -1839,6 +1895,24 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "slot": "OBHero",
             "changed_keyframes": [
                 {"operation": "UPSERT", "data_path": "location", "array_index": 0, "frame": 1.0, "value": 1.0}
+            ],
+            # `handlers/animation.py _edit_cycle_warnings`: a batch keying channels outside the
+            # cycle they already repeat carries the same quantitative notice the two pose paths
+            # do. Warnings are lifted whole into the envelope and never paged, so the list is
+            # bounded at `_MAX_CYCLE_WARNINGS` with one counted line - this is that ceiling.
+            "warnings": [
+                f'pose.bones["{_bone_name(index)}"].location[0] is keyed at frame 199, outside the frames 1-17 it '
+                "already cycles over. A Cycles modifier repeats its own curve's key extent, so this channel's "
+                "period becomes 198 frames instead of 16; under REPEAT_OFFSET each repeat then carries that much "
+                "further, so a travelling root stops arriving where the cycle put it. Key it inside the cycle, or "
+                "re-cycle the action deliberately."
+                for index in range(4)
+            ]
+            + [
+                "12 further channel(s) are keyed outside the cycle their own curves carry, stretching it the same "
+                "way: "
+                + ", ".join(f'pose.bones["{_bone_name(index)}"].location[0]' for index in range(4, 8))
+                + " and 8 more."
             ],
             "changed_resources": ["Hero", "HeroAction"],
         },
@@ -2099,8 +2173,10 @@ _ARGUMENTS: Mapping[str, Mapping[str, object]] = MappingProxyType(
         "manage_view_layers": {"scene_name": "Scene", "action": "CREATE", "view_layer_name": "Beauty"},
         "open_shot": {"filepath": "/shots/hero/shot.blend"},
         "point_camera_at": {"scene_name": "Scene", "camera_name": "Camera_Hero", "target_object_name": "Hero"},
+        "probe_bone_axis": {"armature_object_name": "Hero_Rig", "bone_name": "spine", "axes": ["X", "Z"]},
         "reload_library": {"library_uid": 977},
         "relocate_library": {"library_uid": 977, "filepath": "/shots/canon/canon_v2.blend"},
+        "remove_scene_objects": {"object_names": ["Scratch_Proxy"], "confirm_remove": True},
         "render_lighting_preview": {
             "scene_name": "Scene",
             "camera_name": "Camera_Hero",

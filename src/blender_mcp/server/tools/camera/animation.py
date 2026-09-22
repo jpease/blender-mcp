@@ -116,7 +116,15 @@ async def create_focus_pull(
     focus_control_name: str = "MCP Focus Pull",
     collection_name: str = "MCP Camera Controls",
 ) -> dict:
-    """Animate camera-space focus distance or a dedicated live focus control between two subjects."""
+    """
+    Animate camera-space focus distance or a dedicated live focus control between two subjects.
+
+    Both modes enable the camera's depth of field, unlike ``configure_camera_dof``, which leaves that
+    switch to the caller. ``DISTANCE`` keys the camera's own focus distance, clears any focus object,
+    and creates nothing - ``focus_control_name`` and ``collection_name`` are unused, and no object is
+    added to the scene. ``FOCUS_CONTROL`` creates one tagged Empty under ``collection_name``, keys its
+    location, and focuses the camera on it, so an artist can re-aim the pull afterwards.
+    """
     if (start_frame is None) == (start_at_seconds is None):
         raise ToolError("supply exactly one of start_frame or start_at_seconds")
     if (end_frame is None) == (end_at_seconds is None):

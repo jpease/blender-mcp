@@ -153,7 +153,16 @@ def character_animation_strategy() -> str:
           rest. Pass the entry for the direction the bone should point at as aim_at.track_axis,
           and up_axis (the same as aim_axis_for_world["+Z"]) for the roll. The reply's
           length_axis is the axis along the bone - "Y" for every bone Blender builds - and is
-          almost never the axis that looks anywhere; aim_at refuses one letter for both.
+          almost never the axis that looks anywhere; aim_at refuses one letter for both. Those
+          letters aim a bone; they do not answer which axis SWINGS it, or which way round.
+        - probe_bone_axis(armature_object_name=..., bone_name=..., axes=["X", "-X", "Z"],
+          reference_directions={"camera_right": [1, 0, 0]}) when the question is which axis
+          swings a limb, or which sign of a roll turns a palm outward. rest_axes reports
+          directions at rest: it carries no witness, so it cannot say how far anything travels,
+          and a constraint, a driver or an IK chain can null or invert a channel it never sees.
+          The probe turns the bone, measures how far a witness bone actually moved and which way
+          along each direction you name, and hands the pose straight back. The axis with the
+          largest travel_m is the one that swings this bone; a length axis answers near zero.
         - get_character_rig_info(armature_object_name=..., bone_names=[...]) for world-space
           pose-bone matrices. Never chain FK forward from bone lengths by hand.
         - A bone can aim at another rig's bone: aim_at takes target_object_name plus

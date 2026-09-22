@@ -380,9 +380,19 @@ class _ReachPoseBone(_PoseBone):
 
     def __init__(self, name, head, tail, parent=None) -> None:
         super().__init__(name, rest_relative=_Matrix.Translation(head), parent=parent)
-        self.head = _Vector(head)
-        self.tail = _Vector(tail)
+        self._head = _Vector(head)
+        self._tail = _Vector(tail)
         self.constraints = _ConstraintStack()
+
+    @property
+    def head(self) -> _Vector:
+        """Placed outright rather than composed: a reach reads where the chain already sits."""
+        return self._head
+
+    @property
+    def tail(self) -> _Vector:
+        """The chain's far end, which is the point a reach solves onto its target."""
+        return self._tail
 
 
 # A bent two-bone arm: a 1.0 m upper arm straight down from the origin, then a 0.8 m forearm

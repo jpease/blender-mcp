@@ -227,7 +227,7 @@ def transport_from_env(env: Mapping[str, str]) -> TransportConfig:
     Choose the client transport: stdio by default, streamable HTTP on request.
 
     HTTP settings are validated here, before anything binds, so an error names the
-    variable rather than surfacing later as a library error.
+    variable rather than showing up later as a library error.
 
     Args:
         env: The environment to read.

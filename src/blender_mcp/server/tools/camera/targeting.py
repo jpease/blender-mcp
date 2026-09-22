@@ -35,16 +35,17 @@ async def point_camera_at(
     camera_name: str,
     target_object_name: str | None = None,
     target_point: tuple[float, float, float] | None = None,
-    subtarget: str | None = None,
+    target_bone_name: str | None = None,
     camera_location: tuple[float, float, float] | None = None,
 ) -> dict:
     """
     Optionally place a camera at a world point, then rotate it once to aim at an object or point.
 
     Supply exactly one target source. Rotates local -Z toward the target with local Y as up,
-    correctly resolving parent space. subtarget aims at the named bone's evaluated world head,
-    its posed position at the current frame, not the armature's origin. This is a one-shot
-    rotation, not a constraint — use add_camera_constraint for a live tracking relationship.
+    correctly resolving parent space. ``target_bone_name`` aims at the named bone's evaluated
+    world head, its posed position at the current frame, not the armature's origin. This is a
+    one-shot rotation, not a constraint — use add_camera_constraint for a live tracking
+    relationship.
 
     camera_location is a world-space point applied before the aim, so place-and-aim is one call
     rather than set_object_transform followed by this tool. It is parent-aware: a camera parented
@@ -55,8 +56,8 @@ async def point_camera_at(
     """
     if (target_object_name is None) == (target_point is None):
         raise ToolError("Supply exactly one of target_object_name or target_point")
-    if subtarget is not None and target_object_name is None:
-        raise ToolError("subtarget requires target_object_name")
+    if target_bone_name is not None and target_object_name is None:
+        raise ToolError("target_bone_name requires target_object_name")
     if camera_location is not None and target_point is not None and tuple(camera_location) == tuple(target_point):
         # The handler rejects this against the resolved target too (a target_object_name only
         # resolves inside Blender), but when both points are literal the round trip buys nothing.
@@ -68,7 +69,7 @@ async def point_camera_at(
             "camera_name": camera_name,
             "target_object_name": target_object_name,
             "target_point": target_point,
-            "subtarget": subtarget,
+            "target_bone_name": target_bone_name,
             "camera_location": camera_location,
         },
         changed_objects=[camera_name],

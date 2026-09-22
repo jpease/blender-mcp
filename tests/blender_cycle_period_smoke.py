@@ -254,11 +254,17 @@ assert abs(backward - GUARD_KEYS[0][1]) < 1e-5, (
 # --- item 5: a later key redefines the period, and expected_period_frames refuses it ----------
 # The gesture the rehearsal keyed long after the cycle went on. Nothing refuses it, and
 # nothing should: extending a cycle on purpose is legitimate. It just is not a cycle any more.
-handler.edit_keyframes(
+# It does say so, though: this is the third key-writing path into the same trap, and the one an
+# agent reaches for when it wants one exact channel.
+stretching_edit = handler.edit_keyframes(
     guard_target,
     [{"data_path": CYCLED_PATH, "array_index": 0, "frame": GESTURE_FRAME, "value": 0.9}],
     action_name=GUARD_ACTION,
 )
+stretch_notice = warning_containing(stretching_edit, "cycles over")
+assert f"{CYCLED_PATH}[0] is keyed at frame {GESTURE_FRAME:g}" in stretch_notice, stretch_notice
+assert f"frames {GUARD_KEYS[0][0]:g}-{GUARD_KEYS[-1][0]:g}" in stretch_notice, stretch_notice
+assert f"instead of {GUARD_PERIOD:g}" in stretch_notice, stretch_notice
 measured = record_for(handler.set_action_cycle(guard_target, GUARD_ACTION, data_path_prefix=CYCLED_PATH), CYCLED_PATH)
 assert measured["last_key_frame"] == GESTURE_FRAME, measured
 assert measured["period_frames"] == GESTURE_FRAME - GUARD_KEYS[0][0], (
@@ -288,7 +294,60 @@ assert not any(modifier.type == "CYCLES" for modifier in other_curve.modifiers),
     "a refused call left a Cycles modifier on a curve it was never allowed to cycle"
 )
 
-# --- item 6: a restricted range bounds where the cycle applies, not what it repeats -----------
+# --- item 6: INSPECT reads the period back without destroying the cycle to see it -------------
+# The period was observable only in the reply of the call that deleted the modifier, so asking a
+# walk what it repeats meant un-cycling the action, reading the number, and cycling it again -
+# three calls, and a window in which the shot did not loop at all.
+inspected = handler.set_action_cycle(guard_target, GUARD_ACTION, "INSPECT")
+inspected_cycled = record_for(inspected, CYCLED_PATH)
+inspected_other = record_for(inspected, OTHER_PATH)
+assert inspected_cycled["has_cycles_modifier"] is True, inspected_cycled
+assert inspected_cycled["period_frames"] == GESTURE_FRAME - GUARD_KEYS[0][0], inspected_cycled
+assert inspected_cycled["first_key_frame"] == GUARD_KEYS[0][0], inspected_cycled
+assert inspected_cycled["last_key_frame"] == GESTURE_FRAME, inspected_cycled
+# Read off the live modifier, not off this call's arguments: mode_after defaults to
+# REPEAT_OFFSET here, but mode_before defaults to NONE and the modifier agrees for its own
+# reason - it was authored that way in item 4.
+assert (inspected_cycled["mode_before"], inspected_cycled["mode_after"]) == ("NONE", "REPEAT_OFFSET"), inspected_cycled
+assert (inspected_cycled["cycles_before"], inspected_cycled["cycles_after"]) == (0, 0), inspected_cycled
+assert "restricted_range" not in inspected_cycled, "no window is in force on this curve"
+# The curve carrying no cycle is reported as such. REMOVE omits it, which answers "does this
+# repeat anything?" by silence - the one thing an inspection must not do.
+assert inspected_other["has_cycles_modifier"] is False, inspected_other
+assert inspected_other["mode_after"] is None and inspected_other["cycles_after"] is None, inspected_other
+assert inspected_other["period_frames"] == GUARD_PERIOD, inspected_other
+# And the cycle it described is still on the curve. That is the whole finding.
+assert any(modifier.type == "CYCLES" for modifier in guard_curve.modifiers), (
+    "INSPECT removed the cycle it was asked to describe"
+)
+assert not any(modifier.type == "CYCLES" for modifier in other_curve.modifiers), (
+    "INSPECT created a cycle on a curve that had none"
+)
+inspect_disagreement = warning_containing(inspected, "do not share one cycle period")
+assert f"{GUARD_PERIOD:g} frames" in inspect_disagreement, inspect_disagreement
+assert f"{GESTURE_FRAME - GUARD_KEYS[0][0]:g} frames" in inspect_disagreement, inspect_disagreement
+
+# expected_period_frames is the one cycle argument an inspection can honour, because it asserts
+# rather than writes: a caller can state the period they authored and be refused, having changed
+# nothing. A window is something to write, so INSPECT refuses one.
+try:
+    handler.set_action_cycle(
+        guard_target, GUARD_ACTION, "INSPECT", expected_period_frames=GUARD_PERIOD, data_path_prefix=CYCLED_PATH
+    )
+except ValueError as failure:
+    inspect_refusal = str(failure)
+else:
+    raise AssertionError("INSPECT accepted an expected_period_frames the cycled curve no longer matches")
+assert f"expected_period_frames={GUARD_PERIOD:g}" in inspect_refusal, inspect_refusal
+try:
+    handler.set_action_cycle(guard_target, GUARD_ACTION, "INSPECT", frame_start=RANGE_START, frame_end=RANGE_END)
+except ValueError as failure:
+    inspect_range_refusal = str(failure)
+else:
+    raise AssertionError("INSPECT accepted a restricted range it has nothing to write to")
+assert "creates none" in inspect_range_refusal, inspect_range_refusal
+
+# --- item 7: a restricted range bounds where the cycle applies, not what it repeats -----------
 ranged = handler.set_action_cycle(
     guard_target,
     GUARD_ACTION,
@@ -327,7 +386,7 @@ assert abs(outside_range - GUARD_KEYS[-1][1]) < 1e-5, (
     f"{GUARD_KEYS[-1][1]:.6f}; got {outside_range:.6f}"
 )
 
-# --- item 7: and the reply says so, before a render has to ------------------------------------
+# --- item 8: and the reply says so, before a render has to ------------------------------------
 # The evaluation above is the whole defect a later rehearsal shipped: it bounded a travelling
 # root cycle at frame 141, read the world position at 150, and got the value one raw period
 # ends on - the character back on his starting mark, having followed every documented rule.
@@ -340,7 +399,7 @@ assert "no key out there" in bounded_range, bounded_range
 # mode_before is NONE, so the start bound extrapolates nothing and warns about nothing.
 assert not any(warning.startswith("frame_start=") for warning in ranged["warnings"]), ranged["warnings"]
 
-# --- item 8: a pose-bone cycle addressed at the armature datablock names the object ----------
+# --- item 9: a pose-bone cycle addressed at the armature datablock names the object ----------
 # Blender keys `pose.bones[...]` under the armature *object's* slot, so an ARMATURE target is
 # always wrong here and the old refusal named the datablock without naming the remedy. Thirteen
 # refused calls in one rehearsal.
@@ -390,6 +449,13 @@ print(f"extension: {extension}")
 print(f"forward one cycle: {forward:.4f}; backward with mode_before=NONE: {backward:.4f}")
 print(f"period after the frame {GESTURE_FRAME:g} key: {measured['period_frames']:g}")
 print(f"refusal: {refusal}")
+print(f"edit_keyframes extension: {stretch_notice}")
+print(
+    f"INSPECT: {CYCLED_PATH} repeats {inspected_cycled['period_frames']:g} frames "
+    f"({inspected_cycled['mode_after']}), {OTHER_PATH} has_cycles_modifier="
+    f"{inspected_other['has_cycles_modifier']}"
+)
+print(f"INSPECT refusals: {inspect_refusal} / {inspect_range_refusal}")
 print(
     f"window {RANGE_START:g}-{RANGE_END:g}: frame {RANGE_END:g} evaluates {inside_range:.4f}, "
     f"frame {RANGE_END + 1:g} evaluates {outside_range:.4f}"

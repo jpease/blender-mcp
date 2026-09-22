@@ -184,6 +184,36 @@ def _camera(name, *, scene=None):
     return obj
 
 
+def _target_world_point(target, target_bone_name=None):
+    """
+    Read the world point an aim should use on one target object.
+
+    Naming only the object resolves its origin, and on a character rig that origin sits on the
+    floor beneath the character: a close-up aimed there renders the top of the head rather than
+    the face. Naming a bone resolves that bone's evaluated world head instead, so a posed or
+    constrained bone is aimed at where it actually is.
+
+    Args:
+        target: The object being aimed at.
+        target_bone_name: A pose bone on that armature to aim at, or None for the object origin.
+
+    Returns:
+        mathutils.Vector: The world-space point to aim at.
+
+    Raises:
+        ValueError: If a bone was named and the target is not an armature carrying it, so the
+        caller learns their typo instead of silently receiving the origin aim they were avoiding.
+
+    """
+    if not target_bone_name:
+        return target.matrix_world.translation.copy()
+    bones = getattr(getattr(target, "pose", None), "bones", None)
+    bone = bones.get(target_bone_name) if bones is not None else None
+    if target.type != "ARMATURE" or bone is None:
+        raise ValueError(f"target_bone_name '{target_bone_name}' does not exist on armature target '{target.name}'")
+    return target.matrix_world @ bone.matrix.translation
+
+
 def _ensure_collection(scene, name):
     if not isinstance(name, str) or not name.strip():
         raise ValueError("collection_name must be a non-empty string")

@@ -322,7 +322,7 @@ assert away_camera.matrix_world == away_matrix, "a mid-solve refusal left the ca
 assert abs(away_camera.data.lens - 35.0) < LENS_TOLERANCE_MM, "a mid-solve refusal left the lens changed"
 
 # ---------------------------------------------------------------------------------------------
-# point_camera_at(subtarget=...) aims at the bone's evaluated world head, not the rig's origin.
+# point_camera_at(target_bone_name=...) aims at the bone's evaluated world head, not the rig's origin.
 # ---------------------------------------------------------------------------------------------
 
 anchor = _new_object("Probe Anchor")
@@ -335,11 +335,11 @@ aimed = handler.point_camera_at(
     scene.name,
     away_camera.name,
     target_object_name=rig.name,
-    subtarget="probe",
+    target_bone_name="probe",
     camera_location=(1.0, -2.0, 3.0),
 )
 assert all(abs(a - b) < POSITION_TOLERANCE_M for a, b in zip(aimed["target_point"], (1.0, 2.0, 3.0), strict=True)), (
-    f"subtarget aimed at {aimed['target_point']}, not the constrained bone head [1.0, 2.0, 3.0]"
+    f"target_bone_name aimed at {aimed['target_point']}, not the constrained bone head [1.0, 2.0, 3.0]"
 )
 aim_direction = (mathutils.Vector((1.0, 2.0, 3.0)) - away_camera.matrix_world.translation).normalized()
 camera_forward = (away_camera.matrix_world.to_3x3() @ mathutils.Vector((0.0, 0.0, -1.0))).normalized()

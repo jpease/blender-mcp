@@ -7,10 +7,11 @@
 # pydantic's discriminated-union and `Annotated` forms defeat pyright's call/type-form checks.
 # pyright: reportCallIssue=false, reportInvalidTypeForm=false
 """
-Scene authoring and destructive scene operations.
+Scene authoring and whole-scene resets.
 
 Kept apart from `scene.py`, in the `scene-authoring` bundle, so shot work does not carry the
-large geometry schema or offer destructive scene operations.
+large geometry schema or offer to clear a scene. Deleting objects a session named is not
+authoring - `remove_scene_objects` is core, in `scene.py`.
 """
 
 from typing import Annotated, Any, Literal
@@ -292,13 +293,6 @@ GeometrySpec = Annotated[
 ]
 
 
-class ManagedRigSelector(StrictModel):
-    """Select MCP-owned objects by a known rig ownership tag."""
-
-    system: Literal["CAMERA", "RIGID_BODY"]
-    rig_id: Annotated[str, Field(min_length=1, max_length=256)]
-
-
 @mcp.tool()
 async def create_geometry_object(
     ctx: Context,
@@ -326,29 +320,6 @@ async def create_geometry_object(
             "rotation": rotation,
             "scale": scale,
         },
-    )
-
-
-@mcp.tool()
-async def remove_scene_objects(
-    ctx: Context,
-    object_names: Annotated[list[str], Field(min_length=1, max_length=1_000)] | None = None,
-    managed_rig: ManagedRigSelector | None = None,
-    confirm_remove: bool = False,
-) -> dict:
-    """Remove scene objects given by exactly one of object_names or managed_rig; requires confirm_remove=True."""
-    if not confirm_remove:
-        raise ValueError("confirm_remove=True is required")
-    if (object_names is None) == (managed_rig is None):
-        raise ValueError("Provide exactly one of object_names or managed_rig")
-    return await call_blender(
-        "remove_scene_objects",
-        {
-            "object_names": object_names,
-            "managed_rig": managed_rig.model_dump() if managed_rig else None,
-            "confirm_remove": confirm_remove,
-        },
-        changed_objects=object_names or [],
     )
 
 

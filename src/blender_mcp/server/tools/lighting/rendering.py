@@ -62,7 +62,7 @@ async def configure_lighting_quality(
     detail: bool = False,
 ) -> dict:
     """
-    Patch only render settings that materially affect lighting quality and cost.
+    Patch only render settings that affect lighting quality and cost.
 
     Choose an explicit preset or supply engine-specific patches. ``BOTH`` requires settings for
     both engines unless a preset is supplied. The tool never changes output size, path, color

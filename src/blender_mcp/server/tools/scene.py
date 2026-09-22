@@ -2,10 +2,12 @@
 """
 Typed scene composition, hierarchy, constraint, modifier and validation tools.
 
-Registers the seven core-surface scene tools, including the cross-domain
-`validate_scene` preflight. Geometry authoring and destructive scene operations live in
-`scene_authoring.py` (bundle: `scene-authoring`); the shared input base lives in `_inputs.py`
-and the Blender dispatch helper in `_dispatch.py`.
+Registers the nine core-surface scene tools, including the cross-domain `validate_scene`
+preflight and `remove_scene_objects`: a session that cannot delete the scratch and diagnostic
+objects it created leaves them in the saved shot for good, since `manage_scene_collections`
+refuses to unlink an object from its last collection. Geometry authoring and whole-scene resets
+live in `scene_authoring.py` (bundle: `scene-authoring`); the shared input base lives in
+`_inputs.py` and the Blender dispatch helper in `_dispatch.py`.
 """
 
 import functools
@@ -472,6 +474,7 @@ async def validate_scene(
     ]
     | None = None,
     max_findings: Annotated[int, Field(ge=1, le=1000)] = 300,
+    offset: Annotated[int, Field(ge=0, le=9999)] = 0,
 ) -> dict:
     """
     Run one bounded, non-mutating pre-render preflight aggregating every domain validator.
@@ -484,14 +487,48 @@ async def validate_scene(
     body simulation caches.
 
     Findings are normalized to ``{domain, severity, code, subject, message, evidence,
-    remediation}``, sorted by severity, and bounded by ``max_findings``. Check ``truncated`` and
-    ``domain_summaries`` before trusting an empty result as "clean" - a domain can be truncated
-    internally even while the top-level list still has room. Passing this check does not replace
-    representative evaluated-frame review in Blender.
+    remediation}``, sorted by severity, then paged: ``offset`` starts the page, ``max_findings``
+    bounds it. ``truncated`` means more findings follow this page; ``next_offset`` resumes them.
+    ``domains_truncated`` is the separate fact that a domain stopped at its own internal cap,
+    which ``domain_summaries`` names per domain and no offset can reach - check both before
+    trusting a short result as "clean". A finding's list ``evidence`` is bounded too and carries
+    ``evidence_omitted`` when entries were dropped; the domain validator reports the full list.
+    Passing this check does not replace representative evaluated-frame review in Blender.
 
     The persistence domain is file-wide: it reports local datablocks with no user, which the save
     discards, and actions kept alive only by a fake user.
     """
     return await call_blender(
-        "validate_scene", {"scene_name": scene_name, "scope": scope, "max_findings": max_findings}
+        "validate_scene",
+        {"scene_name": scene_name, "scope": scope, "max_findings": max_findings, "offset": offset},
+    )
+
+
+class ManagedRigSelector(StrictModel):
+    """Select MCP-owned objects by a known rig ownership tag."""
+
+    system: Literal["CAMERA", "RIGID_BODY"]
+    rig_id: Annotated[str, Field(min_length=1, max_length=256)]
+
+
+@mcp.tool()
+async def remove_scene_objects(
+    ctx: Context,
+    object_names: Annotated[list[str], Field(min_length=1, max_length=1_000)] | None = None,
+    managed_rig: ManagedRigSelector | None = None,
+    confirm_remove: bool = False,
+) -> dict:
+    """Remove scene objects given by exactly one of object_names or managed_rig; requires confirm_remove=True."""
+    if not confirm_remove:
+        raise ValueError("confirm_remove=True is required")
+    if (object_names is None) == (managed_rig is None):
+        raise ValueError("Provide exactly one of object_names or managed_rig")
+    return await call_blender(
+        "remove_scene_objects",
+        {
+            "object_names": object_names,
+            "managed_rig": managed_rig.model_dump() if managed_rig else None,
+            "confirm_remove": confirm_remove,
+        },
+        changed_objects=object_names or [],
     )
