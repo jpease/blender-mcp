@@ -552,7 +552,14 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # effect of `frame_camera_on_objects`, which moves a camera to answer it, and it is the
 # prerequisite for naming a mesh to `sample_deformed_geometry`. The rest is the core surface
 # below, whose `set_action_cycle` contract changed with the INSPECT period fix.
-SHOT_MODE_BYTE_CEILING = 263_500
+#
+# Raised from 263,500, measured at 264,930 - 1,430 bytes, all of it `set_object_visibility`.
+# Deleting a library-override object through `remove_scene_objects` does not survive Blender's
+# own liboverride resync: the next file load recreates it, silently undoing the deletion.
+# `set_object_visibility` changes hide_render/hide_viewport/hide_select in place instead of
+# removing the ID, so it survives that resync - the durable alternative `remove_scene_objects`'s
+# new confirm_override_removal refusal now points callers at.
+SHOT_MODE_BYTE_CEILING = 264_930
 
 # The same rule as above, for the default, core-only surface.
 #
@@ -575,7 +582,10 @@ SHOT_MODE_BYTE_CEILING = 263_500
 # stated, because the old shape shipped this repo's first wrong warning - a deliberately
 # uncycled track told it "drifts apart" from the stride - and a caller who believed the
 # warnings needs to know which comparison is now being made.
-DEFAULT_MODE_BYTE_CEILING = 89_500
+#
+# Raised from 89,500, measured at 90,907 - 1,407 bytes, all of it `set_object_visibility` (see
+# the shot-ceiling comment above for why it exists).
+DEFAULT_MODE_BYTE_CEILING = 90_907
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

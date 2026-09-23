@@ -394,6 +394,7 @@ COMMANDS: Mapping[str, CommandSpec] = MappingProxyType(
         "manage_object_hierarchy": CommandSpec(),
         "manage_object_constraints": CommandSpec(),
         "manage_modifiers": CommandSpec(),
+        "set_object_visibility": CommandSpec(),
         "remove_scene_objects": CommandSpec(),
         "reset_scene": CommandSpec(),
         "validate_scene": CommandSpec(read_only=True),

@@ -2,12 +2,12 @@
 """
 Typed scene composition, hierarchy, constraint, modifier and validation tools.
 
-Registers the nine core-surface scene tools, including the cross-domain `validate_scene`
-preflight and `remove_scene_objects`: a session that cannot delete the scratch and diagnostic
-objects it created leaves them in the saved shot for good, since `manage_scene_collections`
-refuses to unlink an object from its last collection. Geometry authoring and whole-scene resets
-live in `scene_authoring.py` (bundle: `scene-authoring`); the shared input base lives in
-`_inputs.py` and the Blender dispatch helper in `_dispatch.py`.
+Registers the ten core-surface scene tools, including the cross-domain `validate_scene`
+preflight, `set_object_visibility`, and `remove_scene_objects`: a session that cannot delete the
+scratch and diagnostic objects it created leaves them in the saved shot for good, since
+`manage_scene_collections` refuses to unlink an object from its last collection. Geometry
+authoring and whole-scene resets live in `scene_authoring.py` (bundle: `scene-authoring`); the
+shared input base lives in `_inputs.py` and the Blender dispatch helper in `_dispatch.py`.
 """
 
 import functools
@@ -512,13 +512,46 @@ class ManagedRigSelector(StrictModel):
 
 
 @mcp.tool()
+async def set_object_visibility(
+    ctx: Context,
+    object_name: str,
+    hide_render: bool | None = None,
+    hide_viewport: bool | None = None,
+    hide_select: bool | None = None,
+) -> dict:
+    """
+    Set one or more visibility flags on an explicit object without removing it.
+
+    The durable alternative to `remove_scene_objects` for a library-override object.
+    """
+    if hide_render is None and hide_viewport is None and hide_select is None:
+        raise ValueError("Provide at least one of hide_render, hide_viewport, hide_select")
+    return await call_blender(
+        "set_object_visibility",
+        {
+            "object_name": object_name,
+            "hide_render": hide_render,
+            "hide_viewport": hide_viewport,
+            "hide_select": hide_select,
+        },
+        changed_objects=[object_name],
+    )
+
+
+@mcp.tool()
 async def remove_scene_objects(
     ctx: Context,
     object_names: Annotated[list[str], Field(min_length=1, max_length=1_000)] | None = None,
     managed_rig: ManagedRigSelector | None = None,
     confirm_remove: bool = False,
+    confirm_override_removal: bool = False,
 ) -> dict:
-    """Remove scene objects given by exactly one of object_names or managed_rig; requires confirm_remove=True."""
+    """
+    Remove scene objects given by exactly one of object_names or managed_rig.
+
+    Requires confirm_remove=True, and confirm_override_removal=True for a library-override
+    object.
+    """
     if not confirm_remove:
         raise ValueError("confirm_remove=True is required")
     if (object_names is None) == (managed_rig is None):
@@ -529,6 +562,7 @@ async def remove_scene_objects(
             "object_names": object_names,
             "managed_rig": managed_rig.model_dump() if managed_rig else None,
             "confirm_remove": confirm_remove,
+            "confirm_override_removal": confirm_override_removal,
         },
         changed_objects=object_names or [],
     )

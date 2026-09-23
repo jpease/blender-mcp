@@ -25,13 +25,14 @@ SCENE_COMMANDS = {
     "manage_object_hierarchy",
     "manage_object_constraints",
     "manage_modifiers",
+    "set_object_visibility",
     "remove_scene_objects",
     "reset_scene",
 }
 
 
 def test_scene_tools_are_registered_and_dispatched(monkeypatch: pytest.MonkeyPatch) -> None:
-    """All nine scene commands stay reachable and mutating once both modules are imported."""
+    """All ten scene commands stay reachable and mutating once both modules are imported."""
     addon, _bpy = _load_addon(monkeypatch, data={})
 
     # Importing both modules is what a `scene-authoring` process does.
@@ -205,10 +206,26 @@ def test_remove_scene_objects_dispatches_named_objects(stub_blender_connection: 
 
     assert connection.calls[0] == (
         "remove_scene_objects",
-        {"object_names": ["Cube"], "managed_rig": None, "confirm_remove": True},
+        {
+            "object_names": ["Cube"],
+            "managed_rig": None,
+            "confirm_remove": True,
+            "confirm_override_removal": False,
+        },
     )
     # With no `name` parameter the stub echoes "Created".
     assert result["changed_objects"] == ["Created"]
+
+
+def test_remove_scene_objects_forwards_confirm_override_removal(stub_blender_connection: StubFactory) -> None:
+    """The override-removal confirmation reaches the addon distinctly from confirm_remove."""
+    connection = stub_blender_connection()
+
+    asyncio.run(
+        scene.remove_scene_objects(ctx=None, object_names=["Cube"], confirm_remove=True, confirm_override_removal=True)
+    )
+
+    assert connection.calls[0][1]["confirm_override_removal"] is True
 
 
 def test_remove_scene_objects_requires_exactly_one_selector(stub_blender_connection: StubFactory) -> None:
@@ -217,6 +234,32 @@ def test_remove_scene_objects_requires_exactly_one_selector(stub_blender_connect
 
     with pytest.raises(ValueError, match="exactly one"):
         asyncio.run(scene.remove_scene_objects(ctx=None, confirm_remove=True))
+
+    assert connection.calls == []
+
+
+def test_set_object_visibility_dispatches_flags(stub_blender_connection: StubFactory) -> None:
+    """Every visibility flag reaches the addon under its own command name, with the object name."""
+    connection = stub_blender_connection()
+
+    result = asyncio.run(
+        scene.set_object_visibility(ctx=None, object_name="Cube", hide_render=True, hide_viewport=False)
+    )
+
+    assert connection.calls[0] == (
+        "set_object_visibility",
+        {"object_name": "Cube", "hide_render": True, "hide_viewport": False, "hide_select": None},
+    )
+    # With no `name` parameter the stub echoes "Created".
+    assert result["changed_objects"] == ["Created"]
+
+
+def test_set_object_visibility_requires_at_least_one_flag(stub_blender_connection: StubFactory) -> None:
+    """No flags is a client error that must not reach Blender."""
+    connection = stub_blender_connection()
+
+    with pytest.raises(ValueError, match="at least one"):
+        asyncio.run(scene.set_object_visibility(ctx=None, object_name="Cube"))
 
     assert connection.calls == []
 

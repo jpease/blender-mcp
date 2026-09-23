@@ -1381,7 +1381,49 @@ class SceneHandlersMixin:
             raise ValueError(f"Unsupported modifier action: {action}")
         return {"name": obj.name, **modifier_result(obj, item, False)}
 
-    def remove_scene_objects(self, object_names=None, managed_rig=None, confirm_remove=False):
+    def set_object_visibility(self, object_name, hide_render=None, hide_viewport=None, hide_select=None):
+        """
+        Set one or more visibility flags on an explicit object, in place.
+
+        Unlike `remove_scene_objects`, this never removes an ID: a library-override object
+        hidden this way stays present, so Blender's liboverride resync - which recreates any
+        override object still present in the linked source but missing locally - has nothing to
+        undo. Prefer this over deletion whenever the intent is "make this not render", not "this
+        object should no longer exist in the file".
+
+        Args:
+            object_name: The object to change.
+            hide_render: Exclude the object from rendered output, or leave unchanged if None.
+            hide_viewport: Exclude the object from the 3D viewport, or leave unchanged if None.
+            hide_select: Make the object unselectable in the viewport, or leave unchanged if None.
+
+        Returns:
+            The object's name and its three visibility flags after the change.
+
+        Raises:
+            ValueError: If none of the three flags were provided, or the object is not found.
+
+        """
+        if hide_render is None and hide_viewport is None and hide_select is None:
+            raise ValueError("Provide at least one of hide_render, hide_viewport, hide_select")
+        obj = _object(object_name)
+        if hide_render is not None:
+            obj.hide_render = bool(hide_render)
+        if hide_viewport is not None:
+            obj.hide_viewport = bool(hide_viewport)
+        if hide_select is not None:
+            obj.hide_select = bool(hide_select)
+        return {
+            "name": obj.name,
+            "hide_render": obj.hide_render,
+            "hide_viewport": obj.hide_viewport,
+            "hide_select": obj.hide_select,
+            "changed_objects": [obj.name],
+        }
+
+    def remove_scene_objects(
+        self, object_names=None, managed_rig=None, confirm_remove=False, confirm_override_removal=False
+    ):
         if not confirm_remove:
             raise ValueError("confirm_remove=True is required")
         if (object_names is None) == (managed_rig is None):
@@ -1405,6 +1447,21 @@ class SceneHandlersMixin:
         if len(object_names) != len(set(object_names)):
             raise ValueError("object_names must be unique")
         objects = [_object(name) for name in object_names]
+        # A library-override object deleted here is indistinguishable, to Blender's own
+        # liboverride resync, from one nobody ever touched: resync recreates any override object
+        # still present in the linked source but missing locally, the next time this file (or any
+        # file linking the same library) opens - silently undoing the deletion. Refuse by default,
+        # the same way every other destructive path in this handler does, rather than let that
+        # surface as an unexplained resurrection on the next load.
+        override_names = sorted(obj.name for obj in objects if obj.override_library is not None)
+        if override_names and not confirm_override_removal:
+            raise ValueError(
+                "Deleting a library-override object does not survive Blender's own liboverride "
+                "resync and will be recreated the next time this file is opened. Overrides: "
+                f"{override_names}. Pass confirm_override_removal=True to delete them anyway, or "
+                "call set_object_visibility(hide_render=True, hide_viewport=True) instead, which "
+                "changes a property rather than removing the ID and survives the resync."
+            )
         dependencies = {
             obj.name: {
                 "children": [child.name for child in obj.children],
@@ -1429,6 +1486,13 @@ class SceneHandlersMixin:
             for material in dependency["materials"]:
                 if material["users_before"] > 1:
                     retained.append({"kind": "MATERIAL", "name": material["name"], "reason": "shared users remain"})
+        warnings = []
+        if override_names:
+            warnings.append(
+                "Deleted library-override object(s) will be recreated by Blender's liboverride "
+                f"resync the next time this file is opened: {override_names}. Use "
+                "set_object_visibility to hide them durably instead of deleting them."
+            )
         return {
             "removed": object_names,
             "selector": selector,
@@ -1436,6 +1500,7 @@ class SceneHandlersMixin:
             "retained_shared_datablocks": retained,
             "purged_datablocks": [],
             "changed_objects": object_names,
+            "warnings": warnings,
         }
 
     def reset_scene(self, confirm_reset=False, scene_name=None, purge_orphaned_data=True):

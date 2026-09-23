@@ -2164,6 +2164,7 @@
       "scene_name"
     ],
     "remove_scene_objects": [
+      "confirm_override_removal",
       "confirm_remove",
       "managed_rig",
       "object_names"
@@ -2333,6 +2334,12 @@
       "object_name",
       "patch",
       "space"
+    ],
+    "set_object_visibility": [
+      "hide_render",
+      "hide_select",
+      "hide_viewport",
+      "object_name"
     ],
     "set_retopology_features": [
       "apply_detected",
@@ -2577,5 +2584,5 @@
       "scope"
     ]
   },
-  "protocol_version": 41
+  "protocol_version": 42
 }

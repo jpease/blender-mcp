@@ -1110,7 +1110,17 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "objects": [{"name": "Hero_002", "data": "Hero_Mesh"}],
             "changed_objects": ["Hero_002"],
         },
-        # `handlers/scene.py:1384 remove_scene_objects`, the core-surface way a session takes
+        # `handlers/scene.py:1384 set_object_visibility`, the durable alternative to
+        # `remove_scene_objects` for a library-override object: it changes a property instead of
+        # removing the ID, so it survives Blender's own liboverride resync on the next file load.
+        "set_object_visibility": lambda _scale: {
+            "name": "Scratch_Proxy",
+            "hide_render": True,
+            "hide_viewport": True,
+            "hide_select": False,
+            "changed_objects": ["Scratch_Proxy"],
+        },
+        # `handlers/scene.py:1424 remove_scene_objects`, the core-surface way a session takes
         # back a scratch object it made; it reports what each removal released and what stayed.
         "remove_scene_objects": lambda _scale: {
             "removed": ["Scratch_Proxy"],
@@ -2283,6 +2293,7 @@ _ARGUMENTS: Mapping[str, Mapping[str, object]] = MappingProxyType(
             "poses": [{"bone_name": "spine", "location": [0.0, 0.0, 0.0]}],
         },
         "set_object_transform": {"object_name": "Hero", "patch": {"location": [0.0, 0.0, 0.0]}},
+        "set_object_visibility": {"object_name": "Scratch_Proxy", "hide_render": True, "hide_viewport": True},
         "set_scene_camera": {"scene_name": "Scene", "camera_name": "Camera_Hero"},
         "set_viewport_overlay": {"toggle": "CAVITY", "enabled": True},
         "solve_bone_reach": {
