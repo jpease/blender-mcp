@@ -345,7 +345,8 @@ class GeometryNodesInspectionHandlersMixin:
         result["node_types"] = result.pop("items")
         return result
 
-    def evaluate_procedural_geometry(self, object_name, frame=None, instance_limit=500):
+    def inspect_evaluated_geometry(self, object_name, frame=None, instance_limit=500):
+        """Read any object's evaluated result at a frame, restoring the playhead afterwards."""
         obj = require_object(object_name)
         scene = bpy.context.scene
         previous_frame = scene.frame_current

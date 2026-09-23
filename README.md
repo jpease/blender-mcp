@@ -265,8 +265,8 @@ for fine-grained control. Modes are curated presets over bundles and compose wit
 | `liquid` | fluid/liquid simulation |
 | `rigid-body` | rigid body physics, scene physics |
 | `geometry-nodes` | geometry nodes, ND toolkit |
-| `character-rigging` | armatures, rigging, posing |
-| `character-posing` | posing and pose-keying an existing rig, without rig construction |
+| `character-rigging` | armatures, rigging, posing, deformed-surface inspection |
+| `character-posing` | posing and pose-keying an existing rig and reading the surface that deforms, without rig construction |
 | `retopology` | retopology workflows |
 | `lighting` | lighting inspection, environment, render-quality settings (construction is separate, see `lighting-construction`) |
 | `lighting-construction` | creating/aiming/linking lights, studio-lighting presets (also carries all of `lighting`'s render-quality tools — `configure_lighting_quality`, `configure_color_management`, `render_lighting_preview` — since the studio-lighting preset calls the last one directly) |

@@ -105,6 +105,10 @@ SERVER_LIGHTING_INSPECTION_TOOL = ROOT / "src/blender_mcp/server/tools/lighting/
 SERVER_LIGHTING_RENDERING_TOOL = ROOT / "src/blender_mcp/server/tools/lighting/rendering.py"
 ADDON_CR_PRIMITIVES = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/primitives.py"
 ADDON_POSING = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/posing.py"
+ADDON_CR_INSPECTION = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/inspection.py"
+# The add-on's shared helpers: one definition of "this mesh is deformed by that rig", read by
+# both camera framing and the posing surface.
+ADDON_HELPERS = ROOT / "src/blender_mcp/bundled/addon/helpers.py"
 ADDON_AXES = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/axes.py"
 ADDON_REACH = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/reach.py"
 SERVER_POSING_TOOL = ROOT / "src/blender_mcp/server/tools/character_rigging/posing.py"
@@ -176,6 +180,9 @@ STRICTT = "tests/server/test_strict_tool_args.py"
 # does not own: their nodes are listed in NEW_NODES_IN_EXISTING_FILES.
 LIGHTT = "tests/server/tools/lighting/test_tools.py"
 CTRLT = "tests/server/tools/character_rigging/test_controls.py"
+# The domain's only evaluated readback: its nodes all turn on reading the depsgraph
+# rather than the file, which is the one thing a fake `bpy` cannot make obvious.
+DEFORMT = "tests/server/tools/character_rigging/test_deformed_geometry.py"
 POSET = "tests/server/tools/character_rigging/test_posing.py"
 REACHT = "tests/server/tools/character_rigging/test_reach.py"
 LISTT = "tests/server/tools/character_rigging/test_bone_listing.py"
@@ -279,10 +286,17 @@ NEW_TEST_FILES = (
     DISPT,
     REGT,
     AUTHT,
+    DEFORMT,
 )
 # Nodes in files the matrix does not own. `coverage_gaps()` sees only these and the nodes
 # collected from NEW_TEST_FILES, so a node left off this list is never checked.
 NEW_NODES_IN_EXISTING_FILES = (
+    # --- an inspection measures the cycled curves and nothing else ---
+    f"{ANIMT}::test_inspect_does_not_tell_an_uncycled_curve_it_drifts_from_the_cycled_ones",
+    f"{ANIMT}::test_inspect_reports_a_curve_that_carries_no_cycle_where_remove_omits_it",
+    # --- which meshes a rig deforms, without moving a camera to find out ---
+    f"{CTRLT}::test_bone_listing_names_the_meshes_the_rig_actually_deforms",
+    f"{CTRLT}::test_a_rig_deforming_more_meshes_than_one_page_is_resumable",
     # --- the drain timer follows the traffic instead of a flat 50 ms poll ---
     f"{THREADT}::test_a_command_makes_the_next_drain_follow_within_the_active_poll",
     f"{THREADT}::test_the_drain_poll_relaxes_once_the_session_goes_quiet",
@@ -8272,6 +8286,106 @@ REVERTS: list[Revert] = [
         '        "unmounted_tool_count": len(known_tool_names() - mounted),\n',
         '        "unmounted_tool_count": sum(unmounted.values()),\n',
         (f"{CORET}::test_toolset_payload_counts_what_a_selection_left_out",),
+    ),
+    Revert(
+        # The blind spot the whole tool exists for: `obj.data` answers identically before and
+        # after a pose, so every measurement it reports is of the rest surface.
+        "deformed geometry: the sample reads the base mesh instead of the evaluated one",
+        ADDON_CR_INSPECTION,
+        "    evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())\n",
+        "    evaluated = obj\n",
+        (
+            f"{DEFORMT}::test_the_sample_reads_the_deformed_surface_and_measures_it_against_the_rest_mesh",
+            f"{DEFORMT}::test_world_space_positions_carry_the_objects_own_transform",
+            f"{DEFORMT}::test_a_generative_modifier_is_reported_as_a_different_numbering_rather_than_mismeasured",
+            f"{DEFORMT}::test_a_refused_request_still_puts_the_playhead_back_and_releases_the_mesh",
+            f"{DEFORMT}::test_an_explicit_index_list_is_paged_in_the_order_it_was_given",
+            f"{DEFORMT}::test_a_page_reports_the_offset_to_continue_from",
+        ),
+    ),
+    Revert(
+        # Read-only, so no transaction covers it: a sample that moved the playhead and left it
+        # there silently re-times every later call in the session.
+        "deformed geometry: a frame-scoped sample leaves the playhead where it moved it",
+        ADDON_CR_INSPECTION,
+        "            if frame is not None and scene.frame_current != previous_frame:\n",
+        "            if False:\n",
+        (
+            f"{DEFORMT}::test_the_sample_reads_the_deformed_surface_and_measures_it_against_the_rest_mesh",
+            f"{DEFORMT}::test_a_refused_request_still_puts_the_playhead_back_and_releases_the_mesh",
+        ),
+    ),
+    Revert(
+        # A Subdivision or Mirror result is a different numbering, so pairing index i with base
+        # vertex i measures the distance between two vertices that were never the same one.
+        "deformed geometry: displacement pairs evaluated indices with base vertices regardless of count",
+        ADDON_CR_INSPECTION,
+        "    if len(mesh.vertices) != len(base_mesh.vertices):\n",
+        "    if False:\n",
+        (f"{DEFORMT}::test_a_generative_modifier_is_reported_as_a_different_numbering_rather_than_mismeasured",),
+    ),
+    Revert(
+        # This repo's first wrong warning: a deliberately uncycled track told it drifts from the
+        # stride, remedied by keying it over the stride's range - which destroys the take.
+        "cycle: the period disagreement is measured over curves carrying no Cycles modifier",
+        ADDON_ANIMATION,
+        '    measurable = [record for record in records if operation != "INSPECT" or record["has_cycles_modifier"]]\n',
+        "    measurable = list(records)\n",
+        (f"{ANIMT}::test_inspect_does_not_tell_an_uncycled_curve_it_drifts_from_the_cycled_ones",),
+    ),
+    Revert(
+        # A key span is only a period if something repeats it. Reported under the period field,
+        # it reads as a rival cycle to every caller and to the warning that compares them.
+        "cycle: an uncycled curve reports its key span as a period",
+        ADDON_ANIMATION,
+        '            record["period_frames"] = None\n',
+        '            record["period_frames"] = record["key_extent_frames"]\n',
+        (f"{ANIMT}::test_inspect_reports_a_curve_that_carries_no_cycle_where_remove_omits_it",),
+    ),
+    Revert(
+        # "file does not exist" alone makes a mistyped folder and a mistyped filename one
+        # sentence, and the refusal may not name the path that would tell them apart.
+        "file paths: the open refusal cannot say which half of the path is wrong",
+        ADDON_FILE_PATHS,
+        "        directory_exists=os.path.isdir(os.path.dirname(path)),\n",
+        "        directory_exists=True,\n",
+        (f"{FPT}::test_a_mistyped_directory_and_a_mistyped_filename_are_not_the_same_refusal",),
+    ),
+    Revert(
+        # The verdict itself, not its wiring: one sentence for both halves is what made a
+        # mistyped folder and a mistyped filename indistinguishable to a caller.
+        "file paths: one refusal covers a missing file and a missing directory alike",
+        ADDON_FILE_PATHS,
+        (
+            "    if not exists:\n"
+            "        if not directory_exists:\n"
+            '            return "file does not exist, and neither does the directory named in its path"\n'
+            '        return "file does not exist, though the directory named in its path does"\n'
+        ),
+        '    if not exists:\n        return "file does not exist"\n',
+        (
+            f"{FPT}::test_the_open_verdict_is_decided_from_facts_alone[a mistyped filename]",
+            f"{FPT}::test_the_open_verdict_is_decided_from_facts_alone"
+            "[a mistyped directory - the same sentence until this split them]",
+            f"{FPT}::test_a_mistyped_directory_and_a_mistyped_filename_are_not_the_same_refusal",
+        ),
+    ),
+    Revert(
+        # `truncated` with nowhere to resume from is the one paging shape the envelope forbids.
+        "rig reading: the deformed-mesh page ignores the offset it told the caller to resume from",
+        ADDON_POSING,
+        "                len(bound), mesh_offset, _MAX_DEFORMED_MESHES, _MAX_DEFORMED_MESHES\n",
+        "                len(bound), 0, _MAX_DEFORMED_MESHES, _MAX_DEFORMED_MESHES\n",
+        (f"{CTRLT}::test_a_rig_deforming_more_meshes_than_one_page_is_resumable",),
+    ),
+    Revert(
+        # Transport parenting is not skinning: a prop that rides the rig is not part of the
+        # silhouette a camera frames or a surface sample measures.
+        "rig reading: any parent counts as a deform bind, not ARMATURE parenting",
+        ADDON_HELPERS,
+        '        parented = obj.parent == armature and obj.parent_type == "ARMATURE"\n',
+        "        parented = obj.parent == armature\n",
+        (f"{CTRLT}::test_bone_listing_names_the_meshes_the_rig_actually_deforms",),
     ),
 ]
 

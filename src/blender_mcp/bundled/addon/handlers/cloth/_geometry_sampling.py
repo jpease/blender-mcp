@@ -7,12 +7,7 @@ import statistics
 import bpy
 import mathutils
 
-
-def _sample_indices(count, limit):
-    if count <= limit:
-        return list(range(count))
-    step = count / limit
-    return sorted({min(count - 1, int(index * step)) for index in range(limit)})
+from ...helpers import evaluated_world_bounds, spread_indices
 
 
 def _evaluated_world_vertices(obj, limit, depsgraph=None):
@@ -20,7 +15,7 @@ def _evaluated_world_vertices(obj, limit, depsgraph=None):
     evaluated = obj.evaluated_get(depsgraph)
     mesh = evaluated.to_mesh()
     try:
-        indices = _sample_indices(len(mesh.vertices), limit)
+        indices = spread_indices(len(mesh.vertices), limit)
         return {
             "total": len(mesh.vertices),
             "indices": indices,
@@ -28,15 +23,6 @@ def _evaluated_world_vertices(obj, limit, depsgraph=None):
         }
     finally:
         evaluated.to_mesh_clear()
-
-
-def _world_bounds(evaluated_obj):
-    corners = [evaluated_obj.matrix_world @ mathutils.Vector(corner) for corner in evaluated_obj.bound_box]
-    return {
-        "coordinate_space": "WORLD",
-        "minimum": [min(corner[axis] for corner in corners) for axis in range(3)],
-        "maximum": [max(corner[axis] for corner in corners) for axis in range(3)],
-    }
 
 
 def _evaluated_surface_measurements(evaluated_obj, mesh, polygon_limit):
@@ -82,7 +68,7 @@ def _evaluated_geometry_evidence(obj, depsgraph=None):
             "vertices": len(mesh.vertices),
             "edges": len(mesh.edges),
             "faces": len(mesh.polygons),
-            "bounds": _world_bounds(evaluated),
+            "bounds": evaluated_world_bounds(evaluated),
         }
     finally:
         evaluated.to_mesh_clear()
@@ -103,7 +89,7 @@ def _proxy_proximity_evidence(render_obj, proxy_obj, depsgraph, sample_limit=10_
         tree = BVHTree.FromPolygons(proxy_vertices, proxy_polygons, all_triangles=False, epsilon=0.0)
         distances = []
         missed = 0
-        for index in _sample_indices(len(render_mesh.vertices), sample_limit):
+        for index in spread_indices(len(render_mesh.vertices), sample_limit):
             position = evaluated_render.matrix_world @ render_mesh.vertices[index].co
             _location, _normal, _face_index, distance = tree.find_nearest(position)
             if distance is None:

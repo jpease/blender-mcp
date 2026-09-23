@@ -79,20 +79,23 @@ async def get_geometry_node_type_info(
 
 
 @mcp.tool()
-async def evaluate_procedural_geometry(
+async def inspect_evaluated_geometry(
     ctx: Context,
     object_name: str,
     frame: int | None = None,
     instance_limit: Annotated[int, Field(ge=1, le=5000)] = 500,
 ) -> dict:
     """
-    Inspect the evaluated result of an object's live procedural stack without applying it.
+    Inspect any object's evaluated result - what its whole modifier stack actually produces.
 
-    Returns world-space bounds, mesh counts, materials, named attributes, component limits,
-    and a bounded dependency-graph instance summary at the requested frame.
+    Not limited to Geometry Nodes despite the name: any object is accepted, and armature,
+    shape-key and driver deformation is in the answer too. Returns world-space bounds, mesh
+    counts, materials, named attributes, component limits and a bounded instance summary at
+    the requested frame - shape, not positions. For per-vertex deformed coordinates and how
+    far each moved, use sample_deformed_geometry (character-posing bundle).
     """
     return await call_blender(
-        "evaluate_procedural_geometry", {"object_name": object_name, "frame": frame, "instance_limit": instance_limit}
+        "inspect_evaluated_geometry", {"object_name": object_name, "frame": frame, "instance_limit": instance_limit}
     )
 
 

@@ -296,6 +296,29 @@ class _Matrix:
                 work[row] = [value - factor * other for value, other in zip(work[row], work[pivot], strict=True)]
         return _Matrix([row[size:] for row in work])
 
+    def inverted_safe(self) -> "_Matrix":
+        """
+        Invert, answering the identity for a singular matrix as mathutils does.
+
+        Returns:
+            _Matrix: The inverse, or the identity when there is none.
+
+        """
+        try:
+            return self.inverted()
+        except ZeroDivisionError:
+            return _Matrix.Identity(self.size)
+
+    def transposed(self) -> "_Matrix":
+        """
+        Mirror the matrix about its diagonal.
+
+        Returns:
+            _Matrix: The transpose.
+
+        """
+        return _Matrix([[self.rows[row][column] for row in range(self.size)] for column in range(self.size)])
+
     def product(self, other: "_Matrix") -> "_Matrix":
         return _Matrix(
             [

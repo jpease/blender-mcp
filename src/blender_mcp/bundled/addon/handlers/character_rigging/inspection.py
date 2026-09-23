@@ -12,8 +12,10 @@ The read-only handlers: what a rig currently is, and whether it holds together.
 `get_character_rig_info` and `get_skinning_info` page a rig's bones, groups and bindings;
 `validate_character_rig` walks the same rig for the structural faults that only surface in a
 shot - unweighted vertices, constraint cycles, bone paths animation still names after the
-bone is gone. None of the three writes, which is what lets every other module in this package
-be read as a write.
+bone is gone. `sample_deformed_geometry` is the one that reads the depsgraph's answer rather
+than the file's: every other reader here describes the rig at rest, and a pose is only
+provable by the surface it moved. None of the four writes, which is what lets every other
+module in this package be read as a write.
 """
 
 import math
@@ -23,8 +25,9 @@ from collections import Counter, defaultdict
 
 import bpy
 
-from ...helpers import paginate
+from ...helpers import evaluated_world_bounds, paginate, spread_indices, sync_from_editmode
 from .constraints import _constraint_dependency_cycle
+from .contracts import DEFORMED_SAMPLE_LIMITATIONS
 from .primitives import (
     _armature_object,
     _custom_properties,
@@ -49,6 +52,189 @@ from .structure import _hierarchy_cycles
 
 _MAX_MEMBERSHIPS = 10_000_000
 _BONE_PATH = re.compile(r'pose\.bones\["((?:[^"\\]|\\.)*)"\]')
+# Longest explicit `vertex_indices` filter, and the ceiling on one page of sampled vertices.
+_MAX_VERTEX_PAGE = 1_000
+# How many vertices the displacement summary measures when no explicit filter narrows it.
+# Uniformly spread over the evaluated mesh rather than taken from the front, because the
+# first thousand vertices of a character are one body part and a rig that moves only that
+# part would otherwise read as a rig that moves everything.
+_MAX_DISPLACEMENT_SAMPLE = 5_000
+# A vertex is counted as moved past this world-space distance. Float error in a matrix
+# multiply lands several orders of magnitude below it, and so does a bone at rest.
+_MOVED_EPSILON_M = 1e-6
+
+
+def _requested_vertex_indices(vertex_indices, total):
+    """
+    Validate an explicit evaluated-vertex filter against the evaluated mesh.
+
+    Args:
+        vertex_indices: The caller's list, or None for the whole mesh in order.
+        total: How many vertices the evaluated mesh has.
+
+    Returns:
+        list[int]: The indices to page over, in the order given.
+
+    Raises:
+        ValueError: If the list is too long, holds a non-integer, repeats an index, or
+            names an index the evaluated mesh does not have.
+
+    """
+    if vertex_indices is None:
+        return list(range(total))
+    values = list(vertex_indices)
+    if len(values) > _MAX_VERTEX_PAGE:
+        raise ValueError(f"vertex_indices accepts at most {_MAX_VERTEX_PAGE} entries")
+    resolved = []
+    for position, value in enumerate(values):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"vertex_indices[{position}] must be an integer")
+        if not 0 <= value < total:
+            raise ValueError(
+                f"vertex_indices[{position}]={value} is outside the evaluated mesh's {total} vertices. "
+                "Evaluated indices are not base-mesh indices when a generative modifier is in the stack."
+            )
+        resolved.append(value)
+    _unique_names(resolved, "vertex_indices")
+    return resolved
+
+
+def _displacement_summary(evaluated_matrix, mesh, rest_matrix, base_mesh):
+    """
+    Measure how far the evaluated surface sits from the undeformed one.
+
+    Args:
+        evaluated_matrix: The evaluated object's world matrix.
+        mesh: The evaluated mesh.
+        rest_matrix: The original object's own world matrix, which places the rest surface.
+        base_mesh: The object's base mesh.
+
+    Returns:
+        dict: Bounded displacement statistics, or a record saying why there are none.
+
+    """
+    if len(mesh.vertices) != len(base_mesh.vertices):
+        return {
+            "measured": False,
+            "reason": "EVALUATED_VERTEX_COUNT_DIFFERS_FROM_BASE",
+        }
+    indices = spread_indices(len(mesh.vertices), _MAX_DISPLACEMENT_SAMPLE)
+    distances = [
+        ((evaluated_matrix @ mesh.vertices[index].co) - (rest_matrix @ base_mesh.vertices[index].co)).length
+        for index in indices
+    ]
+    return {
+        "measured": True,
+        "coordinate_space": "WORLD",
+        "sampled_vertices": len(distances),
+        "complete": len(distances) == len(mesh.vertices),
+        "maximum_m": max(distances) if distances else 0.0,
+        "mean_m": sum(distances) / len(distances) if distances else 0.0,
+        "moved_vertices": sum(distance > _MOVED_EPSILON_M for distance in distances),
+        "moved_epsilon_m": _MOVED_EPSILON_M,
+    }
+
+
+def _vertex_records(evaluated_matrix, mesh, indices, space, rest_world):
+    """
+    Build one record per sampled evaluated vertex.
+
+    Args:
+        evaluated_matrix: The evaluated object's world matrix.
+        mesh: The evaluated mesh.
+        indices: The evaluated vertex indices this page covers.
+        space: "WORLD" or "LOCAL".
+        rest_world: Index to undeformed world position, or None when the evaluated mesh
+            does not correspond to the base mesh vertex for vertex.
+
+    Returns:
+        list[dict]: Records carrying index, co, normal and - when a rest position exists -
+            the world distance the vertex sits from it.
+
+    """
+    # Normals do not transform by the object matrix under non-uniform scale; the
+    # inverse transpose is what keeps a normal perpendicular to the surface it came from.
+    normal_matrix = evaluated_matrix.to_3x3().inverted_safe().transposed()
+    records = []
+    for index in indices:
+        vertex = mesh.vertices[index]
+        position = evaluated_matrix @ vertex.co if space == "WORLD" else vertex.co.copy()
+        normal = (normal_matrix @ vertex.normal).normalized() if space == "WORLD" else vertex.normal.copy()
+        record = {
+            "index": index,
+            "co": [float(value) for value in position],
+            "normal": [float(value) for value in normal],
+        }
+        if rest_world is not None:
+            record["displacement_m"] = float(((evaluated_matrix @ vertex.co) - rest_world[index]).length)
+        records.append(record)
+    return records
+
+
+def _deformed_sample(obj, frame, space, vertex_indices, vertex_limit, vertex_offset):
+    """
+    Read one evaluated mesh and shape the reply, with the playhead already where it belongs.
+
+    Args:
+        obj: The mesh object to read.
+        frame: The frame the caller's playhead now sits on, for the reply to state.
+        space: "WORLD" or "LOCAL".
+        vertex_indices: An explicit evaluated-vertex filter, or None for the whole mesh.
+        vertex_limit: Vertices per page.
+        vertex_offset: Where this page starts.
+
+    Returns:
+        dict: The `sample_deformed_geometry` reply.
+
+    Raises:
+        ValueError: If the object's evaluated result is not mesh-representable, or the
+            explicit index filter does not fit it.
+
+    """
+    evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    try:
+        mesh = evaluated.to_mesh()
+    except RuntimeError as exc:
+        raise ValueError(f"Object '{obj.name}' does not evaluate to a mesh: {exc}") from exc
+    try:
+        base_mesh = obj.data
+        matches_base = len(mesh.vertices) == len(base_mesh.vertices)
+        indices = _requested_vertex_indices(vertex_indices, len(mesh.vertices))
+        start, end, truncated, next_offset = paginate(len(indices), vertex_offset, vertex_limit, _MAX_VERTEX_PAGE)
+        page = indices[start:end]
+        rest_world = (
+            {index: obj.matrix_world @ base_mesh.vertices[index].co for index in page} if matches_base else None
+        )
+        return {
+            "object": obj.name,
+            "frame": int(frame),
+            "evaluated_deformation_included": True,
+            "coordinate_space": "WORLD" if space == "WORLD" else "EVALUATED_OBJECT_LOCAL",
+            "evaluated_counts": {
+                "vertices": len(mesh.vertices),
+                "edges": len(mesh.edges),
+                "faces": len(mesh.polygons),
+            },
+            "base_counts": {
+                "vertices": len(base_mesh.vertices),
+                "edges": len(base_mesh.edges),
+                "faces": len(base_mesh.polygons),
+            },
+            "index_correspondence": "BASE_MESH" if matches_base else "EVALUATED_ONLY",
+            "world_bounds": evaluated_world_bounds(evaluated),
+            "displacement": _displacement_summary(evaluated.matrix_world, mesh, obj.matrix_world, base_mesh),
+            "vertices": {
+                "items": _vertex_records(evaluated.matrix_world, mesh, page, space, rest_world),
+                "total": len(indices),
+                "offset": start,
+                "limit": vertex_limit,
+                "truncated": truncated,
+                "next_offset": next_offset,
+            },
+            "limitations": list(DEFORMED_SAMPLE_LIMITATIONS),
+        }
+    finally:
+        evaluated.to_mesh_clear()
 
 
 class RigInspectionHandlersMixin:
@@ -181,6 +367,36 @@ class RigInspectionHandlersMixin:
                 "next_offset": next_offset,
             },
         }
+
+    def sample_deformed_geometry(
+        self,
+        mesh_object_name,
+        frame=None,
+        space="WORLD",
+        vertex_indices=None,
+        vertex_limit=50,
+        vertex_offset=0,
+    ):
+        obj = _mesh_object(mesh_object_name)
+        if space not in {"WORLD", "LOCAL"}:
+            raise ValueError("space must be 'WORLD' or 'LOCAL'")
+        _validate_limit_offset(vertex_limit, vertex_offset, _MAX_VERTEX_PAGE, "vertex")
+        if frame is not None and (isinstance(frame, bool) or not isinstance(frame, int)):
+            raise ValueError("frame must be an integer")
+        # Edit Mode holds the mesh in a BMesh the depsgraph has not seen; without this the
+        # rest reference the displacement is measured against is the pre-edit surface.
+        sync_from_editmode(obj)
+        scene = bpy.context.scene
+        previous_frame = scene.frame_current
+        try:
+            if frame is not None:
+                scene.frame_set(int(frame))
+            bpy.context.view_layer.update()
+            return _deformed_sample(obj, scene.frame_current, space, vertex_indices, vertex_limit, vertex_offset)
+        finally:
+            if frame is not None and scene.frame_current != previous_frame:
+                scene.frame_set(previous_frame)
+                bpy.context.view_layer.update()
 
     def validate_character_rig(
         self,

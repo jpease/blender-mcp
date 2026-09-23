@@ -189,6 +189,9 @@ def test_breaking_tool_names_are_absent() -> None:
         "model_mirror",
         "model_array",
         "model_radial_array",
+        # Renamed on protocol 41: it was never limited to Geometry Nodes, and a posing session
+        # looking for an evaluated readback never tried a tool named for a procedural stack.
+        "evaluate_procedural_geometry",
     }
 
     assert not removed & registered

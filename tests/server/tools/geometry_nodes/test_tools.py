@@ -21,7 +21,7 @@ FOUNDATION_COMMANDS = {
     "set_geometry_nodes_inputs",
     "manage_geometry_nodes_modifier",
     "copy_geometry_node_group",
-    "evaluate_procedural_geometry",
+    "inspect_evaluated_geometry",
     "validate_geometry_node_graph",
 }
 
@@ -67,7 +67,7 @@ def test_geometry_nodes_dispatch_and_read_only_contract(monkeypatch) -> None:
         "list_procedural_systems",
         "get_geometry_node_graph",
         "get_geometry_node_type_info",
-        "evaluate_procedural_geometry",
+        "inspect_evaluated_geometry",
         "validate_geometry_node_graph",
         "analyze_procedural_performance",
     }

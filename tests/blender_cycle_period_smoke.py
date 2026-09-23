@@ -315,7 +315,12 @@ assert "restricted_range" not in inspected_cycled, "no window is in force on thi
 # repeat anything?" by silence - the one thing an inspection must not do.
 assert inspected_other["has_cycles_modifier"] is False, inspected_other
 assert inspected_other["mode_after"] is None and inspected_other["cycles_after"] is None, inspected_other
-assert inspected_other["period_frames"] == GUARD_PERIOD, inspected_other
+# Its span is reported as a span. It carries no modifier, so it repeats nothing and has no
+# period: calling the span `period_frames` made this curve look like a rival cycle, and the
+# disagreement warning then told a deliberately uncycled track it "drifts apart" from the
+# stride and to key it over the stride's range - which would have destroyed the take.
+assert inspected_other["period_frames"] is None, inspected_other
+assert inspected_other["key_extent_frames"] == GUARD_PERIOD, inspected_other
 # And the cycle it described is still on the curve. That is the whole finding.
 assert any(modifier.type == "CYCLES" for modifier in guard_curve.modifiers), (
     "INSPECT removed the cycle it was asked to describe"
@@ -323,9 +328,9 @@ assert any(modifier.type == "CYCLES" for modifier in guard_curve.modifiers), (
 assert not any(modifier.type == "CYCLES" for modifier in other_curve.modifiers), (
     "INSPECT created a cycle on a curve that had none"
 )
-inspect_disagreement = warning_containing(inspected, "do not share one cycle period")
-assert f"{GUARD_PERIOD:g} frames" in inspect_disagreement, inspect_disagreement
-assert f"{GESTURE_FRAME - GUARD_KEYS[0][0]:g} frames" in inspect_disagreement, inspect_disagreement
+# One cycled curve in the selection cannot disagree with itself, and the uncycled one is not
+# in the comparison at all, so this inspection has nothing to warn about.
+assert inspected["warnings"] == [], inspected["warnings"]
 
 # expected_period_frames is the one cycle argument an inspection can honour, because it asserts
 # rather than writes: a caller can state the period they authored and be refused, having changed

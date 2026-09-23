@@ -890,11 +890,42 @@ def test_inspect_reports_a_curve_that_carries_no_cycle_where_remove_omits_it(mon
         (1, False),
     ]
     uncycled = inspected["modifiers"][1]
-    # It still has an extent - that is the period it *would* repeat - but no modifier to repeat it.
-    assert uncycled["period_frames"] == pytest.approx(24.0)
+    # Its span is reported, but not as a period: it carries no modifier, so it repeats nothing.
+    # Calling the span `period_frames` was read as a live period by the one reader that matters.
+    assert uncycled["period_frames"] is None
+    assert uncycled["key_extent_frames"] == pytest.approx(24.0)
     assert (uncycled["mode_after"], uncycled["cycles_after"]) == (None, None)
     # REMOVE answers the same question by silence, which is the shape INSPECT must not inherit.
     assert [record["array_index"] for record in removed["modifiers"]] == [0]
+
+
+def test_inspect_does_not_tell_an_uncycled_curve_it_drifts_from_the_cycled_ones(monkeypatch) -> None:
+    """
+    The first wrong warning this repo shipped, and the reason it cost more than a missing one.
+
+    A head track deliberately left uncycled beside a 96-frame stride was told the curves "do
+    not share one cycle period" and that they "drift apart instead of repeating together",
+    remedied by keying it over the same frame range - which would have destroyed the take. A
+    standing instruction to believe the warnings makes one wrong warning expensive.
+    """
+    curves = [
+        _FakeCurve('pose.bones["thigh.L"].rotation_quaternion', 0, cyclic=True, frames=(1.0, 97.0)),
+        _FakeCurve('pose.bones["head"].rotation_quaternion', 0, frames=(1.0, 25.0)),
+    ]
+    handler, target = _cycle_handler(monkeypatch, curves)
+
+    inspected = handler.set_action_cycle(target, "Walk", "INSPECT", action_slot_identifier="OBRig")
+
+    assert inspected["warnings"] == []
+    # And a curve with no keys to repeat is not called unrepeatable either, for the same reason:
+    # there is no modifier on it whose effect could be described.
+    single_key = [
+        _FakeCurve('pose.bones["thigh.L"].rotation_quaternion', 0, cyclic=True, frames=(1.0, 97.0)),
+        _FakeCurve('pose.bones["head"].rotation_quaternion', 0, frames=(4.0,)),
+    ]
+    handler, target = _cycle_handler(monkeypatch, single_key)
+
+    assert handler.set_action_cycle(target, "Walk", "INSPECT", action_slot_identifier="OBRig")["warnings"] == []
 
 
 def test_inspect_reads_the_modifier_that_is_there_not_this_calls_defaults(monkeypatch) -> None:

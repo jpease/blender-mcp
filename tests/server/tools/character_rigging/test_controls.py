@@ -290,6 +290,8 @@ def test_bone_listing_is_registered_read_only_and_paginates(monkeypatch) -> None
         "bone_names": None,
         "custom_properties": False,
         "property_offset": 0,
+        "deformed_meshes": False,
+        "mesh_offset": 0,
     }
     assert calls == [("list_character_bones", expected)]
     advertised = character_rigging.mcp._tool_manager._tools["list_character_bones"].parameters["properties"]
@@ -379,6 +381,75 @@ def test_bone_listing_reports_the_sliders_a_pose_call_has_to_name(monkeypatch) -
         {"name": "label", "value": "face"},
     ]
     assert (reported["custom_property_count"], reported["custom_property_next_offset"]) == (3, None)
+
+
+def _skin(name, *, modifier_for=None, parent=None, parent_type="OBJECT", show_viewport=True):
+    """Build a mesh bound to a rig by modifier, by ARMATURE parenting, by both, or by neither."""
+    modifiers = (
+        [types.SimpleNamespace(type="ARMATURE", object=modifier_for, show_viewport=show_viewport)]
+        if modifier_for is not None
+        else []
+    )
+    return types.SimpleNamespace(name=name, type="MESH", modifiers=modifiers, parent=parent, parent_type=parent_type)
+
+
+def test_bone_listing_names_the_meshes_the_rig_actually_deforms(monkeypatch) -> None:
+    """
+    Which meshes a rig moves was reachable only by moving a camera to frame them.
+
+    `frame_camera_on_objects(armature_names=...)` reports `armature_meshes` as a side effect of
+    a mutation, and `get_character_rig_info` is a `character-rigging` tool absent from a posing
+    process. A bone's `deform` flag says a bone deforms something, never what - and the set is
+    the prerequisite for naming a mesh to `sample_deformed_geometry`.
+    """
+    server, _flushes = _fake_armature(monkeypatch, [_bone("head")])
+    bpy = sys.modules["bpy"]
+    armature = bpy.data.objects["HeroRig"]
+    other_rig = types.SimpleNamespace(name="PropRig", type="ARMATURE")
+    scene_objects = [
+        _skin("body", modifier_for=armature),
+        _skin("hair", parent=armature, parent_type="ARMATURE"),
+        _skin("coat", modifier_for=armature, parent=armature, parent_type="ARMATURE"),
+        _skin("brows", modifier_for=armature, show_viewport=False),
+        # Parented for transport, not deformation: it rides the rig without being skinned to it.
+        _skin("glasses", parent=armature),
+        _skin("crate", modifier_for=other_rig),
+        armature,
+    ]
+    bpy.context.scene.objects = scene_objects
+
+    quiet = server.list_character_bones("HeroRig")
+    listed = server.list_character_bones("HeroRig", deformed_meshes=True)["deformed_meshes"]
+
+    assert "deformed_meshes" not in quiet, "an extra section costs bytes; it is opt-in"
+    assert listed["items"] == [
+        {"object": "body", "binding": "MODIFIER", "modifier_enabled": True},
+        {"object": "hair", "binding": "PARENT", "modifier_enabled": None},
+        {"object": "coat", "binding": "BOTH", "modifier_enabled": True},
+        # The answer to "it is bound, so why does it not move?", which a name list cannot give.
+        {"object": "brows", "binding": "MODIFIER", "modifier_enabled": False},
+    ]
+    assert (listed["total"], listed["truncated"], listed["next_offset"]) == (4, False, None)
+
+
+def test_a_rig_deforming_more_meshes_than_one_page_is_resumable(monkeypatch) -> None:
+    """`truncated` with nowhere to resume from is the one paging shape the envelope forbids."""
+    server, _flushes = _fake_armature(monkeypatch, [_bone("head")])
+    bpy = sys.modules["bpy"]
+    armature = bpy.data.objects["HeroRig"]
+    bpy.context.scene.objects = [_skin(f"part_{index:03d}", modifier_for=armature) for index in range(205)]
+
+    first = server.list_character_bones("HeroRig", deformed_meshes=True)["deformed_meshes"]
+    resumed = server.list_character_bones("HeroRig", deformed_meshes=True, mesh_offset=first["next_offset"])[
+        "deformed_meshes"
+    ]
+
+    assert (first["total"], first["truncated"], first["next_offset"]) == (205, True, 200)
+    assert len(first["items"]) == 200
+    assert [item["object"] for item in resumed["items"]] == [f"part_{index:03d}" for index in range(200, 205)]
+    assert (resumed["truncated"], resumed["next_offset"]) == (False, None)
+    with pytest.raises(ValueError, match="mesh_offset must be a non-negative integer"):
+        server.list_character_bones("HeroRig", deformed_meshes=True, mesh_offset=-1)
 
 
 def test_a_bone_carrying_more_sliders_than_one_page_is_resumable(monkeypatch) -> None:

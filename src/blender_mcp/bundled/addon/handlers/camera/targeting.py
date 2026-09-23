@@ -10,6 +10,7 @@ import uuid
 import bpy
 import mathutils
 
+from ...helpers import deforming_meshes
 from ._shared import (
     _CONSTRAINT_TYPES,
     _TARGETED_CONSTRAINTS,
@@ -168,16 +169,6 @@ def _bone_target_points(specs, depsgraph):
     return points, records
 
 
-def _deformed_by(mesh, armature):
-    """Whether this mesh takes its shape from that armature, by modifier or by parenting."""
-    # The two ways Blender actually binds a mesh to a rig. Parent-type ARMATURE is the older
-    # route and is still what `Ctrl+P > With Automatic Weights` leaves behind on a proxy, so
-    # checking only the modifier stack would silently drop half a character.
-    if mesh.parent == armature and mesh.parent_type == "ARMATURE":
-        return True
-    return any(modifier.type == "ARMATURE" and modifier.object == armature for modifier in mesh.modifiers)
-
-
 def _armature_mesh_specs(armature_names, scene):
     """
     Resolve each armature name to the scene meshes it deforms, before anything is moved.
@@ -197,7 +188,7 @@ def _armature_mesh_specs(armature_names, scene):
         armature = _object(name, scene=scene)
         if armature.type != "ARMATURE":
             raise ValueError(f"{label} object '{name}' is not an armature (type={armature.type})")
-        meshes = [obj for obj in scene.objects if obj.type == "MESH" and _deformed_by(obj, armature)]
+        meshes = [mesh for mesh, _binding, _enabled in deforming_meshes(armature, scene)]
         if not meshes:
             raise ValueError(
                 f"{label} armature '{armature.name}' deforms no mesh in scene '{scene.name}'; "

@@ -370,7 +370,9 @@ async def set_action_cycle(
         repetition stops and the curve's own extrapolation takes over, by default holding
         the end key: a snap, then a freeze. INSPECT reads all of those off the modifier that
         is there and adds has_cycles_modifier, cycles_before and cycles_after - null or false
-        on a curve with no modifier. modifiers shortens to fit the reply budget.
+        on a curve with no modifier, whose span is key_extent_frames and whose period_frames
+        is null, since it repeats nothing. Warnings compare the cycled curves only, so an
+        uncycled track is never told it drifts from them. modifiers fits the reply budget.
 
     """
     if (frame_start is None) != (frame_end is None):

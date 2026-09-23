@@ -338,6 +338,33 @@ def test_a_missing_file_is_refused(tmp_path: Path) -> None:
     _refusal(_file_paths(), str(tmp_path / "absent.blend"), must_exist=True, match="does not exist", tmp_path=tmp_path)
 
 
+def test_a_mistyped_directory_and_a_mistyped_filename_are_not_the_same_refusal(tmp_path: Path) -> None:
+    """
+    "file does not exist" alone made a typo'd folder and a typo'd filename one sentence.
+
+    The path itself stays out of the message - naming it would hand a client this machine's
+    layout, which every other refusal here refuses to do - so the half that is wrong is named
+    instead of the location that is wrong.
+    """
+    module = _file_paths()
+    (tmp_path / "shots").mkdir()
+
+    _refusal(
+        module,
+        str(tmp_path / "shots" / "sh040.blend"),
+        must_exist=True,
+        match="does not exist, though the directory named in its path does",
+        tmp_path=tmp_path,
+    )
+    _refusal(
+        module,
+        str(tmp_path / "shotz" / "sh040.blend"),
+        must_exist=True,
+        match="does not exist, and neither does the directory named in its path",
+        tmp_path=tmp_path,
+    )
+
+
 def test_a_file_whose_magic_bytes_are_not_a_blend_is_refused(tmp_path: Path) -> None:
     """A `.blend` name on a zip is exactly what a hostile download would look like."""
     fake = _write(tmp_path / "fake.blend", b"PK\x03\x04" + b"\x00" * 64)
@@ -521,27 +548,44 @@ def test_a_path_is_authorized_by_any_one_root_and_by_no_roots_at_all() -> None:
     ("facts", "expected"),
     [
         pytest.param(
-            {"is_directory": True, "exists": False, "readable": True, "header": b""},
+            {"is_directory": True, "exists": False, "readable": True, "header": b"", "directory_exists": True},
             "path is a directory, not a .blend file",
             id="a directory named x.blend is not a file",
         ),
         pytest.param(
-            {"is_directory": False, "exists": False, "readable": True, "header": b""},
-            "file does not exist",
-            id="missing",
+            {"is_directory": False, "exists": False, "readable": True, "header": b"", "directory_exists": True},
+            "file does not exist, though the directory named in its path does",
+            id="a mistyped filename",
         ),
         pytest.param(
-            {"is_directory": False, "exists": True, "readable": False, "header": b""},
+            {"is_directory": False, "exists": False, "readable": True, "header": b"", "directory_exists": False},
+            "file does not exist, and neither does the directory named in its path",
+            id="a mistyped directory - the same sentence until this split them",
+        ),
+        pytest.param(
+            {"is_directory": False, "exists": True, "readable": False, "header": b"", "directory_exists": True},
             "file could not be read",
             id="unreadable is refused, not treated as a bad header",
         ),
         pytest.param(
-            {"is_directory": False, "exists": True, "readable": True, "header": b"PK\x03\x04"},
+            {
+                "is_directory": False,
+                "exists": True,
+                "readable": True,
+                "header": b"PK\x03\x04",
+                "directory_exists": True,
+            },
             "file is not a .blend file (unrecognised header)",
             id="a zip renamed .blend",
         ),
         pytest.param(
-            {"is_directory": False, "exists": True, "readable": True, "header": b"BLENDER17-01"},
+            {
+                "is_directory": False,
+                "exists": True,
+                "readable": True,
+                "header": b"BLENDER17-01",
+                "directory_exists": True,
+            },
             None,
             id="a real .blend",
         ),

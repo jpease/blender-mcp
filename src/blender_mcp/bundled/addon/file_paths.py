@@ -166,7 +166,9 @@ def inside_roots(canonical_candidate: str, canonical_roots: Sequence[str]) -> bo
     return not canonical_roots or any(contains(root, canonical_candidate) for root in canonical_roots)
 
 
-def blend_file_refusal(*, is_directory: bool, exists: bool, readable: bool, header: bytes) -> str | None:
+def blend_file_refusal(
+    *, is_directory: bool, exists: bool, readable: bool, header: bytes, directory_exists: bool
+) -> str | None:
     """
     Decide whether a path the caller wants to open is an existing, readable `.blend`.
 
@@ -175,6 +177,13 @@ def blend_file_refusal(*, is_directory: bool, exists: bool, readable: bool, head
         exists: Whether it names a regular file.
         readable: Whether its first bytes could be read.
         header: Those bytes; empty when nothing was read.
+        directory_exists: Whether the path's parent directory exists. Which half of the path
+            is wrong is the one thing "file does not exist" cannot say, and a caller told only
+            that cannot tell a mistyped filename from a mistyped directory. Saying which,
+            without saying where, keeps this message free of server layout - the invariant
+            `tests/test_file_paths.py` enforces against every refusal here. Required rather
+            than defaulted: a default would be the confident half of the answer, so a caller
+            that forgot to stat the directory would report one that may not be there.
 
     Returns:
         str | None: None when the file may be opened, else the refusal, which
@@ -184,7 +193,9 @@ def blend_file_refusal(*, is_directory: bool, exists: bool, readable: bool, head
     if is_directory:
         return "path is a directory, not a .blend file"
     if not exists:
-        return "file does not exist"
+        if not directory_exists:
+            return "file does not exist, and neither does the directory named in its path"
+        return "file does not exist, though the directory named in its path does"
     if not readable:
         return "file could not be read"
     if not is_blend_header(header):
@@ -263,7 +274,13 @@ def _require_blend_file(path: str) -> None:
                 header = handle.read(BLEND_HEADER_BYTES)
         except OSError as exc:
             cause = exc
-    refusal = blend_file_refusal(is_directory=is_directory, exists=exists, readable=cause is None, header=header)
+    refusal = blend_file_refusal(
+        is_directory=is_directory,
+        exists=exists,
+        readable=cause is None,
+        header=header,
+        directory_exists=os.path.isdir(os.path.dirname(path)),
+    )
     if refusal is not None:
         # OSError's own text carries the path, so it is chained, not quoted.
         raise ValueError(refusal) from cause

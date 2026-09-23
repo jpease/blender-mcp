@@ -141,6 +141,11 @@ class BonePose(StrictModel):
         return self
 
 
+# Three opt-in sections is this tool's ceiling: rest axes, custom properties and deformed
+# meshes. Each is a different question about the same armature and each is off by default, so
+# the quiet reply stays the cheap one - but the schema is read whole by every session that
+# mounts it, and a fourth section would cost every caller bytes for a question most of them
+# are not asking. Put the next one in its own tool, as sample_deformed_geometry is.
 @mcp.tool()
 async def list_character_bones(
     ctx: Context,
@@ -151,6 +156,8 @@ async def list_character_bones(
     bone_names: Annotated[list[str] | None, Field(min_length=1, max_length=200)] = None,
     custom_properties: bool = False,
     property_offset: Annotated[int, Field(ge=0, le=99_999)] = 0,
+    deformed_meshes: bool = False,
+    mesh_offset: Annotated[int, Field(ge=0, le=99_999)] = 0,
 ) -> dict:
     """
     List a rig's bone names, parents, and deform flags so a pose can name real bones.
@@ -182,6 +189,10 @@ async def list_character_bones(
             on.
         property_offset: Where to resume inside each reported bone's property list, when a bone
             holds more than one page of them. Pass the item's custom_property_next_offset.
+        deformed_meshes: Also name the meshes this rig deforms. Independent of the bone page: a
+            bone's deform flag says it deforms something, never what. This is the set
+            sample_deformed_geometry measures and frame_camera_on_objects frames.
+        mesh_offset: Where to resume in that list; pass its next_offset while truncated.
 
     Returns:
         armature_object, and bones with items (name, parent - null for a root - and deform,
@@ -205,6 +216,11 @@ async def list_character_bones(
         end). Values are read from the pose bone, so on a library override they are the
         override's, and a bare write to one does not survive a reload - key it instead.
 
+        With deformed_meshes, the reply also carries deformed_meshes: items (object, binding -
+        MODIFIER, PARENT or BOTH - and modifier_enabled, false where a hidden Armature modifier
+        is why a bound mesh does not move), total, offset, limit, truncated and next_offset.
+        Meshes outside the scene are not listed.
+
     """
     return await call_blender(
         "list_character_bones",
@@ -216,6 +232,8 @@ async def list_character_bones(
             "bone_names": bone_names,
             "custom_properties": custom_properties,
             "property_offset": property_offset,
+            "deformed_meshes": deformed_meshes,
+            "mesh_offset": mesh_offset,
         },
     )
 
@@ -836,4 +854,59 @@ async def keyframe_bone_reach(
             "detail": detail,
         },
         changed_objects=[armature_object_name],
+    )
+
+
+@mcp.tool()
+async def sample_deformed_geometry(
+    ctx: Context,
+    mesh_object_name: Annotated[str, Field(min_length=1, max_length=63)],
+    frame: int | None = None,
+    space: Literal["WORLD", "LOCAL"] = "WORLD",
+    vertex_indices: Annotated[list[int], Field(min_length=1, max_length=1000)] | None = None,
+    vertex_limit: Annotated[int, Field(ge=1, le=1000)] = 50,
+    vertex_offset: Annotated[int, Field(ge=0, le=99_999_999)] = 0,
+) -> dict:
+    """
+    Read a mesh's deformed surface - the shape the armature, shape keys and drivers produce.
+
+    The only evaluated readback in the rigging surface, and so the only way to prove a pose
+    moved anything: get_mesh_data and get_skinning_info both describe the base mesh at rest and
+    answer identically before and after a pose. Use it after set_character_pose,
+    keyframe_bone_reach, transfer_skin_weights or a shape-key change.
+
+    Indices are the EVALUATED mesh's own. They are base-mesh indices only while the reply's
+    index_correspondence is BASE_MESH; a Subdivision, Mirror or Array renumbers the result and
+    displacement then cannot be measured per vertex. Hide that modifier in the viewport to
+    compare vertex for vertex, or read inspect_evaluated_geometry's bounds and counts.
+
+    Args:
+        ctx: MCP request context.
+        mesh_object_name: An existing MESH object - the deformed mesh, not the armature.
+        frame: Evaluate here, putting the playhead back afterwards. Omit for the current frame.
+        space: WORLD transforms positions and normals by the evaluated object's matrix; LOCAL
+            returns that object's own coordinates.
+        vertex_indices: Exact evaluated vertices, in this order, instead of paging the mesh.
+        vertex_limit: Vertices per page, small by default: each record carries a position and
+            a normal against the reply's byte budget.
+        vertex_offset: First vertex of the page.
+
+    Returns:
+        object, frame, evaluated_deformation_included (always true - get_skinning_info's is
+        always false), coordinate_space, evaluated_counts, base_counts, index_correspondence,
+        world_bounds, displacement (under BASE_MESH only: maximum_m, mean_m, moved_vertices
+        over an evenly spread bounded sample, with complete saying whether it covered the whole
+        mesh), and a vertices page of {index, co, normal, displacement_m}.
+
+    """
+    return await call_blender(
+        "sample_deformed_geometry",
+        {
+            "mesh_object_name": mesh_object_name,
+            "frame": frame,
+            "space": space,
+            "vertex_indices": vertex_indices,
+            "vertex_limit": vertex_limit,
+            "vertex_offset": vertex_offset,
+        },
     )

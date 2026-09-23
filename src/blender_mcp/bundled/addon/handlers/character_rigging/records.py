@@ -235,6 +235,24 @@ def _armature_modifier_info(modifier):
 
 
 def _dependent_meshes(armature_obj):
+    """
+    List every mesh whose data or transform depends on this armature, however it is attached.
+
+    Deliberately wider than `helpers.deforming_meshes`, which `list_character_bones` and camera
+    framing use: that one answers "whose shape does this rig drive?" and so requires an Armature
+    modifier or `parent_type == 'ARMATURE'`, while this answers "what would break if this rig
+    changed?" and counts a prop merely parented to it, across `bpy.data` rather than one scene.
+    A transport-parented prop appearing here and not there is the difference working, not a
+    disagreement - the two must not be collapsed into one rule.
+
+    Args:
+        armature_obj: The armature to resolve.
+
+    Returns:
+        list[dict]: Per mesh, its name, whether it is parented to the rig, and its Armature
+        modifiers pointed at it.
+
+    """
     dependencies = []
     for obj in bpy.data.objects:
         if obj.type != "MESH":

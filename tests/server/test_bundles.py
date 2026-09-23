@@ -398,6 +398,7 @@ POSING_TOOLS = frozenset(
         "probe_bone_axis",
         "solve_bone_reach",
         "keyframe_bone_reach",
+        "sample_deformed_geometry",
     }
 )
 
@@ -415,9 +416,9 @@ def test_character_posing_bundle_adds_only_the_posing_tools() -> None:
 
 
 def test_character_rigging_bundle_keeps_every_rigging_tool_after_the_split() -> None:
-    """Existing `character-rigging` configs lose nothing: all 26 tools, posing included."""
+    """Existing `character-rigging` configs lose nothing: all 27 tools, posing included."""
     rigging = _tool_names_for_toolsets("character-rigging") - _tool_names_for_toolsets(None)
-    assert len(rigging) == 26
+    assert len(rigging) == 27
     assert rigging >= POSING_TOOLS | {"create_armature", "bind_mesh_to_armature", "add_pose_bone_constraint"}
 
 
@@ -540,7 +541,18 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # out-of-band answer goes stale silently. 699 is `create_camera`'s `target_bone_name`, without
 # which aiming at a character rig aims at its origin on the floor. The rest is the core surface
 # below, which this one inherits. Earlier increases are recorded in their own commit messages.
-SHOT_MODE_BYTE_CEILING = 259_500
+#
+# Raised from 259,500 for `sample_deformed_geometry`, measured at 262,266 - 2,766 bytes, the
+# whole increase. It is the shot surface's only readback of evaluated geometry: every other
+# reader here describes the base mesh at rest, so a posed character could be measured only by
+# screenshot, and a weight transfer or a shape-key fix could not be verified at all.
+#
+# Raised from 262,500, measured at 263,199 - 699 bytes. 362 is `list_character_bones`'
+# `deformed_meshes`: which meshes a rig moves was obtainable in a posing session only as a side
+# effect of `frame_camera_on_objects`, which moves a camera to answer it, and it is the
+# prerequisite for naming a mesh to `sample_deformed_geometry`. The rest is the core surface
+# below, whose `set_action_cycle` contract changed with the INSPECT period fix.
+SHOT_MODE_BYTE_CEILING = 263_500
 
 # The same rule as above, for the default, core-only surface.
 #
@@ -556,7 +568,14 @@ SHOT_MODE_BYTE_CEILING = 259_500
 # and the paging contract its description now states, replacing a reply that told callers to
 # continue from an offset the schema rejected. Earlier increases are recorded in their own
 # commit messages, not here.
-DEFAULT_MODE_BYTE_CEILING = 89_250
+#
+# Raised from 89,250, measured at 89,381 - 337 bytes, all of it `set_action_cycle`'s corrected
+# INSPECT contract: a curve with no Cycles modifier reports `key_extent_frames` with a null
+# `period_frames`, and the warnings compare only the cycled curves. Both halves have to be
+# stated, because the old shape shipped this repo's first wrong warning - a deliberately
+# uncycled track told it "drifts apart" from the stride - and a caller who believed the
+# warnings needs to know which comparison is now being made.
+DEFAULT_MODE_BYTE_CEILING = 89_500
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

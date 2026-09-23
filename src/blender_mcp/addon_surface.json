@@ -1316,11 +1316,6 @@
       "domain_object_name",
       "modifier_name"
     ],
-    "evaluate_procedural_geometry": [
-      "frame",
-      "instance_limit",
-      "object_name"
-    ],
     "export_cloth_simulation": [
       "coordinate_space",
       "evaluation_policy",
@@ -1594,6 +1589,11 @@
       "offset",
       "scene_name"
     ],
+    "inspect_evaluated_geometry": [
+      "frame",
+      "instance_limit",
+      "object_name"
+    ],
     "inspect_fluid_simulation": [
       "domain_object_name",
       "domain_type",
@@ -1706,7 +1706,9 @@
       "armature_object_name",
       "bone_names",
       "custom_properties",
+      "deformed_meshes",
       "limit",
+      "mesh_offset",
       "offset",
       "property_offset",
       "rest_axes"
@@ -2237,6 +2239,14 @@
       "timeout_seconds",
       "vertex_sample_limit"
     ],
+    "sample_deformed_geometry": [
+      "frame",
+      "mesh_object_name",
+      "space",
+      "vertex_indices",
+      "vertex_limit",
+      "vertex_offset"
+    ],
     "sample_liquid_simulation": [
       "boundary_tolerance_cells",
       "domain_object_name",
@@ -2567,5 +2577,5 @@
       "scope"
     ]
   },
-  "protocol_version": 39
+  "protocol_version": 41
 }

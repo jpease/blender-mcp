@@ -16,7 +16,7 @@ import math
 import bpy
 import mathutils
 
-from ...helpers import paginate, sync_from_editmode
+from ...helpers import deforming_meshes, paginate, sync_from_editmode
 from ..action_assignment import action_fcurve_collections, assign_named_action, cycled_curve_extent
 from ..key_style import KeyStyle, style_point
 from .axes import (
@@ -73,6 +73,10 @@ _MAX_BONE_PROPERTIES = 40
 # limits, measured on Blender 5.2. Reporting either would put two meaningless fields on every
 # property of a 199-slider bone.
 _UNBOUNDED_PROPERTY_LIMIT = 2_147_483_647
+# Deformed meshes per page. A character is body, hair, clothing, eyes, brows and teeth - a
+# couple of dozen at most - so one page covers every real rig and `mesh_offset` exists for the
+# scene that proves otherwise rather than leaving `truncated` with nowhere to resume from.
+_MAX_DEFORMED_MESHES = 200
 
 
 def _pose_matrix_from_channels(armature, pose_bone, spec, space):
@@ -1679,6 +1683,39 @@ def _probe_record(axis, degrees, before, after, references):
     return record
 
 
+def _deformed_mesh_page(armature, mesh_offset):
+    """
+    Page the meshes this armature deforms, and say how each one is bound to it.
+
+    Armature-level, so it is not paged with the bones and not repeated per bone: one rig
+    deforms a handful of meshes, and which ones is the question a bone's `deform: true` cannot
+    answer. Until this existed it was reachable only as a side effect of
+    `frame_camera_on_objects`, which moves a camera to answer it.
+
+    Args:
+        armature: The armature object to resolve.
+        mesh_offset: Where to resume in the bound list.
+
+    Returns:
+        dict: A page of `{object, binding, modifier_enabled}` with the envelope's usual
+        total/offset/limit/truncated/next_offset.
+
+    """
+    bound = deforming_meshes(armature)
+    start, end, truncated, next_offset = paginate(len(bound), mesh_offset, _MAX_DEFORMED_MESHES, _MAX_DEFORMED_MESHES)
+    return {
+        "items": [
+            {"object": mesh.name, "binding": binding, "modifier_enabled": enabled}
+            for mesh, binding, enabled in bound[start:end]
+        ],
+        "total": len(bound),
+        "offset": start,
+        "limit": _MAX_DEFORMED_MESHES,
+        "truncated": truncated,
+        "next_offset": next_offset,
+    }
+
+
 class PoseAnimationHandlersMixin:
     """Apply pose-space transforms and author named animation actions."""
 
@@ -1691,12 +1728,16 @@ class PoseAnimationHandlersMixin:
         bone_names=None,
         custom_properties=False,
         property_offset=0,
+        deformed_meshes=False,
+        mesh_offset=0,
     ):
         """Page the armature's rest bones with their parent, deform flag, optional rest axes and sliders."""
         armature = _armature_object(armature_object_name)
         _validate_limit_offset(limit, offset, _MAX_BONE_PAGE, "bone")
         if isinstance(property_offset, bool) or int(property_offset) < 0:
             raise ValueError("property_offset must be a non-negative integer")
+        if isinstance(mesh_offset, bool) or int(mesh_offset) < 0:
+            raise ValueError("mesh_offset must be a non-negative integer")
         # Rest-bone names, parents and deform flags are edited in Edit Mode, which keeps its own
         # copy of the armature until it exits; flush it rather than report stale bones.
         sync_from_editmode(armature)
@@ -1739,6 +1780,8 @@ class PoseAnimationHandlersMixin:
             "truncated": truncated,
             "next_offset": next_offset,
         }
+        if deformed_meshes:
+            reply["deformed_meshes"] = _deformed_mesh_page(armature, mesh_offset)
         return reply
 
     def probe_bone_axis(

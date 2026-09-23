@@ -1141,7 +1141,9 @@ def _cycle_record(curve, operation, modes, cycles, restricted=None, modifier=Non
         restricted_range when one is in force and repeat_start_frame/repeat_end_frame when a
         finite count bounds a direction that extrapolates at all. INSPECT adds
         has_cycles_modifier, cycles_before and cycles_after, so a curve that repeats nothing
-        is reported as such instead of being left out of the reply.
+        is reported as such instead of being left out of the reply - and reports its key span
+        as key_extent_frames with period_frames None, because a curve carrying no Cycles
+        modifier repeats nothing and therefore has no period.
 
     """
     if operation == "INSPECT":
@@ -1165,6 +1167,12 @@ def _cycle_record(curve, operation, modes, cycles, restricted=None, modifier=Non
         record["cycles_before"] = cycles_before if modifier is not None else None
         record["cycles_after"] = cycles_after if modifier is not None else None
         if modifier is None:
+            # The span is still worth reporting - it is what a cycle *would* repeat if one were
+            # created - but naming it `period_frames` was read, correctly, as a live period: it
+            # then disagreed with the real periods around it and a warning told a deliberately
+            # uncycled track to be keyed over the stride's range, which is the wrong move.
+            record["key_extent_frames"] = record["period_frames"]
+            record["period_frames"] = None
             return record
     if restricted is not None:
         record["restricted_range"] = dict(restricted)
@@ -1347,13 +1355,14 @@ def _cycle_warnings(records, operation, cycles, modes, restricted=None):
     Two of these are pure readings of the records and nothing else: whether a curve has an
     extent to repeat at all, and whether the selected curves agree on one. They are the answer
     an INSPECT came for - "these curves do not share one period" is the diagnosis, and asking
-    for it must not require writing a modifier. The rest describe arguments SET wrote, so an
-    operation that wrote none has nothing to say about them.
+    for it must not require writing a modifier. Both are measured only over curves that
+    actually repeat, which under INSPECT is the ones carrying a Cycles modifier. The rest
+    describe arguments SET wrote, so an operation that wrote none has nothing to say about them.
 
     Args:
         records: The per-curve records this call built.
         operation: SET, REMOVE or INSPECT. A removal cycles nothing, so it warns about
-            nothing; an inspection warns only about what it measured.
+            nothing; an inspection warns only about the curves it found cycled.
         cycles: (cycles_before, cycles_after) as requested; 0 is unlimited.
         modes: (mode_before, mode_after) as requested.
         restricted: The window the modifier was confined to, or None for the whole timeline.
@@ -1364,7 +1373,14 @@ def _cycle_warnings(records, operation, cycles, modes, restricted=None):
     """
     if operation == "REMOVE":
         return []
-    measured = (_unrepeatable_warning(records), _period_disagreement_warning(records))
+    # Under INSPECT the selection is whatever the action holds, cycled or not, and a curve
+    # carrying no Cycles modifier repeats nothing: it cannot fail to repeat, and it cannot
+    # disagree with the curves that do. Measuring one anyway produced this tool's one wrong
+    # warning - a deliberately uncycled head track told it "drifts apart" from the stride,
+    # remedied by keying it over the stride's range, which would have broken it. SET and
+    # REMOVE cycle every curve they select, so all of their records are measurable.
+    measurable = [record for record in records if operation != "INSPECT" or record["has_cycles_modifier"]]
+    measured = (_unrepeatable_warning(measurable), _period_disagreement_warning(measurable))
     if operation == "INSPECT":
         return [warning for warning in measured if warning is not None]
     cycles_before, cycles_after = cycles

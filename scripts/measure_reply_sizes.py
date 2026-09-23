@@ -23,6 +23,7 @@ Usage:
 
 import asyncio
 import base64
+import importlib.util
 import json
 import os
 import sys
@@ -31,11 +32,43 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
+from typing import cast
 
 from pydantic_core import to_json
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SRC_ROOT = _REPO_ROOT / "src"
+
+
+def _addon_literal(relative_path: str, name: str) -> object:
+    """
+    Read one module-level literal out of a `bpy`-free add-on module, without importing the addon.
+
+    The add-on package imports `bpy` on the way in, which this script has no Blender to supply,
+    so the module is loaded straight from its file. Reading the shipped value is the point: a
+    second copy of reply prose here would measure a reply nobody sends.
+
+    Args:
+        relative_path: Path under `src/blender_mcp/bundled/addon`.
+        name: The module-level name to read.
+
+    Returns:
+        object: That module's value for `name`.
+
+    """
+    path = _SRC_ROOT / "blender_mcp" / "bundled" / "addon" / relative_path
+    spec = importlib.util.spec_from_file_location(f"_reply_size_literals_{path.stem}", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"refusing to measure: {path} could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, name)
+
+
+_DEFORMED_SAMPLE_LIMITATIONS = cast(
+    "tuple[str, ...]",
+    _addon_literal("handlers/character_rigging/contracts.py", "DEFORMED_SAMPLE_LIMITATIONS"),
+)
 
 # The rule of thumb `catalog_metrics.BYTES_PER_TOKEN` uses, respelled: importing it would
 # load `blender_mcp` before BLENDER_MCP_TOOLSETS is set. Order-of-magnitude only.
@@ -527,6 +560,9 @@ _LIBRARY_DETAILS: Mapping[str, object] = MappingProxyType(
 # grows only a reply's count and pagination fields, exactly as it does in Blender.
 _MAX_LISTED_NAMES = 10  # `handlers/linking.py:53`, the default page of datablock names
 _MESH_ELEMENT_PAGE = 100  # `tools/viewport.py get_mesh_data` default limit
+# `tools/character_rigging/posing.py sample_deformed_geometry` default limit. Smaller than
+# get_mesh_data's because each record adds a displacement to a position and a normal.
+_DEFORMED_VERTEX_PAGE = 50
 _SCENE_OBJECT_PAGE = 25  # `tools/scene.py list_scene_objects` default limit
 _VALIDATE_SCENE_PAGE = 300  # `tools/scene.py validate_scene` default max_findings
 _LIGHT_PAGE = 50  # `handlers/lighting/inspection.py:204 list_lights` default limit
@@ -1692,6 +1728,50 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "changed_resources": [],
         },
         # --- character posing: handlers/character_rigging/posing.py ---------------------
+        # `handlers/character_rigging/inspection.py sample_deformed_geometry`, the domain's only
+        # evaluated readback: one page of vertices, each a world position, a normal and the
+        # distance it sits from the rest surface.
+        "sample_deformed_geometry": lambda scale: {
+            "object": "Hero",
+            "frame": 24,
+            "evaluated_deformation_included": True,
+            "coordinate_space": "WORLD",
+            "evaluated_counts": {"vertices": scale.mesh_vertices, "edges": scale.mesh_vertices, "faces": 0},
+            "base_counts": {"vertices": scale.mesh_vertices, "edges": scale.mesh_vertices, "faces": 0},
+            "index_correspondence": "BASE_MESH",
+            "world_bounds": {
+                "coordinate_space": "WORLD",
+                "minimum": _floats(3, 1),
+                "maximum": _floats(3, 4),
+            },
+            "displacement": {
+                "measured": True,
+                "coordinate_space": "WORLD",
+                "sampled_vertices": scale.mesh_vertices,
+                "complete": True,
+                "maximum_m": 0.418273,
+                "mean_m": 0.092841,
+                "moved_vertices": scale.mesh_vertices,
+                "moved_epsilon_m": 1e-06,
+            },
+            "vertices": {
+                "items": [
+                    {
+                        "index": index,
+                        "co": _floats(3, index),
+                        "normal": _floats(3, index + 3),
+                        "displacement_m": 0.031784,
+                    }
+                    for index in range(min(scale.mesh_vertices, _DEFORMED_VERTEX_PAGE))
+                ],
+                "total": scale.mesh_vertices,
+                "offset": 0,
+                "limit": _DEFORMED_VERTEX_PAGE,
+                "truncated": scale.mesh_vertices > _DEFORMED_VERTEX_PAGE,
+                "next_offset": _DEFORMED_VERTEX_PAGE if scale.mesh_vertices > _DEFORMED_VERTEX_PAGE else None,
+            },
+            "limitations": list(_DEFORMED_SAMPLE_LIMITATIONS),
+        },
         # `handlers/character_rigging/posing.py:201 list_character_bones`, paged at 200.
         "list_character_bones": lambda scale: {
             "armature_object": "Hero_Rig",
@@ -2138,6 +2218,7 @@ _ARGUMENTS: Mapping[str, Mapping[str, object]] = MappingProxyType(
         "keyframe_object_transform": {"keyframes": [{"object_name": "Hero", "frame": 1, "location": [0.0, 0.0, 0.0]}]},
         "link_canon_library": {"filepath": "/shots/canon/canon.blend"},
         "list_character_bones": {"armature_object_name": "Hero_Rig"},
+        "sample_deformed_geometry": {"mesh_object_name": "Hero"},
         "list_libraries": {},
         "list_lights": {"scene_name": "Scene"},
         "list_scene_objects": {},
@@ -2546,7 +2627,7 @@ _GROWTH_AXES: Mapping[str, tuple[str, int, tuple[str, ...]]] = MappingProxyType(
             ("list_libraries", "reload_library", "relocate_library", "unlink_libraries"),
         ),
         "lights": ("light", 7, ("list_lights", "inspect_lighting_setup", "render_lighting_preview")),
-        "mesh_vertices": ("mesh element", 50, ("get_mesh_data",)),
+        "mesh_vertices": ("mesh element", 50, ("get_mesh_data", "sample_deformed_geometry")),
         "findings": ("validation finding", 84, ("validate_scene",)),
         "objects": ("scene object", 12, ("list_scene_objects",)),
         "override_objects": ("overridden object", 40, ("create_override", "link_canon_library")),

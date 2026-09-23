@@ -155,8 +155,10 @@ async def get_mesh_data(
     elements.
 
     Coordinates and normals come from the object's base mesh in local (object-space)
-    coordinates - modifiers are not evaluated. To get world-space positions, transform by
-    the object's `matrix_world` (see `get_object_info`).
+    coordinates - modifiers are not evaluated, so this reads the same before and after a pose
+    or a simulation. For world space, transform by `matrix_world` (see `get_object_info`); for
+    the deformed result, use sample_deformed_geometry (per-vertex) or
+    inspect_evaluated_geometry (bounds and counts).
 
     Args:
         ctx: MCP request context.

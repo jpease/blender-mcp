@@ -143,6 +143,7 @@ def test_character_dispatch_and_read_only_contract(monkeypatch) -> None:
     names = {
         "get_character_rig_info",
         "get_skinning_info",
+        "sample_deformed_geometry",
         "create_armature",
         "patch_armature_bones",
         "mirror_armature_bones",
@@ -158,11 +159,17 @@ def test_character_dispatch_and_read_only_contract(monkeypatch) -> None:
     assert set(handlers) >= names
     assert all(
         server.command_spec(name).read_only
-        for name in ("get_character_rig_info", "get_skinning_info", "validate_character_rig")
+        for name in (
+            "get_character_rig_info",
+            "get_skinning_info",
+            "sample_deformed_geometry",
+            "validate_character_rig",
+        )
     )
     assert {name for name in names if server.command_spec(name).read_only} == {
         "get_character_rig_info",
         "get_skinning_info",
+        "sample_deformed_geometry",
         "validate_character_rig",
     }
 

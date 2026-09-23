@@ -90,6 +90,49 @@ def sync_from_editmode(obj) -> None:
     obj.update_from_editmode()
 
 
+def deforming_meshes(armature, scene=None):
+    """
+    List the meshes whose shape an armature drives, and how each one is bound to it.
+
+    The two ways Blender actually binds a mesh to a rig. Parent-type ARMATURE is the older
+    route and is still what `Ctrl+P > With Automatic Weights` leaves behind on a proxy, so
+    checking only the modifier stack would silently drop half a character. Shared rather than
+    respelled per domain: camera framing and the posing surface must not disagree about which
+    meshes a rig moves, or a shot is framed on a set one tool reports and another denies.
+
+    Narrower on purpose than `handlers/character_rigging/records._dependent_meshes`, which
+    answers "what depends on this rig?" and counts a prop merely parented to it. This answers
+    "whose shape does it drive?", which is the set worth framing and worth sampling.
+
+    Args:
+        armature: The armature object to resolve.
+        scene: The scene to search; defaults to the active one. Objects outside it are not
+            rendered and not framed, so they are not part of the answer.
+
+    Returns:
+        list[tuple]: `(object, binding, modifier_enabled)` per mesh, in scene order. `binding`
+        is "MODIFIER", "PARENT" or "BOTH"; `modifier_enabled` is None for a PARENT-only bind,
+        and otherwise whether any of its Armature modifiers is visible in the viewport - a
+        disabled one is why a bound mesh does not move.
+
+    """
+    scene = scene if scene is not None else bpy.context.scene
+    bound = []
+    for obj in scene.objects:
+        if obj.type != "MESH":
+            continue
+        modifiers = [
+            modifier for modifier in obj.modifiers if modifier.type == "ARMATURE" and modifier.object == armature
+        ]
+        parented = obj.parent == armature and obj.parent_type == "ARMATURE"
+        if not modifiers and not parented:
+            continue
+        binding = "BOTH" if modifiers and parented else ("MODIFIER" if modifiers else "PARENT")
+        enabled = any(modifier.show_viewport for modifier in modifiers) if modifiers else None
+        bound.append((obj, binding, enabled))
+    return bound
+
+
 @contextlib.contextmanager
 def preserve_mode_and_selection():
     """
@@ -313,6 +356,53 @@ def _world_bounds(matrix_world, vertices):
     return {
         "min": [min(xs), min(ys), min(zs)],
         "max": [max(xs), max(ys), max(zs)],
+    }
+
+
+def spread_indices(count, limit):
+    """
+    Choose at most `limit` evenly spread indices from `range(count)`.
+
+    Spread rather than taken from the front: the first thousand vertices of a character are one
+    body part, and a measurement that sampled only those would describe a rig that moves one
+    limb the same way it describes a rig that moves nothing.
+
+    Args:
+        count: How many elements exist.
+        limit: The most indices to return.
+
+    Returns:
+        list[int]: Ascending indices, every one of them when `count <= limit`.
+
+    """
+    if count <= limit:
+        return list(range(count))
+    step = count / limit
+    return sorted({min(count - 1, int(index * step)) for index in range(limit)})
+
+
+def evaluated_world_bounds(evaluated_obj):
+    """
+    Report an evaluated object's world-space axis-aligned bounds, corner by corner.
+
+    Distinct from `_world_bounds` above, which measures a vertex list and answers `min`/`max`
+    for `modifier_result`'s long-standing reply shape. This one reads `bound_box`, which the
+    depsgraph has already computed, and answers the `minimum`/`maximum` shape the physics and
+    rigging replies use. Shared so those replies cannot drift apart per domain.
+
+    Args:
+        evaluated_obj: An object from `evaluated_get`, whose `bound_box` and `matrix_world`
+            describe the evaluated result.
+
+    Returns:
+        dict: `coordinate_space`, `minimum` and `maximum`.
+
+    """
+    corners = [evaluated_obj.matrix_world @ mathutils.Vector(corner) for corner in evaluated_obj.bound_box]
+    return {
+        "coordinate_space": "WORLD",
+        "minimum": [min(corner[axis] for corner in corners) for axis in range(3)],
+        "maximum": [max(corner[axis] for corner in corners) for axis in range(3)],
     }
 
 

@@ -810,7 +810,7 @@ def _framing_handler(monkeypatch):
     )
     # The two ways a mesh is bound to a rig, one each: a modifier, and ARMATURE parenting.
     skin = mesh("Skin", (1.0, 0.0, 0.0), 0.5)
-    skin.modifiers = [types.SimpleNamespace(type="ARMATURE", object=rig)]
+    skin.modifiers = [types.SimpleNamespace(type="ARMATURE", object=rig, show_viewport=True)]
     shirt = mesh("Shirt", (1.0, 0.0, 0.0), 0.6)
     shirt.parent, shirt.parent_type = rig, "ARMATURE"
     # Bound to nothing: an armature expansion must not sweep it up.

@@ -359,7 +359,7 @@ COMMANDS: Mapping[str, CommandSpec] = MappingProxyType(
         "set_geometry_nodes_inputs": CommandSpec(),
         "manage_geometry_nodes_modifier": CommandSpec(),
         "copy_geometry_node_group": CommandSpec(),
-        "evaluate_procedural_geometry": CommandSpec(read_only=True),
+        "inspect_evaluated_geometry": CommandSpec(read_only=True),
         "validate_geometry_node_graph": CommandSpec(read_only=True),
         "create_procedural_scatter": CommandSpec(),
         "create_curve_generator": CommandSpec(),
@@ -459,6 +459,9 @@ COMMANDS: Mapping[str, CommandSpec] = MappingProxyType(
         "sync_data_name": CommandSpec(),
         "get_character_rig_info": CommandSpec(read_only=True),
         "get_skinning_info": CommandSpec(read_only=True),
+        # Read-only like `validate_character_rig`: it moves the playhead to the requested
+        # frame and puts it back, and `to_mesh()` output is released before it returns.
+        "sample_deformed_geometry": CommandSpec(read_only=True),
         "create_armature": CommandSpec(),
         "patch_armature_bones": CommandSpec(),
         "mirror_armature_bones": CommandSpec(),
