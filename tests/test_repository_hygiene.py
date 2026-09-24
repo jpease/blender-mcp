@@ -78,7 +78,23 @@ _ALLOWED_ASSETS = {
     "assets/addon-instructions.png",
     "assets/hammer-icon.png",
 }
-_WORD = re.compile(r"[a-z]+")
+
+
+def _term_pattern(terms: set[str]) -> re.Pattern[str]:
+    """
+    Match any term as a whole word, including a term that is not purely letters (`a-b`).
+
+    Args:
+        terms: Lowercase terms from `_private_terms`.
+
+    Returns:
+        re.Pattern[str]: A pattern to search lowercased text with.
+
+    """
+    alternatives = "|".join(re.escape(term) for term in sorted(terms))
+    return re.compile(rf"(?<![a-z])(?:{alternatives})(?![a-z])")
+
+
 # A .blend of a production character is megabytes; the empty fixtures are ~85 KB. Anything
 # tracked above this is an asset that slipped in, whatever its extension claims.
 _MAX_TRACKED_BYTES = 512 * 1024
@@ -107,6 +123,7 @@ def test_no_tracked_file_names_private_production_material() -> None:
     terms = _private_terms()
     if not terms:
         pytest.skip(f"no private terms configured; set {_TERMS_ENV_VAR} or write {_TERMS_FILE.name}")
+    pattern = _term_pattern(terms)
     offenders: list[str] = []
     for path in _tracked_files():
         full = REPO_ROOT / path
@@ -116,9 +133,32 @@ def test_no_tracked_file_names_private_production_material() -> None:
             text = full.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        if set(_WORD.findall(text.lower())) & terms:
+        if pattern.search(text.lower()):
             offenders.append(path)
     assert not offenders, f"tracked files name private production material: {sorted(offenders)}"
+
+
+def test_no_commit_message_names_private_production_material() -> None:
+    """A commit message is published with the history, so it leaks exactly as a file does."""
+    terms = _private_terms()
+    if not terms:
+        pytest.skip(f"no private terms configured; set {_TERMS_ENV_VAR} or write {_TERMS_FILE.name}")
+    pattern = _term_pattern(terms)
+    history = subprocess.run(
+        ["git", "log", "HEAD", "--format=%h%x00%B%x1e"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    offenders = [
+        commit
+        for record in history.stdout.split("\x1e")
+        if record.strip()
+        for commit, _, message in [record.strip().partition("\0")]
+        if pattern.search(message.lower())
+    ]
+    assert not offenders, f"commit messages name private production material: {offenders}"
 
 
 def test_the_only_tracked_assets_are_the_ones_named_here() -> None:
