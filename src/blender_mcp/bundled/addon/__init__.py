@@ -25,9 +25,9 @@ bl_info = {
 # Keep in sync with blender_mcp.addon_manager.EXPECTED_ADDON_PROTOCOL_VERSION.
 # The server reads handshake fields without comparing versions, so an older
 # addon that omits writable_output_roots gets an empty list.
-ADDON_PROTOCOL_VERSION = 44
+ADDON_PROTOCOL_VERSION = 45
 
-from . import session  # ruff: ignore[module-import-not-at-top-of-file]
+from . import render_result_record, session  # ruff: ignore[module-import-not-at-top-of-file]
 from .server_core import BlenderMCPServer  # ruff: ignore[module-import-not-at-top-of-file]
 from .ui import (  # ruff: ignore[module-import-not-at-top-of-file]
     BLENDERMCP_AddonPreferences,
@@ -84,6 +84,9 @@ def register() -> None:
     # a client could see. Safe to repeat: enabling an already-enabled addon
     # unregisters it first, so the handlers are gone before this runs again.
     session.register_handlers()
+    # So a render this add-on did not record - one started from the UI - clears
+    # render_scene's record of what Render Result holds.
+    render_result_record.register_handlers()
 
     # Register preferences class
     bpy.utils.register_class(BLENDERMCP_AddonPreferences)
@@ -118,6 +121,7 @@ def unregister() -> None:
         del bpy.types.blendermcp_server
 
     session.unregister_handlers()
+    render_result_record.unregister_handlers()
 
     bpy.utils.unregister_class(BLENDERMCP_PT_Panel)
     bpy.utils.unregister_class(BLENDERMCP_OT_StartServer)

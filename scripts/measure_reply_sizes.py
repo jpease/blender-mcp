@@ -596,13 +596,34 @@ def _linked_datablocks(total: int) -> dict[str, object]:
         "datablocks": {
             "total": total,
             "by_type": {"COLLECTION": 1, "MATERIAL": total // 2, "MESH": total - 1 - total // 2},
-            "offset": 0,
             "limit": _MAX_LISTED_NAMES,
             "returned_count": listed,
             "truncated": total > _MAX_LISTED_NAMES,
-            "next_offset": listed if total > _MAX_LISTED_NAMES else None,
             "names": [f"prop_{index:03d}_mat" for index in range(listed)],
         }
+    }
+
+
+def _counted_objects(total: int, suffix: str) -> dict[str, object]:
+    """
+    Mirror `handlers/linking.py _counted_page` over objects, without `detail`.
+
+    Args:
+        total: How many objects the link or override brought in.
+        suffix: What Blender appends to each name, e.g. `.001` for an override.
+
+    Returns:
+        dict[str, object]: The exact total, the counts by type and one page of names.
+
+    """
+    listed = min(total, _MAX_LISTED_NAMES)
+    return {
+        "total": total,
+        "by_type": {"OBJECT": total},
+        "limit": _MAX_LISTED_NAMES,
+        "returned_count": listed,
+        "truncated": total > _MAX_LISTED_NAMES,
+        "names": [f"prop_{index:03d}{suffix}" for index in range(listed)],
     }
 
 
@@ -1223,7 +1244,8 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
         },
         # `handlers/linking.py:830 link_canon_library`.
         "link_canon_library": lambda scale: {
-            "changed_objects": [f"prop_{index:03d}" for index in range(scale.override_objects)],
+            # The roots only: one set root parents every prop, which `instanced_objects` counts.
+            "changed_objects": ["set_root"],
             "library": dict(_LIBRARY_DETAILS),
             "library_already_linked": False,
             "scene_uid": 34,
@@ -1237,6 +1259,9 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
                 }
             ],
             "objects": [],
+            "instanced_objects": _counted_objects(scale.override_objects + 1, ""),
+            "world": None,
+            "previous_world": None,
             "overrides": [],
         },
         # `handlers/linking.py:1011 list_libraries`.
@@ -1276,17 +1301,18 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             },
             "scene_uid": 34,
             "replaced_instances": 1,
-            # The records are `detail`; `changed_objects` carries the names either way.
-            "objects": {"total": scale.override_objects, "by_type": {"OBJECT": scale.override_objects}},
-            "changed_objects": [f"prop_{index:03d}.001" for index in range(scale.override_objects)],
+            "objects": _counted_objects(scale.override_objects + 1, ".001"),
+            "changed_objects": ["set_root.001"],
         },
         "unlink_libraries": lambda scale: {
             "removed_libraries": [{key: _LIBRARY_DETAILS[key] for key in ("session_uid", "name", "filepath")}],
             "already_removed_uids": [],
             "removed_count": scale.linked_datablocks + 1,
             "removed_by_type": {"libraries": 1, "objects": 40, "collections": 1, "meshes": 40, "materials": 40},
-            "removed_uids": [1140 + index for index in range(scale.linked_datablocks + 1)],
-            "removed_uids_truncated": False,
+            "removed_sample": [
+                {"name": f"prop_{index:03d}_mat", "id_type": "MATERIAL"}
+                for index in range(min(scale.linked_datablocks + 1, _MAX_LISTED_NAMES))
+            ],
             "purged_orphans": 0,
             "purged_by_type": {},
             "other_libraries_removed": [],
@@ -1352,18 +1378,29 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "warnings": [],
             "changed_objects": [],
         },
-        # `handlers/camera/targeting.py:353 frame_camera_on_objects`.
+        # `handlers/camera/targeting.py:627 frame_camera_on_objects`: a rig whose helper meshes
+        # outnumber the cap, so excluded_objects is full and excluded_total counts the rest.
         "frame_camera_on_objects": lambda _scale: {
             "camera": "Camera_Hero",
             "objects": ["Hero", "set_000"],
+            "bone_targets": [],
+            "armature_meshes": {"Hero_Rig": ["Hero_Body", "Hero_Coat", "Hero_Hair"]},
+            "framed_objects": ["Hero", "set_000", "Hero_Body", "Hero_Coat", "Hero_Hair"],
+            "excluded_objects": [
+                {"object": f"Hero_Collision_Proxy_{index:03d}", "reason": "DISPLAY_WIRE_OR_BOUNDS"}
+                for index in range(16)
+            ],
+            "excluded_total": 40,
             "policy": "MOVE_CAMERA",
             "margin": 0.1,
             "bounds_world": {"min": _floats(3, 1), "max": _floats(3, 4)},
             "target_point_world": _floats(3, 7),
             "limiting_axis": "VERTICAL",
+            "limiting_objects": ["Hero_Body", "set_000"],
             "transform": _transform(),
             "distance": 9.930403472696543,
             "lens": 50.0,
+            "warnings": [],
             "changed_objects": ["Camera_Hero"],
             "changed_resources": [],
         },
@@ -2092,6 +2129,38 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             ],
             "pass_verification": "VIEW_LAYER_CONFIGURATION",
         },
+        # `handlers/render_jobs.py _read`: a job mid-animation, without `detail`.
+        "manage_render_job": lambda _scale: {
+            "job_id": "3f9a1c07b2e4",
+            "state": "RENDERING",
+            "scene_name": "Scene",
+            "mode": "ANIMATION",
+            "view_layer_name": None,
+            "filepath": "/shots/hero/render/shot_",
+            "frame_start": 1,
+            "frame_end": 120,
+            "frame_step": 1,
+            "frames_total": 120,
+            "frames_done": 41,
+            "current_frame": 42,
+            "last_file": "/shots/hero/render/shot_0041.png",
+            "bytes_written": 103_082_476,
+            "max_duration_seconds": 3600.0,
+            "created_at": 1790283621.418342,
+            "started_at": 1790283622.906157,
+            "finished_at": None,
+            "deadline_at": 1790287221.418342,
+            "pid": 48213,
+            "exit_code": None,
+            "engine": "CYCLES",
+            "effective_cycles_device": "GPU",
+            "blend_copy": "/shots/hero/render/blender_mcp_render_jobs/3f9a1c07b2e4/scene.blend",
+            "log_path": "/shots/hero/render/blender_mcp_render_jobs/3f9a1c07b2e4/render.log",
+            "error": None,
+            "cancellation_reason": None,
+            "elapsed_seconds": 1412.338,
+            "heartbeat_age_seconds": 0.412,
+        },
         "inspect_render_output": lambda _scale: {
             "success": True,
             "width": 1000,
@@ -2269,6 +2338,7 @@ _ARGUMENTS: Mapping[str, Mapping[str, object]] = MappingProxyType(
             "constraint": {"name": "Copy Location", "type": "COPY_LOCATION", "target_object_name": "Hero"},
         },
         "manage_object_hierarchy": {"assignments": [{"child_object_name": "set_001", "parent_object_name": "Hero"}]},
+        "manage_render_job": {"action": "READ", "job_id": "3f9a1c07b2e4"},
         "manage_scene_collections": {"action": "CREATE", "collection_name": "Receivers"},
         "manage_view_layers": {"scene_name": "Scene", "action": "CREATE", "view_layer_name": "Beauty"},
         "open_shot": {"filepath": "/shots/hero/shot.blend"},
@@ -2732,7 +2802,6 @@ _PAGED_KEYS = frozenset(
         "items",
         "lights",
         "objects",
-        "removed_uids",
         "records",
     }
 )

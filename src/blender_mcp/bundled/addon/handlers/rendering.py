@@ -14,7 +14,9 @@ from ..file_paths import create_save_directory, enforce_roots
 from ..helpers import color_management_snapshot
 from ..image_reply import finalize_image_reply, image_destination
 from ..output_roots import configured_file_roots
+from ..render_devices import effective_cycles_device
 from ..render_properties import FLAT_ROUTES, NESTED_SECTIONS, RENDER_PATCH_PROPERTIES
+from ..render_result_record import record_render_result, render_result_record
 from .blend_files import require_bool
 
 _VIEW_LAYER_PROPERTIES = {
@@ -51,6 +53,39 @@ _FRAME_IN_FILENAME = re.compile(r"(?<![0-9])[0-9]{4}$")
 # orchestrated per-frame path at the same length: one animation must truncate identically
 # however it was driven. Change one and change the other.
 _PROGRESS_ENTRY_LIMIT = 1000
+# A STILL is one `bpy.ops.render.render` call, which nothing in-process can interrupt, so a
+# duration bound on it would be checked once, before it starts, and never again. Its twin is
+# `_STILL_DURATION_REFUSAL` in `src/blender_mcp/server/tools/rendering.py`, which refuses the
+# same request before it is sent.
+_STILL_DURATION_REFUSAL = (
+    "max_duration_seconds cannot bound a STILL render: one frame renders in a single blocking call "
+    "nothing in-process can interrupt, so the bound would never be applied. For a hard wall-clock "
+    'limit use manage_render_job(action="CREATE", ..., max_duration_seconds=...); otherwise omit it.'
+)
+
+
+def _duration_overrun_warnings(duration_seconds, max_duration_seconds):
+    """
+    Say so when an ANIMATION ran past its between-frames duration bound.
+
+    Its twin is `_duration_overrun_warnings` in `src/blender_mcp/server/tools/rendering.py`,
+    for the orchestrated path; change one and change the other.
+
+    Args:
+        duration_seconds: How long the run took.
+        max_duration_seconds: The caller's bound, or None.
+
+    Returns:
+        list[str]: One warning when the run overran the bound, else none.
+
+    """
+    if max_duration_seconds is None or duration_seconds <= max_duration_seconds:
+        return []
+    return [
+        f"This render took {duration_seconds:.1f} s, over max_duration_seconds={max_duration_seconds:g}: "
+        "the bound is checked between frames, and a frame in progress always finishes. For a hard "
+        'wall-clock limit use manage_render_job(action="CREATE", ..., max_duration_seconds=...).'
+    ]
 
 
 def _scene(name):
@@ -89,6 +124,8 @@ def _render_info(scene):
     return {
         "scene": scene.name,
         "engine": render.engine,
+        # What Cycles will actually use here, which `cycles.device` only requests.
+        "effective_cycles_device": effective_cycles_device(scene)[0],
         "camera": scene.camera.name if scene.camera else None,
         "resolution": [render.resolution_x, render.resolution_y, render.resolution_percentage],
         "pixel_aspect": [render.pixel_aspect_x, render.pixel_aspect_y],
@@ -118,13 +155,40 @@ def _render_info(scene):
             "use_placeholder": render.use_placeholder,
             "exr_codec": getattr(image, "exr_codec", None),
         },
-        "cycles": {
-            "samples": cycles.samples,
-            "use_denoising": cycles.use_denoising,
-        }
-        if cycles is not None
-        else None,
+        "cycles": _rna_values(
+            cycles,
+            (
+                "samples",
+                "preview_samples",
+                "use_adaptive_sampling",
+                "adaptive_threshold",
+                "time_limit",
+                "device",
+                "use_denoising",
+                "denoiser",
+                "denoising_use_gpu",
+                "denoising_input_passes",
+                "denoising_prefilter",
+                "denoising_quality",
+                "pixel_filter_type",
+                "filter_width",
+            ),
+        ),
         "eevee": _eevee_info(getattr(scene, "eevee", None)),
+        # The names configure_render_settings' "performance" section takes.
+        "performance": _rna_values(
+            render,
+            (
+                "use_persistent_data",
+                "use_simplify",
+                "simplify_subdivision",
+                "simplify_subdivision_render",
+                "simplify_child_particles",
+                "simplify_child_particles_render",
+                "simplify_volumes",
+                "filter_size",
+            ),
+        ),
         "metadata": _rna_values(
             render,
             (
@@ -725,35 +789,43 @@ def _default_requested_filepath(scene, filepath):
     return requested_filepath
 
 
-def _validate_animation_frame_range(scene, max_animation_frames, confirm_frame_range):
+def _validate_animation_frame_range(scene, max_animation_frames, confirm_frame_range, frame_range=None):
     """
     Enforce the max_animation_frames cap and the untouched-default-range guard.
 
-    Shared by render_scene's ANIMATION branch and plan_render_animation, so an animation's
-    frame count is validated identically whether or not it is actually rendered.
+    Shared by render_scene's ANIMATION branch, plan_render_animation and manage_render_job, so an
+    animation's frame count is validated identically whether or not, and wherever, it is rendered.
 
     Args:
-        scene: Scene whose frame_start/frame_end/frame_step decide the frame count.
+        scene: Scene whose frame_step - and, without `frame_range`, frame_start/frame_end -
+            decide the frame count.
         max_animation_frames: Upper bound on the number of frames this call may touch; the
             caller has already checked this is an int in range.
         confirm_frame_range: Whether the caller explicitly accepted rendering the untouched
             default 1-250 range.
+        frame_range: An explicit (frame_start, frame_end) pair the caller chose instead of the
+            scene's own range, or None. A range the caller named is a choice, so the
+            untouched-default guard does not apply to it.
 
     Returns:
         list[int]: The frames the animation covers, in render order.
 
     Raises:
-        ValueError: If the frame count exceeds max_animation_frames, or the range is
-            Blender's untouched default and unconfirmed.
+        ValueError: If an explicit range ends before it starts, the frame count exceeds
+            max_animation_frames, or the range is Blender's untouched default and unconfirmed.
 
     """
-    frame_count = ((scene.frame_end - scene.frame_start) // scene.frame_step) + 1
+    frame_start, frame_end = frame_range or (scene.frame_start, scene.frame_end)
+    if frame_end < frame_start:
+        raise ValueError("frame_end must be greater than or equal to frame_start")
+    frame_count = ((frame_end - frame_start) // scene.frame_step) + 1
     if frame_count > max_animation_frames:
         raise ValueError(
             f"Animation contains {frame_count} frames, exceeding max_animation_frames={max_animation_frames}"
         )
     if (
-        (scene.frame_start, scene.frame_end) == (1, 250)
+        frame_range is None
+        and (frame_start, frame_end) == (1, 250)
         and not scene.get("blender_mcp_frame_range_authored", False)
         and not confirm_frame_range
     ):
@@ -762,7 +834,7 @@ def _validate_animation_frame_range(scene, max_animation_frames, confirm_frame_r
             f"this ANIMATION would render {frame_count} frames. Set frame_start/frame_end with "
             "configure_render_settings, or pass confirm_frame_range=true to render 1-250 deliberately."
         )
-    return list(range(scene.frame_start, scene.frame_end + 1, scene.frame_step))
+    return list(range(frame_start, frame_end + 1, scene.frame_step))
 
 
 def _animation_summary(
@@ -771,6 +843,9 @@ def _animation_summary(
     mode,
     output,
     frame,
+    engine,
+    effective_cycles_device,
+    warnings,
     files,
     frame_total,
     operator_result,
@@ -797,6 +872,9 @@ def _animation_summary(
         mode: "STILL" or "ANIMATION".
         output: The resolved absolute output path or per-frame template.
         frame: The frame the reply reports as current.
+        engine: The render engine the frames rendered with.
+        effective_cycles_device: The device Cycles rendered on ("CPU"/"GPU"), None for another engine.
+        warnings: Notices for the envelope, such as a GPU request that rendered on the CPU.
         files: One record per written frame, in render order: "frame", "path", "bytes".
         frame_total: How many frames the run planned, which is what "fraction" divides by.
         operator_result: The last rendered frame's sorted operator result, or ["FINISHED"]
@@ -812,7 +890,8 @@ def _animation_summary(
         detail: Whether to add the per-frame "files"/"progress" arrays.
 
     Returns:
-        dict: The render reply, with "files"/"progress"/"progress_truncated" only when detail.
+        dict: The render reply, with "files"/"progress"/"progress_truncated" only when detail and
+        "warnings" only when there are any.
 
     """
     progress = [
@@ -827,6 +906,8 @@ def _animation_summary(
     summary = {
         "scene": scene_name,
         "mode": mode,
+        "engine": engine,
+        "effective_cycles_device": effective_cycles_device,
         "filepath": output,
         "frame": frame,
         "frame_count": len(files),
@@ -845,11 +926,184 @@ def _animation_summary(
         "pass_verification": pass_verification,
         "created_directory": created_directory,
     }
+    if warnings:
+        summary["warnings"] = warnings
     if not detail:
         # Absent rather than empty: `envelope._record_pages` shortens a page it can see, and
         # warning about data nobody asked for spends the reply budget on bookkeeping.
         return summary
     return {**summary, "files": files, "progress": progress, "progress_truncated": len(files) > len(progress)}
+
+
+def _validate_render_request(scene, *, mode, frame, max_animation_frames, view_layer_name, max_duration_seconds):
+    """
+    Check the request fields `render_scene` and `manage_render_job` share, before any output is resolved.
+
+    One definition, so a render in this process and a render job refuse the same request in the
+    same words. What only one of them refuses - a STILL `max_duration_seconds` in process, which
+    no in-process render can honour - stays with that one.
+
+    Args:
+        scene: Scene whose view layers `view_layer_name` must name.
+        mode: "STILL" or "ANIMATION", in any case.
+        frame: The STILL frame, or None.
+        max_animation_frames: Upper bound on the frames an ANIMATION may cover.
+        view_layer_name: The one view layer to render, or None for every enabled one.
+        max_duration_seconds: The caller's wall-clock bound, or None.
+
+    Returns:
+        str: The mode, upper-cased.
+
+    Raises:
+        ValueError: On the first field out of shape or range.
+
+    """
+    mode = str(mode).upper()
+    if mode not in {"STILL", "ANIMATION"}:
+        raise ValueError("mode must be STILL or ANIMATION")
+    if isinstance(max_animation_frames, bool) or not isinstance(max_animation_frames, int):
+        raise ValueError("max_animation_frames must be an integer")
+    if not 1 <= max_animation_frames <= _MAX_ANIMATION_FRAMES:
+        raise ValueError("max_animation_frames must be between 1 and 10000")
+    if frame is not None and (isinstance(frame, bool) or not isinstance(frame, int)):
+        raise ValueError("frame must be an integer")
+    if mode == "ANIMATION" and frame is not None:
+        raise ValueError("frame is only valid for STILL renders")
+    if view_layer_name and scene.view_layers.get(view_layer_name) is None:
+        raise ValueError(f"View layer not found: {view_layer_name}")
+    if max_duration_seconds is not None and (
+        isinstance(max_duration_seconds, bool)
+        or not isinstance(max_duration_seconds, (int, float))
+        or not math.isfinite(max_duration_seconds)
+        or max_duration_seconds <= 0
+    ):
+        raise ValueError("max_duration_seconds must be a positive finite number")
+    return mode
+
+
+def _refuse_existing_output(path, confirm_overwrite, frame=None):
+    """
+    Refuse to render over a file that already exists, unless the caller confirmed it.
+
+    Args:
+        path: The absolute file a frame would be written to.
+        confirm_overwrite: Whether the caller accepted replacing existing output.
+        frame: The ANIMATION frame that file belongs to, or None for a STILL.
+
+    Raises:
+        ValueError: When the file exists and the overwrite was not confirmed.
+
+    """
+    if confirm_overwrite or not os.path.exists(path):
+        return
+    if frame is None:
+        raise ValueError("Output file already exists; set confirm_overwrite=True to replace it")
+    raise ValueError(f"Animation output already exists for frame {frame}; set confirm_overwrite=True to replace it")
+
+
+def _frame_outputs(scene, output, frames):
+    """
+    Name the exact file Blender writes for each frame of an ANIMATION template.
+
+    `frame_path()` is Blender's own templating, not reproducible outside bpy; it reads
+    `scene.render.filepath`, which is restored before returning whatever it held.
+
+    Args:
+        scene: Scene whose output format decides the extension.
+        output: The resolved absolute per-frame template.
+        frames: Frame numbers, in render order.
+
+    Returns:
+        list[dict]: One {"frame": int, "path": str} per frame, in the order given.
+
+    """
+    original_path = scene.render.filepath
+    try:
+        scene.render.filepath = output
+        return [{"frame": frame, "path": os.path.abspath(scene.render.frame_path(frame=frame))} for frame in frames]
+    finally:
+        scene.render.filepath = original_path
+
+
+def plan_render_job(
+    scene_name,
+    *,
+    filepath,
+    mode,
+    frame,
+    frame_start,
+    frame_end,
+    max_animation_frames,
+    view_layer_name,
+    max_duration_seconds,
+    confirm_overwrite,
+    confirm_frame_range,
+    create_directories,
+):
+    """
+    Validate a `manage_render_job` request with `render_scene`'s own checks, and name every file it writes.
+
+    Nothing is rendered or created. The job renders in another process, so what `render_scene`
+    only finds partway through - an ANIMATION frame whose file already exists - is refused here,
+    before that process starts.
+
+    Args:
+        scene_name: Scene to render, or the active scene when omitted.
+        filepath: The caller's output path; defaults to the scene's stored template, as in
+            `render_scene`.
+        mode: "STILL" or "ANIMATION".
+        frame: The STILL frame, or None for the scene's current frame.
+        frame_start: An ANIMATION's explicit first frame, or None for the scene's; passed
+            together with frame_end.
+        frame_end: An ANIMATION's explicit last frame, or None for the scene's.
+        max_animation_frames: Upper bound on the frames an ANIMATION may cover.
+        view_layer_name: The one view layer to render, or None for every enabled one.
+        max_duration_seconds: The job's wall-clock bound, or None.
+        confirm_overwrite: Whether existing output files may be replaced.
+        confirm_frame_range: Whether the scene's untouched 1-250 default range is intended.
+        create_directories: Accept an output directory that does not exist yet; the caller
+            creates it once everything else has succeeded.
+
+    Returns:
+        dict: "scene" (the Scene), "mode", "output" (the absolute STILL file or ANIMATION
+        template), and "frames" - one {"frame", "path"} per frame, in render order.
+
+    Raises:
+        ValueError: On any request `render_scene` would refuse, a half-given or non-integer
+            frame range, a frame range on a STILL, or an output file that already exists
+            unconfirmed.
+
+    """
+    scene = _scene(scene_name)
+    mode = _validate_render_request(
+        scene,
+        mode=mode,
+        frame=frame,
+        max_animation_frames=max_animation_frames,
+        view_layer_name=view_layer_name,
+        max_duration_seconds=max_duration_seconds,
+    )
+    frame_range = None
+    if frame_start is not None or frame_end is not None:
+        if mode == "STILL":
+            raise ValueError("frame_start/frame_end are only valid for ANIMATION renders; a STILL takes frame")
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in (frame_start, frame_end)):
+            raise ValueError("Pass frame_start and frame_end together as integers, or neither to use the scene's range")
+        frame_range = (frame_start, frame_end)
+    requested_filepath = _default_requested_filepath(scene, filepath)
+    output = _resolve_render_output(
+        scene, requested_filepath, mode, require_bool("create_directories", create_directories)
+    )
+    confirm_overwrite = require_bool("confirm_overwrite", confirm_overwrite)
+    if mode == "STILL":
+        _refuse_existing_output(output, confirm_overwrite)
+        frames = [{"frame": frame if frame is not None else scene.frame_current, "path": output}]
+    else:
+        numbers = _validate_animation_frame_range(scene, max_animation_frames, confirm_frame_range, frame_range)
+        frames = _frame_outputs(scene, output, numbers)
+        for entry in frames:
+            _refuse_existing_output(entry["path"], confirm_overwrite, entry["frame"])
+    return {"scene": scene, "mode": mode, "output": output, "frames": frames}
 
 
 class RenderingHandlersMixin:
@@ -860,6 +1114,9 @@ class RenderingHandlersMixin:
         result = _render_info(scene)
         result["color_management"] = color_management_snapshot(scene)
         result["compositor"] = _compositor_info(scene, graph_sections, offset, limit)
+        _effective, device_warning = effective_cycles_device(scene)
+        if device_warning:
+            result["warnings"] = [device_warning]
         return result
 
     def configure_render_settings(self, scene_name, patch, detail=False):
@@ -990,15 +1247,7 @@ class RenderingHandlersMixin:
             scene, requested_filepath, "ANIMATION", require_bool("create_directories", create_directories)
         )
         frames = _validate_animation_frame_range(scene, max_animation_frames, confirm_frame_range)
-        original_path = scene.render.filepath
-        try:
-            scene.render.filepath = output
-            plan = [
-                {"frame": current_frame, "path": os.path.abspath(scene.render.frame_path(frame=current_frame))}
-                for current_frame in frames
-            ]
-        finally:
-            scene.render.filepath = original_path
+        plan = _frame_outputs(scene, output, frames)
         return {
             "requested_filepath": requested_filepath,
             "output": output,
@@ -1028,17 +1277,16 @@ class RenderingHandlersMixin:
         if not confirm_render:
             raise ValueError("confirm_render=True is required")
         scene = _scene(scene_name)
-        mode = str(mode).upper()
-        if mode not in {"STILL", "ANIMATION"}:
-            raise ValueError("mode must be STILL or ANIMATION")
-        if isinstance(max_animation_frames, bool) or not isinstance(max_animation_frames, int):
-            raise ValueError("max_animation_frames must be an integer")
-        if not 1 <= max_animation_frames <= _MAX_ANIMATION_FRAMES:
-            raise ValueError("max_animation_frames must be between 1 and 10000")
-        if frame is not None and (isinstance(frame, bool) or not isinstance(frame, int)):
-            raise ValueError("frame must be an integer")
-        if mode == "ANIMATION" and frame is not None:
-            raise ValueError("frame is only valid for STILL renders")
+        mode = _validate_render_request(
+            scene,
+            mode=mode,
+            frame=frame,
+            max_animation_frames=max_animation_frames,
+            view_layer_name=view_layer_name,
+            max_duration_seconds=max_duration_seconds,
+        )
+        if max_duration_seconds is not None and mode == "STILL":
+            raise ValueError(_STILL_DURATION_REFUSAL)
         requested_filepath = _default_requested_filepath(scene, filepath)
         if persist_output and mode == "STILL":
             raise ValueError(
@@ -1048,20 +1296,11 @@ class RenderingHandlersMixin:
             )
         create_directories = require_bool("create_directories", create_directories)
         output = _resolve_render_output(scene, requested_filepath, mode, create_directories)
-        if mode == "STILL" and os.path.exists(output) and not confirm_overwrite:
-            raise ValueError("Output file already exists; set confirm_overwrite=True to replace it")
-        if view_layer_name and scene.view_layers.get(view_layer_name) is None:
-            raise ValueError(f"View layer not found: {view_layer_name}")
+        if mode == "STILL":
+            _refuse_existing_output(output, confirm_overwrite)
         render_slot_policy = str(render_slot_policy).upper()
         if render_slot_policy not in {"USE_ACTIVE", "NEW_SLOT", "REPLACE_ACTIVE"}:
             raise ValueError("render_slot_policy must be USE_ACTIVE, NEW_SLOT, or REPLACE_ACTIVE")
-        if max_duration_seconds is not None and (
-            isinstance(max_duration_seconds, bool)
-            or not isinstance(max_duration_seconds, (int, float))
-            or not math.isfinite(max_duration_seconds)
-            or max_duration_seconds <= 0
-        ):
-            raise ValueError("max_duration_seconds must be a positive finite number")
         if mode == "ANIMATION":
             _validate_animation_frame_range(scene, max_animation_frames, confirm_frame_range)
         # Last of the checks, so a refused render leaves no directory behind.
@@ -1086,6 +1325,8 @@ class RenderingHandlersMixin:
             )
             result = {"FINISHED"}
             for current_frame in frames:
+                # Checked between frames only: a frame in progress always finishes, so a run can
+                # overshoot the bound by up to one frame, which the reply then warns about.
                 if max_duration_seconds is not None and time.monotonic() - started >= max_duration_seconds:
                     cancelled = True
                     break
@@ -1099,11 +1340,7 @@ class RenderingHandlersMixin:
                 if mode == "ANIMATION":
                     scene.render.filepath = output
                     frame_output = os.path.abspath(scene.render.frame_path(frame=current_frame))
-                    if os.path.exists(frame_output) and not confirm_overwrite:
-                        raise ValueError(
-                            f"Animation output already exists for frame {current_frame}; "
-                            "set confirm_overwrite=True to replace it"
-                        )
+                    _refuse_existing_output(frame_output, confirm_overwrite, current_frame)
                     scene.render.filepath = frame_output
                 else:
                     frame_output = output
@@ -1123,6 +1360,8 @@ class RenderingHandlersMixin:
                         "bytes": os.path.getsize(frame_output) if exists else None,
                     }
                 )
+                # After the render, whose start cleared any earlier record.
+                record_render_result(scene.name, current_frame, frame_output if exists else None)
             completed = True
         finally:
             # The caller's template text, never the resolved absolute path: persisting `output`
@@ -1135,11 +1374,19 @@ class RenderingHandlersMixin:
         passes, pass_verification = _render_pass_info(scene, view_layer_name, render_result)
         if verify_passes and not passes:
             raise RuntimeError("Render completed but no enabled passes could be verified")
+        effective_device, device_warning = effective_cycles_device(scene)
+        duration_seconds = time.monotonic() - started
         return _animation_summary(
             scene_name=scene.name,
             mode=mode,
             output=output,
             frame=frame if frame is not None else scene.frame_current,
+            engine=scene.render.engine,
+            effective_cycles_device=effective_device,
+            warnings=[
+                *([device_warning] if device_warning else []),
+                *_duration_overrun_warnings(duration_seconds, max_duration_seconds),
+            ],
             files=written_files,
             frame_total=len(frames),
             # `result` is the last frame's operator result, and stays the initial {"FINISHED"}
@@ -1149,7 +1396,7 @@ class RenderingHandlersMixin:
             persisted=persisted,
             cancelled=cancelled,
             cancellation_reason="max_duration_seconds exceeded" if cancelled else None,
-            duration_seconds=time.monotonic() - started,
+            duration_seconds=duration_seconds,
             render_slot_policy=render_slot_policy,
             passes=passes,
             pass_verification=pass_verification,
@@ -1166,8 +1413,11 @@ class RenderingHandlersMixin:
         Unlike a viewport screenshot, this reads actual render output: an explicit
         output_path (a file render_scene already wrote), read-only and never modified,
         or - when omitted - the in-memory "Render Result" datablock. Render Result only
-        ever reflects the most recently rendered frame, so an animation's earlier frames
-        are only reachable through their own written output_path.
+        ever reflects the most recent render, whoever started it, so an animation's earlier
+        frames are only reachable through their own written output_path. Its scene, frame and
+        source_path are what render_scene recorded when it rendered that frame; a render this
+        add-on did not record (Blender's UI, a preview tool) leaves them null with a warning
+        that the pixels' origin is unknown.
 
         Args:
             filepath: Destination path this call writes the (possibly downscaled) copy to;
@@ -1177,15 +1427,17 @@ class RenderingHandlersMixin:
                 null when that filename does not carry one unambiguously. `~` and Blender's `//`
                 prefix resolve exactly as they do when render_scene writes, so the text that
                 wrote a frame reads it back; source_path reports the resolved path.
-            frame: Frame number the in-memory Render Result must currently hold; only
-                checked when output_path is omitted.
+            frame: Frame number the in-memory Render Result must hold, checked against the
+                frame render_scene recorded rendering into it; refused when nothing recorded
+                it. Only checked when output_path is omitted.
             max_size: Maximum size in pixels for the largest dimension of the saved copy.
             format: Image format for the saved copy (png, jpg, etc.)
             inline: Return the image bytes in the reply instead of writing to filepath.
 
         Returns:
-            dict: success status with width/height/native dimensions, source, and frame,
-            carrying the image bytes instead of a path when `inline`.
+            dict: success status with width/height/native dimensions, source, source_path,
+            scene and frame, plus "warnings" when Render Result's origin is unknown, carrying
+            the image bytes instead of a path when `inline`.
 
         """
         with image_destination(inline, filepath) as path:
@@ -1206,7 +1458,8 @@ class RenderingHandlersMixin:
             format: Image format for the saved copy (png, jpg, etc.)
 
         Returns:
-            dict: success status with dimensions, source, and frame.
+            dict: success status with dimensions, source, source_path, scene, frame, and
+            "warnings" when Render Result's origin is unknown.
 
         Raises:
             ValueError: If the operation cannot be completed.
@@ -1214,7 +1467,10 @@ class RenderingHandlersMixin:
 
         """
         staging_path = None
+        scene_name = None
+        warnings = []
         resolved_output_path = _resolved_path(output_path) if output_path else None
+        source_path = resolved_output_path
         if resolved_output_path:
             if not os.path.isfile(resolved_output_path):
                 raise ValueError(f"Render output file not found: {resolved_output_path}")
@@ -1227,13 +1483,30 @@ class RenderingHandlersMixin:
             render_result = bpy.data.images.get("Render Result")
             if render_result is None:
                 raise RuntimeError("No render result available; render a frame first with render_scene")
-            current_frame = bpy.context.scene.frame_current
-            if frame is not None and frame != current_frame:
-                raise ValueError(
-                    f"Render Result currently holds frame {current_frame}, not {frame}; pass "
-                    "output_path to inspect a specific previously-written frame instead"
+            # The playhead is no witness: render_scene puts it back after rendering, and a render
+            # from anywhere else never moved it.
+            record = render_result_record()
+            if record is None:
+                if frame is not None:
+                    raise ValueError(
+                        f"Render Result's origin is unknown - render_scene did not render what it holds - "
+                        f"so it cannot be confirmed to hold frame {frame}; pass output_path to inspect "
+                        "a specific previously-written frame instead"
+                    )
+                warnings.append(
+                    "Render Result's origin is unknown: render_scene did not render what it holds (a render "
+                    "from Blender's UI or another tool did, or the file changed since), so its scene and frame "
+                    "are not reported. Pass output_path=<render_scene's last_file> to inspect a known frame."
                 )
-            frame = current_frame
+            else:
+                if frame is not None and frame != record["frame"]:
+                    raise ValueError(
+                        f"Render Result holds frame {record['frame']} of scene '{record['scene']}', not {frame}; "
+                        "pass output_path to inspect a specific previously-written frame instead"
+                    )
+                frame = record["frame"]
+                scene_name = record["scene"]
+                source_path = record["output_path"]
             source = "render_result"
             staging_path = f"{path}.src.png"
             render_result.save_render(filepath=staging_path)
@@ -1254,7 +1527,7 @@ class RenderingHandlersMixin:
             if staging_path and os.path.exists(staging_path):
                 os.remove(staging_path)
 
-        return {
+        reply = {
             "success": True,
             "width": width,
             "height": height,
@@ -1262,6 +1535,10 @@ class RenderingHandlersMixin:
             "native_height": native_height,
             "filepath": path,
             "source": source,
-            "source_path": resolved_output_path,
+            "source_path": source_path,
+            "scene": scene_name,
             "frame": frame,
         }
+        if warnings:
+            reply["warnings"] = warnings
+        return reply

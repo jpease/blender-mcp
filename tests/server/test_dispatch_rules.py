@@ -40,6 +40,8 @@ _PARAMS_DECIDE = [
     ("manage_geometry_nodes_bake", {}, {"action": "BAKE"}),
     ("manage_procedural_instances", {}, {"source_name": "Rock"}),
     ("manage_procedural_instances", {"pick_instance": None}, {"realize_instances": False}),
+    # READ, LIST and DELETE touch only job files; CREATE saves a copy and starts a process.
+    ("manage_render_job", {"action": "LIST"}, {"action": "CREATE"}),
     # `operation`, not `action`: INSPECT reads the cycle already there, SET writes a modifier,
     # and omitting the parameter means SET.
     ("set_action_cycle", {"operation": "INSPECT"}, {}),
@@ -123,3 +125,8 @@ def test_a_render_that_persists_its_output_template_is_transacted(server: object
     """`persist_output` writes `scene.render.filepath`, which is scene state a failure must restore."""
     assert server.bypasses_transaction("render_scene", {"persist_output": True}) is False
     assert server.bypasses_transaction("render_scene", {"persist_output": False}) is True
+
+
+def test_starting_a_render_job_is_not_transacted(server: object) -> None:
+    """CREATE saves a copy and starts another Blender: nothing in this session's data changes."""
+    assert server.bypasses_transaction("manage_render_job", {"action": "CREATE"}) is True

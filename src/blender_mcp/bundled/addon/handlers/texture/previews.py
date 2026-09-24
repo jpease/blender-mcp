@@ -8,6 +8,7 @@ import bpy
 import mathutils
 
 from ...helpers import runtime_enum_item_name
+from ...render_devices import effective_cycles_device
 from ._shared import material_by_name, runtime_engine, validate_engine
 
 
@@ -211,6 +212,8 @@ class TexturePreviewHandlers:
                         "path": paths[engine],
                         "size_bytes": os.path.getsize(paths[engine]),
                         "samples": int(samples),
+                        # The staging scene keeps Cycles' default CPU device request; None for EEVEE.
+                        "effective_cycles_device": effective_cycles_device(scene)[0],
                     }
                 )
         finally:

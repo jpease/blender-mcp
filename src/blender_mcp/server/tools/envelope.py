@@ -8,12 +8,14 @@ plus this same envelope as additional content items - see their docstrings) uses
 to build it:
 
 Of those five, only `get_viewport_screenshot` is a live viewport capture (OpenGL/GPU
-offscreen draw, not a render). `render_lighting_preview` and `render_pbr_material_preview`
-render a disposable staging scene (a lighting comparison, a studio material preview) -
-not the user's actual scene. `render_scene` renders the user's actual scene but only
+offscreen draw, not a render). `render_pbr_material_preview` renders a disposable staging
+scene (a studio material preview); `render_lighting_preview` renders the user's actual scene
+(a lighting comparison) with its camera, frame, resolution, engine and samples temporarily
+overridden and restored afterwards. `render_scene` renders the user's actual scene but only
 writes files to disk and returns metadata (path, size, per-frame status), not pixels;
-call `inspect_render_output` afterward (pointed at one of those written paths, or with
-no path at all to read the in-memory Render Result) to actually see that render's pixels.
+call `inspect_render_output` afterward, pointed at one of those written paths, to actually
+see that render's pixels (with no path it reads the in-memory Render Result, which holds
+whatever rendered last).
 
     {"ok": bool, "data": ..., "error": None, "warnings": [...], "changed_objects": [...],
      "changed_resources": [...]}
@@ -26,12 +28,14 @@ no path at all to read the in-memory Render Result) to actually see that render'
 - `error`: always None here; kept for shape symmetry with `ToolError`'s payload.
 - `warnings`: non-fatal notices, e.g. that a topology-changing operation invalidated
   indices from an earlier `get_mesh_data` call, or that the operator was cancelled.
-- `changed_objects`: names of Blender *objects* the call created, modified, or deleted.
-  Never includes provider asset IDs, material/image/world names, or requested targets
-  that turned out unchanged (e.g. a cancelled ND operator).
+- `changed_objects`: names of Blender *objects* the call created, modified, or deleted - the
+  items a caller acts on next, such as the roots of a linked hierarchy, not every member of
+  it, which the tool counts in `data` instead. Never includes provider asset IDs,
+  material/image/world names, or requested targets that turned out unchanged (e.g. a
+  cancelled ND operator).
 - `changed_resources`: names of non-object datablocks touched (materials, images,
   worlds, node groups, textures) - the counterpart to `changed_objects` for data that
-  isn't a scene object.
+  isn't a scene object, and short for the same reason.
 
 Pagination fields (`list_scene_objects`, `get_mesh_data`, `list_polyhaven_assets`) live
 inside `data`, not in this envelope: a `limit`/`offset` request, a total-count field
@@ -40,15 +44,18 @@ is true, call again with `offset=next_offset` to continue.
 
 Every reply is bounded by `REPLY_BYTE_BUDGET`. A reply stays in the agent's context for the
 rest of the session, so `ok()` shortens the pages of records in `data`, longest first and on
-into the next until the encoded reply fits, marks each shortened page `truncated` with the
-`next_offset` to resume from, and says so in `warnings`. Identifiers are never dropped to make
-room: a page keeps at least one record, a payload with no record list to shorten is sent whole
-with a warning, and a reply still over the budget with every page down to its last record says
-so instead of offering an offset. Tools return what changed plus the identifiers to find the
-rest; full state is a `detail=True` request, not the default.
+into the next until the encoded reply fits, marks each shortened page `truncated`, and says so
+in `warnings`. A page the tool itself pages - one carrying its own `offset` or `next_offset` -
+also gets the `next_offset` to resume from; any other page's warning says to narrow the scope,
+because an offset it invented would name a parameter the tool does not take, or page a different
+list. Identifiers are never dropped to make room: a page keeps at least one record, a payload with
+no record list to shorten is sent whole with a warning, and a reply still over the budget with
+every page down to its last record says so instead of offering an offset. Tools return what
+changed plus the identifiers to find the rest; full state is a `detail=True` request, not the
+default.
 
 `envelope_for` is the shared path: it lifts `changed_objects` and `changed_resources` out of an
-addon reply, bounds the object list at `CHANGED_OBJECTS_LIMIT`, and calls `ok()`. A tool reaches it
+addon reply, bounds each at `CHANGE_LIST_LIMIT`, and calls `ok()`. A tool reaches it
 by awaiting `tools/_dispatch.call_blender`, which is the only function in the server that both
 sends a command and shapes its reply; a tool that must read the reply before it knows what changed
 - a created object's generated name - awaits `_dispatch.send_blender_command` and hands that reply
@@ -60,7 +67,7 @@ payload out of several round trips (`cloth.configure`, `core`, `rendering`'s orc
 `polyhaven`'s status-then-query pairs), or it must report `ok=False` for a cancelled operator, which
 `envelope_for` has no flag for (`nd`). A straight `ok(reply, changed_objects=...)` over a single
 command's reply is not one of those cases and belongs on `call_blender` instead - it silently skips
-the `CHANGED_OBJECTS_LIMIT` bound and the lift of the addon's own change keys.
+the `CHANGE_LIST_LIMIT` bound and the lift of the addon's own change keys.
 """
 
 from collections.abc import Sequence
@@ -82,10 +89,11 @@ STALE_INDEX_WARNING = (
 # pagination shortens without losing anything.
 REPLY_BYTE_BUDGET = 8 * 1024
 
-# Linking a whole set changes hundreds of objects, and every name would sit in the agent's
-# context for the rest of the session; `envelope_for` keeps this many and says how many there
-# were in total.
-CHANGED_OBJECTS_LIMIT = 50
+# The change lists name what a caller acts on next, so they are short by construction; this cap
+# is the guardrail for a producer that lists every member of a bulk change instead - each name
+# would sit in the agent's context for the rest of the session. `envelope_for` keeps this many of
+# each list and says how many there were in total.
+CHANGE_LIST_LIMIT = 50
 
 # The two keys `envelope_for` lifts out of an addon reply; everything else stays in `data`.
 _CHANGE_KEYS = frozenset({"changed_objects", "changed_resources"})
@@ -151,13 +159,19 @@ def _pagination_names(owner: dict, key: str) -> dict[str, str] | None:
     unpaginated sibling rewrote the page's `next_offset` - `list_scene_objects` handed back
     `next_offset=234` for a page of two, and the next call skipped 232 objects.
 
+    Only a page its owner shows the tool can resume - one carrying its own `offset` or
+    `next_offset` - gets a resume point. A bounded sub-list is marked `truncated` and nothing more:
+    `list_libraries(detail=true)` pages each library's `datablocks` beside a `limit` and a
+    `truncated` but no offset, because its `offset` pages libraries, and the `next_offset` this
+    once wrote there sent the next call past libraries it had never listed.
+
     Args:
         owner: The dict holding the page.
         key: The key whose value is the list of records.
 
     Returns:
-        The `truncated`/`offset`/`next_offset`/`returned_count` names in use, or None when the
-        page carries no pagination to update.
+        The `truncated` and `returned_count` names in use, plus `offset` and `next_offset` for a
+        resumable page, or None when the page carries no pagination to update.
 
     """
     for prefix in (f"{key}_", ""):
@@ -165,12 +179,10 @@ def _pagination_names(owner: dict, key: str) -> dict[str, str] | None:
             continue
         if not prefix and not _bare_page_is(owner, key):
             return None
-        return {
-            "truncated": f"{prefix}truncated",
-            "offset": f"{prefix}offset",
-            "next_offset": f"{prefix}next_offset",
-            "returned_count": f"{prefix}returned_count",
-        }
+        names = {"truncated": f"{prefix}truncated", "returned_count": f"{prefix}returned_count"}
+        if f"{prefix}offset" in owner or f"{prefix}next_offset" in owner:
+            names |= {"offset": f"{prefix}offset", "next_offset": f"{prefix}next_offset"}
+        return names
     return None
 
 
@@ -237,19 +249,19 @@ class PageCut:
     resume: str
 
 
-def _page_offset(owner: dict, names: dict[str, str] | None) -> int:
+def _page_offset(owner: dict, names: dict[str, str]) -> int:
     """
     Read the offset the page itself started at, which is what a resume point counts from.
 
     Args:
         owner: The dict holding the page.
-        names: The page's pagination key names, or None when it carries none.
+        names: The pagination key names of a resumable page.
 
     Returns:
-        The page's own starting offset; 0 for a page that does not report one.
+        The page's own starting offset; 0 for a page that reports only its `next_offset`.
 
     """
-    return int(owner.get(names["offset"]) or 0) if names else 0
+    return int(owner.get(names["offset"]) or 0)
 
 
 def _pagination_updates(owner: dict, key: str, kept: int) -> dict[str, object]:
@@ -262,16 +274,16 @@ def _pagination_updates(owner: dict, key: str, kept: int) -> dict[str, object]:
         kept: How many records the page keeps.
 
     Returns:
-        The values to write on `owner`, empty for a page that carries no pagination.
+        The values to write on `owner`, empty for a page that carries no pagination; a
+        `next_offset` only for a page the tool can resume.
 
     """
     names = _pagination_names(owner, key)
     if names is None:
         return {}
-    updates: dict[str, object] = {
-        names["truncated"]: True,
-        names["next_offset"]: _page_offset(owner, names) + kept,
-    }
+    updates: dict[str, object] = {names["truncated"]: True}
+    if "next_offset" in names:
+        updates[names["next_offset"]] = _page_offset(owner, names) + kept
     if names["returned_count"] in owner:
         updates[names["returned_count"]] = kept
     return updates
@@ -291,7 +303,7 @@ def _resume_hint(owner: dict, key: str, kept: int) -> str:
 
     """
     names = _pagination_names(owner, key)
-    if names is None:
+    if names is None or "next_offset" not in names:
         return _NARROW_SCOPE
     return f"continue with offset={_page_offset(owner, names) + kept}"
 
@@ -532,7 +544,7 @@ def envelope_for(
     changed_objects: Sequence[str] = (),
     changed_resources: Sequence[str] = (),
     warnings: Sequence[str] = (),
-    limit: int = CHANGED_OBJECTS_LIMIT,
+    limit: int = CHANGE_LIST_LIMIT,
 ) -> dict:
     """
     Shape one addon reply into the envelope: the deterministic half of every tool module's `_call`.
@@ -551,8 +563,9 @@ def envelope_for(
         changed_resources: Non-object datablock names, under that same replacement rule.
         warnings: Notices to carry into the envelope. They belong here rather than appended to the
             result, which would land after `ok()` had already measured the reply against its budget.
-        limit: Most `changed_objects` names to keep; a longer list is cut to it and a warning names
-            the total.
+        limit: Most names each change list keeps; a longer list is cut to it and a warning names the
+            total. A tool's change lists name what a caller acts on next, so a cut is a guardrail
+            against a producer that lists every member of a bulk change, not routine.
 
     Returns:
         The `ok()` envelope.
@@ -566,7 +579,7 @@ def envelope_for(
         objects = reply.get("changed_objects", objects)
         resources = reply.get("changed_resources", resources)
     notices = list(warnings)
-    if len(objects) > limit:
-        notices.append(f"changed_objects lists the first {limit} of {len(objects)} objects")
-        objects = objects[:limit]
-    return ok(data, warnings=notices, changed_objects=list(objects), changed_resources=list(resources))
+    for key, names, noun in (("changed_objects", objects, "objects"), ("changed_resources", resources, "resources")):
+        if len(names) > limit:
+            notices.append(f"{key} lists the first {limit} of {len(names)} {noun}")
+    return ok(data, warnings=notices, changed_objects=list(objects[:limit]), changed_resources=list(resources[:limit]))

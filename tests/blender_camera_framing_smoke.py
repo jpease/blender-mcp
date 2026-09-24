@@ -261,6 +261,128 @@ assert not _inside_frame(_projected(armature_only_camera, coat_far_corner)), (
     "framing the armature object alone already contained the coat, so the comparison proves nothing"
 )
 
+# ---------------------------------------------------------------------------------------------
+# Render visibility: a helper mesh the rig also deforms is left out, so it cannot widen the lens.
+# ---------------------------------------------------------------------------------------------
+
+# A collision proxy 3 m behind the character and far wider than it, stamped the way this repo
+# stamps its own helpers - Disable in Renders and a wire display - and bound by an Armature
+# modifier, so the rig resolves it exactly as it resolves the body.
+character_proxy = _new_object("Character Proxy", _box_mesh("Character Proxy Mesh", 4.0, 0.3, 3.0))
+character_proxy.location = (CHARACTER_ORIGIN_X, 3.0, 0.0)
+character_proxy.hide_render = True
+character_proxy.display_type = "WIRE"
+proxy_skin = character_proxy.modifiers.new(name="Armature", type="ARMATURE")
+proxy_skin.object = character_rig
+# Where the whole-character camera started, so a solve here differs from that one only by the proxy.
+proxy_camera = _new_object("Proxy Camera", bpy.data.cameras.new("Proxy Camera Data"))
+proxy_camera.location = (CHARACTER_ORIGIN_X, -5.0, 0.9)
+proxy_camera.rotation_euler = (1.5708, 0.0, 0.0)
+proxy_camera.data.lens = 50.0
+bpy.context.view_layer.update()
+
+filtered = handler.frame_camera_on_objects(
+    scene.name, proxy_camera.name, armature_names=[character_rig.name], margin=0.05, policy="CHANGE_LENS"
+)
+assert filtered["excluded_objects"] == [{"object": character_proxy.name, "reason": "HIDE_RENDER"}], (
+    f"the hidden proxy was not reported as excluded: {filtered['excluded_objects']}"
+)
+assert filtered["excluded_total"] == 1
+assert filtered["framed_objects"] == [character_body.name, character_coat.name], (
+    f"framed {filtered['framed_objects']}, not the two meshes the render shows"
+)
+assert character_proxy.name not in filtered["limiting_objects"]
+assert filtered["limiting_objects"] and set(filtered["limiting_objects"]) <= set(filtered["framed_objects"])
+# CHANGE_LENS solves the longest lens containing the filtered set, which is the lens solved before
+# the proxy existed: a hidden proxy changes nothing about the shot.
+assert abs(filtered["lens"] - whole_character["lens"]) < LENS_TOLERANCE_MM, (
+    f"the proxy moved the solved lens from {whole_character['lens']} mm to {filtered['lens']} mm"
+)
+
+# include_hidden=True frames it after all, and the proxy is then what limits the frame.
+unfiltered = handler.frame_camera_on_objects(
+    scene.name,
+    proxy_camera.name,
+    armature_names=[character_rig.name],
+    margin=0.05,
+    policy="CHANGE_LENS",
+    include_hidden=True,
+)
+assert character_proxy.name in unfiltered["framed_objects"], "include_hidden=True still left the proxy out"
+assert unfiltered["excluded_objects"] == [] and unfiltered["excluded_total"] == 0
+assert character_proxy.name in unfiltered["limiting_objects"], (
+    f"the proxy pushed the frame out but limiting_objects names {unfiltered['limiting_objects']}"
+)
+assert unfiltered["lens"] < filtered["lens"] - 1.0, (
+    f"framing the proxy solved {unfiltered['lens']} mm, no wider than {filtered['lens']} mm without it"
+)
+
+# Naming the proxy frames it without include_hidden, and the reply says it does not render.
+named_proxy = handler.frame_camera_on_objects(
+    scene.name,
+    proxy_camera.name,
+    [character_proxy.name],
+    armature_names=[character_rig.name],
+    margin=0.05,
+    policy="CHANGE_LENS",
+)
+assert named_proxy["framed_objects"] == [character_proxy.name, character_body.name, character_coat.name]
+assert named_proxy["excluded_objects"] == []
+assert any(f"'{character_proxy.name}' (HIDE_RENDER)" in warning for warning in named_proxy["warnings"]), (
+    f"naming a hidden object did not warn: {named_proxy['warnings']}"
+)
+assert abs(named_proxy["lens"] - unfiltered["lens"]) < LENS_TOLERANCE_MM
+
+# Every exclusion code, read off real Blender 5.2 properties rather than the names this file assumes.
+render_exclusion_reason = sys.modules[f"{package_name}.helpers"].render_exclusion_reason
+
+
+def _visibility_probe(name: str, collection: bpy.types.Collection | None = None) -> bpy.types.Object:
+    obj = bpy.data.objects.new(name, _box_mesh(f"{name} Mesh", 0.1, 0.1, 0.2))
+    (collection or scene.collection).objects.link(obj)
+    return obj
+
+
+def _child_collection(name: str) -> tuple[bpy.types.Collection, bpy.types.LayerCollection]:
+    collection = bpy.data.collections.new(name)
+    scene.collection.children.link(collection)
+    return collection, bpy.context.view_layer.layer_collection.children[collection.name]
+
+
+visible_probe = _visibility_probe("Probe Visible")
+assert render_exclusion_reason(visible_probe, scene) is None, "a plain mesh in the scene collection was excluded"
+holdout_probe = _visibility_probe("Probe Holdout")
+holdout_probe.is_holdout = True
+no_camera_probe = _visibility_probe("Probe No Camera Rays")
+no_camera_probe.visible_camera = False
+bounds_probe = _visibility_probe("Probe Bounds")
+bounds_probe.display_type = "BOUNDS"
+hidden_collection, _hidden_layer = _child_collection("Probe Hidden Collection")
+hidden_collection.hide_render = True
+nested_collection = bpy.data.collections.new("Probe Nested Collection")
+hidden_collection.children.link(nested_collection)
+nested_probe = _visibility_probe("Probe Nested", nested_collection)
+expected_codes = {nested_probe.name: "COLLECTION_HIDE_RENDER"}
+for flag in ("exclude", "holdout", "indirect_only"):
+    flagged_collection, flagged_layer = _child_collection(f"Probe {flag} Collection")
+    setattr(flagged_layer, flag, True)
+    expected_codes[_visibility_probe(f"Probe {flag}", flagged_collection).name] = "VIEW_LAYER_EXCLUDED"
+unbound_probe = _visibility_probe("Probe Unbound")
+unbound_skin = unbound_probe.modifiers.new(name="Armature", type="ARMATURE")
+unbound_skin.object = character_rig
+unbound_skin.show_render = False
+expected_codes |= {
+    holdout_probe.name: "HOLDOUT",
+    no_camera_probe.name: "NO_CAMERA_RAYS",
+    bounds_probe.name: "DISPLAY_WIRE_OR_BOUNDS",
+}
+bpy.context.view_layer.update()
+for probe_name, expected in expected_codes.items():
+    actual = render_exclusion_reason(bpy.data.objects[probe_name], scene)
+    assert actual == expected, f"{probe_name} was judged {actual}, not {expected}"
+assert render_exclusion_reason(unbound_probe, scene) is None, "without a rig named, a modifier is no reason"
+assert render_exclusion_reason(unbound_probe, scene, armature=character_rig) == "ARMATURE_MODIFIER_DISABLED"
+
 # CHANGE_ORTHO_SCALE is the only policy an orthographic camera can be framed with.
 ortho_camera = _new_object("Ortho Camera", bpy.data.cameras.new("Ortho Camera Data"))
 ortho_camera.data.type = "ORTHO"

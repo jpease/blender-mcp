@@ -55,7 +55,6 @@ EXCLUDED: Mapping[tuple[str, str], str] = {
     ("scene.render", "use_crop_to_border"): "only meaningful with use_border, which is excluded",
     ("scene.render", "threads"): "a machine-local scheduling choice, not shot intent, and it does not travel",
     ("scene.render", "threads_mode"): "same: the thread count belongs to the host, not the .blend",
-    ("scene.render", "use_persistent_data"): "trades memory for speed per machine; a studio sets it, not a shot",
 }
 
 
@@ -96,6 +95,7 @@ def _section_models() -> Mapping[str, type[BaseModel]]:
         EeveeRayTracingPatch,
         MetadataPatch,
         MultiviewPatch,
+        PerformancePatch,
     )
 
     return {
@@ -104,16 +104,18 @@ def _section_models() -> Mapping[str, type[BaseModel]]:
         "cycles": CyclesPatch,
         "eevee": EeveePatch,
         "eevee.ray_tracing": EeveeRayTracingPatch,
+        "performance": PerformancePatch,
     }
 
 
 def reachable_properties() -> set[tuple[str, str]]:
     """
-    Derive every `(owner, rna_identifier)` a `configure_render_settings` patch can write.
+    Derive every `(owner, rna_identifier)` a render-settings or lighting-quality patch can write.
 
     Flat `SCENE_PROPERTIES` (frame_start/frame_end/frame_step) are dropped: they live on the
     Scene, which this probe does not enumerate, and attributing them to `scene.render` would
-    be a lie that hides a real gap.
+    be a lie that hides a real gap. `configure_lighting_quality`'s fields count too, so a
+    property it already sets (`scene.cycles.device`) is not reported as a gap to fill again.
 
     Returns:
         set[tuple[str, str]]: Owner key and RNA identifier pairs.
@@ -124,6 +126,8 @@ def reachable_properties() -> set[tuple[str, str]]:
     reachable = {("scene.render", name) for name in table.RENDER_PROPERTIES}
     reachable |= {("scene.render.image_settings", name) for name in table.IMAGE_PROPERTY_MAPPING.values()}
     reachable |= {("scene.cycles", name) for name in table.CYCLES_PROPERTY_MAPPING.values()}
+    reachable |= {("scene.cycles", name) for name in table.LIGHTING_CYCLES_FIELDS}
+    reachable |= {("scene.eevee", name) for name in table.LIGHTING_EEVEE_FIELD_MAP.values()}
     for section, routes in table.NESTED_SECTIONS.items():
         claimed: set[str] = {key for _path, mapping, _label in routes if mapping is not None for key in mapping}
         for owner_path, mapping, _label in routes:

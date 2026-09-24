@@ -11,9 +11,10 @@ be rerun for a new Unicode version. Sections:
 1. Code points outside `UNSAFE_CATEGORIES` whose NFKC form contains `/`, `\\` or
    `:`. A category filter passes them; a consumer that normalises sees a separator.
 2. What `client_safe_leaf` does with each of them.
-3. What `safe_relative_link` does with link shapes that defeat a blocklist.
+3. What `admissible_link_component` does with the components of link shapes that
+   defeat a blocklist.
 4. Whether NFKC leaves every character `LINK_COMPONENT_ALLOWED` admits unchanged; if
-   so, `safe_relative_link` needs no normalisation pass.
+   so, `admissible_link_component` needs no normalisation pass.
 5. Confusables the leaf allowlist admits but NFKC changes, which only `is_confusable`
    catches.
 6. Homoglyphs NFKC leaves alone, which `is_confusable` misses.
@@ -65,7 +66,7 @@ for character in ("\u2044", "\u2215"):
         f"NFKC unchanged={unicodedata.normalize('NFKC', character) == character} -> {verdict}: {published!r}"
     )
 
-print("\n=== 3. the four link shapes that defeated the three previous blocklists ===")
+print("\n=== 3. the link shapes that defeated the three previous blocklists, component by component ===")
 LINK_CASES = {
     "literal ..": "//../../clients/acme/canon.blend",
     "U+FE68, NFKC -> backslash": "//..\ufe68..\ufe68clients\ufe68acme\ufe68canon.blend",
@@ -75,10 +76,13 @@ LINK_CASES = {
     "benign, must still publish whole": "//libs/canon.blend",
 }
 for label, filepath in LINK_CASES.items():
-    whole = text_hygiene.safe_relative_link(filepath, MAX_LINK_CHARS)
+    body = text_hygiene.relative_link_body(filepath)
     relative = text_hygiene.relative_link_body(text_hygiene.strip_unsafe(filepath)) is not None
-    published = whole if whole is not None else text_hygiene.client_safe_leaf(filepath)
-    print(f"  {label:44s} is_relative={relative!s:5s} whole={whole is not None!s:5s} published={published!r}")
+    admitted = body is not None and all(text_hygiene.admissible_link_component(part) for part in body.split("/"))
+    leaf = text_hygiene.client_safe_leaf(filepath)
+    print(f"  {label:44s} is_relative={relative!s:5s} components_admitted={admitted!s:5s} leaf={leaf!r}")
+print("  `..` is admitted as a component: whether a link may climb is decided by containment")
+print("  in `blend_files.published_path_fields`, which gates only a link it derived itself.")
 
 print("\n=== 4. NFKC is the identity on every character the link allowlist admits ===")
 UNSTABLE = sorted(c for c in text_hygiene.LINK_COMPONENT_ALLOWED if unicodedata.normalize("NFKC", c) != c)

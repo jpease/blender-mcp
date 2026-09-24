@@ -20,7 +20,7 @@ from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.connection import BlenderOperationError
 from blender_mcp.server.tools import _dispatch, _documentation, file_lifecycle
-from blender_mcp.server.tools.envelope import CHANGED_OBJECTS_LIMIT
+from blender_mcp.server.tools.envelope import CHANGE_LIST_LIMIT
 
 FILE_LIFECYCLE_COMMANDS = {
     "get_session_info",
@@ -184,6 +184,7 @@ def test_link_canon_library_forwards_every_parameter(monkeypatch) -> None:
             as_override=True,
             relative=True,
             scene_uid=7,
+            detail=True,
         )
     )
 
@@ -197,7 +198,24 @@ def test_link_canon_library_forwards_every_parameter(monkeypatch) -> None:
         "as_override": True,
         "relative": True,
         "scene_uid": 7,
+        "detail": True,
     }
+
+
+def test_link_canon_library_defaults(monkeypatch) -> None:
+    """An absolute link and a names-only report are the defaults; `detail` is an explicit request."""
+    connection = _Connection()
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+
+    asyncio.run(file_lifecycle.link_canon_library(ctx=None, filepath="/canon/hero.blend"))
+
+    _command, params = connection.calls[0]
+    assert (params["as_override"], params["relative"], params["scene_uid"], params["detail"]) == (
+        False,
+        False,
+        None,
+        False,
+    )
 
 
 def test_changed_objects_move_from_the_addon_result_into_the_envelope(monkeypatch) -> None:
@@ -218,7 +236,7 @@ def test_changed_objects_are_bounded_and_the_total_is_reported(monkeypatch) -> N
 
     envelope = asyncio.run(file_lifecycle.link_canon_library(ctx=None, filepath="/canon/house.blend"))
 
-    assert envelope["changed_objects"] == names[:CHANGED_OBJECTS_LIMIT]
+    assert envelope["changed_objects"] == names[:CHANGE_LIST_LIMIT]
     assert any("480" in warning for warning in envelope["warnings"]), envelope["warnings"]
 
 

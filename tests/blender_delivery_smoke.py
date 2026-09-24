@@ -3,6 +3,7 @@
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 
@@ -27,6 +28,10 @@ from blender_mcp_delivery_smoke.server_core import BlenderMCPServer
 server = BlenderMCPServer()
 scene = bpy.context.scene
 
+# Publication is judged against the file roots when they are set; this run starts with
+# none, so the tree a path must lie in to be published whole is the shot's own directory.
+os.environ.pop("BLENDERMCP_FILE_ROOTS", None)
+os.environ.pop("BLENDERMCP_OUTPUT_ROOTS", None)
 work = tempfile.mkdtemp(prefix="delivery_smoke_")
 shot_directory = Path(work) / "shot"
 shot_directory.mkdir()
@@ -74,10 +79,10 @@ assert report["portable"] is False
 serialized = json.dumps({key: value for key, value in report.items() if key != "blend_filepath"})
 assert work not in serialized, "a reply carried the temporary directory"
 assert str(shot_directory) not in serialized
-# A reduced path says so, so a bare leaf is never read as a malformed path.
+# A reduced path says so, and says why: the texture sits beside the shot's directory, not in it.
 assert by_name["Loose Texture"]["path"] == "external_texture.png"
 assert by_name["Loose Texture"]["path_redacted"] is True
-assert by_name["Loose Texture"]["path_redaction_reason"] == "NOT_RELATIVE"
+assert by_name["Loose Texture"]["path_redaction_reason"] == "OUTSIDE_ROOTS"
 assert by_name["Packed Texture"]["path_redacted"] is True
 
 # Delete the file the image points at: the same reference must now read MISSING.
@@ -115,8 +120,9 @@ except ValueError as error:
 else:
     raise AssertionError("hash_libraries was accepted with no file roots configured")
 
-# The reply record the redaction finding named: a linked library reports its leaf,
-# and says that the leaf is a redaction rather than a broken or malformed link.
+# The reply record the redaction finding named: a library linked by its absolute path
+# from inside the shot's own directory is published whole, as a link from the shot,
+# because it resolves inside the allowed tree however Blender spelled it.
 library_path = shot_directory / "libs" / "canon.blend"
 library_path.parent.mkdir()
 bpy.ops.wm.save_as_mainfile(filepath=str(library_path), copy=True)
@@ -127,12 +133,31 @@ with bpy.data.libraries.load(str(library_path), link=True) as (data_from, data_t
 
 linked = server.get_session_info()["libraries"]
 assert len(linked) == 1, linked
-assert linked[0]["filepath"] == "canon.blend", linked[0]
-assert linked[0]["filepath_redacted"] is True, linked[0]
-assert linked[0]["filepath_redaction_reason"] == "NOT_RELATIVE", linked[0]
-assert linked[0]["is_relative"] is False, "is_relative is judged on the unredacted path"
-assert linked[0]["is_missing"] is False, "a redacted path was reported as a broken link"
+assert linked[0]["filepath"] == "//libs/canon.blend", linked[0]
+assert linked[0]["filepath_redacted"] is False, linked[0]
+assert linked[0]["filepath_redaction_reason"] is None, linked[0]
+assert linked[0]["is_relative"] is False, "is_relative describes the path as Blender stored it"
+assert linked[0]["is_missing"] is False, linked[0]
 assert work not in json.dumps(linked), "the library layout leaked"
+
+# A canon folder beside the shot is outside the shot's directory, so without roots it
+# is withheld as OUTSIDE_ROOTS; with the work directory as the root it is inside, and
+# Blender's own `..` spelling is published whole.
+canon_path = Path(work) / "canon" / "set.blend"
+canon_path.parent.mkdir()
+bpy.ops.wm.save_as_mainfile(filepath=str(canon_path), copy=True)
+bpy.data.libraries[0].filepath = "//../canon/set.blend"
+beside = server.get_session_info()["libraries"][0]
+assert (beside["filepath"], beside["filepath_redaction_reason"]) == ("set.blend", "OUTSIDE_ROOTS"), beside
+os.environ["BLENDERMCP_FILE_ROOTS"] = work
+try:
+    beside = server.get_session_info()["libraries"][0]
+    assert beside["filepath"] == "//../canon/set.blend", beside
+    assert beside["filepath_redacted"] is False, beside
+    beside_entries = [entry for entry in server.inspect_delivery(scene.name)["entries"] if entry["kind"] == "LIBRARY"]
+    assert beside_entries[0]["path"] == "//../canon/set.blend", beside_entries[0]
+finally:
+    del os.environ["BLENDERMCP_FILE_ROOTS"]
 
 # The same library, linked relatively, is published whole and reports no redaction.
 bpy.data.libraries[0].filepath = "//libs/canon.blend"

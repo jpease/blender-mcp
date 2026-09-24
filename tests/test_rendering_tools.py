@@ -177,30 +177,25 @@ def test_view_layer_and_render_confirmation_rules(monkeypatch) -> None:
     assert connection.calls == []
 
 
-def test_render_output_metadata_reports_all_fields() -> None:
-    result = {
-        "width": 800,
-        "height": 450,
-        "native_width": 1920,
-        "native_height": 1080,
-        "source": "output_path",
-        "source_path": "/tmp/render.png",
-        "frame": 12,
-    }
+def test_render_result_origin_warning_reaches_the_envelope_not_the_data(monkeypatch) -> None:
+    """An agent reads warnings off the envelope; left in data it would be one it never checks."""
+    notice = "Render Result's origin is unknown: render_scene did not render what it holds."
 
-    assert rendering._render_output_metadata(result) == result
+    def fake_send_command(_command, params):
+        with open(params["filepath"], "wb") as f:
+            f.write(b"fake-png-bytes")
+        return {"source": "render_result", "source_path": None, "scene": None, "frame": None, "warnings": [notice]}
 
+    connection = _Connection()
+    connection.send_command = fake_send_command
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+    monkeypatch.setattr(_image_transport, "get_last_handshake", lambda: None)
 
-def test_render_output_metadata_defaults_missing_fields_to_none() -> None:
-    assert rendering._render_output_metadata({}) == {
-        "width": None,
-        "height": None,
-        "native_width": None,
-        "native_height": None,
-        "source": None,
-        "source_path": None,
-        "frame": None,
-    }
+    _image, envelope = asyncio.run(rendering.inspect_render_output(ctx=None))
+
+    assert envelope["warnings"] == [notice]
+    assert "warnings" not in envelope["data"]
+    assert (envelope["data"]["scene"], envelope["data"]["frame"]) == (None, None)
 
 
 def test_inspect_render_output_is_async_and_returns_the_image_with_its_envelope(monkeypatch) -> None:
@@ -346,6 +341,10 @@ def _fake_scene(handlers, name="Scene"):
         use_stamp=False,
         stamp_note_text="",
         image_settings=image_settings,
+        use_persistent_data=False,
+        use_simplify=False,
+        simplify_subdivision_render=6,
+        filter_size=1.5,
     )
     return _FakeScene(
         name=name,
@@ -360,6 +359,9 @@ def _fake_scene(handlers, name="Scene"):
         cycles=types.SimpleNamespace(
             samples=128,
             use_denoising=True,
+            device="CPU",
+            pixel_filter_type="BLACKMAN_HARRIS",
+            filter_width=1.5,
             film_transparent_glass=False,
             film_transparent_roughness=0.1,
         ),
@@ -470,6 +472,90 @@ def test_configure_render_settings_forwards_detail(monkeypatch) -> None:
     )
 
     assert [params["detail"] for _command, params in connection.calls] == [True, False]
+
+
+def _no_gpu_backend():
+    """Preferences on a machine whose Cycles add-on selects no compute backend."""
+    return types.SimpleNamespace(
+        addons={"cycles": types.SimpleNamespace(preferences=types.SimpleNamespace(compute_device_type="NONE"))}
+    )
+
+
+def test_performance_and_cycles_filter_patches_reach_their_owners(monkeypatch) -> None:
+    handler, scene, _handlers = _rendering_handler(monkeypatch)
+
+    # Render cost is engine-independent: no engine guard, unlike the cycles section.
+    handler.configure_render_settings("Scene", {"performance": {"use_simplify": True}})
+    result = handler.configure_render_settings(
+        "Scene",
+        {
+            "engine": "CYCLES",
+            "performance": {"use_persistent_data": True, "filter_size": 2.0},
+            "cycles": {"pixel_filter_type": "GAUSSIAN", "filter_width": 2.5},
+        },
+    )
+
+    assert result["after"] == {
+        "engine": "CYCLES",
+        "performance.use_persistent_data": True,
+        "performance.filter_size": 2.0,
+        "cycles.pixel_filter_type": "GAUSSIAN",
+        "cycles.filter_width": 2.5,
+    }
+    assert scene.render.use_simplify is True
+    assert scene.render.use_persistent_data is True
+    assert scene.render.filter_size == pytest.approx(2.0)
+    assert scene.cycles.filter_width == pytest.approx(2.5)
+
+
+def test_performance_and_cycles_patch_fields_hold_blender_5_2_identifiers_and_ranges() -> None:
+    """Measured on 5.2.2: an unknown enum identifier would reach setattr and raise a bare TypeError."""
+    patch = rendering.RenderSettingsPatch(
+        performance=rendering.PerformancePatch(use_persistent_data=True, simplify_volumes=0.5),
+        cycles=rendering.CyclesPatch(denoising_prefilter="FAST", filter_width=0.01),
+    )
+
+    assert patch.model_dump(exclude_none=True) == {
+        "performance": {"use_persistent_data": True, "simplify_volumes": 0.5},
+        "cycles": {"denoising_prefilter": "FAST", "filter_width": 0.01},
+    }
+    for invalid in ({"simplify_volumes": 1.5}, {"simplify_subdivision": -1}, {"filter_size": 501}):
+        with pytest.raises(ValidationError):
+            rendering.PerformancePatch.model_validate(invalid)
+    for invalid in (
+        {"pixel_filter_type": "TENT"},
+        {"denoising_quality": "LOW"},
+        {"denoising_input_passes": "ALBEDO"},
+        {"filter_width": 0},
+    ):
+        with pytest.raises(ValidationError):
+            rendering.CyclesPatch.model_validate(invalid)
+
+
+def test_inspect_render_setup_reports_performance_and_the_device_cycles_will_use(monkeypatch) -> None:
+    handler, scene, handlers = _rendering_handler(monkeypatch)
+    handlers.bpy.context.preferences = _no_gpu_backend()
+
+    eevee = handler.inspect_render_setup("Scene")
+
+    assert eevee["effective_cycles_device"] is None
+    assert "warnings" not in eevee
+    assert eevee["performance"] == {
+        "use_persistent_data": False,
+        "use_simplify": False,
+        "simplify_subdivision_render": 6,
+        "filter_size": 1.5,
+    }
+    assert eevee["cycles"]["pixel_filter_type"] == "BLACKMAN_HARRIS"
+
+    scene.render.engine = "CYCLES"
+    scene.cycles.device = "GPU"
+    cycles = handler.inspect_render_setup("Scene")
+
+    assert cycles["cycles"]["device"] == "GPU", "the request is still reported as the request"
+    assert cycles["effective_cycles_device"] == "CPU"
+    assert len(cycles["warnings"]) == 1
+    assert "renders on the CPU" in cycles["warnings"][0]
 
 
 def test_render_output_path_shapes_that_blender_would_relocate_are_refused(monkeypatch, tmp_path) -> None:
@@ -781,6 +867,21 @@ def test_configure_render_settings_refuses_a_directory_as_the_stored_template(mo
     assert scene.render.filepath == "/tmp/render/"
 
 
+def test_render_scene_reports_the_engine_and_the_device_cycles_actually_used(monkeypatch, tmp_path) -> None:
+    """A GPU request on a machine with no GPU backend renders on the CPU, and the reply says so."""
+    handler, scene, fake_bpy = _renderable(monkeypatch, tmp_path)
+    fake_bpy.context.preferences = _no_gpu_backend()
+    scene.render.engine = "CYCLES"
+    scene.cycles.device = "GPU"
+
+    summary = handler.render_scene("Scene", str(tmp_path / "gpu.png"), confirm_render=True, verify_passes=False)
+
+    assert summary["engine"] == "CYCLES"
+    assert summary["effective_cycles_device"] == "CPU"
+    assert len(summary["warnings"]) == 1
+    assert "renders on the CPU" in summary["warnings"][0]
+
+
 def test_render_scene_reply_summarises_and_detail_restores_the_per_frame_arrays(monkeypatch, tmp_path) -> None:
     """Per-frame bookkeeping is what spent 86% of the budget; it is now opt-in."""
     handler, scene, _bpy = _renderable(monkeypatch, tmp_path)
@@ -876,6 +977,8 @@ def _fake_still_reply(frame, path, *, bytes_written=5, render_slot_policy="USE_A
     return {
         "scene": "Scene",
         "mode": "STILL",
+        "engine": "CYCLES",
+        "effective_cycles_device": "GPU",
         "filepath": path,
         "frame": frame,
         "frame_count": 1,
@@ -961,6 +1064,8 @@ def test_aggregate_animation_summary_combines_per_frame_replies(monkeypatch) -> 
     assert summary == {
         "scene": "Scene",
         "mode": "ANIMATION",
+        "engine": "CYCLES",
+        "effective_cycles_device": "GPU",
         "filepath": "/tmp/beat_",
         "frame": 1,
         "frame_count": 3,
@@ -979,6 +1084,21 @@ def test_aggregate_animation_summary_combines_per_frame_replies(monkeypatch) -> 
         "pass_verification": "RENDERED_ONLY",
         "created_directory": True,
     }
+
+
+def test_aggregate_animation_summary_reports_the_last_frames_device_and_warnings() -> None:
+    """The single-call path reads its device once, after its loop; the orchestrated one reads the last frame."""
+    fallback = "cycles.device is GPU, but Preferences on this machine select no GPU backend"
+    replies = [
+        _fake_still_reply(1, "/tmp/beat_0001.png"),
+        {**_fake_still_reply(2, "/tmp/beat_0002.png"), "effective_cycles_device": "CPU", "warnings": [fallback]},
+    ]
+
+    summary = rendering._aggregate_animation_summary(_animation_plan(2), replies, _animation_outcome())
+
+    assert summary["engine"] == "CYCLES"
+    assert summary["effective_cycles_device"] == "CPU"
+    assert summary["warnings"] == [fallback]
 
 
 def test_aggregate_animation_summary_detail_adds_files_and_progress() -> None:
@@ -1021,6 +1141,8 @@ def test_aggregate_animation_summary_zero_completed_frames_reports_empty_not_sta
     assert summary["bytes_written"] == 0
     assert summary["operator_result"] == ["FINISHED"]
     assert summary["passes"] == []
+    assert summary["engine"] is None
+    assert summary["effective_cycles_device"] is None
 
 
 def test_aggregate_animation_summary_raises_when_verify_passes_finds_none() -> None:
@@ -1238,3 +1360,195 @@ def test_inspect_render_output_uses_the_inline_transport_when_the_addon_supports
     assert "filepath" not in params
     assert image.data == b"inline-render"
     assert envelope["data"]["source"] == "output_path"
+
+
+# ---------------------------------------------------------------------------
+# Duration bounds: refused where nothing can apply them, reported where overrun.
+# ---------------------------------------------------------------------------
+
+
+def _timed_renderable(monkeypatch, tmp_path, seconds_per_frame):
+    """
+    Build a renderable handler whose clock advances by a fixed amount per rendered frame.
+
+    Returns:
+        tuple: The handler, the scene, and the clock as a one-element list.
+
+    """
+    handler, scene, fake_bpy = _renderable(monkeypatch, tmp_path)
+    clock = [0.0]
+    handlers = importlib.import_module(type(handler).__module__)
+    monkeypatch.setattr(handlers, "time", types.SimpleNamespace(monotonic=lambda: clock[0], time=lambda: 0.0))
+    write_frame = fake_bpy.ops.render.render
+
+    def slow_render(**kwargs):
+        clock[0] += seconds_per_frame
+        return write_frame(**kwargs)
+
+    fake_bpy.ops.render = types.SimpleNamespace(render=slow_render)
+    return handler, scene, clock
+
+
+def test_the_addon_refuses_a_duration_bound_on_a_still_and_renders_nothing(monkeypatch, tmp_path) -> None:
+    """One frame is one blocking call; a bound checked only before it starts would be silently ignored."""
+    handler, _scene, _bpy = _renderable(monkeypatch, tmp_path)
+
+    with pytest.raises(ValueError, match="manage_render_job"):
+        handler.render_scene(
+            "Scene", str(tmp_path / "sh010.png"), confirm_render=True, max_duration_seconds=60, verify_passes=False
+        )
+
+    assert not (tmp_path / "sh010.png").exists()
+
+
+def test_the_server_refuses_a_duration_bound_on_a_still_before_dispatch(monkeypatch) -> None:
+    connection = _Connection()
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+
+    with pytest.raises(ToolError, match="manage_render_job"):
+        asyncio.run(
+            rendering.render_scene(
+                ctx=None, scene_name="Scene", filepath="/tmp/sh010.png", confirm_render=True, max_duration_seconds=60
+            )
+        )
+
+    assert connection.calls == []
+
+
+def test_an_addon_animation_that_overruns_its_duration_bound_warns(monkeypatch, tmp_path) -> None:
+    """The bound is checked between frames, so a frame started just under it finishes over it."""
+    handler, scene, clock = _timed_renderable(monkeypatch, tmp_path, seconds_per_frame=10.0)
+    scene.frame_end = 2
+
+    def animate(prefix, bound):
+        clock[0] = 0.0
+        return handler.render_scene(
+            "Scene",
+            str(tmp_path / prefix),
+            mode="ANIMATION",
+            confirm_render=True,
+            max_duration_seconds=bound,
+            verify_passes=False,
+        )
+
+    within = animate("within_", 25.0)
+    over = animate("over_", 15.0)
+
+    assert "warnings" not in within
+    # Frame 2 started at 10 s, under the bound, and was never going to be interrupted.
+    assert (over["frame_count"], over["status"], over["duration_seconds"]) == (2, "COMPLETED", 20.0)
+    assert len(over["warnings"]) == 1
+    assert "manage_render_job" in over["warnings"][0]
+
+
+class _TimedAnimationConnection(_AnimationConnection):
+    """An orchestrated run whose every frame takes a fixed ten seconds on a shared fake clock."""
+
+    def __init__(self, clock, frame_count=3):
+        super().__init__(frame_count=frame_count)
+        self.clock = clock
+
+    def send_command(self, command, params):
+        if command == "render_scene":
+            self.clock[0] += 10.0
+        return super().send_command(command, params)
+
+
+def test_an_orchestrated_animation_that_overruns_its_duration_bound_warns_in_the_envelope(monkeypatch) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(rendering, "time", types.SimpleNamespace(monotonic=lambda: clock[0]))
+    connection = _TimedAnimationConnection(clock, frame_count=3)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+
+    def render(bound):
+        clock[0] = 0.0
+        return asyncio.run(
+            rendering.render_scene(
+                ctx=_FakeReportProgressContext(),
+                scene_name="Scene",
+                filepath="//renders/beat_",
+                mode="ANIMATION",
+                confirm_render=True,
+                max_duration_seconds=bound,
+            )
+        )
+
+    within = render(30.0)
+    over = render(15.0)
+
+    assert (within["data"]["status"], within["warnings"]) == ("COMPLETED", [])
+    # Frame 2 started at 10 s and finished at 20 s; frame 3 was never sent.
+    assert (over["data"]["status"], over["data"]["frame_count"]) == ("CANCELLED", 2)
+    assert len(over["warnings"]) == 1
+    assert "manage_render_job" in over["warnings"][0]
+    assert "warnings" not in over["data"]
+
+
+# ---------------------------------------------------------------------------
+# Render Result: its pixels are labelled with the render that made them.
+# ---------------------------------------------------------------------------
+
+
+class _FakeRenderResult:
+    """The in-memory Render Result, which only ever saves the last render's pixels."""
+
+    def save_render(self, filepath):
+        Path(filepath).write_bytes(b"render-result")
+
+
+def _render_result_harness(monkeypatch, tmp_path):
+    """
+    Build a renderable handler whose renders fire Blender's render_init handlers, with a Render Result.
+
+    Returns:
+        tuple: The handler, the scene, and a callable standing in for a render from Blender's UI.
+
+    """
+    handler, scene, fake_bpy = _renderable(monkeypatch, tmp_path)
+    addon_name = type(handler).__module__.rsplit(".handlers.", 1)[0]
+    monkeypatch.setattr(fake_bpy.app.handlers, "render_init", [], raising=False)
+    importlib.import_module(f"{addon_name}.render_result_record").register_handlers()
+    fake_bpy.data.images["Render Result"] = _FakeRenderResult()
+    write_frame = fake_bpy.ops.render.render
+
+    def ui_render():
+        for callback in fake_bpy.app.handlers.render_init:
+            callback(scene)
+
+    def render(**kwargs):
+        ui_render()
+        return write_frame(**kwargs)
+
+    fake_bpy.ops.render = types.SimpleNamespace(render=render)
+    return handler, scene, ui_render
+
+
+def test_render_result_reports_the_frame_render_scene_rendered_not_the_playhead(monkeypatch, tmp_path) -> None:
+    handler, scene, _ui_render = _render_result_harness(monkeypatch, tmp_path)
+    copy = str(tmp_path / "copy.png")
+
+    handler.render_scene("Scene", str(tmp_path / "sh010.png"), frame=12, confirm_render=True, verify_passes=False)
+    reply = handler.inspect_render_output(copy)
+
+    assert scene.frame_current == 1, "render_scene puts the playhead back"
+    assert (reply["source"], reply["scene"], reply["frame"]) == ("render_result", "Scene", 12)
+    assert reply["source_path"] == str(tmp_path / "sh010.png")
+    assert "warnings" not in reply
+    assert handler.inspect_render_output(copy, frame=12)["frame"] == 12
+    with pytest.raises(ValueError, match="holds frame 12"):
+        handler.inspect_render_output(copy, frame=1)
+
+
+def test_render_result_from_a_render_render_scene_did_not_record_is_not_labelled(monkeypatch, tmp_path) -> None:
+    """A render from Blender's UI replaces the pixels, so render_scene's frame no longer describes them."""
+    handler, _scene, ui_render = _render_result_harness(monkeypatch, tmp_path)
+    copy = str(tmp_path / "copy.png")
+    handler.render_scene("Scene", str(tmp_path / "sh010.png"), frame=12, confirm_render=True, verify_passes=False)
+
+    ui_render()
+    reply = handler.inspect_render_output(copy)
+
+    assert (reply["scene"], reply["frame"], reply["source_path"]) == (None, None, None)
+    assert len(reply["warnings"]) == 1
+    with pytest.raises(ValueError, match="origin is unknown"):
+        handler.inspect_render_output(copy, frame=12)

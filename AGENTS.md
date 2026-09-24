@@ -115,7 +115,7 @@ Use an add-on only after confirming it is enabled and that its operator is avail
   `just lint`, `just fmt-check` and `just typecheck` never touch Blender, and CI
   has no Blender either. Changes under `src/blender_mcp/bundled/addon/` are
   therefore unverified by all four gates: the unit tests drive them through a
-  fake `bpy`. `just smoke` runs all 31 `tests/blender_*_smoke.py` scripts against
+  fake `bpy`. `just smoke` runs all 32 `tests/blender_*_smoke.py` scripts against
   a real headless Blender in about 20 seconds and is the only thing that
   exercises the real API — run it after touching an add-on handler. `just gate`
   is the heavier live-GUI rig that `just test` deliberately skips.
@@ -145,19 +145,19 @@ Audit date: 2026-08-29
 
 At the time of this audit the MCP exposed **45 registered tools**, and every one of them plus its
 Blender-side handler was reviewed for correctness, reliability, Blender API usage, agent usability,
-and production workflow coverage. **That count is historical: the surface is now 303 tools**, and a
+and production workflow coverage. **That count is historical: the surface is now 305 tools**, and a
 server process registers only a subset of them.
 
 Read the count below as "what this audit covered", never as "what a session sees". Two different
 numbers are routinely mistaken for each other and for this one:
 
-- **303** — every tool in the catalog, registered only with `BLENDER_MCP_TOOLSETS=all`.
-- **35** — the default `core` bundle a process registers when `BLENDER_MCP_TOOLSETS` is unset:
+- **305** — every tool in the catalog, registered only with `BLENDER_MCP_TOOLSETS=all`.
+- **36** — the default `core` bundle a process registers when `BLENDER_MCP_TOOLSETS` is unset:
   scene inspection, object editing, viewport, animation, file lifecycle/linking. Camera, rendering,
   lighting, world, character posing, texture, retopology and the simulation domains are **absent by
-  design**, not missing. `shot` (79 tools) adds camera, lighting, rendering and character posing;
+  design**, not missing. `shot` (81 tools) adds camera, lighting, rendering and character posing;
   see the Tool Bundles table in `README.md`.
-- **299** — `get_addon_status`'s `capability_count`: Blender-side socket commands the add-on
+- **301** — `get_addon_status`'s `capability_count`: Blender-side socket commands the add-on
   dispatches, which is a different surface from the MCP tools a client mounts. A full
   `capability_count` alongside a short tool list is the expected shape, not a registration fault.
 
@@ -200,7 +200,7 @@ and `get_addon_status(tool_name=...)` still gives the verdict on one name.
 |---|---|---|---|
 | Critical | ~~`validate_scene(...)["ready"]` is permanently `False` in a stock Blender~~ | **Solved** | The engine probe read `bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items`, which returns `['BLENDER_EEVEE']` even with Cycles enabled and rendering, so `handlers/lighting/inspection.py` raised an ERROR-severity `ENGINE_UNAVAILABLE` and `ready` ("no ERROR") was false for every scene. `engine_identifiers(scene=None)` now unions that enum with a recursive `bpy.types.RenderEngine.__subclasses__()` walk (the dynamic-RNA trap already documented at `handlers/liquid/simulation.py:84-88`) and always includes the scene's assigned engine; `resolve_engine` still resolves exactly one EEVEE from the RNA enum, so an add-on engine cannot make that ambiguous. The second half of the same finding is fixed too: `ZERO_AREA_UVS` against a library-linked mesh is now a WARNING naming the library the mesh comes from, because "unwrap the listed faces" is not actionable in the linking file and one such finding held `ready` false forever. `tests/blender_scene_validate_smoke.py` asserts `ready is True` on a stock `--factory-startup` scene set to CYCLES, falsified by restoring the old probe on the same scene. |
 | Critical | `create_studio_lighting` validates after it mutates, and blocks its own retry | **Pending** | The tool dispatches the rig (`server/tools/lighting/construction.py:263-275`) and only then runs a mandatory preview whose argument checks live at `server/tools/lighting/rendering.py:142-166,197-198`. A bad `preview_engine`/`preview_samples`/path therefore raises after three lights exist, and the handler refuses existing member names (`handlers/lighting/construction.py:419-424`), so the user deletes them by hand. Validate the preview arguments before dispatch. The handler's own validate-then-rollback is intact; the tool wrapper is what regressed. |
-| Critical | Arbitrary Python execution over an unauthenticated auto-started socket | **Partially solved** | The arbitrary-code half is gone: `execute_blender_code` no longer exists anywhere under `src/blender_mcp`, and there is no free-form `bpy` path left. Still open, and still Critical: the socket auto-starts and authenticates nothing, so any local process can drive the full 299-tool surface. Disable auto-start by default and authenticate each connection with a per-session secret; loopback binding is not authentication. |
+| Critical | Arbitrary Python execution over an unauthenticated auto-started socket | **Partially solved** | The arbitrary-code half is gone: `execute_blender_code` no longer exists anywhere under `src/blender_mcp`, and there is no free-form `bpy` path left. Still open, and still Critical: the socket auto-starts and authenticates nothing, so any local process can drive the full 301-tool surface. Disable auto-start by default and authenticate each connection with a per-session secret; loopback binding is not authentication. |
 | High | `copy_object_transform` fails while formatting results for quaternion and axis-angle objects | **Partially solved** | Copying is rotation-mode aware, but `rotation_quat.to_euler(obj.rotation_mode)` passes invalid Euler orders for `QUATERNION` and `AXIS_ANGLE`. Return the native representation, or use a fixed documented Euler order such as `XYZ`. Label returned transforms as local or return both local and world transforms. |
 | High | ~~`add_radial_array_modifier` does not correctly rotate around an arbitrary world-space pivot~~ | **Solved: the finding was wrong** | Disproved against real Blender, not re-argued. Blender's Array modifier composes its object offset as `offset = obj.matrix_world⁻¹ @ offset_object.matrix_world` and places copy *i* at `obj.matrix_world @ offset^i`, so the handler's `empty.matrix_world = pivot_rotation_matrix(pivot, axis, angle) @ obj.matrix_world` (`handlers/model.py:164`) telescopes to exactly `R_pivot^i @ obj.matrix_world` - the translate-to-pivot/rotate/translate-back composition the finding asked for. `tests/blender_radial_array_smoke.py` reads the evaluated depsgraph's vertices in world space and matches them against that composition, built independently from `mathutils`, for all four cases the finding named: away from the origin, rotated with non-uniform scale, parented to a moved/rotated/scaled parent, and the `radius`-derived pivot. Worst deviation 2.2e-06 m. Falsified by swapping the multiplication order, which misplaces the first copy by 2.26 m. Note for anyone reading the geometry-nodes slice: the *GN* radial builder has a genuine pivot bug of its own (`handlers/geometry_nodes/workflows.py:960`), from an unset `transform_space` on its Object Info node - a different code path with a different cause. |
 | High | Blender's main thread and the MCP event loop are blocked by synchronous I/O | **Pending** | Run Poly Haven and Sketchfab network/download work in worker threads, limiting Blender data changes to the main thread. Run blocking client socket calls through `asyncio.to_thread` or an async transport. Add cancellation and progress reporting for long downloads. |

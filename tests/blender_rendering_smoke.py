@@ -24,7 +24,9 @@ addon = importlib.util.module_from_spec(spec)
 sys.modules[package_name] = addon
 spec.loader.exec_module(addon)
 
+from blender_mcp_rendering_smoke.handlers.lighting.rendering import LightingRenderHandlers
 from blender_mcp_rendering_smoke.handlers.rendering import RenderingHandlersMixin
+from blender_mcp_rendering_smoke.render_devices import cycles_device_report
 
 
 def _check_output_path_resolution(handler: RenderingHandlersMixin, scene: bpy.types.Scene) -> None:
@@ -243,6 +245,144 @@ def _check_default_frame_range_is_refused(handler: RenderingHandlersMixin, scene
             scene[marker] = True
 
 
+def _check_performance_and_cycles_device(handler: RenderingHandlersMixin, scene: bpy.types.Scene) -> None:
+    """Round-trip performance and pixel-filter fields; a GPU request Preferences cannot honour reads CPU."""
+    configured = handler.configure_render_settings(
+        scene.name,
+        {
+            "engine": "CYCLES",
+            "performance": {"use_persistent_data": True, "use_simplify": True, "simplify_subdivision_render": 2},
+            "cycles": {
+                "samples": 1,
+                "use_denoising": False,
+                "filter_width": 2.25,
+                "pixel_filter_type": "GAUSSIAN",
+                "denoising_quality": "FAST",
+            },
+        },
+    )
+    assert configured["after"]["performance.use_persistent_data"] is True
+    inspected = handler.inspect_render_setup(scene.name)
+    assert inspected["performance"]["use_persistent_data"] is True
+    assert inspected["performance"]["use_simplify"] is True
+    assert inspected["performance"]["simplify_subdivision_render"] == 2
+    assert math.isclose(inspected["cycles"]["filter_width"], 2.25)
+    assert inspected["cycles"]["pixel_filter_type"] == "GAUSSIAN"
+    assert inspected["cycles"]["denoising_quality"] == "FAST"
+
+    prefs = bpy.context.preferences.addons["cycles"].preferences
+    original_backend = prefs.compute_device_type
+    lighting = LightingRenderHandlers()
+    try:
+        # Whatever this machine's own Preferences say, the reply must agree with Cycles' own test.
+        report = cycles_device_report()
+        assert report["compute_device_type"] == (original_backend or "NONE"), report
+        own = lighting.configure_lighting_quality(scene.name, "CYCLES", cycles={"device": "GPU"})
+        assert own["effective_cycles_device"] == ("GPU" if prefs.has_active_device() else "CPU"), own
+
+        # Factory preferences on macOS already select METAL with its GPU ticked, so a machine with
+        # no GPU backend is staged: that is what a GPU-less render node reports.
+        prefs.compute_device_type = "NONE"
+        quality = lighting.configure_lighting_quality(scene.name, "CYCLES", cycles={"device": "GPU"})
+        assert quality["after"] == {"cycles.device": "GPU"}
+        assert quality["effective_cycles_device"] == "CPU"
+        assert len(quality["warnings"]) == 1 and "renders on the CPU" in quality["warnings"][0], quality
+        assert cycles_device_report()["enabled_devices"] == []
+
+        inspected = handler.inspect_render_setup(scene.name)
+        assert inspected["cycles"]["device"] == "GPU"
+        assert inspected["effective_cycles_device"] == "CPU"
+        assert inspected["warnings"] == quality["warnings"]
+
+        with tempfile.TemporaryDirectory() as directory:
+            rendered = handler.render_scene(
+                scene.name, str(Path(directory) / "device.png"), mode="STILL", frame=1, confirm_render=True
+            )
+        assert rendered["engine"] == "CYCLES"
+        assert rendered["effective_cycles_device"] == "CPU"
+        assert quality["warnings"][0] in rendered["warnings"], rendered
+
+        cpu = lighting.configure_lighting_quality(scene.name, "CYCLES", cycles={"device": "CPU"})
+        assert cpu["effective_cycles_device"] == "CPU"
+        assert "warnings" not in cpu
+    finally:
+        prefs.compute_device_type = original_backend
+        scene.cycles.device = "CPU"
+        handler.configure_render_settings(scene.name, {"performance": {"use_persistent_data": False}})
+
+
+def _check_render_result_is_labelled(handler: RenderingHandlersMixin, scene: bpy.types.Scene) -> None:
+    """Render Result is labelled with render_scene's frame, not the playhead it restored, until another render."""
+    record = addon.render_result_record
+    record.register_handlers()
+    try:
+        scene.frame_set(1)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "bound.png"
+            handler.render_scene(scene.name, str(output), mode="STILL", frame=2, confirm_render=True)
+            assert scene.frame_current == 1, "render_scene left the playhead on the frame it rendered"
+            copy = str(Path(directory) / "copy.png")
+            inspected = handler.inspect_render_output(copy)
+            assert (inspected["source"], inspected["scene"], inspected["frame"]) == (
+                "render_result",
+                scene.name,
+                2,
+            ), inspected
+            assert inspected["source_path"] == str(output), inspected
+            assert "warnings" not in inspected, inspected
+            assert handler.inspect_render_output(copy, frame=2)["frame"] == 2
+            try:
+                handler.inspect_render_output(copy, frame=1)
+            except ValueError as exc:
+                assert "holds frame 2" in str(exc), exc
+            else:
+                raise AssertionError("Render Result was accepted as the restored playhead's frame")
+            try:
+                handler.render_scene(
+                    scene.name,
+                    str(output),
+                    frame=2,
+                    confirm_render=True,
+                    confirm_overwrite=True,
+                    max_duration_seconds=1,
+                )
+            except ValueError as exc:
+                assert "manage_render_job" in str(exc), exc
+            else:
+                raise AssertionError("A duration bound nothing can apply to a single frame was accepted")
+
+            # A lighting preview renders into the same Render Result and cannot put the old
+            # pixels back (Blender exposes none for it), so render_scene's label must go.
+            camera = next(obj for obj in scene.objects if obj.type == "CAMERA")
+            LightingRenderHandlers().render_lighting_preview(
+                scene.name,
+                camera.name,
+                1,
+                "CYCLES",
+                width=16,
+                height=16,
+                samples=1,
+                output_paths={"CYCLES": str(Path(directory) / "preview.png")},
+            )
+            previewed = handler.inspect_render_output(copy)
+            assert previewed["frame"] is None and previewed["warnings"], previewed
+
+            # Blender's own operator, as the UI's F12 runs it, is a render this add-on never saw.
+            handler.render_scene(scene.name, str(output), frame=2, confirm_render=True, confirm_overwrite=True)
+            assert handler.inspect_render_output(copy)["frame"] == 2
+            original_path = scene.render.filepath
+            scene.render.filepath = str(Path(directory) / "ui.png")
+            try:
+                bpy.ops.render.render(write_still=True, scene=scene.name)
+            finally:
+                scene.render.filepath = original_path
+            foreign = handler.inspect_render_output(copy)
+            assert (foreign["scene"], foreign["frame"], foreign["source_path"]) == (None, None, None), foreign
+            assert foreign["warnings"], foreign
+    finally:
+        record.unregister_handlers()
+
+
 def main() -> None:
     """Exercise settings, passes, rollback, view layers, and a tiny still render."""
     handler = RenderingHandlersMixin()
@@ -341,6 +481,7 @@ def main() -> None:
     _check_directory_output_is_refused(handler, scene)
     _check_frame_is_read_back_from_the_filename(handler, scene)
     _check_inline_reply_carries_the_bytes(handler, scene)
+    _check_render_result_is_labelled(handler, scene)
     _check_scene_owned_render_intent(handler, scene)
     _check_default_frame_range_is_refused(handler, scene)
 
@@ -372,6 +513,7 @@ def main() -> None:
     assert eevee["after"] == {"engine": "BLENDER_EEVEE", "eevee.taa_render_samples": 7}
     assert scene.eevee.taa_render_samples == 7
     _check_eevee_ray_tracing_is_reachable(handler, scene)
+    _check_performance_and_cycles_device(handler, scene)
     print("RENDERING_SMOKE_OK")
 
 

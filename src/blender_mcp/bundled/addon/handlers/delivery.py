@@ -7,11 +7,16 @@ render output template - and judges each reference by shape and by whether it
 exists here. `portable` is a proof, not a guess: it is true only when the file
 is saved, the scan was complete, and no reference is absolute or missing.
 
-Published paths follow `blend_files.published_path_fields`: a `//`-relative path
-may be published whole, anything else is reduced to a leaf and flagged
-`path_redacted` with a reason, so a reply never carries this host's directory
+Published paths follow `blend_files.published_path_fields`: a reference that
+resolves inside the configured file roots (with none configured, inside the
+open .blend's directory) is published whole as a `//` link, however Blender
+spelled it; anything else is reduced to a leaf and flagged `path_redacted` with
+a `path_redaction_reason` (`DIRECTORY`, `UNRESOLVABLE`, `OUTSIDE_ROOTS`,
+`TOO_LONG`, `UNSAFE_COMPONENT`), so a reply never carries this host's directory
 layout and a client never mistakes a redaction for a broken link - `verdict`
-reports breakage. `blend_filepath` is the one exception, published absolute like
+reports breakage, and `absolute` how the path was stored. Resolving costs a
+`realpath` per path, so only the returned page is published. `blend_filepath`
+is the one exception, published absolute like
 `get_session_info.current_filepath`, because a client compares it against the
 configured file roots.
 
@@ -31,7 +36,7 @@ from ..text_hygiene import (
     relative_link_body,
     strip_unsafe,
 )
-from .blend_files import is_indirect_library, library_summary, published_path_fields
+from .blend_files import is_indirect_library, path_frame, published_path_fields
 from .provenance import read_provenance
 from .simulation_cache import point_cache_info
 from .texture._shared import image_path_missing
@@ -49,6 +54,10 @@ MAX_DELIVERY_ENTRIES = 2000
 _NON_FILE_IMAGE_SOURCES = frozenset({"GENERATED", "VIEWER"})
 # Blender's built-in font is not a file on this machine and cannot fail to ship.
 _BUILTIN_FONT_PATH = "<builtin>"
+# Where an entry keeps the path it was built from - `(raw, is_directory,
+# blank_is_unset)` - until `_published_page` replaces it with the published
+# fields. Never in a reply: only page entries are returned, and each is rebuilt.
+_UNPUBLISHED = "_unpublished_path"
 
 
 def _is_relative(raw: object) -> bool:
@@ -114,30 +123,68 @@ def _shape_verdict(raw: object) -> str:
 
 def _entry(kind: str, name: str, raw: object, verdict: str, detail: dict, *, is_directory: bool = False) -> dict:
     """
-    Build one reference entry in the single shape every source shares.
+    Build one reference entry in the single shape every source shares, its path not yet published.
 
     Args:
         kind: One of `DELIVERY_KINDS`.
         name: The already-reduced owner name.
-        raw: The path as Blender reported it, published by the shared rule.
+        raw: The path as Blender reported it, published by the shared rule
+            once the entry lands on the returned page.
         verdict: The portability verdict.
         detail: Kind-specific fields.
         is_directory: Passed through to `published_path_fields`.
 
     Returns:
-        dict: `kind`, `name`, `path`, `path_redacted`, `path_redaction_reason`,
-        `absolute`, `verdict`, `detail`. A path with nothing set is published as
-        `""` and is not a redaction; `verdict` reports that as `UNSET`.
+        dict: `kind`, `name`, the unpublished path, `absolute`, `verdict`,
+        `detail`; `_published_page` turns the path into `path`,
+        `path_redacted` and `path_redaction_reason`. A path with nothing set is
+        published as `""` and is not a redaction; `verdict` reports that as
+        `UNSET`.
 
     """
     return {
         "kind": kind,
         "name": name,
-        **published_path_fields(raw, key="path", is_directory=is_directory, blank_is_unset=True),
+        _UNPUBLISHED: (raw, is_directory, True),
         "absolute": verdict not in {"PACKED", "UNSET"} and _absolute(raw),
         "verdict": verdict,
         "detail": detail,
     }
+
+
+def _published_page(page: list[dict]) -> list[dict]:
+    """
+    Publish the paths of the returned page, and of nothing else.
+
+    Publishing resolves each path with a `realpath`, so a file with thousands
+    of references pays for one page of them, plus one frame, per call.
+
+    Args:
+        page: The entries being returned, each carrying its unpublished path.
+
+    Returns:
+        list[dict]: The same entries in their reply shape: `kind`, `name`,
+        `path`, `path_redacted`, `path_redaction_reason`, `absolute`,
+        `verdict`, `detail`.
+
+    """
+    frame = path_frame()
+    published = []
+    for entry in page:
+        raw, is_directory, blank_is_unset = entry[_UNPUBLISHED]
+        published.append(
+            {
+                "kind": entry["kind"],
+                "name": entry["name"],
+                **published_path_fields(
+                    raw, key="path", is_directory=is_directory, blank_is_unset=blank_is_unset, frame=frame
+                ),
+                "absolute": entry["absolute"],
+                "verdict": entry["verdict"],
+                "detail": entry["detail"],
+            }
+        )
+    return published
 
 
 def _resolved(raw, library=None) -> str:
@@ -178,20 +225,19 @@ def _library_entries(room: int) -> tuple[list[dict], dict[int, object], bool]:
         if len(entries) >= room:
             capped = True
             break
-        summary = library_summary(library)
         raw = str(getattr(library, "filepath", "") or "")
-        if summary["is_missing"]:
+        if getattr(library, "is_missing", False):
             verdict = "MISSING"
-        elif summary["is_relative"]:
+        elif _is_relative(raw):
             verdict = "RELATIVE_OK"
         else:
             verdict = "ABSOLUTE"
         entry = {
             "kind": "LIBRARY",
-            "name": summary["name"],
-            # The same publisher `library_summary` used, under this reply's own
+            "name": _entry_name(getattr(library, "name", "")),
+            # Published by the rule `library_summary` uses, under this reply's own
             # field name: one library reads identically here and in list_libraries.
-            **published_path_fields(raw, key="path"),
+            _UNPUBLISHED: (raw, False, False),
             "absolute": _absolute(raw),
             "verdict": verdict,
             "detail": {"indirect": is_indirect_library(library), "sha256": "", "hash_skipped": ""},
@@ -630,9 +676,10 @@ def _delivery_report(scene, entries: list[dict], page: list[dict], limit: int, o
         "changed_objects": [],
         "warnings": warnings,
         "limitations": [
-            "Paths that are not // -relative are reported by leaf name only, flagged path_redacted with a "
-            "path_redaction_reason, so the reply never carries this host's directory layout; a redacted path is a "
-            "display leaf, not a broken link, and verdict is what reports breakage.",
+            "A path that resolves inside the configured file roots (with none, inside this .blend's directory) is "
+            "published whole as a // link; any other is its leaf name, flagged path_redacted with a "
+            "path_redaction_reason (DIRECTORY, UNRESOLVABLE, OUTSIDE_ROOTS, TOO_LONG or UNSAFE_COMPONENT). A "
+            "redacted path is a display leaf, not a broken link; verdict is what reports breakage.",
             "A packed image is portable; a packed image with unsaved edits (dirty) is not yet written.",
             "Verdicts describe path shape and existence on this machine, not whether the destination can read them.",
         ],
@@ -668,8 +715,9 @@ class DeliveryHandlersMixin:
             dict: `scene`, `blend_filepath` (absolute), `saved`, `portable`,
             `classes` (per kind: `total`, `unportable`), `entries` (the page,
             each carrying `path` with `path_redacted` and
-            `path_redaction_reason`: a redacted `path` is the reference's leaf
-            name, never a broken link), `limit`, `offset`, `total`, `truncated`,
+            `path_redaction_reason`, as `blend_files.published_path_fields`
+            decides them: a redacted `path` is the reference's leaf name, never
+            a broken link), `limit`, `offset`, `total`, `truncated`,
             `next_offset`, `provenance`, `changed_objects`, `warnings`,
             `limitations`.
 
@@ -693,4 +741,4 @@ class DeliveryHandlersMixin:
         page = entries[offset : offset + limit]
         if hash_libraries:
             _hash_page_libraries(page, owners, roots, max_hash_bytes)
-        return _delivery_report(scene, entries, page, limit, offset, capped)
+        return _delivery_report(scene, entries, _published_page(page), limit, offset, capped)

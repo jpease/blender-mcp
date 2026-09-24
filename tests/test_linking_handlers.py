@@ -25,7 +25,10 @@ from typing import Any
 import pytest
 
 from conftest import REPO_ROOT
+from pydantic_core import to_json
 from test_mutation_transaction import _load_addon
+
+from blender_mcp.server.tools.envelope import REPLY_BYTE_BUDGET, envelope_for
 
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "blend" / "empty_gzip.blend"
 LINKING_SOURCE = REPO_ROOT / "src" / "blender_mcp" / "bundled" / "addon" / "handlers" / "linking.py"
@@ -53,6 +56,8 @@ PAGE = 2
 MANY = 150
 LISTED_CAP = 100
 NAME_CAP = 10
+# A furnished set: one rig parenting every prop, beside a lamp nothing parents.
+SET_PROPS = tuple(f"Prop{index:03d}" for index in range(MANY))
 _COLLECTIONS = (
     "objects",
     "meshes",
@@ -127,6 +132,7 @@ class StubID:
         self.freed = False
         self.is_missing = False
         self.uses: list[StubID] = []
+        self.parent: StubID | None = None
 
 
 class StubChildren(list):
@@ -221,11 +227,17 @@ class StubCollectionID(StubID):
         system = kwargs.get("do_fully_editable", False) is not True
         override = StubCollectionID(self.world, self.name)
         override.override_library = StubOverride(self, override, system=system)
+        copies: dict[int, StubID] = {}
         for obj in self.objects:
             copy = StubID(self.world, obj.name, "OBJECT")
             copy.override_library = StubOverride(obj, override, system=system)
             override.objects.link(copy)
             self.world.data["objects"].append(copy)
+            copies[obj.session_uid] = copy
+        # An override object's parent is the override of the original's parent.
+        for obj in self.objects:
+            if obj.parent is not None and obj.parent.session_uid in copies:
+                copies[obj.session_uid].parent = copies[obj.parent.session_uid]
         self.world.data["collections"].append(override)
         # Blender also overrides every linked collection inside it.
         for child in [child for child in self.children if child.library is not None]:
@@ -478,6 +490,8 @@ class World:
         self.override_none_for: set[str] = set()
         # Collection name -> names of the collections inside it, in every library file.
         self.nesting: dict[str, list[str]] = {}
+        # Object name -> the name of the object parenting it, in every library file.
+        self.parenting: dict[str, str] = {}
         self.remove_error: BaseException | None = None
         self.batch_removed: list[StubID] = []
         self.data["scenes"].append(StubScene(self, "Scene"))
@@ -530,6 +544,9 @@ class World:
         collection = StubCollectionID(self, name, library=library)
         for object_name in object_names:
             collection.objects.link(self.linked_object(library, object_name))
+        for obj in collection.objects:
+            if obj.name in self.parenting:
+                obj.parent = self.linked_object(library, self.parenting[obj.name])
         for child_name in self.nesting.get(name, []):
             contents = self.files[library.filepath]["collections"]
             collection.children.link(self.linked_collection(library, child_name, contents[child_name]))
@@ -740,6 +757,25 @@ def _canon(tmp_path: Path, world: World, name: str = "canon.blend") -> str:
     return canonical
 
 
+def _furnished(tmp_path: Path, world: World, name: str = "furnished.blend") -> str:
+    """
+    Put a canon file on disk whose `CanonSet` holds a rig parenting `MANY` props, and an unparented lamp.
+
+    Args:
+        tmp_path: Where to put it.
+        world: The stub database.
+        name: Its file name.
+
+    Returns:
+        str: Its canonical path.
+
+    """
+    canonical = _canon(tmp_path, world, name)
+    world.files[canonical]["collections"]["CanonSet"] = ["SetRoot", *SET_PROPS, "Lamp"]
+    world.parenting.update(dict.fromkeys(SET_PROPS, "SetRoot"))
+    return canonical
+
+
 def _linked(server: object, world: World, canonical: str) -> tuple[StubLibrary, StubCollectionID]:
     """
     Link `CanonHero` through the real handler and return its library and collection.
@@ -903,38 +939,96 @@ def test_link_as_override_uses_route_c_not_create_liboverrides(monkeypatch: pyte
     assert [c.override_library is not None for c in world.scene.collection.children] == [True]
 
 
-def test_link_reports_the_objects_it_brought_into_the_scene(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A linked collection's members count, not only the objects named in the request."""
-    server, _bpy, world = _server(monkeypatch)
-    canonical = _canon(tmp_path, world)
+def test_link_names_the_roots_it_brought_in_and_counts_every_member(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """
+    A furnished set sent 50 of 2,988 object names every time; the roots are what a caller acts on.
 
-    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"], objects=["Crate"])
+    The rig parents every prop, so it and the unparented lamp are the set's roots; the loose
+    object is a root of its own. Every member is still counted, with a sample of names.
+    """
+    server, _bpy, world = _server(monkeypatch)
+    canonical = _furnished(tmp_path, world)
+
+    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonSet"], objects=["Crate"])
 
     assert response["status"] == "success", response
-    assert response["result"]["changed_objects"] == ["Crate", "HeroBody"]
+    result = response["result"]
+    assert result["changed_objects"] == ["Crate", "Lamp", "SetRoot"]
+    members = result["instanced_objects"]
+    assert (members["total"], members["by_type"]) == (MANY + 3, {"OBJECT": MANY + 3})
+    assert (members["returned_count"], members["truncated"]) == (NAME_CAP, True)
+    assert len(members["names"]) == NAME_CAP and "records" not in members
+    assert result["overrides"] == []
 
 
-def test_link_as_override_reports_the_override_objects(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The objects are the editable overrides, which the report names."""
+def test_link_detail_pages_the_members_as_records(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`detail` reaches the members' uids, still capped, and leaves `changed_objects` at the roots."""
     server, _bpy, world = _server(monkeypatch)
-    canonical = _canon(tmp_path, world)
+    canonical = _furnished(tmp_path, world)
 
-    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"], as_override=True)
+    result = _run(server, "link_canon_library", filepath=canonical, collections=["CanonSet"], detail=True)["result"]
 
-    assert response["status"] == "success", response
-    assert response["result"]["changed_objects"] == ["HeroBody"]
+    members = result["instanced_objects"]
+    assert (members["returned_count"], members["truncated"]) == (LISTED_CAP, True)
+    world_uids = {obj.session_uid for obj in world.data["objects"]}
+    assert {record["session_uid"] for record in members["records"]} <= world_uids
+    assert "names" not in members
+    assert result["changed_objects"] == ["Lamp", "SetRoot"]
+
+
+def test_link_as_override_names_the_override_roots_and_counts_the_rest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The editable overrides' roots are named; each override counts its objects, with `detail` threaded through."""
+    server, _bpy, world = _server(monkeypatch)
+    canonical = _furnished(tmp_path, world)
+
+    result = _run(server, "link_canon_library", filepath=canonical, collections=["CanonSet"], as_override=True)[
+        "result"
+    ]
+
+    assert result["changed_objects"] == ["Lamp", "SetRoot"]
+    assert result["instanced_objects"] is None
+    (override,) = result["overrides"]
+    assert override["objects"]["total"] == MANY + 2
+    assert len(override["objects"]["names"]) == NAME_CAP
+    again = _furnished(tmp_path, world, "again.blend")
+
+    detailed = _run(
+        server, "link_canon_library", filepath=again, collections=["CanonSet"], as_override=True, detail=True
+    )
+
+    assert len(detailed["result"]["overrides"][0]["objects"]["records"]) == LISTED_CAP
+
+
+def test_a_linked_set_reply_fits_the_budget_with_every_root_named(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Through the server's envelope the reply is whole: no page cut, no change list cut."""
+    server, _bpy, world = _server(monkeypatch)
+    canonical = _furnished(tmp_path, world)
+
+    result = _run(server, "link_canon_library", filepath=canonical, collections=["CanonSet"])["result"]
+    envelope = envelope_for(result)
+
+    assert envelope["changed_objects"] == ["Lamp", "SetRoot"]
+    assert envelope["warnings"] == []
+    assert len(to_json(envelope, fallback=str, indent=2)) <= REPLY_BYTE_BUDGET
 
 
 def test_create_override_reports_the_override_objects(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Overriding an already-linked collection reports the override's objects too."""
+    """Overriding an already-linked collection names the override's roots too."""
     server, _bpy, world = _server(monkeypatch)
-    canonical = _canon(tmp_path, world)
-    linked = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"])["result"]
+    canonical = _furnished(tmp_path, world)
+    linked = _run(server, "link_canon_library", filepath=canonical, collections=["CanonSet"])["result"]
 
     response = _run(server, "create_override", collection_uid=linked["collections"][0]["session_uid"])
 
     assert response["status"] == "success", response
-    assert response["result"]["changed_objects"] == ["HeroBody"]
+    assert response["result"]["changed_objects"] == ["Lamp", "SetRoot"]
+    assert response["result"]["objects"]["total"] == MANY + 2
 
 
 def test_link_refuses_as_override_with_objects(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1092,16 +1186,23 @@ def test_create_override_reports_same_named_linked_and_override_objects_distingu
     assert result["override"]["reference_uid"] == collection.session_uid
 
 
-def test_create_override_counts_the_objects_it_made_and_leaves_their_names_to_changed_objects(
+def test_create_override_counts_the_objects_it_made_with_a_sample_of_names(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Repeating the names inside `objects` would send the same list twice in one reply."""
+    """`changed_objects` names only the roots now, so the count carries the sample `list_libraries` does."""
     server, _bpy, world = _server(monkeypatch)
     _library, collection = _linked(server, world, _canon(tmp_path, world))
 
     result = _run(server, "create_override", collection_uid=collection.session_uid)["result"]
 
-    assert result["objects"] == {"total": 1, "by_type": {"OBJECT": 1}}
+    assert result["objects"] == {
+        "total": 1,
+        "by_type": {"OBJECT": 1},
+        "limit": NAME_CAP,
+        "returned_count": 1,
+        "truncated": False,
+        "names": ["HeroBody"],
+    }
     assert result["changed_objects"] == ["HeroBody"]
     assert result["override"]["session_uid"] != collection.session_uid
 
@@ -1246,6 +1347,32 @@ def test_a_truncated_datablock_page_offers_no_offset_to_resume_from(
     assert listed["truncated"] is True
     assert listed["total"] == MANY + len(("CanonHero", "HeroBody"))
     assert "offset" not in listed and "next_offset" not in listed
+
+
+def test_a_detail_listing_shortened_by_the_budget_still_offers_no_datablock_offset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """
+    The envelope's cut must not add the resume point the addon left out.
+
+    `list_libraries(detail=true)` is over the budget with a hundred records; the envelope wrote
+    `next_offset` into the datablocks page, and `offset` pages libraries, so following it skipped
+    libraries the agent had never seen.
+    """
+    server, _bpy, world = _server(monkeypatch)
+    library, _collection = _linked(server, world, _canon(tmp_path, world))
+    for index in range(MANY):
+        world.data["meshes"].append(StubID(world, f"M{index}", "MESH", library=library))
+
+    envelope = envelope_for(_run(server, "list_libraries", detail=True)["result"])
+
+    listed = envelope["data"]["libraries"][0]["datablocks"]
+    assert len(to_json(envelope, fallback=str, indent=2)) <= REPLY_BYTE_BUDGET
+    assert 0 < len(listed["records"]) < LISTED_CAP
+    assert (listed["truncated"], listed["returned_count"]) == (True, len(listed["records"]))
+    assert "next_offset" not in listed
+    assert (envelope["data"]["truncated"], envelope["data"]["next_offset"]) == (False, None)
+    assert not any("offset=" in warning for warning in envelope["warnings"]), envelope["warnings"]
 
 
 def test_list_libraries_is_a_read_only_command_and_never_enters_a_transaction(
@@ -1530,10 +1657,40 @@ def test_unlink_reports_exactly_what_it_removed(monkeypatch: pytest.MonkeyPatch,
     removed = before - _uids(world)
     assert result["removed_libraries"][0]["session_uid"] == library.session_uid
     assert len(result["removed_libraries"]) == 1
-    assert set(result["removed_uids"]) == removed
+    assert "removed_uids" not in result and "removed_uids_truncated" not in result
+    assert sorted((entry["id_type"], entry["name"]) for entry in result["removed_sample"]) == [
+        ("COLLECTION", "CanonHero"),
+        ("LIBRARY", os.path.basename(library.filepath)),
+        ("OBJECT", "HeroBody"),
+        ("OBJECT", "HeroBody"),
+    ]
     assert result["removed_count"] == len(removed)
     assert result["removed_by_type"] == {"libraries": 1, "collections": 1, "objects": 2}
     assert result["purged_orphans"] == 0
+
+
+def test_unlinking_a_large_library_counts_what_went_and_names_only_a_sample(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """
+    A furnished set's unlink sent 500 uids of datablocks that no longer exist, which name nothing.
+
+    The count and the counts by type are the facts; a few names say what kind of thing went.
+    """
+    server, _bpy, world = _server(monkeypatch)
+    library, _collection = _linked(server, world, _canon(tmp_path, world))
+    for index in range(MANY * 4):
+        world.data["meshes"].append(StubID(world, f"M{index}", "MESH", library=library))
+
+    result = _run(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True)["result"]
+
+    assert result["removed_count"] == MANY * 4 + len(("canon.blend", "CanonHero", "HeroBody"))
+    assert result["removed_by_type"] == {"collections": 1, "libraries": 1, "meshes": MANY * 4, "objects": 1}
+    assert len(result["removed_sample"]) == NAME_CAP
+    assert all(set(entry) == {"name", "id_type"} for entry in result["removed_sample"])
+    envelope = envelope_for(result)
+    assert envelope["warnings"] == []
+    assert len(to_json(envelope, fallback=str, indent=2)) <= REPLY_BYTE_BUDGET
 
 
 def test_unlink_refuses_an_indirect_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1674,8 +1831,13 @@ def test_only_a_datablock_this_unlink_emptied_counts_as_orphaned(monkeypatch: py
     server, _bpy, _world = _server(monkeypatch)
     linking = _linking_module(server)
 
-    before = {1: ("objects", 2), 2: ("meshes", 0), 3: ("materials", 1)}
-    current = {1: ("objects", 0), 2: ("meshes", 0), 3: ("materials", 1), 4: ("images", 0)}
+    entry = linking.CensusEntry
+    before = {
+        1: entry("objects", 2, "Hero", "OBJECT"),
+        2: entry("meshes", 0, "M", "MESH"),
+        3: entry("materials", 1, "P", "MATERIAL"),
+    }
+    current = {1: 0, 2: 0, 3: 1, 4: 0}
 
     # 2 was already unused, 3 still has a user, and 4 did not exist before the unlink.
     assert linking.compute_orphaned(before, current) == [1]

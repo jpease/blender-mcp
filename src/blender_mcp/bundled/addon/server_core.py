@@ -35,6 +35,7 @@ from .handlers.model import ModelHandlersMixin
 from .handlers.nd import NDHandlersMixin
 from .handlers.object_animation import ObjectAnimationHandlersMixin
 from .handlers.polyhaven import PolyhavenHandlersMixin
+from .handlers.render_jobs import RenderJobHandlersMixin
 from .handlers.rendering import RenderingHandlersMixin
 from .handlers.retopology import RetopologyHandlersMixin
 from .handlers.rigid_body import RigidBodyHandlersMixin
@@ -45,6 +46,7 @@ from .handlers.viewport import ViewportHandlersMixin
 from .helpers import get_blendermcp_addon_preferences, get_mesh_object, paginate, sync_from_editmode
 from .object_lookup import find_object
 from .output_roots import configured_file_roots, configured_roots, writable_roots
+from .render_devices import cycles_device_report
 from .session import load_in_flight, mark_session_indeterminate, session_is_indeterminate, session_snapshot
 from .text_hygiene import client_safe_name_leaf
 from .transaction import mutation_transaction, unreferenced_warning
@@ -407,6 +409,10 @@ COMMANDS: Mapping[str, CommandSpec] = MappingProxyType(
         "plan_render_animation": CommandSpec(read_only=True),
         "render_scene": CommandSpec(non_undo_when=lambda params: not params.get("persist_output", False)),
         "inspect_render_output": CommandSpec(read_only=True),
+        # CREATE saves a copy of the file and starts a separate Blender; it changes nothing in
+        # this session's bpy.data, so there is nothing to snapshot or undo. READ, LIST and DELETE
+        # only read and remove job files.
+        "manage_render_job": CommandSpec(non_undo=True, read_only_when=lambda params: _action(params, "") != "CREATE"),
         "get_polyhaven_status": CommandSpec(read_only=True),
         "get_nd_status": CommandSpec(read_only=True),
         "get_sketchfab_status": CommandSpec(read_only=True),
@@ -851,6 +857,7 @@ class BlenderMCPServer(
     ScenePhysicsHandlersMixin,
     ObjectAnimationHandlersMixin,
     RenderingHandlersMixin,
+    RenderJobHandlersMixin,
     NDHandlersMixin,
     PolyhavenHandlersMixin,
     SketchfabHandlersMixin,
@@ -1122,7 +1129,10 @@ class BlenderMCPServer(
         Run up to one tick's worth of queued commands, applying both barriers.
 
         A separate method so the recovery in `drain_command_queue` covers all of
-        it, including the first `get_nowait`.
+        it, including the first `get_nowait`. A command whose client has
+        disconnected is dropped unrun: nobody can receive its answer, and a
+        client that timed out while an earlier render held the main thread
+        would otherwise see its abandoned renders run later, in order.
         """
         processed = 0
         deadline = time.monotonic() + self._DRAIN_TIME_BUDGET_SECONDS
@@ -1131,6 +1141,15 @@ class BlenderMCPServer(
                 command, client = self.command_queue.get_nowait()
             except queue.Empty:
                 break
+
+            if self._client_departed(client):
+                logger.warning(
+                    "Discarding orphaned command type=%s id=%s: its client disconnected before it ran",
+                    command.get("type"),
+                    command.get("id"),
+                )
+                processed += 1
+                continue
 
             # Popped so handlers never see it.
             stamp = command.pop(self._SESSION_STAMP_KEY, None)
@@ -1164,6 +1183,28 @@ class BlenderMCPServer(
                 break
         if processed:
             self._last_command_at = time.monotonic()
+
+    def _client_departed(self, client: object) -> bool:
+        """
+        Report whether a queued command's client has disconnected since it queued.
+
+        `handle_client` registers its socket before it reads a frame and removes
+        it only once the peer has gone, as does `_abandon_unreachable_client`, so
+        a queued command whose socket is no longer registered has nobody to
+        answer. A command queued with no client at all is never treated as
+        orphaned.
+
+        Args:
+            client: The socket the command arrived on, or None.
+
+        Returns:
+            bool: True when the command's client has disconnected.
+
+        """
+        if client is None:
+            return False
+        with self._clients_lock:
+            return client not in self._clients
 
     def _replace_this_dying_timer(self) -> None:
         """
@@ -1811,8 +1852,9 @@ class BlenderMCPServer(
                         self._decode_and_queue_frame(frame, client)
                     if must_drop:
                         # Either a single frame or an unterminated remainder
-                        # went past the cap; both are protocol violations, and
-                        # the frames above arrived intact and are still queued.
+                        # went past the cap; both are protocol violations. The
+                        # frames above arrived intact and were queued, but the
+                        # drain discards them once this socket is unregistered.
                         logger.warning(
                             "Client sent a frame, or an unterminated message, over the %d-byte limit - disconnecting",
                             self._MAX_MESSAGE_BYTES,
@@ -2122,6 +2164,8 @@ class BlenderMCPServer(
             "capability_params": capability_params(handlers),
             "blender_version": bpy.app.version_string,
             "writable_output_roots": self._writable_output_roots(),
+            # Like the roots, a machine fact the MCP server cannot observe: what Cycles renders on.
+            "render_devices": cycles_device_report(),
             # Enforced containment, unlike the advisory roots above.
             **self._file_path_policy(),
             # The pair, because the epoch restarts at 0 when the addon reloads.

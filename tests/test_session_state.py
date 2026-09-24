@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import re
 import sys
 import types
 import unicodedata
 
+from pathlib import Path
 from types import ModuleType
 
 import pytest
@@ -753,9 +755,18 @@ def test_the_addon_registers_and_unregisters_the_session_handlers() -> None:
 # ---------------------------------------------------------------------------
 
 
+# A saved shot for the library tests: a `//` path resolves against its directory,
+# and with no file roots configured that directory is the tree a published link
+# must stay inside. It need not exist; canonicalization leaves a missing path as spelled.
+_SHOT = "/shots/sq010/sh010.blend"
+
+
 def _load_server(monkeypatch: pytest.MonkeyPatch, **data: object) -> tuple[object, ModuleType, ModuleType]:
     """
     Build a server out of the full addon package, plus its session module.
+
+    File roots are cleared, so a published path is judged against the open
+    .blend's directory unless a test configures roots itself.
 
     Args:
         monkeypatch: Fixture the addon loader installs its stubs through.
@@ -766,6 +777,8 @@ def _load_server(monkeypatch: pytest.MonkeyPatch, **data: object) -> tuple[objec
         `bpy` stub backing both.
 
     """
+    monkeypatch.delenv("BLENDERMCP_FILE_ROOTS", raising=False)
+    monkeypatch.delenv("BLENDERMCP_OUTPUT_ROOTS", raising=False)
     addon, bpy = _load_addon(monkeypatch, data={"filepath": "", "is_dirty": False, "libraries": [], **data})
     server_core = sys.modules[f"{addon.__name__}.server_core"]
     session = sys.modules[f"{addon.__name__}.session"]
@@ -802,7 +815,7 @@ def test_get_session_info_reports_the_dirty_flag_and_the_library_summary(
     library = types.SimpleNamespace(
         name="canon.blend", filepath="//libs/canon.blend", session_uid=4271, is_missing=False
     )
-    server, _session, _bpy = _load_server(monkeypatch, is_dirty=True, libraries=[library])
+    server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, is_dirty=True, libraries=[library])
 
     info = server.get_session_info()
 
@@ -906,8 +919,9 @@ def test_the_library_summary_reports_identity_without_the_asset_library_layout(
     """
     An absolutely-linked library's `filepath` maps the studio's storage to an unauthenticated socket.
 
-    Clients need library identity, not where the asset library lives. A relative
-    link with no `..` stays inside the shot's tree, so it is reported whole.
+    Clients need library identity, not where the asset library lives. A link that
+    resolves inside the shot's own directory stays inside the allowed tree, so it
+    is reported whole.
     """
     absolute = types.SimpleNamespace(
         name="assetlib.blend", filepath="/Volumes/studio/assets/2026/assetlib.blend", session_uid=11, is_missing=True
@@ -915,7 +929,7 @@ def test_the_library_summary_reports_identity_without_the_asset_library_layout(
     relative = types.SimpleNamespace(
         name="canon.blend", filepath="//libs/canon.blend", session_uid=12, is_missing=False
     )
-    server, _session, _bpy = _load_server(monkeypatch, libraries=[absolute, relative])
+    server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, libraries=[absolute, relative])
 
     libraries = server.get_session_info()["libraries"]
 
@@ -925,7 +939,7 @@ def test_the_library_summary_reports_identity_without_the_asset_library_layout(
             "name": "assetlib.blend",
             "filepath": "assetlib.blend",
             "filepath_redacted": True,
-            "filepath_redaction_reason": "NOT_RELATIVE",
+            "filepath_redaction_reason": "OUTSIDE_ROOTS",
             "is_relative": False,
             "is_missing": True,
         },
@@ -950,13 +964,13 @@ def test_a_library_inside_the_project_tree_is_published_whole_and_says_it_was_no
     """
     The unredacted case has to be distinguishable from the redacted one, or the flag says nothing.
 
-    A `//` link inside the shot's own tree is the path the client can resolve,
-    so it is published exactly as Blender reported it.
+    A `//` link that resolves inside the shot's own tree is the path the client
+    can resolve, so it is published whole.
     """
     library = types.SimpleNamespace(
         name="canon.blend", filepath="//libs/props/canon.blend", session_uid=21, is_missing=False
     )
-    server, _session, _bpy = _load_server(monkeypatch, libraries=[library])
+    server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, libraries=[library])
 
     entry = server.get_session_info()["libraries"][0]
 
@@ -979,13 +993,13 @@ def test_a_library_outside_the_project_tree_reports_its_leaf_as_a_redaction_not_
     library = types.SimpleNamespace(
         name="canon.blend", filepath="/Volumes/assets/2026/canon.blend", session_uid=22, is_missing=False
     )
-    server, _session, _bpy = _load_server(monkeypatch, libraries=[library])
+    server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, libraries=[library])
 
     entry = server.get_session_info()["libraries"][0]
 
     assert entry["filepath"] == "canon.blend", "the reduction stopped publishing the leaf"
     assert entry["filepath_redacted"] is True
-    assert entry["filepath_redaction_reason"] == "NOT_RELATIVE"
+    assert entry["filepath_redaction_reason"] == "OUTSIDE_ROOTS"
     assert entry["is_relative"] is False, "is_relative is judged on the unredacted path"
     assert entry["is_missing"] is False, "a redacted path was reported as a broken link"
 
@@ -998,7 +1012,7 @@ def test_a_missing_link_reports_is_missing_whether_or_not_its_path_was_redacted(
         name="assetlib.blend", filepath="/Volumes/assets/assetlib.blend", session_uid=31, is_missing=True
     )
     inside = types.SimpleNamespace(name="canon.blend", filepath="//libs/canon.blend", session_uid=32, is_missing=True)
-    server, _session, _bpy = _load_server(monkeypatch, libraries=[outside, inside])
+    server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, libraries=[outside, inside])
 
     redacted, published = server.get_session_info()["libraries"]
 
@@ -1008,21 +1022,26 @@ def test_a_missing_link_reports_is_missing_whether_or_not_its_path_was_redacted(
     )
 
 
-def _load_blend_files(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+def _load_blend_files(monkeypatch: pytest.MonkeyPatch, filepath: str = _SHOT) -> ModuleType:
     """
     Load the shared path publisher out of the full addon package.
 
     It imports `bpy` at module scope, so it cannot be read with
-    `load_addon_source_module` the way `text_hygiene` is.
+    `load_addon_source_module` the way `text_hygiene` is. File roots are
+    cleared; a test that needs them sets them after loading, since the
+    publisher reads them on every call.
 
     Args:
         monkeypatch: Fixture the addon loader installs its stubs through.
+        filepath: The open .blend; "" for a session never saved.
 
     Returns:
         ModuleType: The addon's `handlers.blend_files`.
 
     """
-    addon, _bpy = _load_addon(monkeypatch, data={"filepath": "", "is_dirty": False, "libraries": []})
+    monkeypatch.delenv("BLENDERMCP_FILE_ROOTS", raising=False)
+    monkeypatch.delenv("BLENDERMCP_OUTPUT_ROOTS", raising=False)
+    addon, _bpy = _load_addon(monkeypatch, data={"filepath": filepath, "is_dirty": False, "libraries": []})
     return sys.modules[f"{addon.__name__}.handlers.blend_files"]
 
 
@@ -1056,8 +1075,10 @@ def test_each_refusal_the_publisher_makes_has_its_own_reason_code(monkeypatch: p
     """
     One code per refusal, or a client cannot tell "too long" from "not yours to see".
 
-    A directory is reported without even a leaf, because its last component is
-    routinely a user name.
+    With no roots configured the allowed tree is the shot's own directory, so
+    each path below reaches its code by its own rule, not by an earlier one: the
+    last two lie inside it. A directory is reported without even a leaf, because
+    its last component is routinely a user name.
 
     Args:
         monkeypatch: Fixture the addon loader installs its stubs through.
@@ -1065,18 +1086,22 @@ def test_each_refusal_the_publisher_makes_has_its_own_reason_code(monkeypatch: p
     """
     blend_files = _load_blend_files(monkeypatch)
     cases = {
-        "NOT_RELATIVE": "/Volumes/assets/canon.blend",
-        "TOO_LONG": "//" + "a" * 500 + ".blend",
-        "UNSAFE_COMPONENT": "//../../elsewhere/canon.blend",
+        "/Volumes/assets/canon.blend": "OUTSIDE_ROOTS",
+        "//../../elsewhere/canon.blend": "OUTSIDE_ROOTS",
+        "///Users/victim/canon.blend": "UNRESOLVABLE",
+        "libs/canon.blend": "UNRESOLVABLE",
+        "//" + "a" * 500 + ".blend": "TOO_LONG",
+        "//libs/canon(1).blend": "UNSAFE_COMPONENT",
     }
 
-    for expected, filepath in cases.items():
+    for filepath, expected in cases.items():
         fields = blend_files.published_path_fields(filepath)
         assert fields["filepath_redaction_reason"] == expected, f"{filepath!r} was refused for the wrong reason"
+        assert fields["filepath_redacted"] is True
 
-    directory = blend_files.published_path_fields("//caches/", key="path", is_directory=True)
-    assert directory["path_redaction_reason"] == "DIRECTORY"
-    assert directory["path_redacted"] is True
+    directory = blend_files.published_path_fields("/Volumes/assets/caches/", key="path", is_directory=True)
+    assert directory == {"path": "the requested file", "path_redacted": True, "path_redaction_reason": "DIRECTORY"}
+    assert set(blend_files.PATH_REDACTION_REASONS) == {*cases.values(), "DIRECTORY"}
 
 
 def test_an_unset_path_is_published_empty_and_is_not_a_redaction(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1092,6 +1117,159 @@ def test_an_unset_path_is_published_empty_and_is_not_a_redaction(monkeypatch: py
     fields = blend_files.published_path_fields("   ", key="path", blank_is_unset=True)
 
     assert fields == {"path": "", "path_redacted": False, "path_redaction_reason": None}
+
+
+def test_a_canon_folder_beside_the_shot_inside_the_roots_is_published_with_its_parent_step(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """
+    `//../canon/set.blend` is how Blender spells a sibling canon folder, and it lies inside the roots.
+
+    The finding this closes: publication read the spelling, so the `..` alone
+    reduced it to a leaf as `UNSAFE_COMPONENT`, though it named nothing outside
+    the allowed folders.
+    """
+    project = tmp_path / "project"
+    blend_files = _load_blend_files(monkeypatch, str(project / "shot" / "sh010.blend"))
+    monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(project))
+
+    fields = blend_files.published_path_fields("//../canon/set.blend")
+
+    assert fields == {"filepath": "//../canon/set.blend", "filepath_redacted": False, "filepath_redaction_reason": None}
+
+
+def test_an_absolute_library_inside_the_tree_is_published_as_a_link_from_the_shot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """
+    `link_canon_library` stores an absolute path by default; where it points decides, not how it is spelled.
+
+    Without roots the tree is the shot's own directory; with them, a root, so a
+    canon folder beside the shot comes back with its parent step.
+    """
+    project = tmp_path / "project"
+    shot = project / "shot"
+    blend_files = _load_blend_files(monkeypatch, str(shot / "sh010.blend"))
+    in_shot = types.SimpleNamespace(
+        name="canon.blend", filepath=str(shot / "libs" / "canon.blend"), session_uid=5, is_missing=False
+    )
+    beside = types.SimpleNamespace(
+        name="set.blend", filepath=str(project / "canon" / "set.blend"), session_uid=6, is_missing=False
+    )
+
+    summary = blend_files.library_summary(in_shot)
+    assert (summary["filepath"], summary["filepath_redacted"]) == ("//libs/canon.blend", False)
+    assert summary["is_relative"] is False, "is_relative describes the path as Blender stored it"
+    assert blend_files.library_summary(beside)["filepath_redaction_reason"] == "OUTSIDE_ROOTS"
+
+    monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(project))
+    assert blend_files.library_summary(beside)["filepath"] == "//../canon/set.blend"
+
+
+def test_a_link_that_climbs_out_of_the_roots_is_withheld_as_outside_roots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Resolved, not spelled: `..` is fine until it leaves the allowed folders, and then the reason says so."""
+    project = tmp_path / "project"
+    blend_files = _load_blend_files(monkeypatch, str(project / "shot" / "sh010.blend"))
+    monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(project))
+
+    fields = blend_files.published_path_fields("//../../elsewhere/x.blend")
+
+    assert fields == {"filepath": "x.blend", "filepath_redacted": True, "filepath_redaction_reason": "OUTSIDE_ROOTS"}
+
+
+def test_a_symlink_out_of_the_tree_is_judged_by_where_it_leads(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A `//libs` that is a link to the studio vault is the vault, as `open_shot`'s root check would find."""
+    shot = tmp_path / "shot"
+    shot.mkdir()
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (shot / "libs").symlink_to(vault, target_is_directory=True)
+    blend_files = _load_blend_files(monkeypatch, str(shot / "sh010.blend"))
+
+    fields = blend_files.published_path_fields("//libs/canon.blend")
+
+    assert fields["filepath_redaction_reason"] == "OUTSIDE_ROOTS"
+    assert fields["filepath"] == "canon.blend"
+
+
+def test_a_relative_link_in_a_session_never_saved_is_unresolvable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With no .blend to be relative to, `//` names nothing; resolving it against the working directory would guess."""
+    blend_files = _load_blend_files(monkeypatch, "")
+    monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(tmp_path))
+
+    fields = blend_files.published_path_fields("//x.blend")
+
+    assert fields == {"filepath": "x.blend", "filepath_redacted": True, "filepath_redaction_reason": "UNRESOLVABLE"}
+
+
+def test_a_session_never_saved_publishes_an_in_root_path_absolute(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """
+    No .blend means no `//` form; a path inside a configured root is published as `current_filepath` is.
+
+    Without roots there is no tree at all, so nothing is inside it.
+    """
+    project = tmp_path / "project"
+    library = str(project / "canon" / "set.blend")
+    blend_files = _load_blend_files(monkeypatch, "")
+
+    assert blend_files.published_path_fields(library)["filepath_redaction_reason"] == "OUTSIDE_ROOTS"
+
+    monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(project))
+    fields = blend_files.published_path_fields(library)
+    assert fields == {
+        "filepath": os.path.realpath(library),
+        "filepath_redacted": False,
+        "filepath_redaction_reason": None,
+    }
+    outside = blend_files.published_path_fields(str(tmp_path / "vault" / "x.blend"))
+    assert outside["filepath_redaction_reason"] == "OUTSIDE_ROOTS"
+
+
+@pytest.mark.parametrize(
+    "filepath",
+    [
+        pytest.param("//libs/\u200bcanon.blend", id="zero-width space"),
+        pytest.param("//S\u00e9t/canon.blend", id="accented directory"),
+        pytest.param("//\u7d20\u6750/canon.blend", id="CJK directory"),
+    ],
+)
+def test_a_contained_link_with_a_character_outside_the_allowlist_is_an_unsafe_component(
+    monkeypatch: pytest.MonkeyPatch, filepath: str
+) -> None:
+    """
+    Inside the tree, the one thing left to refuse is a character; the reason must say that, and only that.
+
+    Nothing is stripped first: without its zero-width space the link would name
+    a different file.
+    """
+    blend_files = _load_blend_files(monkeypatch)
+
+    fields = blend_files.published_path_fields(filepath)
+
+    assert fields == {
+        "filepath": "canon.blend",
+        "filepath_redacted": True,
+        "filepath_redaction_reason": "UNSAFE_COMPONENT",
+    }
+
+
+def test_a_directory_inside_the_tree_is_published_whole_with_its_trailing_separator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Blender reads a render output ending in a separator as a directory, so the published link keeps it."""
+    blend_files = _load_blend_files(monkeypatch)
+
+    renders = blend_files.published_path_fields("//renders/", key="path", is_directory=True)
+    shot_directory = blend_files.published_path_fields(os.path.dirname(_SHOT), key="path", is_directory=True)
+
+    assert renders == {"path": "//renders/", "path_redacted": False, "path_redaction_reason": None}
+    assert shot_directory["path"] == "//"
 
 
 # One hostile `Library.filepath` per defect `_failure_note` also handles, plus
@@ -1126,8 +1304,8 @@ _HOSTILE_LIBRARY_PATHS = (
     # A gate on the raw string sees `.<ZWSP>.`, not `..`; stripping the ZWSP
     # afterwards would manufacture the traversal the gate rejects.
     ("zero-width-hidden traversal", "//.\u200b./.\u200b./clients/acme/canon.blend", ("clients", "acme", "..")),
-    # Stripped, this is an ordinary link and is published whole, so the published
-    # string must be the stripped one the gate checked, not the raw one.
+    # Inside the tree, but stripped it would name a different file, so the
+    # published string is refused rather than stripped.
     ("format character inside a component", "//libs/\u200bcanon.blend", ("\u200b",)),
 )
 
@@ -1172,7 +1350,7 @@ def test_a_hostile_library_path_is_reduced_the_same_way_a_failure_note_is(
 
     """
     library = types.SimpleNamespace(name="canon.blend", filepath=filepath, session_uid=7, is_missing=False)
-    server, _session, _bpy = _load_server(monkeypatch, libraries=[library])
+    server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, libraries=[library])
 
     reported = server.get_session_info()["libraries"][0]["filepath"]
 
@@ -1239,12 +1417,13 @@ def test_a_link_published_whole_names_nothing_above_its_own_shot(
     The structural property, asserted over the whole hostile table at once.
 
     A blocklist falls to the next character it does not list. Instead, anything
-    published whole must be a `//` link whose components are each a plain,
-    non-traversing name, so an unlisted character fails by not being admitted.
+    published whole must be a `//` link whose components are each a plain name,
+    so an unlisted character fails by not being admitted. With no roots
+    configured the tree is the shot's own directory, so no step climbs out of it.
     """
     for label, filepath, _forbidden in _HOSTILE_LIBRARY_PATHS:
         library = types.SimpleNamespace(name="canon.blend", filepath=filepath, session_uid=7, is_missing=False)
-        server, _session, _bpy = _load_server(monkeypatch, libraries=[library])
+        server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, libraries=[library])
         reported = server.get_session_info()["libraries"][0]["filepath"]
         if not reported.startswith("//"):
             continue
@@ -1261,11 +1440,12 @@ def test_a_published_link_is_never_an_absolute_path(monkeypatch: pytest.MonkeyPa
     """
     `///Users/victim/...` is not a character defect or a traversal, so only this check catches it.
 
-    A `//` prefix followed by a root is still an absolute path.
+    A `//` prefix followed by a root is still an absolute path. In a saved
+    session a path is published whole only as a `//` link.
     """
     for label, filepath, _forbidden in _HOSTILE_LIBRARY_PATHS:
         library = types.SimpleNamespace(name="canon.blend", filepath=filepath, session_uid=7, is_missing=False)
-        server, _session, _bpy = _load_server(monkeypatch, libraries=[library])
+        server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, libraries=[library])
         entry = server.get_session_info()["libraries"][0]
         reported = entry["filepath"]
         rooted = reported.startswith("/") and not reported.startswith("//")
@@ -1315,23 +1495,6 @@ def test_no_character_can_smuggle_a_separator_through_a_leaf_name() -> None:
     for character in [*smugglers, "\u2044", "\u2215"]:
         published = hygiene.client_safe_leaf(f"/shots/a{character}b.blend")
         _assert_client_safe_leaf_text(published, f"U+{ord(character):04X}")
-
-
-def test_a_whole_published_link_is_the_string_the_gate_looked_at(monkeypatch: pytest.MonkeyPatch) -> None:
-    """
-    Strip-then-gate: what is published is the string the gate admitted.
-
-    Gating the raw string and stripping afterwards would let `.<ZWSP>.` pass a `..`
-    check and be published as `..`.
-    """
-    library = types.SimpleNamespace(
-        name="canon.blend", filepath="//libs/\u200bcanon.blend", session_uid=9, is_missing=False
-    )
-    server, _session, _bpy = _load_server(monkeypatch, libraries=[library])
-
-    reported = server.get_session_info()["libraries"][0]["filepath"]
-
-    assert reported == "//libs/canon.blend", f"the publisher returned something the gate never saw: {reported!r}"
 
 
 def test_a_confusable_leaf_name_is_refused_rather_than_published(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -89,9 +89,10 @@ def asset_creation_strategy() -> str:
           only the written file's path/size/status, not pixels. To actually see rendered
           pixels: for the real scene's final render, call
           inspect_render_output(output_path=<render_scene's "last_file">)
-          afterward (or with no arguments, to read the in-memory Render Result); for a
-          bounded preview render, use render_lighting_preview or render_pbr_material_preview
-          instead (a disposable staging scene, not the real one).
+          afterward (with no arguments it reads the in-memory Render Result, which holds
+          whatever rendered last); for a bounded preview render, use render_lighting_preview
+          (the real scene, its camera/resolution/engine/samples overridden and then restored)
+          or render_pbr_material_preview (a disposable staging scene) instead.
 
     6. When two characters must touch, solve the contact, don't hand-build it.
         - Read the real positions first: get_character_rig_info(armature_object_name=...,

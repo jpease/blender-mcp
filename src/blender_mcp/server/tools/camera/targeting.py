@@ -133,14 +133,16 @@ async def frame_camera_on_objects(
     margin: Annotated[float, Field(ge=0, lt=0.9)] = 0.1,
     policy: FramePolicy = "MOVE_CAMERA",
     aim_at_center: bool = True,
+    include_hidden: bool = False,
 ) -> dict:
     """
     Fit explicit evaluated objects and posed bones in a camera without viewport operators.
 
-    ``MOVE_CAMERA`` preserves perspective optics, ``CHANGE_LENS`` preserves camera position, and
-    ``CHANGE_ORTHO_SCALE`` is required for orthographic scale changes. Modifier-evaluated world
-    bounds, target point, solved distance or optical value, and limiting frame axis are returned.
-    The margin is the fractional inset on each side of the render frame.
+    ``MOVE_CAMERA`` preserves perspective optics, ``CHANGE_LENS`` preserves camera position and
+    solves the longest lens containing every framed point, and ``CHANGE_ORTHO_SCALE`` is required
+    for orthographic scale changes. Modifier-evaluated world bounds, target point, solved distance
+    or optical value, and limiting frame axis are returned. The margin is the fractional inset on
+    each side of the render frame.
 
     Supply ``object_names``, ``bone_targets``, ``armature_names``, or any combination; together
     they frame their union, and an object reached twice is counted once. A bone target
@@ -158,6 +160,16 @@ async def frame_camera_on_objects(
     object in ``object_names`` does not: an armature's own bounds are its bones. The reply's
     ``armature_meshes`` names what each rig resolved to, and an armature that deforms no mesh in
     the scene is refused rather than silently framing nothing.
+
+    Render-visibility rule: the expansion keeps only meshes the render shows, so a rig's cages and
+    helper proxies cannot widen the frame. A left-out mesh gets the first code that applies:
+    ``HIDE_RENDER``, ``HOLDOUT``, ``NO_CAMERA_RAYS``, ``DISPLAY_WIRE_OR_BOUNDS``,
+    ``COLLECTION_HIDE_RENDER``, ``VIEW_LAYER_EXCLUDED`` (excluded, holdout or indirect-only layer
+    collection) or ``ARMATURE_MODIFIER_DISABLED`` (its rig's Armature modifiers are off in renders).
+    A rig with every mesh left out is refused. ``include_hidden=True`` frames them all; objects in
+    ``object_names`` are always framed, with a warning for any that do not render. The reply adds
+    ``framed_objects``, up to 16 ``excluded_objects`` ``{object, reason}`` with ``excluded_total``,
+    and ``limiting_objects``: the objects at each end of ``limiting_axis``.
     """
     object_names = object_names or []
     bone_targets = bone_targets or []
@@ -181,6 +193,7 @@ async def frame_camera_on_objects(
             "margin": margin,
             "policy": policy,
             "aim_at_center": aim_at_center,
+            "include_hidden": include_hidden,
         },
         changed_objects=[camera_name],
     )

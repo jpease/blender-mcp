@@ -31,7 +31,8 @@ async def render_pbr_material_preview(
     Render a controlled studio preview in Eevee, Cycles, or both using identical staging.
 
     Cycles requires `confirm_cycles=True`. Output paths are optional but must be absolute and distinct.
-    The result records engine, device, samples, color management, and approximation warnings. The
+    Each output records its engine, samples and "effective_cycles_device" (the device Cycles rendered
+    on, null for Eevee); the result adds color management and approximation warnings. The
     temporary scene and datablocks are removed in `finally` and the user's active scene is restored.
     """
     if target_engine in {"CYCLES", "BOTH"} and not confirm_cycles:

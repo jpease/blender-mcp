@@ -225,6 +225,7 @@ def _load_server_core():
         "ScenePhysicsHandlersMixin",
         "ObjectAnimationHandlersMixin",
         "RenderingHandlersMixin",
+        "RenderJobHandlersMixin",
         "NDHandlersMixin",
         "PolyhavenHandlersMixin",
         "SketchfabHandlersMixin",
@@ -844,9 +845,26 @@ def _make_swap_server() -> tuple[object, list[str | None]]:
     return server, executed
 
 
+def _connect(server: object, client: object) -> None:
+    """
+    Register a stub socket as connected, the way `handle_client` does first.
+
+    The drain discards a command whose socket is no longer registered, so a
+    stub standing in for a live peer has to be registered like one. A socket
+    already registered keeps its own write lock.
+
+    Args:
+        server: The server the client is connected to.
+        client: The stub socket.
+
+    """
+    with server._clients_lock:
+        server._clients.setdefault(client, threading.Lock())
+
+
 def _queue(server: object, client: object, cmd_type: str, request_id: str, **params: object) -> None:
     """
-    Put one command on the queue the way a client thread would.
+    Put one command on the queue the way a connected client's thread would.
 
     Stamped through production's `_stamp_session`, because the drain rejects
     unstamped commands, and a hand-built stamp would keep passing if the stamp's
@@ -860,6 +878,7 @@ def _queue(server: object, client: object, cmd_type: str, request_id: str, **par
         **params: The command's parameters.
 
     """
+    _connect(server, client)
     command = {"type": cmd_type, "id": request_id, "params": params}
     server._stamp_session(command)
     server.command_queue.put_nowait((command, client))
@@ -1114,6 +1133,7 @@ def _decode(server: object, client: object, cmd_type: str, request_id: str, **pa
     """
     frame = json.dumps({"type": cmd_type, "id": request_id, "params": params}).encode("utf-8")
     queued = server.command_queue.qsize()
+    _connect(server, client)
     server._decode_and_queue_frame(frame, client)
     assert server.command_queue.qsize() == queued + 1, f"the fixture's {cmd_type} frame was rejected, not queued"
 
@@ -1673,6 +1693,7 @@ def test_a_command_that_reached_the_queue_unstamped_is_rejected_not_run() -> Non
     """
     server, executed = _make_swap_server()
     client = _RecordingClient()
+    _connect(server, client)
     # Straight onto the queue with no stamp, which is what a second producer
     # that forgot to stamp would produce.
     server.command_queue.put_nowait(({"type": "ping", "id": "unstamped", "params": {}}, client))
@@ -1685,6 +1706,32 @@ def test_a_command_that_reached_the_queue_unstamped_is_rejected_not_run() -> Non
     assert frame["status"] == "error"
     assert "session stamp" in frame["message"], f"the rejection must say why, not claim a swap: {frame['message']}"
     assert frame["session_epoch"] == _epoch()
+
+
+def test_a_command_whose_client_disconnected_while_queued_is_dropped_not_run() -> None:
+    """
+    A queued command whose client has gone is discarded; a live client's still runs.
+
+    A client that times out while a long render holds the main thread closes its
+    socket, and every render it queued meanwhile would otherwise run afterwards,
+    in order, overwriting output the caller has already given up on.
+    """
+    server, executed = _make_swap_server()
+    departed = _RecordingClient()
+    live = _RecordingClient()
+    _queue(server, departed, "render_scene", "orphan")
+    _queue(server, departed, "open_shot", "orphan-swap", filepath="/shots/sq010.blend")
+    _queue(server, live, "ping", "live")
+    # What `handle_client`'s `finally` does once the peer has closed its socket.
+    with server._clients_lock:
+        server._clients.pop(departed)
+
+    server.drain_command_queue()
+
+    assert executed == ["ping"], f"a command from a disconnected client ran: {executed}"
+    assert departed.frames() == [], "nothing may be written to a socket that has gone"
+    assert [frame["id"] for frame in live.frames()] == ["live"]
+    assert server.command_queue.empty()
 
 
 def test_rejecting_a_full_queue_to_a_stalled_peer_is_bounded() -> None:

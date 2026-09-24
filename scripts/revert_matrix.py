@@ -685,14 +685,15 @@ _DOUBLE_DEFENDED = (
 
 _ROOTED_TWICE = (
     "`///Users/...` is refused twice over and neither refusal can be reverted into the other's absence. "
-    "`relative_link_body` returns None for a `//` followed by a root, and `safe_relative_link`'s own loop "
-    "then refuses the empty first component the same string produces - so reverting either clause leaves the "
-    "link reduced to a leaf and this node passing. Measured both ways rather than argued. The redundancy is "
-    "kept deliberately: this is the boundary that failed three cycles running, and the two clauses answer "
-    "different questions (`relative_link_body` decides `is_relative`, the loop decides publication). Each "
+    "`relative_link_body` returns None for a `//` followed by a root, so `blend_files._resolved` calls it "
+    "UNRESOLVABLE; without that clause `os.path.join` takes the root as absolute and the containment check "
+    "withholds `/Users/...` as OUTSIDE_ROOTS - so reverting either one leaves the link reduced to a leaf and this "
+    "node passing. Measured both ways rather than argued. The two answer different questions "
+    "(`relative_link_body` also decides `is_relative`; containment decides publication for every path). Each "
     "mechanism is falsifiable through a node that depends on it alone - the root clause through "
-    "`test_a_rooted_relative_prefix_is_not_reported_as_relative`, the component loop through "
-    "`test_a_link_published_whole_names_nothing_above_its_own_shot`."
+    "`test_a_rooted_relative_prefix_is_not_reported_as_relative` and the `///` case of "
+    "`test_each_refusal_the_publisher_makes_has_its_own_reason_code`, containment through "
+    "`test_a_link_that_climbs_out_of_the_roots_is_withheld_as_outside_roots`."
 )
 
 # The type-dispatched fallback table, and the reverted form that generates no semantics at all.
@@ -1832,8 +1833,8 @@ REVERTS: list[Revert] = [
             f"{SESSIONT}::test_a_recorded_failure_names_one_bounded_leaf_and_nothing_else[c1-control]",
         ),
     ),
-    # `safe_relative_link` bounds its own length the same way, so the anchor carries the
-    # line above it to name `client_safe_text`'s bound and not that one.
+    # The anchor carries the line above the bound, so it names `client_safe_text`'s bound
+    # and no other length check in the module.
     Revert(
         "text hygiene: the note's length bound goes away, so a 400-character name ships whole",
         ADDON_TEXT_HYGIENE,
@@ -1902,7 +1903,7 @@ REVERTS: list[Revert] = [
     Revert(
         "text hygiene: the library summary publishes an absolute filepath, mapping the asset library out",
         ADDON_BLEND_FILES,
-        "        **published_path_fields(filepath),",
+        "        **published_path_fields(filepath, frame=frame),",
         '        "filepath": filepath,\n'
         '        "filepath_redacted": False,\n'
         '        "filepath_redaction_reason": None,',
@@ -2329,21 +2330,27 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
-        "text hygiene: the link allowlist stops rejecting traversal and empty components",
+        "text hygiene: the link allowlist admits any character, so a hidden or foreign one ships inside a link",
         ADDON_TEXT_HYGIENE,
-        "        if component in NOT_A_LEAF or not set(component) <= LINK_COMPONENT_ALLOWED:",
-        '        if not set(component) <= LINK_COMPONENT_ALLOWED | {"."}:',
+        "    return component not in NOT_A_LINK_COMPONENT and set(component) <= LINK_COMPONENT_ALLOWED",
+        "    return component not in NOT_A_LINK_COMPONENT",
         (
-            f"{HOSTILE_LIB}[traversal out of the shot-//../../../clients/acme-merger/lib/canon.blend-forbidden0]",
             f"{HOSTILE_LIB}[zero-width-hidden traversal-//.\\u200b./.\\u200b./clients/acme/canon.blend-forbidden11]",
+            f"{HOSTILE_LIB}[format character inside a component-//libs/\\u200bcanon.blend-forbidden12]",
             f"{SESSIONT}::test_a_link_published_whole_names_nothing_above_its_own_shot",
+            f"{SESSIONT}::test_a_contained_link_with_a_character_outside_the_allowlist_is_an_unsafe_component"
+            "[zero-width space]",
+            f"{SESSIONT}::test_a_contained_link_with_a_character_outside_the_allowlist_is_an_unsafe_component"
+            "[accented directory]",
+            f"{SESSIONT}::test_a_contained_link_with_a_character_outside_the_allowlist_is_an_unsafe_component"
+            "[CJK directory]",
         ),
     ),
     Revert(
         "text hygiene: the link predicate goes back to a blocklist, which is a list of the attacks already known",
         ADDON_TEXT_HYGIENE,
-        "        if component in NOT_A_LEAF or not set(component) <= LINK_COMPONENT_ALLOWED:",
-        '        if component in NOT_A_LEAF or any(marker in component for marker in ("/", "\\\\", ":")):',
+        "    return component not in NOT_A_LINK_COMPONENT and set(component) <= LINK_COMPONENT_ALLOWED",
+        '    return component not in NOT_A_LINK_COMPONENT and not any(m in component for m in ("/", "\\\\", ":"))',
         (
             f"{HOSTILE_LIB}[fullwidth solidus-//shots/\\uff0fUsers\\uff0fvictim\\uff0facme.blend-forbidden6]",
             f"{HOSTILE_LIB}[big solidus (U+29F8)-//..\\u29f8..\\u29f8clients\\u29f8acme\\u29f8canon.blend-forbidden9]",
@@ -2363,25 +2370,26 @@ REVERTS: list[Revert] = [
         "    if body[:1] in _LEAF_SEPARATORS:\n        return None",
         "    if False:\n        return None",
         (
-            # Only `is_relative` depends on this clause; the empty-component check
+            # `is_relative` and the reason code depend on this clause alone; containment
             # still keeps `///Users/...` from being published. See `_ROOTED_TWICE`.
             f"{SESSIONT}::test_a_rooted_relative_prefix_is_not_reported_as_relative",
+            f"{SESSIONT}::test_each_refusal_the_publisher_makes_has_its_own_reason_code",
         ),
     ),
     Revert(
-        "text hygiene: the gate admits one string and the publisher returns another, manufacturing what it rejected",
+        "text hygiene: the publisher returns Blender's spelling instead of the link it derived",
         ADDON_BLEND_FILES,
         '        return {key: whole, f"{key}_redacted": False, f"{key}_redaction_reason": None}',
         '        return {key: text, f"{key}_redacted": False, f"{key}_redaction_reason": None}',
         (
-            f"{SESSIONT}::test_a_whole_published_link_is_the_string_the_gate_looked_at",
-            f"{HOSTILE_LIB}[format character inside a component-//libs/\\u200bcanon.blend-forbidden12]",
+            f"{SESSIONT}::test_an_absolute_library_inside_the_tree_is_published_as_a_link_from_the_shot",
+            f"{SESSIONT}::test_a_directory_inside_the_tree_is_published_whole_with_its_trailing_separator",
         ),
     ),
     Revert(
         "text hygiene: the library summary loses the hygiene its sibling field has, on both branches",
         ADDON_BLEND_FILES,
-        "        **published_path_fields(filepath),",
+        "        **published_path_fields(filepath, frame=frame),",
         '        "filepath": filepath,\n'
         '        "filepath_redacted": False,\n'
         '        "filepath_redaction_reason": None,',
@@ -2421,22 +2429,94 @@ REVERTS: list[Revert] = [
         ADDON_BLEND_FILES,
         '        "is_missing": bool(getattr(library, "is_missing", False)),',
         '        "is_missing": bool(getattr(library, "is_missing", False))\n'
-        "        and safe_relative_link(filepath, MAX_REPORTED_LINK_CHARS) is not None,",
+        '        and not published_path_fields(filepath, frame=frame)["filepath_redacted"],',
         (f"{SESSIONT}::test_a_missing_link_reports_is_missing_whether_or_not_its_path_was_redacted",),
     ),
     Revert(
-        "text hygiene: every refusal reports one reason code, so `too long` reads as `not yours to see`",
+        "text hygiene: every refusal inside the tree reports OUTSIDE_ROOTS, so `too long` reads as `not yours to see`",
         ADDON_BLEND_FILES,
-        "    if is_directory:\n"
-        "        return REDACTION_DIRECTORY\n"
-        "    stripped = strip_unsafe(text)\n"
-        "    if len(stripped) > MAX_REPORTED_LINK_CHARS:\n"
-        "        return REDACTION_TOO_LONG\n"
-        "    if relative_link_body(stripped) is None:\n"
-        "        return REDACTION_NOT_RELATIVE\n"
-        "    return REDACTION_UNSAFE_COMPONENT\n",
-        "    return REDACTION_NOT_RELATIVE\n",
+        "    if len(whole) > MAX_REPORTED_LINK_CHARS:\n"
+        "        return None, REDACTION_TOO_LONG\n"
+        "    if not all(admissible_link_component(part) for part in parts):\n"
+        "        return None, REDACTION_UNSAFE_COMPONENT\n",
+        "    if len(whole) > MAX_REPORTED_LINK_CHARS or not all(admissible_link_component(part) for part in parts):\n"
+        "        return None, REDACTION_OUTSIDE_ROOTS\n",
+        (
+            f"{SESSIONT}::test_each_refusal_the_publisher_makes_has_its_own_reason_code",
+            f"{SESSIONT}::test_a_contained_link_with_a_character_outside_the_allowlist_is_an_unsafe_component"
+            "[zero-width space]",
+        ),
+    ),
+    Revert(
+        "text hygiene: an unresolvable path is called outside the roots, as though it had been placed",
+        ADDON_BLEND_FILES,
+        "    if candidate is None:\n        return None, REDACTION_UNRESOLVABLE",
+        "    if candidate is None:\n        return None, REDACTION_OUTSIDE_ROOTS",
+        (
+            f"{SESSIONT}::test_each_refusal_the_publisher_makes_has_its_own_reason_code",
+            f"{SESSIONT}::test_a_relative_link_in_a_session_never_saved_is_unresolvable",
+        ),
+    ),
+    Revert(
+        "text hygiene: a withheld directory reports its containment verdict and hides that its leaf went too",
+        ADDON_BLEND_FILES,
+        '        f"{key}_redaction_reason": REDACTION_DIRECTORY if is_directory else reason,',
+        '        f"{key}_redaction_reason": reason,',
         (f"{SESSIONT}::test_each_refusal_the_publisher_makes_has_its_own_reason_code",),
+    ),
+    Revert(
+        "text hygiene: containment is skipped, so any path that resolves is published whole",
+        ADDON_BLEND_FILES,
+        "    if not frame.trees or not inside_roots(candidate, frame.trees):\n"
+        "        return None, REDACTION_OUTSIDE_ROOTS",
+        "    if False:\n        return None, REDACTION_OUTSIDE_ROOTS",
+        (
+            f"{SESSIONT}::test_a_link_that_climbs_out_of_the_roots_is_withheld_as_outside_roots",
+            f"{SESSIONT}::test_a_symlink_out_of_the_tree_is_judged_by_where_it_leads",
+            f"{SESSIONT}::test_the_library_summary_reports_identity_without_the_asset_library_layout",
+            f"{SESSIONT}::test_a_library_outside_the_project_tree_reports_its_leaf_as_a_redaction_not_as_a_defect",
+            f"{HOSTILE_LIB}[traversal out of the shot-//../../../clients/acme-merger/lib/canon.blend-forbidden0]",
+        ),
+    ),
+    Revert(
+        "text hygiene: no tree reads as every tree, so a session never saved publishes any absolute path",
+        ADDON_BLEND_FILES,
+        "    if not frame.trees or not inside_roots(candidate, frame.trees):",
+        "    if not inside_roots(candidate, frame.trees):",
+        (f"{SESSIONT}::test_a_session_never_saved_publishes_an_in_root_path_absolute",),
+    ),
+    Revert(
+        "text hygiene: the configured roots are ignored, so a canon folder beside the shot is withheld",
+        ADDON_BLEND_FILES,
+        "    return PathFrame(blend_directory, link_directory, roots or ((link_directory,) if link_directory else ()))",
+        "    return PathFrame(blend_directory, link_directory, (link_directory,) if link_directory else ())",
+        (
+            f"{SESSIONT}::test_a_canon_folder_beside_the_shot_inside_the_roots_is_published_with_its_parent_step",
+            f"{SESSIONT}::test_an_absolute_library_inside_the_tree_is_published_as_a_link_from_the_shot",
+            f"{SESSIONT}::test_a_session_never_saved_publishes_an_in_root_path_absolute",
+            f"{FLT}::test_save_shot_records_each_ingredient_as_a_link_from_the_file_it_writes",
+        ),
+    ),
+    Revert(
+        "text hygiene: symlinks are not followed, so a link to the vault inside the shot reads as the shot's",
+        ADDON_BLEND_FILES,
+        "        return canonical_path(os.path.normpath(text))",
+        "        return os.path.normpath(text)",
+        (f"{SESSIONT}::test_a_symlink_out_of_the_tree_is_judged_by_where_it_leads",),
+    ),
+    Revert(
+        "text hygiene: a // path in a session never saved resolves against the working directory",
+        ADDON_BLEND_FILES,
+        "        if body is None or not blend_directory:\n            return None",
+        "        if body is None:\n            return None",
+        (f"{SESSIONT}::test_a_relative_link_in_a_session_never_saved_is_unresolvable",),
+    ),
+    Revert(
+        "text hygiene: a trailing separator is dropped, so a render-output directory reads as a file prefix",
+        ADDON_BLEND_FILES,
+        '    trailing = text.endswith(("/", os.sep))',
+        "    trailing = False",
+        (f"{SESSIONT}::test_a_directory_inside_the_tree_is_published_whole_with_its_trailing_separator",),
     ),
     Revert(
         "text hygiene: an unset path is reduced like any other, so `nothing is set here` reads as a hidden one",
@@ -4613,7 +4693,7 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: absent names are not refused inside the load block",
         ADDON_LINKING,
-        "                _refuse_absent_names(data_from, collection_names, object_names)\n",
+        "                _refuse_absent_names(data_from, collection_names, object_names, world_names)\n",
         "",
         (f"{LKT}::test_link_refuses_a_name_absent_from_the_file_and_leaves_no_library",),
     ),
@@ -4961,9 +5041,16 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: the removal report counts only the libraries",
         ADDON_LINKING,
-        '            "removed_by_type": summarize_type_counts(before[uid][0] for uid in removed),\n',
+        '            "removed_by_type": summarize_type_counts(before[uid].collection for uid in removed),\n',
         '            "removed_by_type": {"libraries": len(removed_libraries)},\n',
         (f"{LKT}::test_unlink_reports_exactly_what_it_removed",),
+    ),
+    Revert(
+        "linking: the unlink's sample of what it removed is unbounded, so a furnished set sends every name",
+        ADDON_LINKING,
+        "                for uid in removed[:MAX_LISTED_NAMES]\n",
+        "                for uid in removed\n",
+        (f"{LKT}::test_unlinking_a_large_library_counts_what_went_and_names_only_a_sample",),
     ),
     # One node, not two: `_newly_orphaned` keys its candidates by uid now, so a doubled walk
     # can no longer hand `batch_remove` duplicates and the purge test stopped noticing this
@@ -4992,7 +5079,7 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: the purge also takes datablocks that were orphans before the unlink",
         ADDON_LINKING,
-        'if users == 0 and before.get(uid, ("", 0))[1] > 0]',
+        "if users == 0 and uid in before and before[uid].users > 0]",
         "if users == 0]",
         (
             f"{LKT}::test_unlink_purges_only_when_asked_and_only_what_it_orphaned",
@@ -5374,10 +5461,17 @@ REVERTS: list[Revert] = [
         (f"{SFLT}::test_link_canon_library_forwards_every_parameter",),
     ),
     Revert(
+        "server tools: link_canon_library does not forward detail",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        '            "scene_uid": scene_uid,\n            "detail": detail,\n',
+        '            "scene_uid": scene_uid,\n            "detail": False,\n',
+        (f"{SFLT}::test_link_canon_library_forwards_every_parameter",),
+    ),
+    Revert(
         "server tools: link_canon_library's relative=False default is unpinned to True",
         SERVER_FILE_LIFECYCLE_TOOL,
-        "    relative: bool = False,\n    scene_uid: int | None = None,\n) -> dict:",
-        "    relative: bool = True,\n    scene_uid: int | None = None,\n) -> dict:",
+        "    relative: bool = False,\n    scene_uid: int | None = None,\n    detail: bool = False,\n) -> dict:",
+        "    relative: bool = True,\n    scene_uid: int | None = None,\n    detail: bool = False,\n) -> dict:",
         (f"{SFLT}::test_link_canon_library_defaults",),
     ),
     Revert(
@@ -6099,7 +6193,7 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: the default datablock page carries the records, not the names",
         ADDON_LINKING,
-        '    return {**counted, **_record_page("names", items, _display_name, name_limit)}\n',
+        '    return {**counted, **_record_page("names", items, _display_name, MAX_LISTED_NAMES)}\n',
         '    return {**counted, **_record_page("records", items, describe, limit)}\n',
         (
             f"{LKT}::test_a_reload_reports_what_it_replaced_by_type_without_the_records[reload_library]",
@@ -6121,29 +6215,56 @@ REVERTS: list[Revert] = [
         (f"{LKT}::test_list_libraries_bounds_the_datablocks_it_lists_per_library",),
     ),
     Revert(
-        "linking: create_override lists the override's objects as records, repeating changed_objects",
+        "linking: an override's objects page carries records by default, not a sample of names",
         ADDON_LINKING,
-        "    listed = _counted_page(objects, _override_entry, MAX_LISTED_DATABLOCKS, detail=detail, name_limit=None)",
-        "    listed = _counted_page(objects, _override_entry, MAX_LISTED_DATABLOCKS, detail=True, name_limit=None)",
-        (f"{LKT}::test_create_override_counts_the_objects_it_made_and_leaves_their_names_to_changed_objects",),
+        "    listed = _counted_page(objects, _override_entry, MAX_LISTED_DATABLOCKS, detail=detail)",
+        "    listed = _counted_page(objects, _override_entry, MAX_LISTED_DATABLOCKS, detail=True)",
+        (f"{LKT}::test_create_override_counts_the_objects_it_made_with_a_sample_of_names",),
     ),
     Revert(
         "linking: nothing names the objects an override made, so changed_objects is empty",
         ADDON_LINKING,
-        "    return sorted(names)\n",
-        "    return []\n",
+        "    return _root_names(_distinct(obj for override in overrides for obj in override.all_objects))",
+        "    return []",
         (
             f"{LKT}::test_create_override_reports_the_override_objects",
-            f"{LKT}::test_link_as_override_reports_the_override_objects",
+            f"{LKT}::test_link_as_override_names_the_override_roots_and_counts_the_rest",
         ),
     ),
     Revert(
-        "linking: a linked collection's members are left out of changed_objects",
+        "linking: changed_objects names every member of a linked set, not the roots a caller acts on",
+        ADDON_LINKING,
+        '            if getattr(obj, "parent", None) is None or _uid_of(obj.parent) not in uids'
+        "  # type: ignore[attr-defined]\n",
+        "            if True\n",
+        (
+            f"{LKT}::test_link_names_the_roots_it_brought_in_and_counts_every_member",
+            f"{LKT}::test_link_as_override_names_the_override_roots_and_counts_the_rest",
+            f"{LKT}::test_a_linked_set_reply_fits_the_budget_with_every_root_named",
+            f"{LKT}::test_create_override_reports_the_override_objects",
+        ),
+    ),
+    Revert(
+        "linking: link_canon_library ignores detail for the objects it instanced",
+        ADDON_LINKING,
+        "            instanced = _counted_page(brought_in, _linked_entry, MAX_LISTED_DATABLOCKS, detail=detail)\n",
+        "            instanced = _counted_page(brought_in, _linked_entry, MAX_LISTED_DATABLOCKS, detail=False)\n",
+        (f"{LKT}::test_link_detail_pages_the_members_as_records",),
+    ),
+    Revert(
+        "linking: link_canon_library ignores detail for the overrides it builds",
+        ADDON_LINKING,
+        "            overrides = _override_all(list(linked_collections), scene, detail=detail)\n",
+        "            overrides = _override_all(list(linked_collections), scene, detail=False)\n",
+        (f"{LKT}::test_link_as_override_names_the_override_roots_and_counts_the_rest",),
+    ),
+    Revert(
+        "linking: a linked collection's members are left out of the instanced count",
         ADDON_LINKING,
         "            members = [obj for collection in linked_collections for obj in collection.all_objects]"
         "  # type: ignore[attr-defined]\n",
         "            members = []\n",
-        (f"{LKT}::test_link_reports_the_objects_it_brought_into_the_scene",),
+        (f"{LKT}::test_link_names_the_roots_it_brought_in_and_counts_every_member",),
     ),
     # --- changed_objects crosses into the envelope, bounded, with its total named ---
     # All three moved to `envelope.py`: the twelve `_call` copies were unified onto
@@ -6159,24 +6280,45 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: changed_objects is published whole, so linking a set floods the agent's context",
         SERVER_ENVELOPE,
-        "        objects = objects[:limit]\n",
-        "",
+        "changed_objects=list(objects[:limit])",
+        "changed_objects=list(objects)",
         (f"{SFLT}::test_changed_objects_are_bounded_and_the_total_is_reported",),
     ),
     Revert(
-        "server tools: a cut changed_objects list never says how many objects there really were",
+        "server tools: changed_resources is published whole, outside the budget that bounds data",
         SERVER_ENVELOPE,
-        '        notices.append(f"changed_objects lists the first {limit} of {len(objects)} objects")\n',
-        "",
-        (f"{SFLT}::test_changed_objects_are_bounded_and_the_total_is_reported",),
+        "changed_resources=list(resources[:limit])",
+        "changed_resources=list(resources)",
+        (f"{ENVT}::test_a_long_resource_list_is_bounded_the_same_way",),
+    ),
+    Revert(
+        "server tools: a cut change list never says how many names there really were",
+        SERVER_ENVELOPE,
+        '            notices.append(f"{key} lists the first {limit} of {len(names)} {noun}")\n',
+        "            pass\n",
+        (
+            f"{SFLT}::test_changed_objects_are_bounded_and_the_total_is_reported",
+            f"{ENVT}::test_a_long_resource_list_is_bounded_the_same_way",
+        ),
     ),
     # --- the budget recognises a page named after its own list ---
     Revert(
         "reply budget: a page paged under its list's own name is not recognised as a page",
         SERVER_ENVELOPE,
-        '    for prefix in ("", f"{key}_"):\n',
+        '    for prefix in (f"{key}_", ""):\n',
         '    for prefix in ("",):\n',
         (f"{ENVT}::test_a_page_paged_under_a_prefixed_name_is_still_marked_truncated",),
+    ),
+    Revert(
+        "reply budget: a page whose tool takes no offset for it is handed one to resume from",
+        SERVER_ENVELOPE,
+        '        if f"{prefix}offset" in owner or f"{prefix}next_offset" in owner:\n',
+        "        if True:\n",
+        (
+            f"{ENVT}::test_a_page_whose_owner_takes_no_offset_is_marked_truncated_but_offers_none",
+            f"{ENVT}::test_a_prefixed_page_without_its_own_offset_offers_no_offset_to_resume_from",
+            f"{LKT}::test_a_detail_listing_shortened_by_the_budget_still_offers_no_datablock_offset",
+        ),
     ),
     # --- a light record is trimmed to what a listing is asked for ---
     Revert(
@@ -6911,10 +7053,14 @@ REVERTS: list[Revert] = [
     Revert(
         "delivery: a path outside the shot is published whole instead of by leaf",
         ADDON_DELIVERY,
-        # `_entry` is the one publisher every non-library reference goes through; the library
-        # entries build their own, so this anchor is the image/font/sound/cache/output path.
-        '        **published_path_fields(raw, key="path", is_directory=is_directory, blank_is_unset=True),',
-        '        "path": str(raw or ""),\n        "path_redacted": False,\n        "path_redaction_reason": None,',
+        # `_published_page` is the one publisher every reference on a returned page goes
+        # through, libraries included, so this anchor is every entry's path.
+        "                **published_path_fields(\n"
+        '                    raw, key="path", is_directory=is_directory, blank_is_unset=blank_is_unset, frame=frame\n'
+        "                ),",
+        '                "path": str(raw or ""),\n'
+        '                "path_redacted": False,\n'
+        '                "path_redaction_reason": None,',
         (
             f"{FLT}::test_inspect_delivery_reports_an_absolute_image_by_leaf_not_by_directory",
             f"{FLT}::test_inspect_delivery_does_not_mistake_a_rooted_triple_slash_path_for_a_relative_one",
@@ -6998,9 +7144,12 @@ REVERTS: list[Revert] = [
         ADDON_FILE_LIFECYCLE,
         (
             "        if request.write_provenance:\n"
-            "            backup, ingredients = stamp_provenance(request.digest_roots)\n"
+            "            backup, ingredients = stamp_provenance(request.digest_roots, request.canonical)\n"
         ),
-        ("        if False:\n            backup, ingredients = stamp_provenance(request.digest_roots)\n"),
+        (
+            "        if False:\n"
+            "            backup, ingredients = stamp_provenance(request.digest_roots, request.canonical)\n"
+        ),
         (
             f"{FLT}::test_save_shot_writes_a_json_provenance_block_into_every_local_scene",
             f"{FLT}::test_save_shot_names_the_datablocks_this_session_authored",
@@ -7011,9 +7160,12 @@ REVERTS: list[Revert] = [
         ADDON_FILE_LIFECYCLE,
         (
             "        if request.write_provenance:\n"
-            "            backup, ingredients = stamp_provenance(request.digest_roots)\n"
+            "            backup, ingredients = stamp_provenance(request.digest_roots, request.canonical)\n"
         ),
-        ("        if True:\n            backup, ingredients = stamp_provenance(request.digest_roots)\n"),
+        (
+            "        if True:\n"
+            "            backup, ingredients = stamp_provenance(request.digest_roots, request.canonical)\n"
+        ),
         (f"{FLT}::test_save_shot_writes_nothing_when_provenance_is_declined",),
     ),
     Revert(
@@ -7120,6 +7272,20 @@ REVERTS: list[Revert] = [
         ),
     ),
     Revert(
+        "provenance: an ingredient is recorded from the file open before a save-as, naming the wrong place after it",
+        ADDON_PROVENANCE,
+        "    frame = path_frame(blend_filepath)\n",
+        "    frame = path_frame()\n",
+        (f"{FLT}::test_save_shot_records_each_ingredient_as_a_link_from_the_file_it_writes",),
+    ),
+    Revert(
+        "provenance: any recorded redaction reason is relayed, so a stranger's text reaches the agent as a code",
+        ADDON_PROVENANCE,
+        '                if entry.get("filepath_redaction_reason") in PATH_REDACTION_REASONS\n',
+        "                if True\n",
+        (f"{FLT}::test_inspect_delivery_reads_back_only_a_known_ingredient_redaction_reason",),
+    ),
+    Revert(
         "provenance: a file with no block is reported as carrying an invalid one",
         ADDON_PROVENANCE,
         ("    if raw is None:\n        return None"),
@@ -7191,8 +7357,8 @@ REVERTS: list[Revert] = [
     Revert(
         "rendering: an ANIMATION over Blender's untouched default range renders unasked",
         ADDON_RENDERING,
-        "        (scene.frame_start, scene.frame_end) == (1, 250)",
-        "        False",
+        "        and (frame_start, frame_end) == (1, 250)",
+        "        and False",
         (f"{RENDT}::test_render_scene_refuses_an_animation_over_blenders_untouched_default_range",),
     ),
     Revert(

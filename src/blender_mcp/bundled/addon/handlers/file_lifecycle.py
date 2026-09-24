@@ -36,6 +36,7 @@ from .blend_files import (
     is_indirect_library,
     library_summary,
     operator_failure_message,
+    path_frame,
     refuse_scripts_auto_execute,
     require_bool,
 )
@@ -261,7 +262,7 @@ def _save_with_provenance(request: SaveRequest) -> int:
     ingredients = 0
     try:
         if request.write_provenance:
-            backup, ingredients = stamp_provenance(request.digest_roots)
+            backup, ingredients = stamp_provenance(request.digest_roots, request.canonical)
         # Raises RuntimeError on every failure mode; never returns CANCELLED.
         operator(filepath=request.canonical, compress=request.compress, relative_remap=request.relative_remap)
     except RuntimeError as exc:
@@ -340,10 +341,11 @@ class FileLifecycleHandlersMixin:
             library as `library_summary` describes.
 
         """
+        frame = path_frame()
         return {
             **session_snapshot(),
             "is_dirty": bool(bpy.data.is_dirty),
-            "libraries": [library_summary(library) for library in bpy.data.libraries],
+            "libraries": [library_summary(library, frame=frame) for library in bpy.data.libraries],
         }
 
     def _capability_names(self) -> frozenset[str]:
@@ -395,7 +397,8 @@ class FileLifecycleHandlersMixin:
             # two tools disagreeing by exactly the linked set: 31 against 16.
             report["object_count"] = len(bpy.context.scene.objects)
             report["datablock_object_count"] = len(bpy.data.objects)
-            report["libraries"] = [library_summary(library) for library in bpy.data.libraries]
+            frame = path_frame()
+            report["libraries"] = [library_summary(library, frame=frame) for library in bpy.data.libraries]
             report["capabilities_changed"] = self._capability_names() != capabilities_before
         except _POST_SWAP_READ_ERRORS as exc:
             print(f"BlenderMCP: the swap completed but its report is partial: {exc!s}")

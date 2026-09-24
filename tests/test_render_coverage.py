@@ -73,3 +73,14 @@ def test_the_recorded_baseline_and_the_shipped_routes_agree_on_the_reachable_set
     assert "scene.render.image_settings:file_format" in report["reachable"]
     assert "scene.eevee.ray_tracing_options:use_denoise" in report["reachable"]
     assert len(report["excluded"]) == len(render_coverage.EXCLUDED)
+
+
+def test_properties_another_tool_sets_are_not_reported_as_gaps() -> None:
+    """`configure_lighting_quality` sets the Cycles device; counting it unreachable invites a duplicate field."""
+    reachable = render_coverage.reachable_properties()
+
+    assert ("scene.cycles", "device") in reachable
+    assert ("scene.eevee", "taa_render_samples") in reachable
+    assert ("scene.eevee", "shadow_ray_count") in reachable
+    assert ("scene.render", "use_persistent_data") in reachable
+    assert ("scene.cycles", "filter_width") in reachable

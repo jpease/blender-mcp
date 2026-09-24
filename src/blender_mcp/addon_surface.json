@@ -1427,6 +1427,7 @@
       "armature_names",
       "bone_targets",
       "camera_name",
+      "include_hidden",
       "margin",
       "object_names",
       "policy",
@@ -1697,6 +1698,7 @@
     "link_canon_library": [
       "as_override",
       "collections",
+      "detail",
       "filepath",
       "objects",
       "relative",
@@ -1873,6 +1875,27 @@
       "source_name",
       "source_type",
       "translation"
+    ],
+    "manage_render_job": [
+      "action",
+      "confirm_delete",
+      "confirm_frame_range",
+      "confirm_overwrite",
+      "confirm_render",
+      "create_directories",
+      "detail",
+      "filepath",
+      "frame",
+      "frame_end",
+      "frame_start",
+      "job_id",
+      "limit",
+      "max_animation_frames",
+      "max_duration_seconds",
+      "mode",
+      "offset",
+      "scene_name",
+      "view_layer_name"
     ],
     "manage_retopology_checkpoint": [
       "action",
@@ -2588,5 +2611,5 @@
       "scope"
     ]
   },
-  "protocol_version": 44
+  "protocol_version": 45
 }

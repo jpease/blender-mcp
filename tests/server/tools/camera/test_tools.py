@@ -753,8 +753,19 @@ def test_frame_camera_on_objects_refuses_an_empty_and_a_repeated_request(monkeyp
     assert connection.calls == []
 
 
+def _layer(collection, *children, exclude=False, holdout=False, indirect_only=False):
+    """One LayerCollection: the collection it shows, its view-layer flags, and its children."""
+    return types.SimpleNamespace(
+        collection=collection,
+        exclude=exclude,
+        holdout=holdout,
+        indirect_only=indirect_only,
+        children=list(children),
+    )
+
+
 def _framing_handler(monkeypatch):
-    """Build the camera, the mesh and the armature that the framing point machinery reads."""
+    """Build the camera, the meshes, the armature and the view layer the framing machinery reads."""
 
     class Vector(tuple):
         """The slice of mathutils.Vector the framing point machinery uses."""
@@ -786,17 +797,34 @@ def _framing_handler(monkeypatch):
         def __iter__(self):
             return iter(self.values())
 
-    def mesh(name, offset, half, **binding):
+    characters = types.SimpleNamespace(name="Characters", hide_render=False)
+    master = types.SimpleNamespace(name="Scene Collection", hide_render=False)
+    view_layer = types.SimpleNamespace(layer_collection=_layer(master, _layer(characters)), update=lambda: None)
+
+    def mesh(name, offset, half, **overrides):
+        fields = {
+            "parent": None,
+            "parent_type": "OBJECT",
+            "modifiers": [],
+            "hide_render": False,
+            "is_holdout": False,
+            "visible_camera": True,
+            "display_type": "TEXTURED",
+            "users_collection": [characters],
+            **overrides,
+        }
         return Evaluable(
             name=name,
             type="MESH",
             matrix_world=Matrix(offset),
             bound_box=[(x, y, z) for x in (-half, half) for y in (-half, half) for z in (0.0, 1.0)],
-            parent=None,
-            parent_type="OBJECT",
-            modifiers=[],
-            **binding,
+            **fields,
         )
+
+    def skinned(obj, rig, *, show_render=True):
+        binding = types.SimpleNamespace(type="ARMATURE", object=rig, show_viewport=True, show_render=show_render)
+        obj.modifiers = [binding]
+        return obj
 
     # A 20 x 20 x 1 m slab: wide enough that a union with it is visible on x and y alone.
     wall = mesh("Wall", (0.0, 0.0, 0.0), 10.0)
@@ -809,19 +837,31 @@ def _framing_handler(monkeypatch):
         ),
     )
     # The two ways a mesh is bound to a rig, one each: a modifier, and ARMATURE parenting.
-    skin = mesh("Skin", (1.0, 0.0, 0.0), 0.5)
-    skin.modifiers = [types.SimpleNamespace(type="ARMATURE", object=rig, show_viewport=True)]
+    skin = skinned(mesh("Skin", (1.0, 0.0, 0.0), 0.5), rig)
     shirt = mesh("Shirt", (1.0, 0.0, 0.0), 0.6)
     shirt.parent, shirt.parent_type = rig, "ARMATURE"
+    # A helper the rig also deforms, 3 m behind the body and far wider: stamped the way this repo
+    # stamps its own proxies, so the render never shows it and a frame on it would be far too wide.
+    proxy = skinned(mesh("Proxy", (1.0, 3.0, 0.0), 4.0, hide_render=True, display_type="WIRE"), rig)
     # Bound to nothing: an armature expansion must not sweep it up.
     loose = mesh("Loose", (30.0, 0.0, 0.0), 1.0)
     bare_rig = Evaluable(name="Bare Rig", type="ARMATURE", matrix_world=Matrix((0.0, 0.0, 0.0)))
+    # A rig that deforms only geometry the render does not show.
+    cage_rig = Evaluable(name="Cage Rig", type="ARMATURE", matrix_world=Matrix((0.0, 0.0, 0.0)))
+    cage = skinned(mesh("Cage", (0.0, 0.0, 0.0), 1.0, display_type="BOUNDS"), cage_rig)
+    collider = skinned(mesh("Collider", (0.0, 0.0, 0.0), 1.0, hide_render=True), cage_rig)
+    unbound = skinned(mesh("Unbound", (0.0, 0.0, 0.0), 1.0), cage_rig, show_render=False)
     hero = types.SimpleNamespace(name="Hero", type="CAMERA", data=types.SimpleNamespace(type="PERSP"))
     objects = Collection(
-        {obj.name: obj for obj in (hero, wall, rig, skin, shirt, loose, bare_rig)},
+        {
+            obj.name: obj
+            for obj in (hero, wall, rig, skin, shirt, proxy, loose, bare_rig, cage_rig, cage, collider, unbound)
+        },
     )
-    scene = types.SimpleNamespace(name="Scene", objects=objects)
+    scene = types.SimpleNamespace(name="Scene", objects=objects, view_layers=[view_layer])
     addon, bpy_stub = _load_addon(monkeypatch, data={"scenes": {"Scene": scene}, "objects": objects})
+    bpy_stub.context.scene = scene
+    bpy_stub.context.view_layer = view_layer
     bpy_stub.context.evaluated_depsgraph_get = lambda: None
     monkeypatch.setattr(sys.modules["mathutils"], "Vector", Vector, raising=False)
     module = sys.modules[f"{addon.__name__}.handlers.camera.targeting"]
@@ -851,7 +891,7 @@ def test_handler_framing_bounds_a_bone_segment_padded_by_its_radius(monkeypatch)
     module, _handler, scene, _objects = _framing_handler(monkeypatch)
 
     specs = module._bone_target_specs([{"object_name": "Rig", "bone_name": "segment", "radius_m": 0.25}], scene)
-    _points, minimum, maximum, center, records = module._framing_points([], specs)
+    _points, _sources, minimum, maximum, center, records = module._framing_points([], specs)
 
     assert list(minimum) == pytest.approx([0.75, -0.25, 1.25])
     assert list(maximum) == pytest.approx([1.25, 0.25, 1.95])
@@ -871,7 +911,7 @@ def test_handler_framing_unions_object_bounds_with_bone_segments(monkeypatch) ->
     module, _handler, scene, objects = _framing_handler(monkeypatch)
 
     specs = module._bone_target_specs([{"object_name": "Rig", "bone_name": "segment"}], scene)
-    _points, minimum, maximum, _center, records = module._framing_points([objects["Wall"]], specs)
+    _points, _sources, minimum, maximum, _center, records = module._framing_points([objects["Wall"]], specs)
 
     # x and y come from the slab, the upper z from the bone tail that reaches above it.
     assert list(minimum) == pytest.approx([-10.0, -10.0, 0.0])
@@ -890,23 +930,157 @@ def test_handler_framing_refuses_every_unresolvable_armature_name_before_touchin
         handler.frame_camera_on_objects("Scene", "Hero", armature_names=["Bare Rig"])
     with pytest.raises(ValueError, match="armature_names must not contain duplicates"):
         handler.frame_camera_on_objects("Scene", "Hero", armature_names=["Rig", "Rig"])
+    with pytest.raises(ValueError, match="include_hidden must be true or false"):
+        handler.frame_camera_on_objects("Scene", "Hero", armature_names=["Rig"], include_hidden="yes")
 
 
 def test_handler_framing_expands_an_armature_to_the_meshes_it_deforms(monkeypatch) -> None:
     module, _handler, scene, objects = _framing_handler(monkeypatch)
 
-    specs = module._armature_mesh_specs(["Rig"], scene)
+    specs = module._armature_mesh_specs(["Rig"], scene, include_hidden=False, named=set())
     framed = module._framing_objects([], specs)
-    _points, minimum, maximum, _center, _records = module._framing_points(framed, [])
+    _points, _sources, minimum, maximum, _center, _records = module._framing_points(framed, [])
 
     # Both bindings are found, and neither the unbound mesh 30 m away nor the slab is swept in.
-    assert [(name, sorted(obj.name for obj in meshes)) for name, meshes in specs] == [("Rig", ["Shirt", "Skin"])]
+    assert [(name, sorted(obj.name for obj in meshes)) for name, meshes, _excluded in specs] == [
+        ("Rig", ["Shirt", "Skin"])
+    ]
     assert list(minimum) == pytest.approx([0.4, -0.6, 0.0])
     assert list(maximum) == pytest.approx([1.6, 0.6, 1.0])
 
     # A mesh reached both explicitly and through the rig is framed once, not twice.
     both_ways = module._framing_objects([objects["Skin"]], specs)
     assert [obj.name for obj in both_ways] == ["Skin", "Shirt"]
+
+
+def test_handler_framing_leaves_a_hidden_proxy_out_of_an_armature_frame_and_says_why(monkeypatch) -> None:
+    """A rig's hidden helper mesh 3 m behind the body must not widen a frame the render never shows it in."""
+    module, _handler, scene, objects = _framing_handler(monkeypatch)
+
+    specs = module._armature_mesh_specs(["Rig"], scene, include_hidden=False, named=set())
+    framed = module._framing_objects([], specs)
+    assert [obj.name for obj in framed] == ["Skin", "Shirt"]
+    assert module._excluded_records(specs, framed) == [{"object": "Proxy", "reason": "HIDE_RENDER"}]
+
+    # include_hidden restores every deformed mesh, and the proxy's bounds with it.
+    everything = module._armature_mesh_specs(["Rig"], scene, include_hidden=True, named=set())
+    framed_everything = module._framing_objects([], everything)
+    _points, _sources, _minimum, maximum, _center, _records = module._framing_points(framed_everything, [])
+    assert [obj.name for obj in framed_everything] == ["Skin", "Shirt", "Proxy"]
+    assert list(maximum) == pytest.approx([5.0, 7.0, 1.0])
+    assert module._excluded_records(everything, framed_everything) == []
+
+    # Naming the proxy frames it without include_hidden, and says it does not render.
+    named = module._armature_mesh_specs(["Rig"], scene, include_hidden=False, named={"Proxy"})
+    framed_named = module._framing_objects([objects["Proxy"]], named)
+    assert [obj.name for obj in framed_named] == ["Proxy", "Skin", "Shirt"]
+    assert module._excluded_records(named, framed_named) == []
+    [warning] = module._named_render_warnings([objects["Proxy"], objects["Skin"]], scene)
+    assert "'Proxy' (HIDE_RENDER)" in warning
+    assert "Skin" not in warning
+
+
+def test_handler_framing_refuses_a_rig_whose_every_deformed_mesh_is_left_out_of_the_render(monkeypatch) -> None:
+    _module, handler, _scene, _objects = _framing_handler(monkeypatch)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"'Cage Rig' deforms 3 mesh\(es\) in scene 'Scene', and every one is left out of the render "
+            r"\(ARMATURE_MODIFIER_DISABLED x1, DISPLAY_WIRE_OR_BOUNDS x1, HIDE_RENDER x1\); "
+            r"pass include_hidden=True"
+        ),
+    ):
+        handler.frame_camera_on_objects("Scene", "Hero", armature_names=["Cage Rig"])
+
+
+def test_limiting_axis_names_the_objects_at_both_ends_of_the_tight_axis(monkeypatch) -> None:
+    module, _handler, _scene, _objects = _framing_handler(monkeypatch)
+
+    def point(x, y, depth=1.0):
+        return types.SimpleNamespace(x=x, y=y, z=-depth)
+
+    limits = (-1.0, 1.0, -1.0, 1.0)
+    # Body and Hat share the right-hand edge, Proxy holds the left; Prop sits inside both.
+    axis, owners = module._limiting_axis(
+        [point(0.5, 0.9), point(-0.95, 0.0), point(0.2, -0.3), point(0.5, 0.1)],
+        ["Body", "Proxy", "Prop", "Hat"],
+        limits,
+        perspective=False,
+    )
+    assert (axis, owners) == ("HORIZONTAL", ["Body", "Proxy", "Hat"])
+
+    # In perspective the far object's larger offset projects inside the near pair, so it is not named.
+    axis, owners = module._limiting_axis(
+        [point(0.1, 0.6), point(0.0, -0.6), point(0.2, 1.0, depth=4.0)],
+        ["Head", "Feet", "Far"],
+        limits,
+        perspective=True,
+    )
+    assert (axis, owners) == ("VERTICAL", ["Head", "Feet"])
+
+
+def test_render_exclusion_reason_names_the_first_flag_that_keeps_an_object_out_of_the_render(monkeypatch) -> None:
+    addon, _bpy = _load_addon(monkeypatch)
+    reason = sys.modules[f"{addon.__name__}.helpers"].render_exclusion_reason
+
+    def collection(name, *, hide_render=False):
+        return types.SimpleNamespace(name=name, hide_render=hide_render)
+
+    master, props, nested, excluded, holdout, indirect = (
+        collection(name) for name in ("Scene Collection", "Props", "Nested", "Excluded", "Holdout", "Indirect")
+    )
+    hidden_parent = collection("Hidden Parent", hide_render=True)
+    view_layer = types.SimpleNamespace(
+        layer_collection=_layer(
+            master,
+            _layer(props),
+            _layer(hidden_parent, _layer(nested)),
+            _layer(excluded, exclude=True),
+            _layer(holdout, holdout=True),
+            _layer(indirect, indirect_only=True),
+        )
+    )
+    scene = types.SimpleNamespace(name="Scene")
+    rig = types.SimpleNamespace(name="Rig")
+
+    def judged(*collections, armature=None, **flags):
+        fields = {
+            "hide_render": False,
+            "is_holdout": False,
+            "visible_camera": True,
+            "display_type": "SOLID",
+            "parent": None,
+            "parent_type": "OBJECT",
+            "modifiers": [],
+            **flags,
+        }
+        obj = types.SimpleNamespace(users_collection=list(collections), **fields)
+        return reason(obj, scene, view_layer, armature=armature)
+
+    assert judged(props) is None
+    assert judged(master) is None
+    # The object's own flags, first applicable wins: Disable in Renders outranks a wire display.
+    assert judged(props, hide_render=True, display_type="WIRE") == "HIDE_RENDER"
+    assert judged(props, is_holdout=True) == "HOLDOUT"
+    assert judged(props, visible_camera=False) == "NO_CAMERA_RAYS"
+    assert judged(props, display_type="WIRE") == "DISPLAY_WIRE_OR_BOUNDS"
+    assert judged(props, display_type="BOUNDS") == "DISPLAY_WIRE_OR_BOUNDS"
+    # A collection disabled in renders hides the collections nested under it too.
+    assert judged(nested) == "COLLECTION_HIDE_RENDER"
+    for layer in (excluded, holdout, indirect):
+        assert judged(layer) == "VIEW_LAYER_EXCLUDED"
+    assert judged(collection("Elsewhere")) == "VIEW_LAYER_EXCLUDED"
+    # One path the render reaches is enough, whatever the others do.
+    assert judged(nested, excluded, props) is None
+    # A rig's Armature modifier disabled in renders leaves the mesh undriven in the shot...
+    disabled = types.SimpleNamespace(type="ARMATURE", object=rig, show_render=False)
+    enabled = types.SimpleNamespace(type="ARMATURE", object=rig, show_render=True)
+    assert judged(props, modifiers=[disabled], armature=rig) == "ARMATURE_MODIFIER_DISABLED"
+    # ...unless another binding to the same rig still drives it.
+    assert judged(props, modifiers=[disabled, enabled], armature=rig) is None
+    assert judged(props, modifiers=[disabled], parent=rig, parent_type="ARMATURE", armature=rig) is None
+    assert judged(props, modifiers=[disabled]) is None
 
 
 def test_camera_keyframe_requires_exactly_one_timing_source() -> None:

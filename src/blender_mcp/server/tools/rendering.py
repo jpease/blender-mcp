@@ -22,6 +22,38 @@ from .image_capture import capture_png
 # the single-call path at the same length: one animation must truncate identically however it
 # was driven. Change one and change the other.
 _PROGRESS_ENTRY_LIMIT = 1000
+# A STILL is one blocking render call the add-on cannot interrupt, so a duration bound on it would
+# be checked once, before it starts. Its twin is `_STILL_DURATION_REFUSAL` in
+# `src/blender_mcp/bundled/addon/handlers/rendering.py`, which refuses the same request there.
+_STILL_DURATION_REFUSAL = (
+    "max_duration_seconds cannot bound a STILL render: one frame renders in a single blocking call "
+    "nothing in-process can interrupt, so the bound would never be applied. For a hard wall-clock "
+    'limit use manage_render_job(action="CREATE", ..., max_duration_seconds=...); otherwise omit it.'
+)
+
+
+def _duration_overrun_warnings(duration_seconds: float, max_duration_seconds: float | None) -> list[str]:
+    """
+    Say so when an ANIMATION ran past its between-frames duration bound.
+
+    Its twin is `_duration_overrun_warnings` in `src/blender_mcp/bundled/addon/handlers/rendering.py`,
+    for the single-call path; change one and change the other.
+
+    Args:
+        duration_seconds: How long the run took.
+        max_duration_seconds: The caller's bound, or None.
+
+    Returns:
+        list[str]: One warning when the run overran the bound, else none.
+
+    """
+    if max_duration_seconds is None or duration_seconds <= max_duration_seconds:
+        return []
+    return [
+        f"This render took {duration_seconds:.1f} s, over max_duration_seconds={max_duration_seconds:g}: "
+        "the bound is checked between frames, and a frame in progress always finishes. For a hard "
+        'wall-clock limit use manage_render_job(action="CREATE", ..., max_duration_seconds=...).'
+    ]
 
 
 class RenderSettingsPatch(StrictModel):
@@ -53,6 +85,7 @@ class RenderSettingsPatch(StrictModel):
     multiview: "MultiviewPatch | None" = None
     cycles: "CyclesPatch | None" = None
     eevee: "EeveePatch | None" = None
+    performance: "PerformancePatch | None" = None
 
     @model_validator(mode="after")
     def validate_patch(self) -> "RenderSettingsPatch":
@@ -119,7 +152,7 @@ class MultiviewPatch(StrictModel):
 
 
 class CyclesPatch(StrictModel):
-    """Cycles-only sampling and denoising controls."""
+    """Cycles-only sampling, denoising, and pixel-filter controls; the render device is configure_lighting_quality's."""
 
     samples: Annotated[int | None, Field(ge=1, le=1_000_000)] = None
     preview_samples: Annotated[int | None, Field(ge=1, le=1_000_000)] = None
@@ -128,6 +161,32 @@ class CyclesPatch(StrictModel):
     time_limit: Annotated[float | None, Field(ge=0, le=604_800)] = None
     use_denoising: bool | None = None
     denoiser: Literal["OPENIMAGEDENOISE", "OPTIX"] | None = None
+    denoising_use_gpu: bool | None = None
+    denoising_input_passes: Literal["RGB", "RGB_ALBEDO", "RGB_ALBEDO_NORMAL"] | None = None
+    denoising_prefilter: Literal["NONE", "FAST", "ACCURATE"] | None = None
+    denoising_quality: Literal["HIGH", "BALANCED", "FAST"] | None = None
+    pixel_filter_type: Literal["BOX", "GAUSSIAN", "BLACKMAN_HARRIS"] | None = None
+    filter_width: Annotated[float | None, Field(ge=0.01, le=10)] = None
+
+
+class PerformancePatch(StrictModel):
+    """
+    Render cost controls on `scene.render`, for any engine.
+
+    `use_persistent_data` keeps scene data in memory between renders (faster re-renders, more
+    memory). `use_simplify` enables the caps: `simplify_subdivision*` is a maximum subdivision
+    level, the other three are 0-1 fractions (viewport, then `_render`). `filter_size` is the
+    EEVEE/Workbench pixel filter width; Cycles uses `cycles.filter_width`.
+    """
+
+    use_persistent_data: bool | None = None
+    use_simplify: bool | None = None
+    simplify_subdivision: Annotated[int | None, Field(ge=0, le=32_767)] = None
+    simplify_subdivision_render: Annotated[int | None, Field(ge=0, le=32_767)] = None
+    simplify_child_particles: Annotated[float | None, Field(ge=0, le=1)] = None
+    simplify_child_particles_render: Annotated[float | None, Field(ge=0, le=1)] = None
+    simplify_volumes: Annotated[float | None, Field(ge=0, le=1)] = None
+    filter_size: Annotated[float | None, Field(ge=0, le=500)] = None
 
 
 class EeveeRayTracingPatch(StrictModel):
@@ -202,7 +261,15 @@ async def inspect_render_setup(
     limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     offset: Annotated[int, Field(ge=0)] = 0,
 ) -> dict:
-    """Inspect render engine, output, display color management, camera, view layers, passes, and compositor state."""
+    """
+    Inspect render engine, output, display color management, camera, view layers, passes, and compositor state.
+
+    "cycles" carries sampling, the requested "device", denoiser/denoising_* settings,
+    pixel_filter_type, filter_width and time_limit; "performance" carries persistent data, simplify
+    and filter_size under configure_render_settings' "performance" names. "effective_cycles_device"
+    is the device Cycles will actually use on this machine ("CPU"/"GPU", null for other engines): a
+    GPU request that Preferences cannot honour reads "CPU" and adds a warning.
+    """
     return await call_blender(
         "inspect_render_setup",
         {"scene_name": scene_name, "graph_sections": graph_sections, "limit": limit, "offset": offset},
@@ -216,7 +283,9 @@ async def configure_render_settings(
     """
     Patch validated scene render settings without rendering or writing a file.
 
-    Display transform (view transform, look, exposure, gamma) is set by configure_color_management.
+    Display transform (view transform, look, exposure, gamma) is set by configure_color_management;
+    the Cycles render device by configure_lighting_quality. "performance" patches render cost on any
+    engine: persistent data, simplify caps, and the EEVEE/Workbench filter_size.
 
     The reply names the scene, lists the property paths the patch wrote ("changed", dotted for
     nested patches such as "output.image_format") and maps each to its resulting value.
@@ -227,7 +296,8 @@ async def configure_render_settings(
         patch: Strict typed settings patch; omitted fields remain unchanged.
         detail: Also return the whole render state before and after the patch as "before" and
             "after" - engine, camera, resolution, frame range, film, output, engine sampling,
-            metadata, multiview, every view layer, compositor - instead of the patched paths.
+            performance, effective_cycles_device, metadata, multiview, every view layer,
+            compositor - instead of the patched paths.
 
     """
     return await call_blender(
@@ -372,6 +442,8 @@ class _AnimationOutcome:
     cancellation_reason: str | None
     duration_seconds: float
     persisted: bool
+    # The run's own notices, such as a duration bound it overran, after the last frame's.
+    warnings: tuple[str, ...] = ()
 
 
 def _animation_summary(
@@ -380,6 +452,9 @@ def _animation_summary(
     mode: str,
     output: str,
     frame: int,
+    engine: str | None,
+    effective_cycles_device: str | None,
+    warnings: list[str],
     files: list[dict],
     frame_total: int,
     operator_result: list[str],
@@ -406,6 +481,10 @@ def _animation_summary(
         mode: "STILL" or "ANIMATION".
         output: The resolved absolute output path or per-frame template.
         frame: The frame the reply reports as current.
+        engine: The render engine the frames rendered with, or None when none rendered.
+        effective_cycles_device: The device Cycles rendered on ("CPU"/"GPU"), None for another
+            engine or when no frame rendered.
+        warnings: Notices for the envelope, such as a GPU request that rendered on the CPU.
         files: One record per written frame, in render order: "frame", "path", "bytes".
         frame_total: How many frames the run planned, which is what "fraction" divides by.
         operator_result: The last rendered frame's sorted operator result, or ["FINISHED"]
@@ -421,7 +500,8 @@ def _animation_summary(
         detail: Whether to add the per-frame "files"/"progress" arrays.
 
     Returns:
-        dict: The render reply, with "files"/"progress"/"progress_truncated" only when detail.
+        dict: The render reply, with "files"/"progress"/"progress_truncated" only when detail and
+        "warnings" only when there are any.
 
     """
     progress = [
@@ -436,6 +516,8 @@ def _animation_summary(
     summary = {
         "scene": scene_name,
         "mode": mode,
+        "engine": engine,
+        "effective_cycles_device": effective_cycles_device,
         "filepath": output,
         "frame": frame,
         "frame_count": len(files),
@@ -454,6 +536,8 @@ def _animation_summary(
         "pass_verification": pass_verification,
         "created_directory": created_directory,
     }
+    if warnings:
+        summary["warnings"] = warnings
     if not detail:
         return summary
     return {**summary, "files": files, "progress": progress, "progress_truncated": len(files) > len(progress)}
@@ -463,11 +547,12 @@ def _aggregate_animation_summary(plan: dict, replies: list[dict], outcome: _Anim
     """
     Combine N per-frame STILL replies into the exact summary shape a single ANIMATION call returns.
 
-    passes/pass_verification come from the LAST completed frame, matching the single-call path
-    reading Render Result once, after its whole loop. An empty `replies` (cancelled before any
-    frame rendered) reports first_file/last_file as None, bytes_written as 0, and passes as
-    empty, because there is no render to report on, rather than the single-call path's
-    own quirk of reading whatever Render Result happened to predate the call.
+    passes/pass_verification, engine/effective_cycles_device and warnings come from the LAST
+    completed frame, matching the single-call path reading them once, after its whole loop. An
+    empty `replies` (cancelled before any frame rendered) reports first_file/last_file, engine and
+    effective_cycles_device as None, bytes_written as 0, and passes as empty, because there is no
+    render to report on, rather than the single-call path's own quirk of reading whatever Render
+    Result happened to predate the call.
 
     Args:
         plan: The plan_render_animation reply this run was driven from.
@@ -492,6 +577,9 @@ def _aggregate_animation_summary(plan: dict, replies: list[dict], outcome: _Anim
         mode="ANIMATION",
         output=plan["output"],
         frame=plan["frame_current"],
+        engine=last.get("engine") if last else None,
+        effective_cycles_device=last.get("effective_cycles_device") if last else None,
+        warnings=[*((last.get("warnings") or []) if last else []), *outcome.warnings],
         files=[reply["files"][0] for reply in replies],
         frame_total=len(plan["frames"]),
         # The last completed frame's operator result, ["FINISHED"] when none completed: the
@@ -515,8 +603,10 @@ async def _iter_rendered_frames(request: _RenderRequest, frames: list[dict], sta
     """
     Render each planned frame as its own STILL call, ending early when the deadline trips.
 
-    Owning the deadline here is what lets the caller read cancellation off the arithmetic -
-    fewer replies than frames - instead of carrying a flag and a reason through the loop.
+    The deadline is checked between frames only: a frame already sent always finishes, so a run
+    can overshoot it by up to one frame. Owning it here is what lets the caller read
+    cancellation off the arithmetic - fewer replies than frames - instead of carrying a flag and
+    a reason through the loop.
 
     Args:
         request: The animation request every frame is narrowed from.
@@ -578,12 +668,14 @@ async def _render_animation_orchestrated(ctx: Context, request: _RenderRequest) 
             "configure_render_settings",
             {"scene_name": request.scene_name, "patch": {"output": {"filepath": plan["requested_filepath"]}}},
         )
+    duration_seconds = time.monotonic() - started
     outcome = _AnimationOutcome(
         request=request,
         cancelled=cancelled,
         cancellation_reason="max_duration_seconds exceeded" if cancelled else None,
-        duration_seconds=time.monotonic() - started,
+        duration_seconds=duration_seconds,
         persisted=persisted,
+        warnings=tuple(_duration_overrun_warnings(duration_seconds, request.max_duration_seconds)),
     )
     return envelope_for(_aggregate_animation_summary(plan, replies, outcome), changed_resources=[request.scene_name])
 
@@ -613,11 +705,14 @@ async def render_scene(
     Render a still or bounded animation to an explicit path after confirmation.
 
     This writes the actual rendered frame(s) to disk but returns only metadata: the first and
-    last written path, the total bytes, and per-frame status. get_viewport_screenshot captures
+    last written path, the total bytes, per-frame status, the "engine" and the
+    "effective_cycles_device" Cycles actually rendered on (a GPU request that fell back to the
+    CPU adds a warning). get_viewport_screenshot captures
     the live viewport, not this render, so it is not a substitute for looking at the output. To
     see this render's pixels, call inspect_render_output(output_path=result["last_file"])
-    afterward - or omit output_path there to read the in-memory Render Result directly.
-    detail=true adds the per-frame "files" and "progress" arrays.
+    afterward. Omitting output_path there reads the in-memory Render Result instead, which holds
+    only the most recent render, whoever started it. detail=true adds the per-frame "files" and
+    "progress" arrays.
 
     Omit filepath to render to the scene's own output path (configure_render_settings
     output.filepath); persist_output=true stores an ANIMATION's template on the scene so a
@@ -639,16 +734,22 @@ async def render_scene(
     client cancellation between frames. Set orchestrate_animation=false for the single
     blocking legacy call instead - the reply shape is identical either way.
 
-    A long ANIMATION can outlive the calling client's own MCP request timeout, which is not a
-    failure of the render: Blender keeps writing frames, and the files land. A timeout here
-    means the outcome is unknown, not lost - re-read it with inspect_render_output on the
-    expected last frame before re-rendering. Bound the call instead with max_duration_seconds,
-    which cancels between frames and reports what was written, or raise the client's timeout.
+    A long render can outlive the calling client's own MCP request timeout, which is not a
+    failure of the render: Blender keeps rendering, and the files land. A timeout here means the
+    outcome is unknown, not lost - re-read it with inspect_render_output(output_path=...) on the
+    expected last frame before re-rendering. For a render that may run long or needs a time
+    limit, use manage_render_job(action="CREATE", ...) instead: it returns at once, and its
+    max_duration_seconds is a hard wall-clock limit. Here max_duration_seconds applies to an
+    ANIMATION only and is checked between frames - a frame in progress always finishes, so a run
+    can overshoot it by up to one frame, and the reply warns when it did. A STILL is refused
+    max_duration_seconds, because nothing in-process can interrupt a single frame.
     """
     if not confirm_render:
         raise ToolError("confirm_render=True is required")
     if mode == "ANIMATION" and frame is not None:
         raise ToolError("frame is only valid for STILL renders")
+    if mode == "STILL" and max_duration_seconds is not None:
+        raise ToolError(_STILL_DURATION_REFUSAL)
     request = _RenderRequest(
         scene_name=scene_name,
         filepath=filepath,
@@ -681,18 +782,22 @@ def _render_output_metadata(result: dict) -> dict:
 
     Returns:
         dict: "width", "height", "native_width", "native_height", "source" ("output_path" or "render_result"),
-        "source_path", and "frame".
+        "source_path", "scene", and "frame", plus the handler's "warnings" for the envelope to lift.
 
     """
-    return {
+    metadata = {
         "width": result.get("width"),
         "height": result.get("height"),
         "native_width": result.get("native_width"),
         "native_height": result.get("native_height"),
         "source": result.get("source"),
         "source_path": result.get("source_path"),
+        "scene": result.get("scene"),
         "frame": result.get("frame"),
     }
+    if result.get("warnings"):
+        metadata["warnings"] = list(result["warnings"])
+    return metadata
 
 
 @mcp.tool(structured_output=False)
@@ -707,11 +812,12 @@ async def inspect_render_output(
 
     Unlike get_viewport_screenshot, which captures the live viewport and never matches
     final render output (different engine, lighting, and color management), this reads
-    real render output: an explicit output_path (typically render_scene's returned "last_file",
-    or one of its detail=true "files" paths - read-only, never modified) or, when omitted, the
-    in-memory "Render Result" datablock. Render Result only ever reflects the most recently
-    rendered frame, so an animation's earlier frames are only reachable by passing
-    their own written output_path.
+    real render output. To see a render_scene frame, pass output_path=render_scene's returned
+    "last_file" (or one of its detail=true "files" paths - read-only, never modified): that is
+    exactly the file that frame wrote. Omitting output_path reads the in-memory "Render Result"
+    datablock, which holds only the most recent render, whoever started it - Blender's UI and
+    render_lighting_preview replace it too - so an animation's earlier frames are only reachable
+    through their own output_path.
 
     Unlike most other tools, this returns two content items instead of one dict: the
     rendered image itself, followed by an ok() envelope carrying its metadata - read
@@ -721,18 +827,23 @@ async def inspect_render_output(
         ctx: MCP request context.
         output_path: Exact path to an existing rendered file on disk. Takes precedence
             over frame; the file is read but never modified.
-        frame: Frame number the in-memory Render Result must currently hold; only
-            checked when output_path is omitted. A mismatch raises rather than
-            silently returning a different frame's pixels.
+        frame: Frame number the in-memory Render Result must hold; only checked when
+            output_path is omitted, against the frame render_scene recorded rendering into
+            it. A mismatch - or a Render Result render_scene did not render - raises rather
+            than returning pixels that may be another frame's.
         max_size: Maximum pixel length of the returned image's largest dimension;
             defaults to 1000.
 
     Returns:
         [Image, dict]: the rendered frame, then an envelope whose data has "width",
-        "height", "native_width", "native_height", "source", "source_path", "frame".
+        "height", "native_width", "native_height", "source", "source_path", "scene", "frame".
         With output_path, "frame" is read back out of the filename Blender wrote and is
         null when that filename carries no unambiguous frame number - so a narration of
-        "here is frame 24" is only warranted when it is not null.
+        "here is frame 24" is only warranted when it is not null; "scene" is null. From
+        Render Result, "scene", "frame" and "source_path" (the file that frame was written
+        to) are what render_scene recorded when it rendered the frame - not the playhead,
+        which render_scene restores afterwards. A Render Result render_scene did not render
+        leaves them null, with a warning that its origin is unknown.
 
     Raises:
         Exception: If the operation cannot be completed.

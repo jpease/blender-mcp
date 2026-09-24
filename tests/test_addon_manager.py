@@ -371,6 +371,54 @@ def test_handshake_defaults_writable_output_roots_when_the_addon_omits_them() ->
     )
 
 
+def test_handshake_surfaces_render_devices_and_reads_an_older_addon_as_not_reporting() -> None:
+    """None, not an empty report: an add-on that predates the field has said nothing about its GPUs."""
+    blender = Mock()
+    older = {
+        "protocol_version": EXPECTED_ADDON_PROTOCOL_VERSION,
+        "addon_version": [1, 2, 0],
+        "capabilities": ["get_addon_info"],
+        "blender_version": "5.2.1",
+    }
+    blender.send_command.return_value = older
+
+    assert handshake_addon(blender).render_devices is None
+
+    report = {
+        "compute_device_type": "OPTIX",
+        "enabled_devices": [{"name": "RTX 4090", "type": "OPTIX"}],
+        "available_devices": [{"name": "RTX 4090", "type": "OPTIX", "use": True}],
+    }
+    blender.send_command.return_value = {**older, "render_devices": report}
+
+    assert handshake_addon(blender).render_devices == report
+
+
+@pytest.mark.parametrize("payload", ["OPTIX", ["OPTIX"], 7])
+def test_a_render_devices_payload_that_is_not_an_object_is_treated_as_absent(payload: object) -> None:
+    assert _hostile_handshake(render_devices=payload).render_devices is None
+
+
+def test_render_device_records_are_cleaned_bounded_and_typed() -> None:
+    """The socket is unauthenticated and these names reach an agent through get_addon_status."""
+    flood = [{"name": f"GPU {index}", "type": "CUDA"} for index in range(40)]
+    devices = _hostile_handshake(
+        render_devices={
+            "compute_device_type": "OPTIX\u202e",
+            "enabled_devices": [{"name": "untyped"}, "RTX", {"name": "RTX\x1b 4090", "type": "OPTIX"}, *flood],
+            "available_devices": [{"name": "RTX 4090", "type": "OPTIX", "use": "yes"}],
+        }
+    ).render_devices
+
+    assert devices is not None
+    assert devices["compute_device_type"] == "OPTIX"
+    enabled = devices["enabled_devices"]
+    assert isinstance(enabled, list)
+    assert enabled[0] == {"name": "RTX 4090", "type": "OPTIX"}
+    assert len(enabled) <= 16
+    assert devices["available_devices"] == [{"name": "RTX 4090", "type": "OPTIX", "use": False}]
+
+
 def test_handshake_surfaces_capability_params() -> None:
     """A per-command accepted-keyword map has to reach the cached handshake to gate anything."""
     blender = MagicMock()

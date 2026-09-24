@@ -569,7 +569,19 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # pointer to `configure_color_management`, and `inspect_render_setup` naming the display color
 # management it now reports. A client needing exposure per engine found no route from either and
 # fell back to a bare `bpy` script, though the validated tool was mounted in this same surface.
-SHOT_MODE_BYTE_CEILING = 266_086
+#
+# Raised from 266,086, measured at 277,300 - 11,214 bytes, from the field-review fixes. 4,720 is
+# `manage_render_job`: a render outliving the client's request timeout could be neither observed
+# nor stopped, and `max_duration_seconds` could not bound a single frame at all; the job runs in a
+# separate `blender -b` process that a hard deadline or DELETE really ends. 2,908 is
+# `configure_render_settings`' `performance` section (Persistent Data, simplify, pixel filter) and
+# the Cycles denoise/filter fields, which no tool could set. 957 is `frame_camera_on_objects`'
+# render-visibility rule and `include_hidden`: hidden helper meshes were widening the solved lens.
+# 1,604 is the rendering replies naming the device Cycles actually uses (`render_scene`,
+# `inspect_render_setup`, `configure_lighting_quality`, `inspect_render_output`) and the honest
+# `max_duration_seconds` contract. 75 is `list_character_bones`. The rest is the core surface
+# below.
+SHOT_MODE_BYTE_CEILING = 277_300
 
 # The same rule as above, for the default, core-only surface.
 #
@@ -600,7 +612,13 @@ SHOT_MODE_BYTE_CEILING = 266_086
 # is in no collection, so a canon library's World was unreachable by any linking call.
 # `list_scene_objects`' `search`: on a 598-object set at 25 a page, finding one object meant
 # paging the whole scene.
-DEFAULT_MODE_BYTE_CEILING = 91_609
+#
+# Raised from 91,609, measured at 92,559 - 950 bytes. 508 is `link_canon_library`'s `detail` and
+# its roots-only `changed_objects` with members counted in `instanced_objects`: linking a
+# furnished set listed 50 of 2,988 objects on every call. 353 is `get_addon_status`'
+# `render_devices`, without which a GPU request silently rendering on the CPU was invisible. The
+# rest is the library tools' reply shapes and the path-redaction rule now stated as it is applied.
+DEFAULT_MODE_BYTE_CEILING = 92_559
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

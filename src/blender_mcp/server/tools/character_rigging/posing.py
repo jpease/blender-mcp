@@ -191,7 +191,8 @@ async def list_character_bones(
             holds more than one page of them. Pass the item's custom_property_next_offset.
         deformed_meshes: Also name the meshes this rig deforms. Independent of the bone page: a
             bone's deform flag says it deforms something, never what. This is the set
-            sample_deformed_geometry measures and frame_camera_on_objects frames.
+            sample_deformed_geometry measures; frame_camera_on_objects frames the members of it
+            the render shows and names the rest in its excluded_objects.
         mesh_offset: Where to resume in that list; pass its next_offset while truncated.
 
     Returns:

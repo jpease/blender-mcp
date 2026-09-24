@@ -31,10 +31,11 @@ async def get_session_info(ctx: Context) -> dict:
         session_id, session_epoch, current_filepath (None if never saved), is_dirty,
         session_indeterminate, last_load_error, last_save_error, and libraries (each with
         session_uid, name, filepath, filepath_redacted, filepath_redaction_reason,
-        is_relative, is_missing). A library path outside the configured file roots is
-        reported as its leaf name with filepath_redacted=true - a display leaf, not a
-        resolvable path and not a broken link; is_missing is what reports breakage, and
-        is_relative is judged on the unredacted path.
+        is_relative, is_missing). filepath is a // link (absolute if never saved) when the
+        library resolves inside the file roots (none set: the .blend's folder); otherwise its
+        leaf, with filepath_redacted=true and a filepath_redaction_reason: DIRECTORY,
+        UNRESOLVABLE, OUTSIDE_ROOTS, TOO_LONG or UNSAFE_COMPONENT. A leaf is not a broken
+        link: is_missing reports breakage, is_relative the stored form.
 
     """
     return await call_blender("get_session_info", {})
@@ -67,10 +68,8 @@ async def open_shot(
         list_scene_objects reports), datablock_object_count (every object datablock in the
         file, which a linked hierarchy makes larger), libraries, session_id, session_epoch,
         capabilities_changed, rehandshake_required, discarded_unsaved_changes, note, and
-        warnings when part of the swap report could not be read. Each library reports
-        filepath_redacted=true when its path lies outside the configured file roots and was
-        reduced to its leaf name; that is a display leaf, not a broken link, and is_missing
-        is the field that reports breakage.
+        warnings when part of the swap report could not be read. Each library's filepath
+        is published as get_session_info describes.
 
     """
     return await call_blender(
@@ -166,6 +165,7 @@ async def link_canon_library(
     as_override: bool = False,
     relative: bool = False,
     scene_uid: int | None = None,
+    detail: bool = False,
 ) -> dict:
     """
     Link named collections, objects and/or a World from a canon .blend into the open shot.
@@ -186,10 +186,15 @@ async def link_canon_library(
         as_override: Override each linked collection's hierarchy instead of instancing it.
         relative: Store the library path relative to the open file; needs a saved session.
         scene_uid: Scene to link into; needed only when the file has more than one scene.
+        detail: Page the objects brought in as records (session_uid, id_type, indirect and
+            missing flags) instead of names; under as_override, each override's objects.
 
     Returns:
         library (as list_libraries), library_already_linked, scene_uid, collections, objects,
-        world, previous_world, overrides.
+        instanced_objects (total, by_type and one page of names, or records under detail;
+        None under as_override), world, previous_world, overrides (as create_override).
+        changed_objects names only the root objects - those no other linked object parents,
+        e.g. a character's rig - not every member of the linked hierarchy.
 
     """
     return await call_blender(
@@ -202,6 +207,7 @@ async def link_canon_library(
             "as_override": as_override,
             "relative": relative,
             "scene_uid": scene_uid,
+            "detail": detail,
         },
     )
 
@@ -222,12 +228,14 @@ async def create_override(
         ctx: MCP request context.
         collection_uid: The linked collection's session_uid.
         scene_uid: Scene to override into; only needed when the file has more than one scene.
-        detail: Also list the override's objects as records (session_uid, editability, the linked
-            original each references); changed_objects names them either way.
+        detail: List the override's objects as records (session_uid, editability, the linked
+            original each references) instead of names.
 
     Returns:
         override (session_uid, is_editable, is_system_override, reference_uid,
-        hierarchy_root_uid), scene_uid, replaced_instances, and objects (total, by_type).
+        hierarchy_root_uid), scene_uid, replaced_instances, and objects (total, by_type and one
+        page of names, or records under detail). changed_objects names the override's root
+        objects - those no other override object parents - not every member.
 
     """
     return await call_blender(
@@ -256,10 +264,8 @@ async def list_libraries(ctx: Context, limit: int = 25, offset: int = 0, detail:
         filepath_redaction_reason, is_relative, is_missing, version,
         needs_liboverride_resync, users, and datablocks: total, by_type and one page of
         names, or of records under detail), total, offset, limit, returned_count, truncated,
-        next_offset. A library path outside the configured file roots is reported as its
-        leaf name with filepath_redacted=true - a display leaf, not a resolvable path and
-        not a broken link; is_missing is what reports breakage, and is_relative is judged on
-        the unredacted path.
+        next_offset. filepath, its redaction flags and their codes are as get_session_info
+        describes; a leaf is not a broken link, is_missing reports breakage.
 
     """
     return await call_blender("list_libraries", {"limit": limit, "offset": offset, "detail": detail})
@@ -340,7 +346,8 @@ async def unlink_libraries(
 
     Returns:
         removed_libraries (each as list_libraries, including filepath_redacted),
-        already_removed_uids, removed_count, removed_by_type, removed_uids, purged_orphans,
+        already_removed_uids, removed_count, removed_by_type, removed_sample (up to 10 removed
+        datablocks as name and id_type - a removed uid names nothing), purged_orphans,
         purged_by_type, other_libraries_removed.
 
     """
@@ -367,10 +374,11 @@ async def inspect_delivery(
     RELATIVE_OK, ABSOLUTE, MISSING or UNSET. `portable` is only true when the file is saved,
     the scan was complete, and nothing is ABSOLUTE or MISSING - it is a proof, not a guess.
 
-    A path outside the configured file roots - anything not `//`-relative - is reported as
-    its leaf name with `path_redacted: true` and a `path_redaction_reason`, so the reply
-    never carries this machine's directory layout; that leaf is a display name, not a
-    resolvable path and not a broken link, and `verdict` (MISSING) is what reports breakage.
+    A path that resolves inside the file roots (none set: the .blend's folder) is published
+    as a // link; any other as its leaf, with `path_redacted: true` and a
+    `path_redaction_reason` (DIRECTORY, UNRESOLVABLE, OUTSIDE_ROOTS, TOO_LONG,
+    UNSAFE_COMPONENT), so the reply never carries this machine's layout outside them. A leaf
+    is not a broken link; `verdict` (MISSING) reports breakage.
 
     Args:
         ctx: MCP request context.

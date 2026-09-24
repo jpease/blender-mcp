@@ -27,7 +27,7 @@ from .. import ADDON_PROTOCOL_VERSION, authored, bl_info
 from ..file_digest import MAX_DIGEST_FILE_BYTES
 from ..library_digest import library_digests
 from ..text_hygiene import client_safe_text
-from .blend_files import library_summary
+from .blend_files import PATH_REDACTION_REASONS, library_summary, path_frame
 
 # The custom property every local scene carries after a save. One name, so a reader does not
 # have to know which scene the add-on happened to be looking at.
@@ -45,17 +45,27 @@ _PROVENANCE_SCALARS = ("claim_generator", "protocol_version", "blender_version",
 _ID_PROPERTY_ERRORS = (AttributeError, KeyError, ReferenceError, TypeError)
 
 
-def provenance_block(digest_roots: Sequence[str]) -> dict[str, object]:
+def provenance_block(digest_roots: Sequence[str], blend_filepath: str) -> dict[str, object]:
     """
     Describe who authored this file, from what, in C2PA's vocabulary.
+
+    Each ingredient's `filepath` is published by `blend_files.published_path_fields`
+    as seen from the file being written, so it identifies the library from where the
+    record will live: a library inside the configured file roots (with none, inside
+    the saved file's directory) is recorded as a `//` link relative to that file, and
+    any other as its leaf name with the `filepath_redaction_reason` that withheld the
+    rest.
 
     Args:
         digest_roots: File roots to confine library checksums to; empty records
             no checksum, because hashing every library on every save would read
             gigabytes on Blender's main thread.
+        blend_filepath: The `.blend` the save is about to write, which recorded
+            links are relative to.
 
     Returns:
-        dict[str, object]: The block, JSON-serializable and free of host paths.
+        dict[str, object]: The block, JSON-serializable and free of host paths
+        outside the configured file roots.
 
     """
     addon_version = ".".join(str(part) for part in bl_info["version"])
@@ -65,11 +75,18 @@ def provenance_block(digest_roots: Sequence[str]) -> dict[str, object]:
         if digest_roots
         else [("", "")] * len(libraries)
     )
+    frame = path_frame(blend_filepath)
     ingredients = []
     for library, (sha256, skipped) in zip(libraries, digests, strict=True):
-        summary = library_summary(library)
+        summary = library_summary(library, frame=frame)
         ingredients.append(
-            {"name": summary["name"], "filepath": summary["filepath"], "sha256": sha256, "skipped": skipped}
+            {
+                "name": summary["name"],
+                "filepath": summary["filepath"],
+                "filepath_redaction_reason": summary["filepath_redaction_reason"],
+                "sha256": sha256,
+                "skipped": skipped,
+            }
         )
     return {
         "claim_generator": f"blender-mcp/{addon_version}",
@@ -88,7 +105,7 @@ def provenance_block(digest_roots: Sequence[str]) -> dict[str, object]:
     }
 
 
-def stamp_provenance(digest_roots: Sequence[str]) -> tuple[list[tuple[object, bool, object]], int]:
+def stamp_provenance(digest_roots: Sequence[str], blend_filepath: str) -> tuple[list[tuple[object, bool, object]], int]:
     """
     Write the provenance block into every local scene, remembering what was there.
 
@@ -96,13 +113,14 @@ def stamp_provenance(digest_roots: Sequence[str]) -> tuple[list[tuple[object, bo
 
     Args:
         digest_roots: Passed through to `provenance_block`.
+        blend_filepath: Passed through to `provenance_block`.
 
     Returns:
         tuple[list[tuple[object, bool, object]], int]: The `(scene, key existed, previous
         value)` backup `restore_provenance` undoes, and how many ingredients were recorded.
 
     """
-    block = provenance_block(digest_roots)
+    block = provenance_block(digest_roots, blend_filepath)
     encoded = json.dumps(block, sort_keys=True)
     backup: list[tuple[object, bool, object]] = []
     for scene in bpy.data.scenes:
@@ -195,7 +213,10 @@ def _clean_provenance(block: dict) -> dict:
         block: The parsed block.
 
     Returns:
-        dict: `present`, `valid`, the known scalars, `ingredients` and `actions`.
+        dict: `present`, `valid`, the known scalars, `ingredients` and `actions`. An
+        ingredient's `filepath_redaction_reason` is one of `PATH_REDACTION_REASONS`, or
+        None when the block records no known code: a whole link, or a block written
+        before the field existed.
 
     """
     cleaned: dict[str, object] = {"present": True, "valid": True}
@@ -205,6 +226,11 @@ def _clean_provenance(block: dict) -> dict:
         {
             "name": _clean_scalar(entry.get("name", "")),
             "filepath": _clean_scalar(entry.get("filepath", "")),
+            "filepath_redaction_reason": (
+                entry.get("filepath_redaction_reason")
+                if entry.get("filepath_redaction_reason") in PATH_REDACTION_REASONS
+                else None
+            ),
             "sha256": _clean_scalar(entry.get("sha256", "")),
             "skipped": _clean_scalar(entry.get("skipped", "")),
         }

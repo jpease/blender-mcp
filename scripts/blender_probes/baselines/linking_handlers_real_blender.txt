@@ -18,10 +18,10 @@ Info: Saved as "props.blend"
 
 === A. link (instanced) -> create_override -> save_shot -> open_shot ===
 Info: Saved as "shot_a.blend"
-  link result: {'session_uid': 513, 'name': 'canon.blend', 'filepath': 'canon.blend', 'is_relative': False, 'is_missing': False, 'version': [5, 2, 45], 'needs_liboverride_resync': False, 'users': 1} [{'session_uid': 514, 'name': 'CanonHero', 'id_type': 'COLLECTION', 'is_library_indirect': False, 'is_missing': False}]
+  link result: {'session_uid': 513, 'name': 'canon.blend', 'filepath': '//canon.blend', 'filepath_redacted': False, 'filepath_redaction_reason': None, 'is_relative': False, 'is_missing': False, 'version': [5, 2, 45], 'needs_liboverride_resync': False, 'users': 1} [{'session_uid': 514, 'name': 'CanonHero', 'id_type': 'COLLECTION', 'is_library_indirect': False, 'is_missing': False}]
   scene children after link: [('CanonHero', True)]
   override: {'session_uid': 517, 'name': 'CanonHero', 'is_override': True, 'is_editable': True, 'is_system_override': False, 'reference_uid': 514, 'hierarchy_root_uid': 517}  replaced_instances: 1
-  override objects: {'total': 1, 'by_type': {'OBJECT': 1}}
+  override objects: {'total': 1, 'by_type': {'OBJECT': 1}, 'limit': 10, 'returned_count': 1, 'truncated': False, 'names': ['HeroBody']}
   scene children after override: [('CanonHero', False)]
 Info: Saved "shot_a.blend"
   [save_shot in place] OK
@@ -49,12 +49,12 @@ Info: Saved as "shot.blend"
   relative link stored as: '//../../../../../../..<real-tmp>/t7_handlers_<rand>/Smith, John/canon.blend'
   RAW relative   : "Error: Trying to reload library 'LIcanon.blend' from invalid path '<real-tmp>/t7_handlers_<rand>/Smith, John/canon.blend'\n"
   [reload_library, // link in 'Smith, John'] RuntimeError -> "reload_library failed: Error: Trying to reload library 'canon.blend' from invalid path '<path>'"
-  [relocate_library to a missing file] ValueError -> 'file does not exist'
+  [relocate_library to a missing file] ValueError -> 'file does not exist, though the directory named in its path does'
   [relocate_library to a truncated .blend] RuntimeError -> "relocate_library failed: Error: Failed to read blend file '<path>': Missing DNA block"
   filepath restored: True  is_missing: False
   [reload_library after the restore] OK
   datablocks after the restore: ['CanonHero', 'HeroBodyMesh', 'HeroBody']
-  [link_canon_library of a missing file] ValueError -> 'file does not exist'
+  [link_canon_library of a missing file] ValueError -> 'file does not exist, though the directory named in its path does'
 
 === D. failed links through the real mutation_transaction ===
 Info: Saved as "shot_d.blend"
@@ -67,7 +67,7 @@ Info: Saved as "shot_d.blend"
 Info: Saved as "shot_e.blend"
   before: OnlyUsedByTheOverride users = 1  UserScratchMaterial users = 0
   [unlink without confirm] ValueError -> 'unlink_libraries removes each named library and every datablock linked from it; pass confirm=true'
-  report: {'removed_libraries': [{'session_uid': 1409, 'name': 'canon.blend', 'filepath': 'canon.blend', 'is_relative': False, 'is_missing': False}], 'already_removed_uids': [], 'removed_count': 5, 'removed_by_type': {'libraries': 1, 'collections': 1, 'objects': 2, 'meshes': 1}, 'removed_uids': [1409, 1410, 1411, 1412, 1418], 'removed_uids_truncated': False, 'purged_orphans': 1, 'purged_by_type': {'materials': 1}, 'other_libraries_removed': []}
+  report: {'removed_libraries': [{'session_uid': 1409, 'name': 'canon.blend', 'filepath': '//canon.blend', 'filepath_redacted': False, 'filepath_redaction_reason': None, 'is_relative': False, 'is_missing': False}], 'already_removed_uids': [], 'removed_count': 5, 'removed_by_type': {'collections': 1, 'libraries': 1, 'meshes': 1, 'objects': 2}, 'removed_sample': [{'name': 'canon.blend', 'id_type': 'LIBRARY'}, {'name': 'CanonHero', 'id_type': 'COLLECTION'}, {'name': 'HeroBody', 'id_type': 'OBJECT'}, {'name': 'HeroBodyMesh', 'id_type': 'MESH'}, {'name': 'HeroBody', 'id_type': 'OBJECT'}], 'purged_orphans': 1, 'purged_by_type': {'materials': 1}, 'other_libraries_removed': []}
   unnamed library and its datablocks all alive: True
   user's zero-user material alive: True UserScratchMaterial
   orphaned material purged: True
@@ -95,7 +95,7 @@ Info: Read library: '<real-tmp>/t7_handlers_<rand>/canon_two.blend', '<real-tmp>
 Info: Saved as "shot_h.blend"
   [relocate_library to props.blend] OK
   library is_missing: False
-  datablocks: {'total': 1, 'by_type': {'COLLECTION': 1}, 'offset': 0, 'limit': 10, 'returned_count': 1, 'truncated': False, 'next_offset': None, 'names': ['CanonHero']}
+  datablocks: {'total': 1, 'by_type': {'COLLECTION': 1}, 'limit': 10, 'returned_count': 1, 'truncated': False, 'names': ['CanonHero']}
   warnings: ['1 datablock linked from this library is missing from its file; it is a placeholder until relinked']
 
 === I. relocate of an indirect library ===

@@ -8,7 +8,7 @@ object list is bounded, the reply dict is left alone - are asserted here once in
 
 from pydantic_core import to_json
 
-from blender_mcp.server.tools.envelope import CHANGED_OBJECTS_LIMIT, REPLY_BYTE_BUDGET, envelope_for, ok
+from blender_mcp.server.tools.envelope import CHANGE_LIST_LIMIT, REPLY_BYTE_BUDGET, envelope_for, ok
 
 # A page this long passes the budget whatever the exact record size is.
 _OVER_BUDGET = 400
@@ -146,7 +146,9 @@ def test_the_keys_the_shortening_adds_are_inside_the_budget_it_measured() -> Non
     `next_offset` is a key many payloads do not carry until a page is shortened, so writing it
     afterwards puts the reply back over the budget by its own length.
     """
-    data = {"names": {"items": [f"bone{index}" for index in range(2_000)], "total": 2_000, "truncated": False}}
+    data = {
+        "names": {"items": [f"bone{index}" for index in range(2_000)], "total": 2_000, "offset": 0, "truncated": False}
+    }
 
     result = ok(data)
 
@@ -174,6 +176,56 @@ def test_a_page_paged_under_a_prefixed_name_is_still_marked_truncated() -> None:
     assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
     assert result["data"]["lights_truncated"] is True
     assert result["data"]["lights_next_offset"] == len(result["data"]["lights"])
+
+
+def test_a_page_whose_owner_takes_no_offset_is_marked_truncated_but_offers_none() -> None:
+    """
+    A bounded sub-list carries `truncated` but no offset, because its tool pages something else.
+
+    `list_libraries(detail=true)` pages each library's `datablocks` beside `limit`,
+    `returned_count` and `truncated`; its own `offset` pages libraries. Writing a `next_offset`
+    into the datablocks page told the agent to resume at an offset that skips libraries.
+    """
+    datablocks = {
+        "total": 150,
+        "by_type": {"MESH": 150},
+        "limit": 100,
+        "returned_count": 100,
+        "truncated": True,
+        "records": _records(100),
+    }
+    data = {
+        "libraries": [{"name": "canon.blend", "datablocks": datablocks}],
+        "total": 1,
+        "offset": 0,
+        "limit": 25,
+        "returned_count": 1,
+        "truncated": False,
+        "next_offset": None,
+    }
+
+    result = ok(data)
+    page = result["data"]["libraries"][0]["datablocks"]
+
+    assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
+    assert 0 < len(page["records"]) < 100
+    assert page["truncated"] is True
+    assert page["returned_count"] == len(page["records"])
+    assert "next_offset" not in page
+    assert (result["data"]["truncated"], result["data"]["next_offset"]) == (False, None)
+    shortened = [warning for warning in result["warnings"] if "was shortened to" in warning]
+    assert len(shortened) == 1 and "narrower scope" in shortened[0] and "offset=" not in shortened[0]
+
+
+def test_a_prefixed_page_without_its_own_offset_offers_no_offset_to_resume_from() -> None:
+    """`render_scene(detail=true)` flags `progress_truncated` but takes no progress offset."""
+    data = {"files": ["a.png"], "progress": _records(_OVER_BUDGET), "progress_truncated": False}
+
+    result = ok(data)
+
+    assert result["data"]["progress_truncated"] is True
+    assert "progress_next_offset" not in result["data"]
+    assert not any("offset=" in warning for warning in result["warnings"])
 
 
 def test_cutting_an_unpaged_sibling_leaves_the_real_pages_resume_point_alone() -> None:
@@ -415,16 +467,29 @@ def test_a_long_change_list_is_bounded_and_the_warning_names_the_total() -> None
 
     result = envelope_for({"changed_objects": names})
 
-    assert result["changed_objects"] == names[:CHANGED_OBJECTS_LIMIT]
-    assert result["warnings"] == [f"changed_objects lists the first {CHANGED_OBJECTS_LIMIT} of 480 objects"]
+    assert result["changed_objects"] == names[:CHANGE_LIST_LIMIT]
+    assert result["warnings"] == [f"changed_objects lists the first {CHANGE_LIST_LIMIT} of 480 objects"]
+
+
+def test_a_long_resource_list_is_bounded_the_same_way() -> None:
+    """`changed_resources` sits outside `data`, where the budget never reaches, so it needs its own cap."""
+    names = [f"Mat{index:04d}" for index in range(2_000)]
+
+    result = envelope_for({"changed_objects": ["Cube"], "changed_resources": names})
+
+    assert result["changed_resources"] == names[:CHANGE_LIST_LIMIT]
+    assert result["changed_objects"] == ["Cube"]
+    assert result["warnings"] == [f"changed_resources lists the first {CHANGE_LIST_LIMIT} of 2000 resources"]
+    assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
 
 
 def test_a_change_list_exactly_at_the_limit_is_sent_whole_and_unremarked() -> None:
-    names = [f"Part{index:03d}_geo" for index in range(CHANGED_OBJECTS_LIMIT)]
+    names = [f"Part{index:03d}_geo" for index in range(CHANGE_LIST_LIMIT)]
 
-    result = envelope_for({"changed_objects": names})
+    result = envelope_for({"changed_objects": names, "changed_resources": names})
 
     assert result["changed_objects"] == names
+    assert result["changed_resources"] == names
     assert result["warnings"] == []
 
 

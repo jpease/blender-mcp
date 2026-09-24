@@ -241,7 +241,7 @@ command = "blender-mcp"
 blender-mcp registers just over 300 tools in total. Sending all of them to a client on every
 connection can be large enough to eat into the context available for the actual task, so by
 default a server process only registers its **core** bundle — scene inspection, object editing,
-object removal, viewport, animation, and file lifecycle/linking (35 tools). Everything else is
+object removal, viewport, animation, and file lifecycle/linking (36 tools). Everything else is
 opt-in, selected with the `BLENDER_MCP_TOOLSETS` environment variable (a comma-separated list of
 names, or `all` for the previous everything-registered behavior).
 
@@ -272,7 +272,7 @@ for fine-grained control. Modes are curated presets over bundles and compose wit
 | `lighting-construction` | creating/aiming/linking lights, studio-lighting presets (also carries all of `lighting`'s render-quality tools — `configure_lighting_quality`, `configure_color_management`, `render_lighting_preview` — since the studio-lighting preset calls the last one directly) |
 | `texture` | materials/textures |
 | `texture-lighting` | **deprecated**, kept for existing configs: `texture` + `lighting` + `lighting-construction` |
-| `rendering` | render + inspect render output |
+| `rendering` | render, background render jobs (`manage_render_job`), inspect render output |
 | `assets` | Poly Haven, Sketchfab |
 
 A tool outside the selected bundles is not advertised at all, so a client reports a call to it
@@ -394,6 +394,22 @@ Commands that open, save or link a `.blend` take a path from an unauthenticated 
 - **Embedded scripts never run.** A `.blend` can carry Python that Blender executes on load. `use_scripts` is never a tool parameter, a file command's load passes `use_scripts=False` explicitly, and Blender's *Auto Run Python Scripts* preference (`preferences.filepaths.use_scripts_auto_execute`) is part of the same risk and must be checked before a load.
 - Blender's own error text contains absolute paths; file commands replace them with `<path>` before an error reaches a client.
 
+**Path redaction**
+
+Replies that report a path Blender stores — `get_session_info`, `open_shot` and the linking tools' library `filepath`, `inspect_delivery`'s reference `path`, and the ingredients `save_shot` records as provenance — publish it whole only when it lies inside the allowed folders: the file roots above, or with none configured, the open `.blend`'s own directory. The path is resolved, not read by its spelling: a `//` path is expanded against the open `.blend`, and both forms go through the same `realpath` canonicalization the file commands use, so `..` and symlinks are followed. A contained path is published as a `//` link relative to the `.blend` however Blender stored it — an absolute `<shot>/libs/canon.blend` reads `//libs/canon.blend`, and a canon folder beside the shot inside a root reads `//../canon/set.blend`. A session that has never been saved has no `.blend` to be relative to, so there a path inside a configured root is published absolute, as `current_filepath` is.
+
+Anything else is reduced to its leaf name and flagged `<field>_redacted: true` with a `<field>_redaction_reason`:
+
+| Code | Meaning |
+|---|---|
+| `DIRECTORY` | A directory not published whole; even its leaf is withheld (`"the requested file"`), since a directory's last component is routinely a user name. |
+| `UNRESOLVABLE` | Nothing to resolve it against: a `//` path in a never-saved session, `//` followed by a root (`///Users/...`), or a relative path without the `//` marker. |
+| `OUTSIDE_ROOTS` | It resolved, but not inside the allowed folders. |
+| `TOO_LONG` | Inside, but its published form is over 256 characters. |
+| `UNSAFE_COMPONENT` | Inside, but a component of its published form holds a character outside ASCII letters, digits, `.`, `_`, `-` and space — a zero-width, control or non-ASCII character, for instance. |
+
+A redacted path is a display name, not a broken link: `is_missing` (libraries) and `verdict` (`inspect_delivery`) report breakage, and `is_relative` / `absolute` describe the path as stored. Each published path costs one `realpath`; `inspect_delivery` resolves only the page it returns.
+
 **Tool bundles**
 
 Configure which tool domains a server process registers with `BLENDER_MCP_TOOLSETS` — see [Tool Bundles](#tool-bundles).
@@ -408,7 +424,19 @@ Ensure the Blender addon server is running. Don't run `blender-mcp` manually out
 
 **Timeout errors**
 
-Break requests into smaller steps or simplify the operation.
+Break requests into smaller steps or simplify the operation. A render that can outlive the client's request timeout belongs in a render job (below), not `render_scene`.
+
+**Long or time-bounded renders**
+
+`render_scene` renders inside the connected Blender, which answers no other command until it finishes and cannot stop a frame part way, so its `max_duration_seconds` is checked only between frames. `manage_render_job(action="CREATE", ...)` takes the same render parameters, saves a copy of the open file (unsaved edits included) and renders that copy in a separate `blender -b` process, returning at once. Poll `action="READ"` for `state` (`QUEUED`, `RENDERING`, `DONE`, `CANCELLED`, `TIMED_OUT`, `FAILED`), `frames_done` and `last_file`; `max_duration_seconds` is a hard wall-clock limit that ends the process mid-frame. `LIST` pages every job, and `DELETE` stops a running job (with `confirm_delete=true`) and removes its directory, never a rendered frame.
+
+- A job is a directory `<job_id>/` holding `job.json`, the `scene.blend` copy, `render.log` and `files.jsonl`, kept in `blender_mcp_render_jobs/` under the first writable `BLENDERMCP_OUTPUT_ROOTS` entry, else the first writable `BLENDERMCP_FILE_ROOTS` entry, so the copy of the open file stays inside the declared roots. With no roots set it is a private per-user `blender_mcp_render_jobs-<uid>/` (mode 0700) under the system temp directory; a directory of that name that is a symlink, owned by another user or open to others is refused. The output `filepath` must lie inside the file roots when they are set, whether or not its directory exists.
+- The render process starts without `--factory-startup`, so your Preferences (Cycles render devices, enabled add-ons) apply to it as they do to the GUI, and with `--disable-autoexec`, so no script embedded in the file runs.
+- Jobs outlive the session on purpose: disconnecting the client, stopping the add-on's server or quitting Blender stops none of them, and each still ends at its own deadline. A job stays listed until it is deleted.
+
+**Cycles renders on the CPU**
+
+`cycles.device = "GPU"` is only a request. Cycles uses a GPU when Blender's Preferences > System > Cycles Render Devices, on the machine running Blender, select a backend and tick one of its devices; otherwise it renders on the CPU without complaint. `get_addon_status` reports those preferences as `render_devices`, and `configure_lighting_quality`, `inspect_render_setup` and `render_scene` report the device actually used as `effective_cycles_device`, with a warning when a GPU request falls back. Persistent Data, Simplify and the pixel filter size are `configure_render_settings`' `performance` section.
 
 ---
 

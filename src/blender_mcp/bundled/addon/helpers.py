@@ -120,7 +120,8 @@ def deforming_meshes(armature, scene=None):
     route and is still what `Ctrl+P > With Automatic Weights` leaves behind on a proxy, so
     checking only the modifier stack would silently drop half a character. Shared rather than
     respelled per domain: camera framing and the posing surface must not disagree about which
-    meshes a rig moves, or a shot is framed on a set one tool reports and another denies.
+    meshes a rig moves, or a shot is framed on a set one tool reports and another denies. Framing
+    then drops the members `render_exclusion_reason` rejects, and names each with its reason.
 
     Narrower on purpose than `handlers/character_rigging/records._dependent_meshes`, which
     answers "what depends on this rig?" and counts a prop merely parented to it. This answers
@@ -153,6 +154,107 @@ def deforming_meshes(armature, scene=None):
         enabled = any(modifier.show_viewport for modifier in modifiers) if modifiers else None
         bound.append((obj, binding, enabled))
     return bound
+
+
+def _render_paths(layer_collection, users, hidden=False, excluded=False):
+    """
+    Yield `(hidden, excluded)` once per layer-collection path that links one of `users` directly.
+
+    A collection's `hide_render` hides everything beneath it in every view layer, and a layer
+    collection's `exclude`, `holdout` and `indirect_only` keep everything beneath it out of the
+    camera's direct view in this view layer. Both are inherited down the tree, so they are carried
+    along the walk rather than read off the one collection that links the object.
+    """
+    collection = layer_collection.collection
+    hidden = hidden or collection.hide_render
+    excluded = excluded or layer_collection.exclude or layer_collection.holdout or layer_collection.indirect_only
+    if collection in users:
+        yield hidden, excluded
+    for child in layer_collection.children:
+        yield from _render_paths(child, users, hidden, excluded)
+
+
+# The object's own render switches, in the order `render_exclusion_reason` reports them.
+_OBJECT_EXCLUSIONS = (
+    ("HIDE_RENDER", lambda obj: obj.hide_render),
+    ("HOLDOUT", lambda obj: obj.is_holdout),
+    ("NO_CAMERA_RAYS", lambda obj: not obj.visible_camera),
+    ("DISPLAY_WIRE_OR_BOUNDS", lambda obj: obj.display_type in {"WIRE", "BOUNDS"}),
+)
+
+
+def _collection_exclusion(obj, scene, view_layer):
+    """
+    Say whether every collection path leaves `obj` out of `view_layer`'s render.
+
+    Returns:
+        str | None: COLLECTION_HIDE_RENDER, VIEW_LAYER_EXCLUDED, or None when a path renders it.
+
+    """
+    if view_layer is None:
+        view_layer = bpy.context.view_layer if bpy.context.scene == scene else scene.view_layers[0]
+    paths = list(_render_paths(view_layer.layer_collection, list(obj.users_collection)))
+    if any(not hidden and not excluded for hidden, excluded in paths):
+        return None
+    if paths and all(hidden for hidden, _excluded in paths):
+        return "COLLECTION_HIDE_RENDER"
+    return "VIEW_LAYER_EXCLUDED"
+
+
+def _armature_binding_exclusion(obj, armature):
+    """
+    Say whether `obj` is bound to `armature` only through render-disabled Armature modifiers.
+
+    Returns:
+        str | None: ARMATURE_MODIFIER_DISABLED, or None when the rig moves it in the render.
+
+    """
+    if obj.parent == armature and obj.parent_type == "ARMATURE":
+        return None
+    bindings = [modifier for modifier in obj.modifiers if modifier.type == "ARMATURE" and modifier.object == armature]
+    if bindings and not any(modifier.show_render for modifier in bindings):
+        return "ARMATURE_MODIFIER_DISABLED"
+    return None
+
+
+def render_exclusion_reason(obj, scene, view_layer=None, *, armature=None):
+    """
+    Say why an object adds nothing to what a camera renders, or None when it does.
+
+    Camera framing is the consumer: a rig binds collision cages, simulation proxies and helper
+    meshes as well as its skin, and this repo itself stamps such helpers `hide_render` and
+    `display_type = 'WIRE'`. Framing them fits the shot around geometry the render never shows.
+    Codes, checked in this order so an object hidden several ways reports the first one to clear:
+
+    - HIDE_RENDER: the object's own Disable in Renders.
+    - HOLDOUT: the object renders as a holdout, a transparent hole rather than a surface.
+    - NO_CAMERA_RAYS: its camera ray visibility is off, so no camera sees it directly.
+    - DISPLAY_WIRE_OR_BOUNDS: displayed as wire or bounds, the convention for helper geometry.
+    - COLLECTION_HIDE_RENDER: every collection path to it in the scene is disabled in renders.
+    - VIEW_LAYER_EXCLUDED: every path to it in the view layer is excluded, holdout or
+      indirect-only, or the view layer does not reach it at all.
+    - ARMATURE_MODIFIER_DISABLED: bound to `armature` only through Armature modifiers that are
+      all disabled in renders, so the rig does not move it in the shot.
+
+    Args:
+        obj: The object to judge.
+        scene: The scene it would render in.
+        view_layer: The view layer to judge it in; defaults to the one the viewport evaluates when
+            `scene` is the context scene, and otherwise the scene's first.
+        armature: The rig the object was reached through, which enables the
+            ARMATURE_MODIFIER_DISABLED check; None skips it.
+
+    Returns:
+        str | None: The first code that applies, or None when the object renders.
+
+    """
+    for code, excludes in _OBJECT_EXCLUSIONS:
+        if excludes(obj):
+            return code
+    reason = _collection_exclusion(obj, scene, view_layer)
+    if reason is None and armature is not None:
+        reason = _armature_binding_exclusion(obj, armature)
+    return reason
 
 
 @contextlib.contextmanager

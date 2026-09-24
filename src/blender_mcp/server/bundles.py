@@ -3,7 +3,7 @@ Tool bundles: which domain modules a server process registers.
 
 A client carries every advertised tool definition in the model's context on every turn, so
 each tool costs context for the whole session, not once at startup. With every bundle
-registered (304 tools, per `scripts/measure_catalog.py all`) that alone can fill a client's
+registered (305 tools, per `scripts/measure_catalog.py all`) that alone can fill a client's
 context. `BLENDER_MCP_TOOLSETS` selects a subset per process. A test parses the tool count
 above; get byte figures from `scripts/measure_catalog.py` instead, since they go stale.
 
@@ -55,7 +55,7 @@ _BUNDLES_BASE: Mapping[str, tuple[str, ...]] = MappingProxyType(
         # with this bundle anyway.
         "lighting-construction": ("lighting.construction", "lighting.rendering"),
         "texture": ("texture",),
-        "rendering": ("rendering",),
+        "rendering": ("rendering", "render_jobs"),
         "assets": ("polyhaven", "sketchfab"),
     }
 )

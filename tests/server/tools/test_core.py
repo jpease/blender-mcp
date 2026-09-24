@@ -81,6 +81,31 @@ def test_get_addon_status_reports_no_roots_for_an_addon_that_does_not_send_them(
     )
 
 
+def test_get_addon_status_reports_render_devices_with_the_machine_list_only_on_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What Cycles renders on is a Blender-machine fact; a GPU request without one renders on the CPU."""
+    devices = {
+        "compute_device_type": "NONE",
+        "enabled_devices": [],
+        "available_devices": [{"name": "RTX 4090", "type": "OPTIX", "use": True}],
+    }
+    _install_handshake(monkeypatch, _handshake(render_devices=devices))
+
+    summary = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]
+    detailed = asyncio.run(
+        core.get_addon_status(ctx=None, detail=True)  # pyright: ignore[reportArgumentType]
+    )["data"]
+
+    assert summary["render_devices"] == {"compute_device_type": "NONE", "enabled_devices": []}
+    assert detailed["render_devices"] == devices
+
+    _install_handshake(monkeypatch, _handshake())
+    older = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]
+
+    assert older["render_devices"] is None
+
+
 def test_get_addon_status_documents_every_key_it_returns(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     Every key the payload carries is named in the docstring, the opt-in ones included.

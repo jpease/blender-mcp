@@ -9,6 +9,11 @@ properties of real Blender a fake `bpy` cannot show:
 - A JSON `0` written into a float slider turned it into an int property, and Blender flags an
   F-Curve keyed on an int property to round everything it evaluates. The keys stayed exact while
   playback read 0.35 as 0 and 0.85 as 1. The keyed value has to survive a save and a reopen.
+- Linking a furnished set named every object it held in `changed_objects`, and unlinking it
+  sent hundreds of uids of datablocks that no longer existed. Both replies are bounded: the
+  link names the set's roots - read from real `Object.parent` - and counts its members; the
+  override does the same for its override objects; the unlink counts what went beside a
+  ten-name sample and no uids.
 """
 
 import importlib.util
@@ -46,6 +51,12 @@ CANON_WORLD = "Canon World"
 # The last key is the one whose type decided how Blender flagged the whole curve.
 KEYS = ((1.0, 0), (20.0, 0.35), (40.0, 0.85), (60.0, 0))
 TOLERANCE = 1e-6
+SET_COLLECTION = "Canon Set"
+SET_ROOT = "SetRoot"
+SET_LAMP = "SetLamp"
+SET_PROPS = 120
+# `MAX_LISTED_NAMES` in handlers/linking.py.
+NAME_SAMPLE = 10
 
 
 def _build_library(path: Path) -> None:
@@ -67,6 +78,59 @@ def _build_library(path: Path) -> None:
     world = bpy.data.worlds.new(CANON_WORLD)
     world.use_fake_user = True
     bpy.ops.wm.save_as_mainfile(filepath=str(path), copy=True)
+
+
+def _build_furnished_set(path: Path) -> None:
+    """Write a canon set: one root empty parenting every prop, and a lamp nothing parents."""
+    bpy.ops.wm.read_homefile(use_empty=True)
+    collection = bpy.data.collections.new(SET_COLLECTION)
+    bpy.context.scene.collection.children.link(collection)
+    root = bpy.data.objects.new(SET_ROOT, None)
+    collection.objects.link(root)
+    for index in range(SET_PROPS):
+        prop = bpy.data.objects.new(f"SetProp{index:03d}", None)
+        prop.parent = root
+        collection.objects.link(prop)
+    collection.objects.link(bpy.data.objects.new(SET_LAMP, None))
+    bpy.ops.wm.save_as_mainfile(filepath=str(path), copy=True)
+
+
+def _check_bounded_replies(tmp: Path) -> None:
+    """Link, override and unlink a furnished set, and check each reply names roots and counts the rest."""
+    library_path = tmp / "canon_set.blend"
+    _build_furnished_set(library_path)
+    members = SET_PROPS + len((SET_ROOT, SET_LAMP))
+
+    bpy.ops.wm.read_homefile(use_empty=True)
+    linked = LinkingHandlersMixin.link_canon_library(filepath=str(library_path), collections=[SET_COLLECTION])
+    assert linked["changed_objects"] == sorted([SET_LAMP, SET_ROOT]), linked["changed_objects"]
+    instanced = linked["instanced_objects"]
+    assert (instanced["total"], instanced["by_type"]) == (members, {"OBJECT": members}), instanced
+    assert instanced["truncated"] and len(instanced["names"]) == NAME_SAMPLE, instanced
+
+    removed = LinkingHandlersMixin.unlink_libraries([linked["library"]["session_uid"]], confirm=True)
+    assert not bpy.data.libraries, "the unlink left the library behind"
+    assert "removed_uids" not in removed and "removed_uids_truncated" not in removed, sorted(removed)
+    assert removed["removed_by_type"]["objects"] == members, removed["removed_by_type"]
+    assert removed["removed_count"] == sum(removed["removed_by_type"].values()), removed
+    assert len(removed["removed_sample"]) == NAME_SAMPLE, removed["removed_sample"]
+    assert all(set(entry) == {"name", "id_type"} for entry in removed["removed_sample"]), removed
+
+    bpy.ops.wm.read_homefile(use_empty=True)
+    overridden = LinkingHandlersMixin.link_canon_library(
+        filepath=str(library_path), collections=[SET_COLLECTION], as_override=True
+    )
+    assert overridden["changed_objects"] == sorted([SET_LAMP, SET_ROOT]), overridden["changed_objects"]
+    assert overridden["instanced_objects"] is None, overridden["instanced_objects"]
+    (override,) = overridden["overrides"]
+    assert override["objects"]["total"] == members, override["objects"]
+    assert len(override["objects"]["names"]) == NAME_SAMPLE, override["objects"]
+    root = next(obj for obj in bpy.data.objects if obj.name == SET_ROOT and obj.override_library is not None)
+    assert all(child.override_library is not None for child in root.children), "an override parents a linked prop"
+    print(
+        f"bounded replies: link and override named {overridden['changed_objects']} of {members} objects; "
+        f"unlink counted {removed['removed_count']} datablocks beside {len(removed['removed_sample'])} names"
+    )
 
 
 def _slider_curve(rig):
@@ -104,10 +168,11 @@ def _check_world(library_path: Path) -> None:
 
 
 def main() -> None:
-    """Link a canon rig as an override with its World, key its slider, and read it back from disk."""
+    """Check the bounded link replies, then link a canon rig as an override with its World, key it, and reopen."""
     with tempfile.TemporaryDirectory() as tmp:
         library_path = Path(tmp).resolve() / "canon_character.blend"
         shot_path = Path(tmp).resolve() / "sh030.blend"
+        _check_bounded_replies(Path(tmp).resolve())
         _build_library(library_path)
 
         bpy.ops.wm.read_homefile(use_empty=True)

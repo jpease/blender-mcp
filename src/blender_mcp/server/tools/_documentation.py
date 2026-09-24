@@ -57,6 +57,8 @@ _FILE_TOOLS = {
     "render_lighting_preview",
     "setup_liquid_shot",
     "render_scene",
+    # Writes its frames from a separate process, and saves only a copy of the open file.
+    "manage_render_job",
 }
 # Tools that read or write a .blend file. Their shared sentence says only that:
 # `reload_library` takes no path and enforces no file roots, so per-tool detail belongs in each

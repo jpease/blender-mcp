@@ -229,6 +229,13 @@ def _status_payload(
         },
         "blender_version": result.blender_version,
         "writable_output_roots": result.writable_output_roots,
+        # What Cycles renders on, from the add-on's Preferences: `cycles.device = "GPU"` falls back
+        # to the CPU without these. The machine's whole device list is detail-only.
+        "render_devices": (
+            None
+            if result.render_devices is None
+            else {key: value for key, value in result.render_devices.items() if key != "available_devices"}
+        ),
         "file_roots": result.file_roots,
         "file_roots_enforced": result.file_roots_enforced,
         "current_filepath": result.current_filepath,
@@ -264,6 +271,7 @@ def _status_payload(
         payload["mounted_tools"] = _mounted_tools_page(mounted, limit=tool_limit, offset=tool_offset)
     if detail:
         payload["capabilities"] = result.capabilities
+        payload["render_devices"] = result.render_devices
     return payload
 
 
@@ -373,8 +381,9 @@ async def get_addon_status(
 
     Args:
         ctx: MCP request context.
-        detail: Also return every command name the addon advertises; the server already refuses
-            a command it does not, so the names only explain such a refusal.
+        detail: Also return every command name the addon advertises, and render_devices'
+            "available_devices"; the server already refuses a command the addon does not
+            advertise, so the names only explain such a refusal.
         tool_name: Resolve one tool name against this process. Use it before concluding a tool
             you cannot call does not exist.
         mounted_tools: Also list the tool names this process registered, paged. The counts say how
@@ -392,7 +401,10 @@ async def get_addon_status(
         "missing_commands"/"missing_parameters" (empty when current; non-empty means the installed add-on
         predates this server even though its protocol number matches, and must be reinstalled via
         "update_command" before those commands will work - they were not omitted from the project),
-        "writable_output_roots" (empty when none), "file_roots"/"file_roots_enforced" (false:
+        "writable_output_roots" (empty when none), "render_devices" (Cycles Preferences on the Blender
+        machine: "compute_device_type" backend, "NONE" for none, and the ticked "enabled_devices"; with
+        detail also "available_devices"; null from an older add-on - a GPU request with no enabled
+        device of that backend renders on the CPU), "file_roots"/"file_roots_enforced" (false:
         paths unconfined), "current_filepath", "session_id"/"session_epoch" (re-read capabilities if the pair
         moves), "session_indeterminate" (true: a swap aborted; most commands refused, don't save over the file),
         "source", "warning", "update_command", "after_install".

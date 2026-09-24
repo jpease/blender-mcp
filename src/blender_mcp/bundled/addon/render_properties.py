@@ -15,6 +15,10 @@ A section can write several owners (an `output` patch splits across `scene.rende
 the last claims exactly the keys its mapping names; the last takes whatever is left, using its
 mapping as a translation table with an identity fallback. That is the rule the handler
 implemented inline before this table existed.
+
+`configure_lighting_quality` writes render properties too, so its field tables live here as well
+(`LIGHTING_CYCLES_FIELDS`, `LIGHTING_EEVEE_FIELD_MAP`): the coverage report counts what either
+tool reaches, and a property one of them already sets is not reported as a gap.
 """
 
 from collections.abc import Mapping
@@ -148,6 +152,8 @@ NESTED_SECTIONS: Mapping[str, tuple[tuple[str, Mapping[str, str] | None, str], .
         "cycles": (("cycles", IDENTITY, "Cycles"),),
         "eevee": (("eevee", IDENTITY, "EEVEE"),),
         "eevee.ray_tracing": (("eevee.ray_tracing_options", IDENTITY, "EEVEE ray tracing"),),
+        # Persistent data, simplify and the pixel filter size: engine-independent render cost.
+        "performance": (("render", IDENTITY, "render performance"),),
     }
 )
 
@@ -159,4 +165,41 @@ RENDER_PATCH_PROPERTIES = (
     | frozenset(IMAGE_PROPERTY_MAPPING)
     | frozenset(CYCLES_PROPERTY_MAPPING)
     | {section for section in NESTED_SECTIONS if "." not in section}
+)
+
+# `configure_lighting_quality`'s Cycles keys, which are the RNA identifiers on `scene.cycles`.
+LIGHTING_CYCLES_FIELDS = frozenset(
+    {
+        "samples",
+        "use_adaptive_sampling",
+        "adaptive_threshold",
+        "use_denoising",
+        "light_sampling_threshold",
+        "sample_clamp_direct",
+        "sample_clamp_indirect",
+        "max_bounces",
+        "diffuse_bounces",
+        "glossy_bounces",
+        "transmission_bounces",
+        "transparent_max_bounces",
+        "volume_bounces",
+        "device",
+    }
+)
+# `configure_lighting_quality`'s EEVEE keys, translated onto `scene.eevee` RNA identifiers.
+LIGHTING_EEVEE_FIELD_MAP: Mapping[str, str] = MappingProxyType(
+    {
+        "render_samples": "taa_render_samples",
+        "light_threshold": "light_threshold",
+        "shadow_pool_size": "shadow_pool_size",
+        "shadow_resolution_scale": "shadow_resolution_scale",
+        "shadow_ray_count": "shadow_ray_count",
+        "shadow_step_count": "shadow_step_count",
+        "use_raytracing": "use_raytracing",
+        "ray_tracing_method": "ray_tracing_method",
+        "use_fast_gi": "use_fast_gi",
+        "volumetric_tile_size": "volumetric_tile_size",
+        "volumetric_samples": "volumetric_samples",
+        "volumetric_ray_depth": "volumetric_ray_depth",
+    }
 )

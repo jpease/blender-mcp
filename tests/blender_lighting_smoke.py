@@ -192,6 +192,9 @@ def main() -> None:
 
         original_resolution = (scene.render.resolution_x, scene.render.resolution_y)
         preview_path = os.path.join(temp_directory, "lighting_preview.png")
+        # Blender exposes a rendered Render Result with no pixels, so a preview that follows an
+        # earlier render cannot put it back and must say so; with none before, it leaves none.
+        had_render_result = bpy.data.images.get("Render Result") is not None
         preview = handler.render_lighting_preview(
             scene.name,
             scene.camera.name,
@@ -203,12 +206,32 @@ def main() -> None:
             {"EEVEE": preview_path},
         )
         assert preview["outputs"][0]["size_bytes"] > 0
-        assert preview["warnings"] == []
+        if had_render_result:
+            assert len(preview["warnings"]) == 1, preview["warnings"]
+            assert "could not be restored and now holds this preview" in preview["warnings"][0]
+        else:
+            assert preview["warnings"] == [], preview["warnings"]
+            assert bpy.data.images.get("Render Result") is None
         assert (scene.render.resolution_x, scene.render.resolution_y) == original_resolution
         matched = preview["matched_state"]
         assert {"Key Light", "Sky Sun"}.issubset(set(matched["lights"]))
         assert matched["light_count"] == len(matched["lights"])
         assert all(isinstance(name, str) for name in matched["lights"])
+
+        # A render the preview did not make (as F12 would) is what it cannot put back.
+        assert bpy.ops.render.render(scene=scene.name) == {"FINISHED"}
+        after_render = handler.render_lighting_preview(
+            scene.name,
+            scene.camera.name,
+            scene.frame_current,
+            "EEVEE",
+            32,
+            32,
+            1,
+            {"EEVEE": os.path.join(temp_directory, "lighting_preview_after_render.png")},
+        )
+        assert len(after_render["warnings"]) == 1, after_render["warnings"]
+        assert "could not be restored and now holds this preview" in after_render["warnings"][0]
 
     view = bpy.context.scene.view_settings.view_transform
     color = handler.configure_color_management(scene.name, view_transform=view, exposure=0.0)

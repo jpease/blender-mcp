@@ -6,8 +6,10 @@ the rules here admit rather than block:
 
 - Refuse what NFKC would change. U+FE68 SMALL REVERSE SOLIDUS is not an unsafe
   category, yet any consumer that normalizes gets a backslash from it.
-- Strip first, then gate the string that will be returned. Gating first lets
-  `.<ZWSP>.` pass a check for `..` and then be published as `..`.
+- Gate the string that will be returned. A leaf is stripped first, because
+  gating first lets `.<ZWSP>.` pass a check for `..` and then be published as
+  `..`; a link is never stripped, because a link with a character removed names
+  a different file, so a stray character refuses it instead.
 - Publish only what an allowlist admits, and reduce anything else rather than
   repair it: a repaired name is one the caller did not choose.
 
@@ -81,6 +83,10 @@ UNNAMEABLE = "the requested file"
 # reader acts on its structure. A library under a non-ASCII directory is
 # therefore reported by its leaf.
 LINK_COMPONENT_ALLOWED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._ -")
+# Not a link component, whatever else it looks like. `..` is absent on purpose:
+# a link is gated only after the path it came from was proven to lie inside an
+# allowed tree, so a parent step in it is structure, not an escape.
+NOT_A_LINK_COMPONENT = frozenset({"", "."})
 # A leaf has no separators left to forge, so accented and CJK names are admitted.
 # Being an allowlist, it also refuses look-alike slashes such as U+2044 and
 # U+2215, which NFKC leaves unchanged.
@@ -223,7 +229,7 @@ def relative_link_body(text: str) -> str | None:
     as relative would publish that absolute path.
 
     Args:
-        text: The control-stripped link.
+        text: The link to read.
 
     Returns:
         str | None: Everything after the `//` prefix, or None when `text` does
@@ -238,31 +244,23 @@ def relative_link_body(text: str) -> str | None:
     return body
 
 
-def safe_relative_link(file_path: object, max_chars: int) -> str | None:
+def admissible_link_component(component: str) -> bool:
     """
-    Return a link that may be published whole, or None when it must be reduced.
+    Decide whether one component of a link may be published character for character.
 
-    The link must be relative, and each `/`-separated component non-empty, not
-    `.` or `..`, and made only of `LINK_COMPONENT_ALLOWED`. The check runs on the
-    stripped string, which is the string returned, so `.<ZWSP>.` is refused as
-    `..`. No NFKC check is needed: every allowed character is ASCII, which NFKC
-    leaves unchanged.
+    For links derived from a path whose containment the caller already proved,
+    which is why `..` passes: this rules on characters, not on where a link
+    leads. Nothing is stripped first; a component carrying a zero-width or
+    control character is refused, because publishing it without the character
+    would name a different file. No NFKC check is needed: every allowed
+    character is ASCII, which NFKC leaves unchanged.
 
     Args:
-        file_path: The raw `Library.filepath`.
-        max_chars: The longest link that may be published whole.
+        component: One separator-free component, exactly as it will be published.
 
     Returns:
-        str | None: The exact string to publish, or None.
+        bool: True when it is not empty or `.`, and is made only of
+        `LINK_COMPONENT_ALLOWED`.
 
     """
-    text = strip_unsafe(file_path)
-    if len(text) > max_chars:
-        return None
-    body = relative_link_body(text)
-    if not body:
-        return None
-    for component in body.split("/"):
-        if component in NOT_A_LEAF or not set(component) <= LINK_COMPONENT_ALLOWED:
-            return None
-    return text
+    return component not in NOT_A_LINK_COMPONENT and set(component) <= LINK_COMPONENT_ALLOWED

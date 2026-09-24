@@ -71,12 +71,17 @@ async def configure_lighting_quality(
     ("changed", e.g. "eevee.render_samples") and maps each to its resulting value, so a preset's
     expansion and any clamping are visible without a second call.
 
+    `cycles.device` only requests a GPU. The reply's "effective_cycles_device" is what Cycles will
+    actually use on this machine ("CPU"/"GPU", null when the scene engine is not CYCLES); a GPU
+    request that Preferences cannot honour is still written, reads "CPU", and adds a warning.
+    get_addon_status's "render_devices" shows the backend and enabled devices.
+
     Args:
         ctx: MCP request context.
         scene_name: Exact name of the scene whose engine quality is patched.
         target_engine: Which engine's settings the call may touch.
         preset: Named quality expansion applied first; explicit engine fields override it.
-        cycles: Allowlisted Cycles sampling and light-path fields.
+        cycles: Allowlisted Cycles sampling, light-path and device fields.
         eevee: Allowlisted EEVEE sampling, shadow, ray-tracing, GI, and volume fields.
         detail: Also return the whole allowlisted Cycles and EEVEE quality state before and after
             the patch as "before" and "after" instead of the patched paths.

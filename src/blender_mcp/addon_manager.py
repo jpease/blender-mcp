@@ -30,7 +30,7 @@ from .text_hygiene import strip_unsafe
 logger = logging.getLogger("BlenderMCPServer")
 
 # Must match ADDON_PROTOCOL_VERSION in bundled/addon/__init__.py
-EXPECTED_ADDON_PROTOCOL_VERSION = 44
+EXPECTED_ADDON_PROTOCOL_VERSION = 45
 
 _ADDON_MARKER = 'bl_info = {\n    "name": "Blender MCP"'
 _INSTALLED_DIRNAME = "blender_mcp"
@@ -262,6 +262,10 @@ class AddonHandshake:
     # that is behind on protocol too: the protocol warning already says reinstall.
     missing_commands: list[str] = field(default_factory=list)
     missing_parameters: dict[str, list[str]] = field(default_factory=dict)
+    # What Cycles renders on, from the add-on's own Preferences: "compute_device_type",
+    # "enabled_devices", "available_devices". None for an older add-on that does not report
+    # it, rather than a guessed CPU-only machine.
+    render_devices: dict[str, object] | None = None
 
     def session_marker(self) -> tuple[str | None, int | None]:
         """
@@ -871,6 +875,71 @@ def normalized_addon_version(value: object) -> list[int] | None:
     return list(value)
 
 
+# A backend identifier is a short enum ("NONE", "METAL", "ONEAPI"); a device name is a driver
+# string such as "NVIDIA GeForce RTX 4090". The record cap matches the add-on's own.
+_MAX_DEVICE_TYPE_CHARS = 32
+_MAX_DEVICE_NAME_CHARS = 256
+_MAX_REPORTED_RENDER_DEVICES = 16
+
+
+def _normalized_device_records(value: object, *, with_use: bool) -> list[dict[str, object]]:
+    """
+    Read one list of render device records, dropping any that are not a named, typed device.
+
+    Args:
+        value: The raw list, possibly missing or of any JSON type.
+        with_use: Also read each record's "use" flag.
+
+    Returns:
+        list[dict[str, object]]: At most `_MAX_REPORTED_RENDER_DEVICES` records of "name" and
+        "type", plus "use" when asked.
+
+    """
+    if not isinstance(value, list | tuple):
+        return []
+    records: list[dict[str, object]] = []
+    for element in value[:_MAX_REPORTED_RENDER_DEVICES]:
+        if not isinstance(element, dict):
+            continue
+        name = normalized_session_text(element.get("name"), max_chars=_MAX_DEVICE_NAME_CHARS)
+        device_type = normalized_session_text(element.get("type"), max_chars=_MAX_DEVICE_TYPE_CHARS)
+        if name is None or device_type is None:
+            continue
+        record: dict[str, object] = {"name": name, "type": device_type}
+        if with_use:
+            # `is True`: a truthy string off the socket is not a yes.
+            record["use"] = element.get("use") is True
+        records.append(record)
+    return records
+
+
+def normalized_render_devices(value: object) -> dict[str, object] | None:
+    """
+    Read the handshake's Cycles render-device report.
+
+    Args:
+        value: The raw `render_devices` field, possibly missing or of any JSON type.
+
+    Returns:
+        dict[str, object] | None: "compute_device_type" (None when unusable), "enabled_devices"
+        and "available_devices"; None when the add-on predates the field or sent something that
+        is not an object.
+
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        logger.warning(f"Addon reported an unusable render_devices ({type(value).__name__}); treating it as absent")
+        return None
+    return {
+        "compute_device_type": normalized_session_text(
+            value.get("compute_device_type"), max_chars=_MAX_DEVICE_TYPE_CHARS
+        ),
+        "enabled_devices": _normalized_device_records(value.get("enabled_devices"), with_use=False),
+        "available_devices": _normalized_device_records(value.get("available_devices"), with_use=True),
+    }
+
+
 @lru_cache(maxsize=1)
 def load_addon_surface() -> dict[str, list[str] | str]:
     """
@@ -1087,6 +1156,7 @@ def handshake_addon(blender_connection) -> AddonHandshake:
             source="native",
             warning=warning,
             writable_output_roots=normalized_session_text_list(info.get("writable_output_roots")),
+            render_devices=normalized_render_devices(info.get("render_devices")),
             session_epoch=normalized_session_epoch(info.get("session_epoch")),
             current_filepath=normalized_session_text(info.get("current_filepath")),
             session_id=normalized_session_id(info.get("session_id")),

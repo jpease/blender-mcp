@@ -7,10 +7,12 @@
 
 import uuid
 
+from collections import Counter
+
 import bpy
 import mathutils
 
-from ...helpers import deforming_meshes
+from ...helpers import deforming_meshes, render_exclusion_reason
 from ._shared import (
     _CONSTRAINT_TYPES,
     _TARGETED_CONSTRAINTS,
@@ -56,6 +58,10 @@ _MAXIMUM_MARGIN = 0.9
 # same floor _look_quaternion applies to its aim direction, so a camera placement this handler
 # accepts can never be rejected a line later by the aim it was computed for.
 _COINCIDENT_DISTANCE_SQUARED = 1e-16
+# How many meshes excluded_objects names, and how many named-but-hidden objects one warning lists.
+# A production rig carries dozens of cages, proxies and widget meshes; naming every one would crowd
+# the rest of the reply out of its budget, so the reply names this many and counts the rest.
+_EXCLUDED_OBJECTS_LIMIT = 16
 
 
 def _set_world_rotation(obj, rotation):
@@ -74,13 +80,15 @@ def _set_world_location(obj, location):
 
 
 def _object_bound_points(objects, depsgraph):
-    """World-space bound-box corners of every object as the depsgraph evaluates it."""
-    points = []
+    """World-space bound-box corners of every object as the depsgraph evaluates it, and each one's owner."""
+    points, sources = [], []
     for obj in objects:
         evaluated = obj.evaluated_get(depsgraph)
         matrix = evaluated.matrix_world
-        points.extend(matrix @ mathutils.Vector(corner) for corner in evaluated.bound_box)
-    return points
+        corners = [matrix @ mathutils.Vector(corner) for corner in evaluated.bound_box]
+        points.extend(corners)
+        sources.extend([obj.name] * len(corners))
+    return points, sources
 
 
 def _bounds_of(points):
@@ -93,7 +101,7 @@ def _bounds_of(points):
 
 def _evaluated_bounds(objects):
     _update_view_layer()
-    points = _object_bound_points(objects, bpy.context.evaluated_depsgraph_get())
+    points, _sources = _object_bound_points(objects, bpy.context.evaluated_depsgraph_get())
     minimum, maximum, center = _bounds_of(points)
     return points, minimum, maximum, center
 
@@ -142,21 +150,22 @@ def _padded_points(point, radius):
 
 def _bone_target_points(specs, depsgraph):
     """
-    World head and tail of each resolved bone, padded by its radius, plus one reply record each.
+    World head and tail of each resolved bone, padded by its radius, their owner, and a record each.
 
     The head and tail are read from the depsgraph-evaluated armature, so a bone driven by
     constraints, drivers or an action reports where it actually is at the current frame rather
-    than where its rest pose would put it.
+    than where its rest pose would put it. Every point is owned by the bone's armature object.
     """
-    points, records = [], []
+    points, sources, records = [], [], []
     for obj, bone_name, radius in specs:
         evaluated = obj.evaluated_get(depsgraph)
         bone = evaluated.pose.bones[bone_name]
         matrix = evaluated.matrix_world
         head = matrix @ bone.head
         tail = matrix @ bone.tail
-        points.extend(_padded_points(head, radius))
-        points.extend(_padded_points(tail, radius))
+        segment = [*_padded_points(head, radius), *_padded_points(tail, radius)]
+        points.extend(segment)
+        sources.extend([obj.name] * len(segment))
         records.append(
             {
                 "object_name": obj.name,
@@ -166,18 +175,29 @@ def _bone_target_points(specs, depsgraph):
                 "tail_world": list(tail),
             }
         )
-    return points, records
+    return points, sources, records
 
 
-def _armature_mesh_specs(armature_names, scene):
+def _armature_mesh_specs(armature_names, scene, *, include_hidden, named):
     """
-    Resolve each armature name to the scene meshes it deforms, before anything is moved.
+    Resolve each armature name to the scene meshes it deforms that render, before anything is moved.
 
     Framing an armature object by name is not the same request: an armature's bound box is its
     bones, not the silhouette the camera sees, so a full-body frame has to expand to the deformed
     geometry. Every refusal that expansion can earn - a missing object, an object that is not an
-    armature, a rig that deforms nothing in this scene - is raised here, because a silently empty
-    expansion is a frame on whatever else the caller happened to name.
+    armature, a rig that deforms nothing in this scene, a rig whose every deformed mesh is left out
+    of the render - is raised here, because a silently empty expansion is a frame on whatever else
+    the caller happened to name.
+
+    A rig binds more than its visible skin: collision cages, simulation proxies and helper meshes
+    are armature-deformed too, and a proxy standing metres off the body would otherwise pull the
+    frame wide around geometry the render never shows. Each mesh is therefore kept only when
+    `render_exclusion_reason` finds nothing, unless `include_hidden` is set or the caller named
+    the mesh in object_names; the rest are returned with the reason they were left out.
+
+    Returns:
+        list[tuple]: `(armature name, kept meshes, [(excluded mesh, reason code), ...])` per rig.
+
     """
     names = [_required_name(name, f"armature_names[{index}]") for index, name in enumerate(armature_names or [])]
     if len(set(names)) != len(names):
@@ -194,7 +214,24 @@ def _armature_mesh_specs(armature_names, scene):
                 f"{label} armature '{armature.name}' deforms no mesh in scene '{scene.name}'; "
                 f"name the meshes in object_names, or a bone of '{armature.name}' in bone_targets"
             )
-        specs.append((armature.name, meshes))
+        kept, excluded = [], []
+        for mesh in meshes:
+            reason = None
+            if not include_hidden and mesh.name not in named:
+                reason = render_exclusion_reason(mesh, scene, armature=armature)
+            if reason is None:
+                kept.append(mesh)
+            else:
+                excluded.append((mesh, reason))
+        if not kept:
+            counts = Counter(reason for _mesh, reason in excluded)
+            summary = ", ".join(f"{reason} x{count}" for reason, count in sorted(counts.items()))
+            raise ValueError(
+                f"{label} armature '{armature.name}' deforms {len(excluded)} mesh(es) in scene '{scene.name}', "
+                f"and every one is left out of the render ({summary}); pass include_hidden=True to frame "
+                f"them anyway, or name the meshes to frame in object_names"
+            )
+        specs.append((armature.name, kept, excluded))
     return specs
 
 
@@ -202,7 +239,7 @@ def _framing_objects(objects, armature_specs):
     """List the explicitly named objects, then every armature-deformed mesh, each counted once."""
     combined = list(objects)
     seen = {obj.name for obj in combined}
-    for _armature_name, meshes in armature_specs:
+    for _armature_name, meshes, _excluded in armature_specs:
         for mesh in meshes:
             if mesh.name in seen:
                 continue
@@ -211,15 +248,58 @@ def _framing_objects(objects, armature_specs):
     return combined
 
 
+def _excluded_records(armature_specs, framed):
+    """
+    Name every deformed mesh the render-visibility rule left out of the frame, once, with its reason.
+
+    A mesh two rigs deform is listed once, and one that reached the frame by another route - named
+    in object_names, or kept through a second rig - is not listed at all: it was framed.
+    """
+    framed_names = {obj.name for obj in framed}
+    reasons = {}
+    for _armature_name, _meshes, excluded in armature_specs:
+        for mesh, reason in excluded:
+            if mesh.name not in framed_names:
+                reasons.setdefault(mesh.name, reason)
+    return [{"object": name, "reason": reason} for name, reason in reasons.items()]
+
+
+def _named_render_warnings(objects, scene):
+    """
+    Warn once about every object named in object_names that the render-visibility rule would drop.
+
+    A named object is always framed - the caller asked for it by name - but a hidden one is the
+    usual cause of a frame far wider than the shot, so the reply says which ones and why.
+    """
+    hidden = []
+    for obj in objects:
+        reason = render_exclusion_reason(obj, scene)
+        if reason is not None:
+            hidden.append(f"'{obj.name}' ({reason})")
+    if not hidden:
+        return []
+    listed = ", ".join(hidden[:_EXCLUDED_OBJECTS_LIMIT])
+    more = f" and {len(hidden) - _EXCLUDED_OBJECTS_LIMIT} more" if len(hidden) > _EXCLUDED_OBJECTS_LIMIT else ""
+    return [
+        f"object_names names {len(hidden)} object(s) the render does not show, framed anyway because they "
+        f"were named: {listed}{more}; drop them from object_names to frame only what the camera renders"
+    ]
+
+
 def _framing_points(objects, bone_specs):
-    """Every world point a framing solve must contain, plus the bone records the reply echoes."""
+    """
+    Every world point a framing solve must contain, the object owning each, and the bone records.
+
+    A bone target's points are owned by its armature, so the owners name what pushed the bounds out.
+    """
     _update_view_layer()
     depsgraph = bpy.context.evaluated_depsgraph_get()
-    points = _object_bound_points(objects, depsgraph)
-    bone_points, bone_records = _bone_target_points(bone_specs, depsgraph)
+    points, sources = _object_bound_points(objects, depsgraph)
+    bone_points, bone_sources, bone_records = _bone_target_points(bone_specs, depsgraph)
     points.extend(bone_points)
+    sources.extend(bone_sources)
     minimum, maximum, center = _bounds_of(points)
-    return points, minimum, maximum, center, bone_records
+    return points, sources, minimum, maximum, center, bone_records
 
 
 def _margin_limits(camera_data, scene, margin):
@@ -259,18 +339,33 @@ def _frame_contains(local_points, limits, *, perspective):
     return True
 
 
-def _limiting_axis(local_points, limits, *, perspective):
+def _limiting_axis(local_points, sources, limits, *, perspective):
+    """
+    Name the frame axis the fit is limited by, and the objects owning its two outermost points.
+
+    The owners are what a caller needs when a solve comes back wider than the shot: the object at
+    either end of the tight axis is the one pushing the frame out. A point within a millionth of
+    the axis's span of an end counts as on it, so two objects sharing an edge are both named.
+    """
     xmin, xmax, ymin, ymax = limits
     x_center, y_center = (xmin + xmax) * 0.5, (ymin + ymax) * 0.5
     x_half, y_half = max((xmax - xmin) * 0.5, 1e-12), max((ymax - ymin) * 0.5, 1e-12)
-    x_score = y_score = 0.0
+    projected = []
     for point in local_points:
         depth = -point.z
-        x = point.x / depth if perspective else point.x
-        y = point.y / depth if perspective else point.y
-        x_score = max(x_score, abs(x - x_center) / x_half)
-        y_score = max(y_score, abs(y - y_center) / y_half)
-    return "HORIZONTAL" if x_score >= y_score else "VERTICAL"
+        projected.append((point.x / depth, point.y / depth) if perspective else (point.x, point.y))
+    x_score = max(abs(x - x_center) / x_half for x, _y in projected)
+    y_score = max(abs(y - y_center) / y_half for _x, y in projected)
+    axis = 0 if x_score >= y_score else 1
+    coordinates = [pair[axis] for pair in projected]
+    low, high = min(coordinates), max(coordinates)
+    tolerance = max((high - low) * 1e-6, 1e-9)
+    owners = [
+        source
+        for source, coordinate in zip(sources, coordinates, strict=True)
+        if coordinate <= low + tolerance or coordinate >= high - tolerance
+    ]
+    return ("HORIZONTAL" if axis == 0 else "VERTICAL"), list(dict.fromkeys(owners))
 
 
 def _binary_smallest_fit(predicate, low, high):
@@ -289,7 +384,9 @@ def _binary_smallest_fit(predicate, low, high):
     return high
 
 
-def _validated_framing_request(scene_name, camera_name, object_names, bone_targets, armature_names, margin, policy):
+def _validated_framing_request(
+    scene_name, camera_name, object_names, bone_targets, armature_names, margin, policy, include_hidden
+):
     """Resolve and check every framing argument before the camera is touched."""
     scene = _scene(scene_name)
     camera = _camera(camera_name, scene=scene)
@@ -298,9 +395,11 @@ def _validated_framing_request(scene_name, camera_name, object_names, bone_targe
         raise ValueError("Supply at least one of object_names, bone_targets or armature_names; all were empty")
     if len(set(object_names)) != len(object_names):
         raise ValueError("object_names must not contain duplicates")
+    if not isinstance(include_hidden, bool):
+        raise ValueError(f"include_hidden must be true or false, not {include_hidden!r}")
     objects = [_object(name, scene=scene) for name in object_names]
     bone_specs = _bone_target_specs(bone_targets, scene)
-    armature_specs = _armature_mesh_specs(armature_names, scene)
+    armature_specs = _armature_mesh_specs(armature_names, scene, include_hidden=include_hidden, named=set(object_names))
     margin = _finite_number(margin, "margin")
     if not 0 <= margin < _MAXIMUM_MARGIN:
         raise ValueError(f"margin must be in [0, {_MAXIMUM_MARGIN})")
@@ -370,9 +469,9 @@ def _solve_ortho_scale(camera, scene, points, location, rotation, margin, span, 
     return {"ortho_scale": ortho_scale}
 
 
-def _verify_framing(camera, scene, points, margin):
+def _verify_framing(camera, scene, points, sources, margin):
     """
-    Re-measure the camera state a solve assigned, and name the axis the fit is limited by.
+    Re-measure the camera state a solve assigned; name the limiting axis and the objects at its ends.
 
     The solve reasons about the camera it is about to write; this reads the camera Blender
     actually evaluated, so a constraint that overrode the assignment is caught here rather than
@@ -386,7 +485,7 @@ def _verify_framing(camera, scene, points, margin):
         raise ValueError(
             "The assigned camera state does not frame the request; active constraints may be overriding it"
         )
-    return _limiting_axis(local_points, limits, perspective=perspective)
+    return _limiting_axis(local_points, sources, limits, perspective=perspective)
 
 
 class _TargetingMixin:
@@ -535,12 +634,15 @@ class _TargetingMixin:
         margin=0.1,
         policy="MOVE_CAMERA",
         aim_at_center=True,
+        include_hidden=False,
     ):
         scene, camera, objects, bone_specs, armature_specs, margin, policy = _validated_framing_request(
-            scene_name, camera_name, object_names, bone_targets, armature_names, margin, policy
+            scene_name, camera_name, object_names, bone_targets, armature_names, margin, policy, include_hidden
         )
         framed = _framing_objects(objects, armature_specs)
-        points, minimum, maximum, center, bone_records = _framing_points(framed, bone_specs)
+        excluded = _excluded_records(armature_specs, framed)
+        warnings = [] if include_hidden else _named_render_warnings(objects, scene)
+        points, sources, minimum, maximum, center, bone_records = _framing_points(framed, bone_specs)
         restore = (camera.matrix_world.copy(), camera.data.lens, camera.data.ortho_scale)
         location, rotation, scale = restore[0].decompose()
         if aim_at_center:
@@ -553,7 +655,7 @@ class _TargetingMixin:
                 result = _solve_change_lens(camera, scene, points, location, rotation, margin)
             else:
                 result = _solve_ortho_scale(camera, scene, points, location, rotation, margin, span, restore[2])
-            limiting_axis = _verify_framing(camera, scene, points, margin)
+            limiting_axis, limiting_objects = _verify_framing(camera, scene, points, sources, margin)
         except Exception:
             camera.matrix_world, camera.data.lens, camera.data.ortho_scale = restore
             raise
@@ -561,14 +663,21 @@ class _TargetingMixin:
             "camera": camera.name,
             "objects": [obj.name for obj in objects],
             "bone_targets": bone_records,
-            "armature_meshes": {name: sorted(mesh.name for mesh in meshes) for name, meshes in armature_specs},
+            "armature_meshes": {
+                name: sorted(mesh.name for mesh in meshes) for name, meshes, _excluded in armature_specs
+            },
+            "framed_objects": [obj.name for obj in framed],
+            "excluded_objects": excluded[:_EXCLUDED_OBJECTS_LIMIT],
+            "excluded_total": len(excluded),
             "policy": policy,
             "margin": margin,
             "bounds_world": {"min": list(minimum), "max": list(maximum)},
             "target_point_world": list(center),
             "limiting_axis": limiting_axis,
+            "limiting_objects": limiting_objects,
             "transform": _transform_info(camera),
             **result,
+            "warnings": warnings,
             "changed_objects": [camera.name],
             "changed_resources": [camera.data.name] if policy != "MOVE_CAMERA" else [],
         }

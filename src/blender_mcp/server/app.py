@@ -91,13 +91,19 @@ Every tool below returns one of two shapes:
    for engines without explicit paths, followed by their envelope. Read the final item for metadata
    and warnings rather than inspecting only the image content.
    - get_viewport_screenshot is a live viewport capture, not a render - it will not match
-     final render output (engine, lighting, color management). render_lighting_preview and
-     render_pbr_material_preview do render, but a disposable staging scene, not the user's
-     actual one. render_scene renders the user's actual scene but only writes files to disk
-     and never returns pixels itself - only its written-path/size/status metadata. To actually
-     see render_scene's pixels, call inspect_render_output(output_path=<its "last_file", or one
-     of its detail=true "files" paths>) afterward, or call it with no arguments to read the
-     in-memory Render Result directly (which only ever holds the most recently rendered frame).
+     final render output (engine, lighting, color management). render_pbr_material_preview
+     renders a disposable staging scene. render_lighting_preview renders the user's actual
+     scene, with its camera, frame, resolution, engine and samples temporarily overridden and
+     restored afterwards. render_scene renders the user's actual scene but only writes files to
+     disk and never returns pixels itself - only its written-path/size/status metadata. To
+     actually see render_scene's pixels, call inspect_render_output(output_path=<its "last_file",
+     or one of its detail=true "files" paths>) afterward. With no output_path it reads the
+     in-memory Render Result instead, which holds only the most recent render, whoever started
+     it (a lighting preview or a render from Blender's UI included); a Render Result
+     render_scene did not render comes back with a warning that its origin is unknown. For a
+     render that can outlive the request timeout or must end by a wall-clock limit, use
+     manage_render_job(action="CREATE", ...) instead, then poll action="READ" and call
+     inspect_render_output(output_path=<its "last_file">).
 
 For any tool exposing limit/offset parameters, pagination metadata is inside the envelope's "data"
 dict. Continue with the returned "next_offset" while "truncated" is true. Independent limit/offset
@@ -108,8 +114,11 @@ return only the provider-bounded result set; do not assume the result is a compl
 Replies are bounded. A reply returns what changed, the identifiers needed to find the rest, and
 the facts the call asked for; full state is a `detail=true` request, not the default. Every reply
 is also capped at 8 KiB, so the largest page of records in it may arrive shortened - the warning
-says so and names the offset to continue from. Identifiers are never dropped to make room: a
-shortened page still carries whole records, and the names of what changed stay complete.
+says so, and names the offset to continue from when the tool pages that list, or says to narrow
+the scope when it does not. Identifiers are never dropped to make room: a shortened page still
+carries whole records. "changed_objects"/"changed_resources" name the items you act on next - the
+roots of a linked hierarchy, not its every member, which the tool counts in "data" - so they stay
+short; past 50 names a list is cut and a warning states the total.
 
 Before editing, inspect the scene (list_scene_objects, get_object_info, get_mesh_data)
 rather than assuming which object is active or selected. Prefer non-destructive tools

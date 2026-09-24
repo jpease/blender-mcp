@@ -26,6 +26,7 @@ Blender puts absolute paths in its error text, so every `except` sanitizes with
 import os
 
 from collections.abc import Iterable, Iterator, Sequence
+from typing import NamedTuple
 
 import bpy
 
@@ -54,7 +55,6 @@ MAX_LISTED_NAMES = 10
 MAX_LISTED_DATABLOCKS = 100
 MAX_LINK_NAMES = 100
 MAX_UNLINK_UIDS = 100
-MAX_REPORTED_UIDS = 500
 
 _RELOAD_NOTE = (
     "Every datablock linked from this library now has a new session_uid; references read before this call "
@@ -296,7 +296,9 @@ def _library_details(library: object) -> dict[str, object]:
         library: A `bpy.types.Library`.
 
     Returns:
-        dict[str, object]: The summary fields - including `filepath` with its
+        dict[str, object]: The summary fields - including `filepath`, a `//`
+        link when the library resolves inside the configured file roots (with
+        none, the open .blend's directory) and otherwise a leaf, with its
         `filepath_redacted` / `filepath_redaction_reason` pair, so a leaf-only
         path is not read as a broken link - `version` (`[major, minor, file
         subversion]` of the Blender that last saved the file),
@@ -311,9 +313,7 @@ def _library_details(library: object) -> dict[str, object]:
     }
 
 
-def _counted_page(
-    items: Sequence[object], describe: object, limit: int, *, detail: bool, name_limit: int | None = MAX_LISTED_NAMES
-) -> dict[str, object]:
+def _counted_page(items: Sequence[object], describe: object, limit: int, *, detail: bool) -> dict[str, object]:
     """
     Count a sub-list by type and page it: names by default, records under `detail`.
 
@@ -322,12 +322,10 @@ def _counted_page(
         describe: Turns one item into its record, under `detail`.
         limit: Entries the record page may carry.
         detail: Page records instead of names.
-        name_limit: Names to publish without `detail`; None publishes none, for a
-            reply that already names every item in `changed_objects`.
 
     Returns:
-        dict[str, object]: `total`, `by_type`, and one `_record_page` unless
-        `name_limit` is None and `detail` is false.
+        dict[str, object]: `total`, `by_type`, and one `_record_page`: up to
+        `MAX_LISTED_NAMES` `names`, or up to `limit` `records` under `detail`.
 
     """
     counted: dict[str, object] = {
@@ -336,9 +334,7 @@ def _counted_page(
     }
     if detail:
         return {**counted, **_record_page("records", items, describe, limit)}
-    if name_limit is None:
-        return counted
-    return {**counted, **_record_page("names", items, _display_name, name_limit)}
+    return {**counted, **_record_page("names", items, _display_name, MAX_LISTED_NAMES)}
 
 
 def _linked_datablocks(library: object, *, detail: bool) -> dict[str, object]:
@@ -639,13 +635,13 @@ def _override_hierarchy(
         collection: A linked `bpy.types.Collection`.
         scene: The scene, from `bpy.data`.
         unlinked: `(parent, child)` pairs this call unlinks are appended here.
-        detail: Also page the override's objects as records; their names are in
-            `changed_objects` either way.
+        detail: Page the override's objects as records instead of names; their
+            roots are in `changed_objects` either way.
 
     Returns:
         dict[str, object]: `override` (see `_override_entry`), `scene_uid`,
         `replaced_instances`, and `objects` with their exact `total` and
-        `by_type`, plus a page of `records` under `detail`.
+        `by_type`, plus a page of names, or of `records` under `detail`.
 
     Raises:
         RuntimeError: When Blender raised or created no override.
@@ -672,7 +668,7 @@ def _override_hierarchy(
             unlinked.append((parent, collection))
             replaced += 1
     objects = list(override.all_objects)
-    listed = _counted_page(objects, _override_entry, MAX_LISTED_DATABLOCKS, detail=detail, name_limit=None)
+    listed = _counted_page(objects, _override_entry, MAX_LISTED_DATABLOCKS, detail=detail)
     return {
         "override": _override_entry(override),
         "scene_uid": _uid_of(scene),
@@ -681,22 +677,62 @@ def _override_hierarchy(
     }
 
 
-def _override_object_names(reports: list[dict[str, object]]) -> list[str]:
+def _root_names(objects: Sequence[object]) -> list[str]:
     """
-    Name every object inside the overrides the reports describe, unbounded, for `changed_objects`.
+    Name the objects no other object in `objects` parents: the handles a hierarchy is moved or posed by.
+
+    A linked set can hold thousands of objects, but a caller acts on it through its roots -
+    a character through its rig - so the roots are what `changed_objects` names, and every
+    member is counted beside them.
+
+    Args:
+        objects: What one call brought into the scene.
+
+    Returns:
+        list[str]: Sorted, distinct names of the objects whose parent is none of `objects`.
+
+    """
+    uids = {_uid_of(obj) for obj in objects}
+    return sorted(
+        {
+            obj.name  # type: ignore[attr-defined]
+            for obj in objects
+            if getattr(obj, "parent", None) is None or _uid_of(obj.parent) not in uids  # type: ignore[attr-defined]
+        }
+    )
+
+
+def _distinct(objects: Iterable[object]) -> list[object]:
+    """
+    Drop repeats by `session_uid`, keeping first-seen order: an object can sit in two linked collections.
+
+    Args:
+        objects: The objects, possibly repeated.
+
+    Returns:
+        list[object]: Each object once.
+
+    """
+    seen: dict[object, object] = {}
+    for obj in objects:
+        seen.setdefault(_uid_of(obj), obj)
+    return list(seen.values())
+
+
+def _override_root_names(reports: list[dict[str, object]]) -> list[str]:
+    """
+    Name the root objects of the overrides the reports describe, for `changed_objects`.
 
     Args:
         reports: `_override_hierarchy` reports.
 
     Returns:
-        list[str]: Sorted, distinct object names.
+        list[str]: See `_root_names`, over every object inside those overrides.
 
     """
-    names: set[str] = set()
-    for report in reports:
-        uid = report["override"]["session_uid"]  # type: ignore[index]
-        names.update(obj.name for obj in _by_session_uid(bpy.data.collections, uid, "collection").all_objects)  # type: ignore[attr-defined]
-    return sorted(names)
+    uids = [report["override"]["session_uid"] for report in reports]  # type: ignore[index]
+    overrides = [_by_session_uid(bpy.data.collections, uid, "collection") for uid in uids]
+    return _root_names(_distinct(obj for override in overrides for obj in override.all_objects))  # type: ignore[attr-defined]
 
 
 def _refuse_nested_requests(collections: list) -> None:
@@ -850,41 +886,67 @@ def _iter_ids() -> Iterator[tuple[str, object]]:
                 yield prop.identifier, datablock
 
 
-def _census() -> dict[int, tuple[str, int]]:
+class CensusEntry(NamedTuple):
     """
-    Snapshot every datablock's uid, collection and user count.
+    One datablock as a census read it: enough to count it, judge its orphaning, and name it once it is gone.
+
+    `name` and `id_type` are the raw values `_display_name` reads, so an entry is reduced for a
+    client exactly as the datablock itself would have been.
+
+    Attributes:
+        collection: The `bpy.data` collection holding it.
+        users: Its user count.
+        name: Its name, unreduced.
+        id_type: Blender's `ID.id_type`.
+
+    """
+
+    collection: str
+    users: int
+    name: str
+    id_type: str
+
+
+def _census() -> dict[int, CensusEntry]:
+    """
+    Snapshot every datablock's uid, collection, user count and name.
 
     Returns:
-        dict[int, tuple[str, int]]: uid -> `(collection name, users)`.
+        dict[int, CensusEntry]: uid -> what the census read of it.
 
     """
     return {
-        datablock.session_uid: (name, int(getattr(datablock, "users", 0)))  # type: ignore[attr-defined]
+        datablock.session_uid: CensusEntry(  # type: ignore[attr-defined]
+            name,
+            int(getattr(datablock, "users", 0)),
+            str(getattr(datablock, "name", "")),
+            str(getattr(datablock, "id_type", "")),
+        )
         for name, datablock in _iter_ids()
         if getattr(datablock, "session_uid", None) is not None
     }
 
 
-def compute_orphaned(before: dict[int, tuple[str, int]], current: dict[int, tuple[str, int]]) -> list[int]:
+def compute_orphaned(before: dict[int, CensusEntry], current: dict[int, int]) -> list[int]:
     """
-    Decide which datablocks an unlink orphaned, from the census before it and the one after.
+    Decide which datablocks an unlink orphaned, from the census before it and the users after.
 
     Not `orphans_purge`, which also deletes the user's unrelated zero-user datablocks: an
     orphan of this unlink is a datablock that had users before it and has none now.
 
     Args:
-        before: uid -> `(collection name, users)` read before the removal.
-        current: uid -> `(collection name, users)` for the datablocks still eligible now;
-            the caller has already dropped libraries, linked data and fake users.
+        before: `_census()` read before the removal.
+        current: uid -> users for the datablocks still eligible now; the caller has
+            already dropped libraries, linked data and fake users.
 
     Returns:
         list[int]: The orphaned uids, in `current`'s order.
 
     """
-    return [uid for uid, (_name, users) in current.items() if users == 0 and before.get(uid, ("", 0))[1] > 0]
+    return [uid for uid, users in current.items() if users == 0 and uid in before and before[uid].users > 0]
 
 
-def _newly_orphaned(before: dict[int, tuple[str, int]]) -> list[tuple[str, object]]:
+def _newly_orphaned(before: dict[int, CensusEntry]) -> list[tuple[str, object]]:
     """
     Find local datablocks that this unlink left with no users.
 
@@ -896,7 +958,7 @@ def _newly_orphaned(before: dict[int, tuple[str, int]]) -> list[tuple[str, objec
 
     """
     candidates: dict[int, tuple[str, object]] = {}
-    current: dict[int, tuple[str, int]] = {}
+    current: dict[int, int] = {}
     for name, datablock in _iter_ids():
         uid = getattr(datablock, "session_uid", None)
         if name == "libraries" or not isinstance(uid, int) or getattr(datablock, "library", None) is not None:
@@ -905,7 +967,7 @@ def _newly_orphaned(before: dict[int, tuple[str, int]]) -> list[tuple[str, objec
         if getattr(datablock, "use_fake_user", False):
             continue
         candidates[uid] = (name, datablock)
-        current[uid] = (name, int(getattr(datablock, "users", 0)))
+        current[uid] = int(getattr(datablock, "users", 0))
     return [candidates[uid] for uid in compute_orphaned(before, current)]
 
 
@@ -978,7 +1040,7 @@ def _remove_libraries(
     return removed, already_removed
 
 
-def _purge_newly_orphaned(before: dict[int, tuple[str, int]], known_paths: tuple[str, ...]) -> list[str]:
+def _purge_newly_orphaned(before: dict[int, CensusEntry], known_paths: tuple[str, ...]) -> list[str]:
     """
     Remove the local datablocks this unlink orphaned, with `bpy.data.batch_remove`.
 
@@ -1002,6 +1064,65 @@ def _purge_newly_orphaned(before: dict[int, tuple[str, int]], known_paths: tuple
     return [name for name, _datablock in orphans]
 
 
+def _load_linked(
+    filepath: object,
+    canonical: str,
+    relative: bool,
+    collection_names: list[str],
+    object_names: list[str],
+    world_names: list[str],
+) -> tuple[list[object], list[object], list[object]]:
+    """
+    Link the named datablocks from `canonical`, refusing names the file lacks before linking any.
+
+    Returns:
+        tuple[list, list, list]: The linked collections, objects and worlds.
+
+    Raises:
+        LibraryFileNamesError: When the file lacks a requested name.
+        RuntimeError: When Blender failed; the text carries no path.
+
+    """
+    try:
+        with bpy.data.libraries.load(canonical, link=True, relative=relative) as (data_from, data_to):  # pyright: ignore[reportGeneralTypeIssues]  # libraries.load() is a context manager at runtime
+            _refuse_absent_names(data_from, collection_names, object_names, world_names)
+            data_to.collections = list(collection_names)
+            data_to.objects = list(object_names)
+            data_to.worlds = list(world_names)
+    except LibraryFileNamesError:
+        raise
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(operator_failure_message("link_canon_library", exc, (filepath, canonical))) from exc
+    return list(data_to.collections), list(data_to.objects), list(data_to.worlds)
+
+
+def _place_linked(
+    scene: object, linked_collections: list[object], linked_objects: list[object], *, as_override: bool, detail: bool
+) -> dict[str, object]:
+    """
+    Override linked collections into `scene` (Route C), or instance them and linked objects in its root.
+
+    Returns:
+        dict[str, object]: `changed_objects` (the roots of what came into the scene),
+        `instanced_objects` (every object the instances put there, counted as `_counted_page`
+        does; None under `as_override`) and `overrides` (one `create_override` report per
+        collection under `as_override`, else empty).
+
+    """
+    if as_override:
+        overrides = _override_all(list(linked_collections), scene, detail=detail)
+        return {"changed_objects": _override_root_names(overrides), "instanced_objects": None, "overrides": overrides}
+    _link_into(scene.collection.children, linked_collections)  # type: ignore[attr-defined]
+    _link_into(scene.collection.objects, linked_objects)  # type: ignore[attr-defined]
+    members = [obj for collection in linked_collections for obj in collection.all_objects]  # type: ignore[attr-defined]
+    brought_in = _distinct([*members, *linked_objects])
+    return {
+        "changed_objects": _root_names(brought_in),
+        "instanced_objects": _counted_page(brought_in, _linked_entry, MAX_LISTED_DATABLOCKS, detail=detail),
+        "overrides": [],
+    }
+
+
 class LinkingHandlersMixin:
     """Link, override, list, reload, relocate and unlink canon libraries."""
 
@@ -1015,6 +1136,7 @@ class LinkingHandlersMixin:
         as_override: object = False,
         relative: object = False,
         scene_uid: object = None,
+        detail: object = False,
     ) -> dict[str, object]:
         """
         Link datablocks from a canon `.blend` into the open shot, instanced or overridden.
@@ -1036,14 +1158,19 @@ class LinkingHandlersMixin:
             relative: Store the library path relative to the open file; refused in a never-saved session,
                 where Blender would silently store it absolute.
             scene_uid: The scene to instance or override into; optional when the file has one scene.
+            detail: Page the objects this call brought in as records instead of names, as
+                `create_override` does for an override's objects.
 
         Returns:
-            dict[str, object]: `library` (`library_summary` plus `version`,
-            `needs_liboverride_resync`, `users`), `library_already_linked`,
-            `scene_uid`, `collections` / `objects` linked (uid, name, id_type),
-            `world` (the linked World, or None) with `previous_world` (the name the
-            scene's world had, or None), and `overrides` (one `create_override`
-            report per collection when `as_override`).
+            dict[str, object]: `changed_objects` (the roots of what came into the scene - the
+            objects no other one of them parents - not every member of a linked hierarchy),
+            `library` (`library_summary` plus `version`, `needs_liboverride_resync`, `users`),
+            `library_already_linked`, `scene_uid`, `collections` / `objects` linked (uid, name,
+            id_type), `instanced_objects` (every object the instanced collections and objects
+            put in the scene, counted as `_counted_page` does; None under `as_override`),
+            `world` (the linked World, or None) with `previous_world` (the name the scene's
+            world had, or None), and `overrides` (one `create_override` report per collection
+            when `as_override`).
 
         Raises:
             ValueError: When the request is refused; nothing was linked.
@@ -1053,6 +1180,7 @@ class LinkingHandlersMixin:
         """
         as_override = require_bool("as_override", as_override)
         relative = require_bool("relative", relative)
+        detail = require_bool("detail", detail)
         collection_names = _library_file_names("collections", collections)
         object_names = _library_file_names("objects", objects)
         world_names = _library_world_name(world)
@@ -1069,38 +1197,22 @@ class LinkingHandlersMixin:
         refuse_scripts_auto_execute("link_canon_library")
         scene = _scene(scene_uid)
         libraries_before = {library.session_uid for library in bpy.data.libraries}
-        try:
-            with bpy.data.libraries.load(canonical, link=True, relative=relative) as (data_from, data_to):  # pyright: ignore[reportGeneralTypeIssues]  # libraries.load() is a context manager at runtime
-                _refuse_absent_names(data_from, collection_names, object_names, world_names)
-                data_to.collections = list(collection_names)
-                data_to.objects = list(object_names)
-                data_to.worlds = list(world_names)
-        except LibraryFileNamesError:
-            raise
-        except (OSError, RuntimeError) as exc:
-            raise RuntimeError(operator_failure_message("link_canon_library", exc, (filepath, canonical))) from exc
-        linked_collections, linked_objects = list(data_to.collections), list(data_to.objects)
-        linked_worlds = list(data_to.worlds)
+        linked_collections, linked_objects, linked_worlds = _load_linked(
+            filepath, canonical, relative, collection_names, object_names, world_names
+        )
         library = _linking_library([*linked_collections, *linked_objects, *linked_worlds])
-        overrides = []
-        if as_override:
-            overrides = _override_all(list(linked_collections), scene, detail=False)
-            changed_objects = _override_object_names(overrides)
-        else:
-            _link_into(scene.collection.children, linked_collections)  # type: ignore[attr-defined]
-            _link_into(scene.collection.objects, linked_objects)  # type: ignore[attr-defined]
-            members = [obj for collection in linked_collections for obj in collection.all_objects]  # type: ignore[attr-defined]
-            changed_objects = sorted({obj.name for obj in [*members, *linked_objects]})  # type: ignore[attr-defined]
+        placed = _place_linked(scene, linked_collections, linked_objects, as_override=as_override, detail=detail)
         return {
-            "changed_objects": changed_objects,
+            "changed_objects": placed["changed_objects"],
             "library": _library_details(library),
             "library_already_linked": library.session_uid in libraries_before,
             "scene_uid": _uid_of(scene),
             "collections": [_linked_entry(item) for item in linked_collections],
             "objects": [_linked_entry(item) for item in linked_objects],
+            "instanced_objects": placed["instanced_objects"],
             "world": None,
             "previous_world": None,
-            "overrides": overrides,
+            "overrides": placed["overrides"],
             # Last, so no step after it can fail and leave the scene looking at a World the
             # transaction is about to remove.
             **(_assign_linked_world(scene, linked_worlds[0]) if linked_worlds else {}),
@@ -1120,20 +1232,21 @@ class LinkingHandlersMixin:
         Args:
             collection_uid: The **linked** collection's `session_uid`.
             scene_uid: The scene to override into; optional when the file has one scene.
-            detail: Also list the override's objects as records; `changed_objects`
-                names them either way.
+            detail: Page the override's objects as records instead of names;
+                `changed_objects` names their roots either way.
 
         Returns:
-            dict[str, object]: `override` (`session_uid`, `is_system_override`,
-            `reference_uid`, `hierarchy_root_uid`, ...), `scene_uid`,
-            `replaced_instances`, and `objects` counted by type.
+            dict[str, object]: `changed_objects` (the override's root objects),
+            `override` (`session_uid`, `is_system_override`, `reference_uid`,
+            `hierarchy_root_uid`, ...), `scene_uid`, `replaced_instances`, and
+            `objects` counted by type with a page of names, or records under `detail`.
 
         """
         uid = _require_uid("collection_uid", collection_uid)
         collection = _by_session_uid(bpy.data.collections, uid, "collection")
         refuse_scripts_auto_execute("create_override")
         report = _override_all([collection], _scene(scene_uid), detail=require_bool("detail", detail))[0]
-        return {**report, "changed_objects": _override_object_names([report])}
+        return {**report, "changed_objects": _override_root_names([report])}
 
     @staticmethod
     def list_libraries(
@@ -1270,7 +1383,8 @@ class LinkingHandlersMixin:
         Returns:
             dict[str, object]: `removed_libraries` (summaries read before removal),
             `already_removed_uids`, `removed_count`, `removed_by_type`,
-            `removed_uids` (capped, with `removed_uids_truncated`),
+            `removed_sample` (up to `MAX_LISTED_NAMES` of what went, as `name` and
+            `id_type`: a removed datablock's uid names nothing, so none is sent),
             `purged_orphans`, `purged_by_type`, and `other_libraries_removed`
             (unnamed libraries that disappeared, expected empty). A refusal is a
             `ValueError` raised before anything is removed; a Blender failure
@@ -1285,7 +1399,7 @@ class LinkingHandlersMixin:
         other_before = {library.session_uid for library in bpy.data.libraries} - set(uids)
         before = _census()
         removed_libraries, already_removed = _remove_libraries(libraries, known)
-        after = _census()
+        after = {getattr(datablock, "session_uid", None) for _name, datablock in _iter_ids()}
         removed = sorted(uid for uid in before if uid not in after)
         purged = _purge_newly_orphaned(before, known) if purge_orphans else []
         surviving = {library.session_uid for library in bpy.data.libraries}
@@ -1293,9 +1407,11 @@ class LinkingHandlersMixin:
             "removed_libraries": removed_libraries,
             "already_removed_uids": already_removed,
             "removed_count": len(removed),
-            "removed_by_type": summarize_type_counts(before[uid][0] for uid in removed),
-            "removed_uids": removed[:MAX_REPORTED_UIDS],
-            "removed_uids_truncated": len(removed) > MAX_REPORTED_UIDS,
+            "removed_by_type": summarize_type_counts(before[uid].collection for uid in removed),
+            "removed_sample": [
+                {"name": _display_name(before[uid]), "id_type": before[uid].id_type}
+                for uid in removed[:MAX_LISTED_NAMES]
+            ],
             "purged_orphans": len(purged),
             "purged_by_type": summarize_type_counts(purged),
             "other_libraries_removed": sorted(other_before - surviving),
