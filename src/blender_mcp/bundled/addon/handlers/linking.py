@@ -517,7 +517,28 @@ def _library_file_names(parameter: str, value: object) -> list[str]:
     return list(dict.fromkeys(value))
 
 
-def _refuse_absent_names(data_from: object, collections: list[str], objects: list[str]) -> None:
+def _library_world_name(value: object) -> list[str]:
+    """
+    Validate the one World a link may name; a scene has one world, so this is not a list.
+
+    Args:
+        value: What the client sent; None means no world.
+
+    Returns:
+        list[str]: The name alone, or empty, in the shape `libraries.load` assigns.
+
+    Raises:
+        ValueError: If it is not a non-empty string.
+
+    """
+    if value is None:
+        return []
+    if not isinstance(value, str) or not value:
+        raise ValueError("world must be the non-empty name of a World inside the library file")
+    return [value]
+
+
+def _refuse_absent_names(data_from: object, collections: list[str], objects: list[str], worlds: list[str]) -> None:
     """
     Refuse, inside the `libraries.load` block, a name the file does not contain.
 
@@ -528,6 +549,7 @@ def _refuse_absent_names(data_from: object, collections: list[str], objects: lis
         data_from: The file's contents, as `libraries.load` yields them.
         collections: Requested collection names.
         objects: Requested object names.
+        worlds: Requested World names.
 
     Raises:
         LibraryFileNamesError: Naming the absent entries (the client's own strings).
@@ -535,6 +557,7 @@ def _refuse_absent_names(data_from: object, collections: list[str], objects: lis
     """
     absent = [name for name in collections if name not in data_from.collections]  # type: ignore[attr-defined]
     absent += [name for name in objects if name not in data_from.objects]  # type: ignore[attr-defined]
+    absent += [name for name in worlds if name not in data_from.worlds]  # type: ignore[attr-defined]
     if absent:
         shown = ", ".join(repr(client_safe_text(name)) for name in absent[:_MAX_CANDIDATES])
         raise LibraryFileNamesError(f"the library file does not contain: {shown}; nothing was linked")
@@ -753,6 +776,62 @@ def _link_into(members: object, items: list[object]) -> None:
             members.link(item)  # type: ignore[attr-defined]
 
 
+def _linking_library(linked: list[object]) -> object:
+    """
+    Return the Library a link created or reused, refusing a link Blender left partial.
+
+    Args:
+        linked: Every datablock `libraries.load` handed back; Blender leaves None in place
+            of one it could not link.
+
+    Returns:
+        object: The Library the first one belongs to.
+
+    Raises:
+        RuntimeError: When any requested datablock did not link.
+
+    """
+    library = getattr(linked[0], "library", None) if None not in linked else None
+    if library is None:
+        raise RuntimeError("link_canon_library failed: Blender did not link every requested datablock")
+    return library
+
+
+def _assign_linked_world(scene: object, world: object) -> dict[str, object]:
+    """
+    Make a linked World the scene's world, which is also what keeps it linked.
+
+    A World is no collection's member, so assigning it is the only use that stops
+    Blender dropping the link at the next save, the same reason `_link_into`
+    instances collections.
+
+    Args:
+        scene: The scene to assign it to.
+        world: The linked World.
+
+    Returns:
+        dict[str, object]: `world` (as `_linked_entry`), `previous_world` (the name the
+        scene's world had, or None), `changed_resources`, and `warnings` naming a displaced
+        World that nothing uses any more.
+
+    """
+    previous = scene.world  # type: ignore[attr-defined]
+    report: dict[str, object] = {
+        "world": _linked_entry(world),
+        "previous_world": _display_name(previous) if previous is not None else None,
+        "changed_resources": [_display_name(world)],
+    }
+    if previous is not None and previous.session_uid == world.session_uid:  # type: ignore[attr-defined]
+        return report
+    scene.world = world  # type: ignore[attr-defined]
+    if previous is not None and previous.users == 0:
+        report["warnings"] = [
+            f"World '{_display_name(previous)}' was the scene's world and nothing uses it now, so the next save "
+            "drops it; assign it elsewhere first if it is still wanted."
+        ]
+    return report
+
+
 def _iter_ids() -> Iterator[tuple[str, object]]:
     """
     Walk every datablock in every `bpy.data` ID collection, once.
@@ -932,6 +1011,7 @@ class LinkingHandlersMixin:
         *,
         collections: object = None,
         objects: object = None,
+        world: object = None,
         as_override: object = False,
         relative: object = False,
         scene_uid: object = None,
@@ -949,7 +1029,10 @@ class LinkingHandlersMixin:
             collections: Names of collections inside the library file, which have
                 no uid yet. None means none.
             objects: Names of objects inside the library file. None means none.
-            as_override: Override each linked collection (Route C). Refused with `objects`.
+            world: The name of one World inside the library file, linked and made the scene's
+                world. A World belongs to no collection, so linking a collection never brings it.
+            as_override: Override each linked collection (Route C). Refused with `objects`; a
+                `world` is linked as it is either way.
             relative: Store the library path relative to the open file; refused in a never-saved session,
                 where Blender would silently store it absolute.
             scene_uid: The scene to instance or override into; optional when the file has one scene.
@@ -958,8 +1041,9 @@ class LinkingHandlersMixin:
             dict[str, object]: `library` (`library_summary` plus `version`,
             `needs_liboverride_resync`, `users`), `library_already_linked`,
             `scene_uid`, `collections` / `objects` linked (uid, name, id_type),
-            and `overrides` (one `create_override` report per collection when
-            `as_override`).
+            `world` (the linked World, or None) with `previous_world` (the name the
+            scene's world had, or None), and `overrides` (one `create_override`
+            report per collection when `as_override`).
 
         Raises:
             ValueError: When the request is refused; nothing was linked.
@@ -971,8 +1055,12 @@ class LinkingHandlersMixin:
         relative = require_bool("relative", relative)
         collection_names = _library_file_names("collections", collections)
         object_names = _library_file_names("objects", objects)
-        if not (collection_names or object_names):
-            raise ValueError("name at least one datablock inside the library file: collections or objects")
+        world_names = _library_world_name(world)
+        if not (collection_names or object_names or world_names):
+            raise ValueError(
+                "name at least one datablock inside the library file: collections=[...] or objects=[...] "
+                "(lists of names), or world='<name>'"
+            )
         if as_override and object_names:
             raise ValueError("as_override overrides collection hierarchies; link objects without it")
         if relative and not bpy.data.filepath:
@@ -983,18 +1071,17 @@ class LinkingHandlersMixin:
         libraries_before = {library.session_uid for library in bpy.data.libraries}
         try:
             with bpy.data.libraries.load(canonical, link=True, relative=relative) as (data_from, data_to):  # pyright: ignore[reportGeneralTypeIssues]  # libraries.load() is a context manager at runtime
-                _refuse_absent_names(data_from, collection_names, object_names)
+                _refuse_absent_names(data_from, collection_names, object_names, world_names)
                 data_to.collections = list(collection_names)
                 data_to.objects = list(object_names)
+                data_to.worlds = list(world_names)
         except LibraryFileNamesError:
             raise
         except (OSError, RuntimeError) as exc:
             raise RuntimeError(operator_failure_message("link_canon_library", exc, (filepath, canonical))) from exc
         linked_collections, linked_objects = list(data_to.collections), list(data_to.objects)
-        linked = [*linked_collections, *linked_objects]
-        library = getattr(linked[0], "library", None) if None not in linked else None
-        if library is None:
-            raise RuntimeError("link_canon_library failed: Blender did not link every requested datablock")
+        linked_worlds = list(data_to.worlds)
+        library = _linking_library([*linked_collections, *linked_objects, *linked_worlds])
         overrides = []
         if as_override:
             overrides = _override_all(list(linked_collections), scene, detail=False)
@@ -1011,7 +1098,12 @@ class LinkingHandlersMixin:
             "scene_uid": _uid_of(scene),
             "collections": [_linked_entry(item) for item in linked_collections],
             "objects": [_linked_entry(item) for item in linked_objects],
+            "world": None,
+            "previous_world": None,
             "overrides": overrides,
+            # Last, so no step after it can fail and leave the scene looking at a World the
+            # transaction is about to remove.
+            **(_assign_linked_world(scene, linked_worlds[0]) if linked_worlds else {}),
         }
 
     @staticmethod

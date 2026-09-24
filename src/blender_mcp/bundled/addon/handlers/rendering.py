@@ -10,8 +10,11 @@ from contextlib import contextmanager, suppress
 
 import bpy
 
+from ..file_paths import create_save_directory, enforce_roots
 from ..image_reply import finalize_image_reply, image_destination
+from ..output_roots import configured_file_roots
 from ..render_properties import FLAT_ROUTES, NESTED_SECTIONS, RENDER_PATCH_PROPERTIES
+from .blend_files import require_bool
 
 _VIEW_LAYER_PROPERTIES = {
     "use",
@@ -585,7 +588,7 @@ def _refuse_container_output(scene, filepath):
         )
 
 
-def _resolve_render_output(scene, filepath, mode):
+def _resolve_render_output(scene, filepath, mode, create_directories=False):
     """
     Resolve a caller's output path to the exact file Blender will write, or refuse its shape.
 
@@ -601,22 +604,27 @@ def _resolve_render_output(scene, filepath, mode):
         filepath: The caller's requested path, used verbatim in errors so the message never
             exposes Blender's working directory.
         mode: Either "STILL" or "ANIMATION".
+        create_directories: Accept an output directory that does not exist yet; the caller
+            makes it with `_create_output_directory` once every other check has passed.
 
     Returns:
         str: Absolute path to assign to scene.render.filepath.
 
     Raises:
-        ValueError: If the directory does not exist, or the path's shape would make Blender write
-            somewhere other than where the caller asked.
+        ValueError: If the directory does not exist and may not be created, or the path's shape
+            would make Blender write somewhere other than where the caller asked.
 
     """
     extension = scene.render.file_extension
     _refuse_container_output(scene, filepath)
     output = _resolved_path(filepath)
     directory = os.path.dirname(output)
-    if not directory or not os.path.isdir(directory):
+    if not directory or (not create_directories and not os.path.isdir(directory)):
         # The caller's own text, not the resolved path, which can expose Blender's working directory.
-        raise ValueError(f"Output directory does not exist: {os.path.dirname(filepath) or '.'}")
+        raise ValueError(
+            f"Output directory does not exist: {os.path.dirname(filepath) or '.'}; pass "
+            "create_directories=true to create it"
+        )
     name = os.path.basename(output)
     suffix = os.path.splitext(name)[1].lower()
     if mode == "ANIMATION":
@@ -638,6 +646,30 @@ def _resolve_render_output(scene, filepath, mode):
             f"{os.path.join(os.path.dirname(filepath), _render_output_suggestion(name, extension))!r}."
         )
     return output
+
+
+def _create_output_directory(output):
+    """
+    Create a render output's missing directory, inside the file roots when they are configured.
+
+    A render into an existing directory is not held to the roots; making a new one is, the same
+    rule `save_shot(create_directories=true)` follows, because creating a directory is a write
+    of its own that no render setting implied.
+
+    Args:
+        output: The absolute path `_resolve_render_output` returned.
+
+    Returns:
+        bool: True when a directory was created, False when it already existed.
+
+    Raises:
+        ValueError: When the directory lies outside the configured roots or cannot be made.
+
+    """
+    if os.path.isdir(os.path.dirname(output)):
+        return False
+    enforce_roots(output, configured_file_roots())
+    return create_save_directory(output)
 
 
 def _frame_from_filename(path):
@@ -748,6 +780,7 @@ def _animation_summary(
     render_slot_policy,
     passes,
     pass_verification,
+    created_directory,
     detail,
 ):
     """
@@ -774,6 +807,7 @@ def _animation_summary(
         render_slot_policy: The caller's requested slot policy, echoed back.
         passes: Render passes read after the run.
         pass_verification: How `passes` was established.
+        created_directory: Whether the call created the output's missing directory.
         detail: Whether to add the per-frame "files"/"progress" arrays.
 
     Returns:
@@ -808,6 +842,7 @@ def _animation_summary(
         "bytes_written": sum(entry["bytes"] or 0 for entry in files),
         "passes": passes,
         "pass_verification": pass_verification,
+        "created_directory": created_directory,
     }
     if not detail:
         # Absent rather than empty: `envelope._record_pages` shortens a page it can see, and
@@ -906,7 +941,9 @@ class RenderingHandlersMixin:
             return {"removed": view_layer_name, "changed_resources": [view_layer_name]}
         return {"view_layer": _layer_info(layer), "changed_resources": [layer.name]}
 
-    def plan_render_animation(self, scene_name, filepath=None, max_animation_frames=250, confirm_frame_range=False):
+    def plan_render_animation(
+        self, scene_name, filepath=None, max_animation_frames=250, confirm_frame_range=False, create_directories=False
+    ):
         """
         Validate and resolve an ANIMATION render without rendering anything.
 
@@ -925,6 +962,8 @@ class RenderingHandlersMixin:
             max_animation_frames: Upper bound on the frames this plan may cover.
             confirm_frame_range: Whether the caller explicitly accepted the untouched 1-250
                 default range.
+            create_directories: Accept an output directory that does not exist yet. Nothing is
+                created here; the first frame's render_scene call makes it.
 
         Returns:
             dict: requested_filepath (the caller's template, unresolved - what persist_output
@@ -945,7 +984,9 @@ class RenderingHandlersMixin:
         if not 1 <= max_animation_frames <= _MAX_ANIMATION_FRAMES:
             raise ValueError("max_animation_frames must be between 1 and 10000")
         requested_filepath = _default_requested_filepath(scene, filepath)
-        output = _resolve_render_output(scene, requested_filepath, "ANIMATION")
+        output = _resolve_render_output(
+            scene, requested_filepath, "ANIMATION", require_bool("create_directories", create_directories)
+        )
         frames = _validate_animation_frame_range(scene, max_animation_frames, confirm_frame_range)
         original_path = scene.render.filepath
         try:
@@ -980,6 +1021,7 @@ class RenderingHandlersMixin:
         max_duration_seconds=None,
         persist_output=False,
         detail=False,
+        create_directories=False,
     ):
         if not confirm_render:
             raise ValueError("confirm_render=True is required")
@@ -1002,7 +1044,8 @@ class RenderingHandlersMixin:
                 "would make the next ANIMATION write '<name>.png0001.png'. Persist from an ANIMATION, or "
                 "set the template with configure_render_settings."
             )
-        output = _resolve_render_output(scene, requested_filepath, mode)
+        create_directories = require_bool("create_directories", create_directories)
+        output = _resolve_render_output(scene, requested_filepath, mode, create_directories)
         if mode == "STILL" and os.path.exists(output) and not confirm_overwrite:
             raise ValueError("Output file already exists; set confirm_overwrite=True to replace it")
         if view_layer_name and scene.view_layers.get(view_layer_name) is None:
@@ -1019,6 +1062,8 @@ class RenderingHandlersMixin:
             raise ValueError("max_duration_seconds must be a positive finite number")
         if mode == "ANIMATION":
             _validate_animation_frame_range(scene, max_animation_frames, confirm_frame_range)
+        # Last of the checks, so a refused render leaves no directory behind.
+        created_directory = _create_output_directory(output) if create_directories else False
 
         original_path = scene.render.filepath
         original_frame = scene.frame_current
@@ -1106,6 +1151,7 @@ class RenderingHandlersMixin:
             render_slot_policy=render_slot_policy,
             passes=passes,
             pass_verification=pass_verification,
+            created_directory=created_directory,
             detail=detail,
         )
 

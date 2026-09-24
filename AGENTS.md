@@ -115,7 +115,7 @@ Use an add-on only after confirming it is enabled and that its operator is avail
   `just lint`, `just fmt-check` and `just typecheck` never touch Blender, and CI
   has no Blender either. Changes under `src/blender_mcp/bundled/addon/` are
   therefore unverified by all four gates: the unit tests drive them through a
-  fake `bpy`. `just smoke` runs all 29 `tests/blender_*_smoke.py` scripts against
+  fake `bpy`. `just smoke` runs all 31 `tests/blender_*_smoke.py` scripts against
   a real headless Blender in about 20 seconds and is the only thing that
   exercises the real API — run it after touching an add-on handler. `just gate`
   is the heavier live-GUI rig that `just test` deliberately skips.

@@ -21,6 +21,7 @@ async def list_scene_objects(
     ctx: Context,
     limit: Annotated[int, Field(ge=1, le=200)] = 25,
     offset: Annotated[int, Field(ge=0)] = 0,
+    search: Annotated[str | None, Field(min_length=1)] = None,
 ) -> dict:
     """
     Inspect the current Blender scene and page through its objects.
@@ -29,21 +30,23 @@ async def list_scene_objects(
         ctx: MCP request context.
         limit: Maximum number of objects to return in this page (default 25, capped at 200).
         offset: Index of the first object to return, for paging through a scene with more objects than fit in one page.
+        search: Only objects whose name contains this, case-insensitively ("char1_" finds every CHAR1_ object).
+            Paging then runs over the matches.
 
     Returns:
-        "name" (scene name), active object, selection, mode, unit settings, "materials_count", and "objects"
-        (stable name-sorted records with local location, parent, collections, selection and visibility),
-        "object_count" (the scene's true total),
-        "offset"/"limit" (the effective page bounds used), "returned_count" (length of this page), "truncated"
-        (True if more objects remain), and "next_offset" (pass as offset to fetch the next page while truncated
-        is True).
+        "name" (scene name), active object, "selected_count", mode, unit settings, "materials_count", and
+        "objects" (stable name-sorted records with local location, parent, collections, selection and
+        visibility), "object_count" (the scene's true total), "matched_count" (how many match search; the
+        total paging runs over), "search" (echoed, or None), "offset"/"limit" (the effective page bounds used),
+        "returned_count" (length of this page), "truncated" (True if more matches remain), and "next_offset"
+        (pass as offset to fetch the next page while truncated is True).
 
     Raises:
         ToolError: If the operation cannot be completed.
 
     """
     try:
-        return await call_blender("list_scene_objects", {"limit": limit, "offset": offset})
+        return await call_blender("list_scene_objects", {"limit": limit, "offset": offset, "search": search})
     except Exception as e:
         logger.error(f"Error getting scene info from Blender: {e}")
         raise ToolError(f"Error getting scene info: {e}") from e

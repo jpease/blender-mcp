@@ -559,7 +559,12 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # `set_object_visibility` changes hide_render/hide_viewport/hide_select in place instead of
 # removing the ID, so it survives that resync - the durable alternative `remove_scene_objects`'s
 # new confirm_override_removal refusal now points callers at.
-SHOT_MODE_BYTE_CEILING = 264_930
+#
+# Raised from 264,930, measured at 265,968 - 1,038 bytes. 702 is the core surface below. The
+# rest is `render_scene`'s create_directories, which `save_shot` already had: a render into a
+# shot's not-yet-made renders folder could only be refused, and `configure_world_background`'s
+# one-line pointer to the canon-World path, which a rehearsal looked for there and did not find.
+SHOT_MODE_BYTE_CEILING = 265_968
 
 # The same rule as above, for the default, core-only surface.
 #
@@ -585,7 +590,12 @@ SHOT_MODE_BYTE_CEILING = 264_930
 #
 # Raised from 89,500, measured at 90,907 - 1,407 bytes, all of it `set_object_visibility` (see
 # the shot-ceiling comment above for why it exists).
-DEFAULT_MODE_BYTE_CEILING = 90_907
+#
+# Raised from 90,907, measured at 91,609 - 702 bytes. `link_canon_library`'s `world`: a World
+# is in no collection, so a canon library's World was unreachable by any linking call.
+# `list_scene_objects`' `search`: on a 598-object set at 25 a page, finding one object meant
+# paging the whole scene.
+DEFAULT_MODE_BYTE_CEILING = 91_609
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

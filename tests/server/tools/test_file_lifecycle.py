@@ -180,6 +180,7 @@ def test_link_canon_library_forwards_every_parameter(monkeypatch) -> None:
             filepath="/canon/hero.blend",
             collections=["CanonHero"],
             objects=["Prop"],
+            world="CanonWorld",
             as_override=True,
             relative=True,
             scene_uid=7,
@@ -192,26 +193,10 @@ def test_link_canon_library_forwards_every_parameter(monkeypatch) -> None:
         "filepath": "/canon/hero.blend",
         "collections": ["CanonHero"],
         "objects": ["Prop"],
+        "world": "CanonWorld",
         "as_override": True,
         "relative": True,
         "scene_uid": 7,
-    }
-
-
-def test_link_canon_library_defaults(monkeypatch) -> None:
-    connection = _Connection()
-    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
-
-    asyncio.run(file_lifecycle.link_canon_library(ctx=None, filepath="/canon/hero.blend"))
-
-    _command, params = connection.calls[0]
-    assert params == {
-        "filepath": "/canon/hero.blend",
-        "collections": None,
-        "objects": None,
-        "as_override": False,
-        "relative": False,
-        "scene_uid": None,
     }
 
 

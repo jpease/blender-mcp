@@ -42,6 +42,7 @@ from .primitives import (
     _matrix_list,
     _override_property_warning,
     _plain,
+    _property_value_as_stored,
     _required_name,
     _selected_bones,
     _unique_names,
@@ -126,6 +127,27 @@ def _posable_armature(armature_object_name, purpose):
     return armature
 
 
+def _stored_custom_properties(pose_bone, custom):
+    """
+    Check a pose entry's custom properties exist, and spell each value in its property's type.
+
+    Args:
+        pose_bone: The bone the entry poses.
+        custom: `{property name: value}` from the entry.
+
+    Returns:
+        dict: The same names, each value as `_property_value_as_stored` spells it.
+
+    Raises:
+        ValueError: For a property the bone does not carry, or a value its type cannot hold.
+
+    """
+    missing = sorted(name for name in custom if name not in pose_bone)
+    if missing:
+        raise ValueError(f"Custom properties not found on '{pose_bone.name}': {missing}")
+    return {name: _property_value_as_stored(pose_bone, name, value) for name, value in custom.items()}
+
+
 def _validate_pose_specs(armature, poses, space):
     """
     Check every pose entry and pre-build the targets that do not depend on other bones.
@@ -160,11 +182,9 @@ def _validate_pose_specs(armature, poses, space):
         pose_bone = armature.pose.bones.get(entry.get("bone_name"))
         if pose_bone is None:
             raise ValueError(f"Pose bone not found: {entry.get('bone_name')}")
-        custom = entry.get("custom_properties", {})
-        missing = sorted(name for name in custom if name not in pose_bone)
-        if missing:
-            raise ValueError(f"Custom properties not found on '{pose_bone.name}': {missing}")
         spec = dict(entry)
+        if entry.get("custom_properties"):
+            spec["custom_properties"] = _stored_custom_properties(pose_bone, entry["custom_properties"])
         if "aim_at" in spec:
             spec["aim_at"] = _validated_aim(armature, pose_bone, spec["aim_at"])
         if "rotate" in spec:

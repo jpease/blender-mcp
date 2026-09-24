@@ -141,10 +141,15 @@ def _pagination_names(owner: dict, key: str) -> dict[str, str] | None:
     """
     Find the pagination keys that describe one page of records.
 
-    A payload pages either with bare names beside an `items` list or with names prefixed by the
+    A payload pages either with bare names beside its page or with names prefixed by the
     list's own key, which is how `inspect_lighting_setup` reports `lights_truncated`. Without
     both spellings the shortening would leave a reply saying `truncated: false` about a page it
     had just cut.
+
+    A list's own prefixed names win over bare ones, and bare names describe one list only: when
+    `returned_count` identifies a sibling as the page, this list is not it. Otherwise cutting an
+    unpaginated sibling rewrote the page's `next_offset` - `list_scene_objects` handed back
+    `next_offset=234` for a page of two, and the next call skipped 232 objects.
 
     Args:
         owner: The dict holding the page.
@@ -155,15 +160,37 @@ def _pagination_names(owner: dict, key: str) -> dict[str, str] | None:
         page carries no pagination to update.
 
     """
-    for prefix in ("", f"{key}_"):
-        if f"{prefix}truncated" in owner:
-            return {
-                "truncated": f"{prefix}truncated",
-                "offset": f"{prefix}offset",
-                "next_offset": f"{prefix}next_offset",
-                "returned_count": f"{prefix}returned_count",
-            }
+    for prefix in (f"{key}_", ""):
+        if f"{prefix}truncated" not in owner:
+            continue
+        if not prefix and not _bare_page_is(owner, key):
+            return None
+        return {
+            "truncated": f"{prefix}truncated",
+            "offset": f"{prefix}offset",
+            "next_offset": f"{prefix}next_offset",
+            "returned_count": f"{prefix}returned_count",
+        }
     return None
+
+
+def _bare_page_is(owner: dict, key: str) -> bool:
+    """
+    Whether the bare pagination keys in `owner` describe `owner[key]` rather than a sibling list.
+
+    Args:
+        owner: The dict holding the page and its bare pagination keys.
+        key: The key whose value is the list of records.
+
+    Returns:
+        False only when `returned_count` matches another list's length and not this one's; a
+        payload that gives no way to tell keeps the bare keys, as it always has.
+
+    """
+    count = owner.get("returned_count")
+    if not isinstance(count, int) or len(owner[key]) == count:
+        return True
+    return not any(isinstance(value, list) and len(value) == count for name, value in owner.items() if name != key)
 
 
 # What a shortened page's warning says instead of a resume point once every page is down to its

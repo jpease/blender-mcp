@@ -681,6 +681,27 @@ def test_the_containment_refusal_names_the_policy_not_a_path(tmp_path: Path) -> 
     _assert_no_absolute_path(str(caught.value), str(tmp_path), str(root))
 
 
+def test_a_relative_path_outside_the_roots_is_told_where_it_resolved(tmp_path: Path, monkeypatch) -> None:
+    """
+    A shots-relative spelling resolves against Blender's working directory, which the refusal must say.
+
+    Without it a caller retries every relative spelling it can think of and gets the same sentence each
+    time; an absolute path to the same place outside the roots gets no such note, since it was meant.
+    """
+    module = _file_paths()
+    root = tmp_path / "project"
+    (root / "shots").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(module.PathOutsideRootsError, match="working directory") as relative:
+        module.resolve_blend_path("shots/sh030.blend", roots=[str(root)], must_exist=False)
+    _assert_no_absolute_path(str(relative.value), str(tmp_path))
+    with pytest.raises(module.PathOutsideRootsError) as absolute:
+        module.resolve_blend_path(str(tmp_path / "shots" / "sh030.blend"), roots=[str(root)], must_exist=False)
+    assert "working directory" not in str(absolute.value)
+    assert module.resolve_blend_path(str(root / "shots" / "sh030.blend"), roots=[str(root)], must_exist=False)
+
+
 # ---------------------------------------------------------------------------
 # sanitize_blender_error, against captured shapes
 # ---------------------------------------------------------------------------

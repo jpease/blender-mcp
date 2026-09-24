@@ -870,7 +870,7 @@ def test_plan_render_animation_is_registered_and_read_only(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _fake_still_reply(frame, path, *, bytes_written=5, render_slot_policy="USE_ACTIVE"):
+def _fake_still_reply(frame, path, *, bytes_written=5, render_slot_policy="USE_ACTIVE", created_directory=False):
     """One render_scene(mode="STILL", detail=True) reply, shaped exactly as the addon returns it."""
     return {
         "scene": "Scene",
@@ -891,6 +891,7 @@ def _fake_still_reply(frame, path, *, bytes_written=5, render_slot_policy="USE_A
         "bytes_written": bytes_written,
         "passes": ["Combined"],
         "pass_verification": "RENDERED_ONLY",
+        "created_directory": created_directory,
         "files": [{"frame": frame, "path": path, "bytes": bytes_written}],
         "progress": [{"frame": frame, "completed": 1, "total": 1, "fraction": 1.0}],
         "progress_truncated": False,
@@ -933,6 +934,7 @@ def _animation_outcome(
         max_duration_seconds=None,
         persist_output=False,
         detail=detail,
+        create_directories=False,
     )
     return rendering._AnimationOutcome(
         request=request,
@@ -945,7 +947,8 @@ def _animation_outcome(
 
 def test_aggregate_animation_summary_combines_per_frame_replies(monkeypatch) -> None:
     replies = [
-        _fake_still_reply(1, "/tmp/beat_0001.png", render_slot_policy="NEW_SLOT"),
+        # Only the first frame can find the directory missing, so its report is the run's.
+        _fake_still_reply(1, "/tmp/beat_0001.png", render_slot_policy="NEW_SLOT", created_directory=True),
         _fake_still_reply(2, "/tmp/beat_0002.png"),
         _fake_still_reply(3, "/tmp/beat_0003.png"),
     ]
@@ -973,6 +976,7 @@ def test_aggregate_animation_summary_combines_per_frame_replies(monkeypatch) -> 
         "bytes_written": 15,
         "passes": ["Combined"],
         "pass_verification": "RENDERED_ONLY",
+        "created_directory": True,
     }
 
 

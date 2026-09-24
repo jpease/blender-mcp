@@ -1015,6 +1015,8 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
         "list_scene_objects": lambda scale: {
             "name": "Scene",
             "object_count": scale.objects,
+            "matched_count": scale.objects,
+            "search": None,
             "objects": [
                 {
                     "name": f"set_{index:03d}",
@@ -1031,7 +1033,7 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             ],
             "materials_count": 12,
             "active_object": "Hero_Rig",
-            "selected_objects": ["Hero"],
+            "selected_count": 1,
             "mode": "OBJECT",
             "unit_settings": {"system": "METRIC", "scale_length": 1.0, "length_unit": "METERS"},
             "offset": 0,

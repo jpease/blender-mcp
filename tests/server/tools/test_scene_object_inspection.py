@@ -269,6 +269,24 @@ def test_list_scene_objects_offset_past_end_returns_empty_page(monkeypatch) -> N
     assert result["next_offset"] is None
 
 
+def test_list_scene_objects_search_pages_over_the_matches_only(monkeypatch) -> None:
+    """A name filter narrows what is paged, so offsets count matches, not the whole scene."""
+    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    server = addon.BlenderMCPServer()
+    for name in ("CHAR1_Body_geo", "Wall_geo", "char1_rig", "Door_grp", "CHAR1_Eye_geo"):
+        _new_mesh_object(bpy, name)
+
+    first = server.list_scene_objects(limit=2, offset=0, search="Char1_")
+    second = server.list_scene_objects(limit=2, offset=first["next_offset"], search="Char1_")
+
+    assert first["object_count"] == 5
+    assert first["matched_count"] == 3
+    assert first["truncated"] is True
+    assert second["truncated"] is False
+    names = [record["name"] for page in (first, second) for record in page["objects"]]
+    assert names == ["CHAR1_Body_geo", "CHAR1_Eye_geo", "char1_rig"]
+
+
 # endregion
 
 

@@ -1721,9 +1721,13 @@ def test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_doe
 
 
 def test_no_linking_command_takes_a_datablock_name_as_a_handle(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every handle is a uid; `collections` / `objects` name contents of the library *file*."""
+    """Every handle is a uid; `collections` / `objects` / `world` name contents of the library *file*."""
     server, _bpy, _world = _server(monkeypatch)
-    library_file_names = {("link_canon_library", "collections"), ("link_canon_library", "objects")}
+    library_file_names = {
+        ("link_canon_library", "collections"),
+        ("link_canon_library", "objects"),
+        ("link_canon_library", "world"),
+    }
     non_handles = {"filepath", "limit", "offset", "confirm", "purge_orphans", "as_override", "relative", "detail"}
 
     for command in LINKING_COMMANDS:

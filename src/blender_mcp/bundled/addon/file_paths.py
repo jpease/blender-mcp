@@ -139,8 +139,20 @@ class PathOutsideRootsError(ValueError):
 
 
 # Named by the policy, not by the path or the roots, which the handshake already
-# reports. One string, because one function refuses.
-ROOTS_REFUSAL = "path is outside the allowed file roots (BLENDERMCP_FILE_ROOTS); see file_roots in get_addon_status"
+# reports. One string, because one function refuses; it names the shapes that do
+# pass, since "outside" alone sends a caller guessing which spelling is wanted. It
+# spells those shapes in words: the refusal carries no path-like token at all.
+ROOTS_REFUSAL = (
+    "path is outside the allowed file roots (BLENDERMCP_FILE_ROOTS); pass a full absolute path inside one of "
+    "the file_roots get_addon_status reports, or a path relative to the open .blend with Blender's double-slash "
+    "prefix"
+)
+# Added when the caller's own text was relative: it resolved against Blender's working
+# directory, which is neither a file root nor the open .blend's folder.
+_RELATIVE_ROOTS_REFUSAL = (
+    "; a bare relative path such as 'shots/x.blend' resolves against Blender's working directory, "
+    "not against a file root"
+)
 
 
 def inside_roots(canonical_candidate: str, canonical_roots: Sequence[str]) -> bool:
@@ -419,7 +431,12 @@ def resolve_blend_path(raw: object, *, roots: Iterable[str], must_exist: bool, c
     if raw.startswith(BLENDER_RELATIVE_PREFIX):
         raise ValueError("a Blender-relative path must be expanded by the caller before it is resolved")
     resolved = canonical_path(raw)
-    enforce_roots(resolved, roots)
+    try:
+        enforce_roots(resolved, roots)
+    except PathOutsideRootsError as refusal:
+        if os.path.isabs(os.path.expanduser(raw)):
+            raise
+        raise PathOutsideRootsError(f"{refusal}{_RELATIVE_ROOTS_REFUSAL}") from None
     if not (_has_blend_suffix(raw) and _has_blend_suffix(resolved)):
         raise ValueError("path must name a file ending in .blend")
     if must_exist:

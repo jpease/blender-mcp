@@ -387,9 +387,10 @@ Commands that open, save or link a `.blend` take a path from an unauthenticated 
 - The enforced roots come only from those variables. The `writable_output_roots` the handshake also reports (which include `~` and the temp directory) are an advisory ranking of where renders can go, and never widen the boundary.
 - **Overwriting** an existing `.blend` requires an explicit `confirm_overwrite=True`; the default refuses.
 - **Creating directories** is opt-in: `save_shot(create_directories=True)` makes the target's missing parents, so a
-  `canon/shots/` layout needs no pre-created directories. It is the one command here that creates filesystem
-  structure, it runs only after the roots and every other refusal have passed, and in permissive mode (no roots set)
-  it can therefore create a directory anywhere Blender itself can write. The default refuses a missing directory.
+  `canon/shots/` layout needs no pre-created directories. It runs only after the roots and every other refusal have
+  passed, and in permissive mode (no roots set) it can therefore create a directory anywhere Blender itself can
+  write. `render_scene(create_directories=True)` does the same for a render's output directory, held to the same
+  roots when they are set, though a render into an existing directory is not. The default refuses a missing directory.
 - **Embedded scripts never run.** A `.blend` can carry Python that Blender executes on load. `use_scripts` is never a tool parameter, a file command's load passes `use_scripts=False` explicitly, and Blender's *Auto Run Python Scripts* preference (`preferences.filepaths.use_scripts_auto_execute`) is part of the same risk and must be checked before a load.
 - Blender's own error text contains absolute paths; file commands replace them with `<path>` before an error reaches a client.
 

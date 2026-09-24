@@ -34,6 +34,7 @@ from .primitives import (
     _finite,
     _override_property_warning,
     _plain,
+    _property_value_as_stored,
     _required_name,
     _unique_names,
     _vector,
@@ -785,7 +786,7 @@ class ArmatureStructureHandlersMixin:
                         prior = pose_bone.get(key, None)
                         existed = key in pose_bone
                         old_values.append((pose_bone, ("custom_property", key, existed), prior))
-                        pose_bone[key] = value
+                        pose_bone[key] = _property_value_as_stored(pose_bone, key, value)
         except Exception:
             for owner, field, value in reversed(old_values):
                 if isinstance(field, tuple):

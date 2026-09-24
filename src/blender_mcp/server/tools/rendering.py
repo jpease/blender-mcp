@@ -289,6 +289,7 @@ class _RenderRequest:
     max_duration_seconds: float | None
     persist_output: bool
     detail: bool
+    create_directories: bool
 
     def payload(self) -> dict:
         """
@@ -314,6 +315,7 @@ class _RenderRequest:
             "max_duration_seconds": self.max_duration_seconds,
             "persist_output": self.persist_output,
             "detail": self.detail,
+            "create_directories": self.create_directories,
         }
 
     def frame_payload(self, entry: dict, *, first: bool) -> dict:
@@ -349,6 +351,8 @@ class _RenderRequest:
             "verify_passes": False,
             "persist_output": False,
             "detail": True,
+            # Only the first frame can find the directory missing; it makes it for the rest.
+            "create_directories": self.create_directories and first,
         }
 
 
@@ -384,6 +388,7 @@ def _animation_summary(
     render_slot_policy: str,
     passes: list,
     pass_verification: str | None,
+    created_directory: bool,
     detail: bool,
 ) -> dict:
     """
@@ -410,6 +415,7 @@ def _animation_summary(
         render_slot_policy: The caller's requested slot policy, echoed back.
         passes: Render passes read after the run.
         pass_verification: How `passes` was established.
+        created_directory: Whether the call created the output's missing directory.
         detail: Whether to add the per-frame "files"/"progress" arrays.
 
     Returns:
@@ -444,6 +450,7 @@ def _animation_summary(
         "bytes_written": sum(entry["bytes"] or 0 for entry in files),
         "passes": passes,
         "pass_verification": pass_verification,
+        "created_directory": created_directory,
     }
     if not detail:
         return summary
@@ -496,6 +503,8 @@ def _aggregate_animation_summary(plan: dict, replies: list[dict], outcome: _Anim
         render_slot_policy=request.render_slot_policy,
         passes=passes,
         pass_verification=pass_verification,
+        # Only the first frame's call can have made it, so a run with no frames made none.
+        created_directory=bool(replies[0].get("created_directory")) if replies else False,
         detail=request.detail,
     )
 
@@ -548,6 +557,7 @@ async def _render_animation_orchestrated(ctx: Context, request: _RenderRequest) 
             "filepath": request.filepath,
             "max_animation_frames": request.max_animation_frames,
             "confirm_frame_range": request.confirm_frame_range,
+            "create_directories": request.create_directories,
         },
     )
     frames = plan["frames"]
@@ -594,6 +604,7 @@ async def render_scene(
     max_duration_seconds: Annotated[float | None, Field(gt=0, le=604_800)] = None,
     persist_output: bool = False,
     detail: bool = False,
+    create_directories: bool = False,
     orchestrate_animation: bool = True,
 ) -> dict:
     """
@@ -609,7 +620,9 @@ async def render_scene(
     Omit filepath to render to the scene's own output path (configure_render_settings
     output.filepath); persist_output=true stores an ANIMATION's template on the scene so a
     re-render needs no arguments. An ANIMATION over Blender's untouched 1-250 default range is
-    refused until the range is set or confirm_frame_range=true.
+    refused until the range is set or confirm_frame_range=true. A missing output directory is
+    refused unless create_directories=true, which makes it (inside the file roots when configured)
+    and reports created_directory.
 
     filepath is never a directory: Blender appends the frame number to the path as given,
     so a trailing slash writes files beside the folder instead of inside it and is refused.
@@ -650,6 +663,7 @@ async def render_scene(
         max_duration_seconds=max_duration_seconds,
         persist_output=persist_output,
         detail=detail,
+        create_directories=create_directories,
     )
     if mode == "ANIMATION" and orchestrate_animation:
         return await _render_animation_orchestrated(ctx, request)

@@ -162,30 +162,34 @@ async def link_canon_library(
     filepath: str,
     collections: list[str] | None = None,
     objects: list[str] | None = None,
+    world: Annotated[str | None, Field(min_length=1)] = None,
     as_override: bool = False,
     relative: bool = False,
     scene_uid: int | None = None,
 ) -> dict:
     """
-    Link named collections and/or objects from a canon .blend into the open shot.
+    Link named collections, objects and/or a World from a canon .blend into the open shot.
 
-    Name at least one of `collections` or `objects` - names inside the library file, not
-    handles into this session. `as_override=true` overrides each linked collection's
-    hierarchy (see `create_override`) instead of instancing it, and is refused with
-    `objects`. Refuses while Blender's script auto-execution preference is on.
+    Name at least one of `collections`, `objects` or `world` - names inside the library
+    file, not handles into this session. A World is in no collection, so only `world`
+    links it; it also becomes the scene's world, read-only here.
+    `as_override=true` overrides each linked collection's hierarchy (see `create_override`)
+    instead of instancing it, and is refused with `objects`. Refuses while Blender's script
+    auto-execution preference is on.
 
     Args:
         ctx: MCP request context.
         filepath: The library .blend; absolute, ~, or // relative to a saved open file.
         collections: Collection names inside the library file to link.
         objects: Object names inside the library file to link.
+        world: One World name inside the library file, linked and assigned as the scene's world.
         as_override: Override each linked collection's hierarchy instead of instancing it.
         relative: Store the library path relative to the open file; needs a saved session.
         scene_uid: Scene to link into; needed only when the file has more than one scene.
 
     Returns:
         library (as list_libraries), library_already_linked, scene_uid, collections, objects,
-        overrides.
+        world, previous_world, overrides.
 
     """
     return await call_blender(
@@ -194,6 +198,7 @@ async def link_canon_library(
             "filepath": filepath,
             "collections": collections,
             "objects": objects,
+            "world": world,
             "as_override": as_override,
             "relative": relative,
             "scene_uid": scene_uid,

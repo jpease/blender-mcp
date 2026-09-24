@@ -1700,7 +1700,8 @@
       "filepath",
       "objects",
       "relative",
-      "scene_uid"
+      "scene_uid",
+      "world"
     ],
     "list_character_bones": [
       "armature_object_name",
@@ -1734,7 +1735,8 @@
     ],
     "list_scene_objects": [
       "limit",
-      "offset"
+      "offset",
+      "search"
     ],
     "list_texture_images": [
       "include_unused",
@@ -2015,6 +2017,7 @@
     "ping": [],
     "plan_render_animation": [
       "confirm_frame_range",
+      "create_directories",
       "filepath",
       "max_animation_frames",
       "scene_name"
@@ -2193,6 +2196,7 @@
       "confirm_frame_range",
       "confirm_overwrite",
       "confirm_render",
+      "create_directories",
       "detail",
       "filepath",
       "frame",
@@ -2584,5 +2588,5 @@
       "scope"
     ]
   },
-  "protocol_version": 42
+  "protocol_version": 43
 }

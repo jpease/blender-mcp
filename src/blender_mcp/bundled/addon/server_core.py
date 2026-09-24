@@ -2178,20 +2178,28 @@ class BlenderMCPServer(
 
     _SCENE_INFO_MAX_LIMIT = 200
 
-    def list_scene_objects(self, limit=25, offset=0):
+    def list_scene_objects(self, limit=25, offset=0, search=None):
         """
         Get information about the current Blender scene, paginated over its objects.
 
         Args:
             limit: Maximum number of items to return.
             offset: Zero-based starting position.
+            search: Case-insensitive substring an object's name must contain; None or empty
+                pages every object.
 
         Returns:
             Result produced by the operation.
 
         """
         try:
-            scene_objects = sorted(bpy.context.scene.objects, key=lambda item: item.name.casefold())
+            if search is not None and not isinstance(search, str):
+                raise ValueError("search must be a string")
+            query = (search or "").casefold()
+            every_object = list(bpy.context.scene.objects)
+            scene_objects = sorted(
+                (obj for obj in every_object if query in obj.name.casefold()), key=lambda item: item.name.casefold()
+            )
             total = len(scene_objects)
             start, end, truncated, next_offset = paginate(total, offset, limit, self._SCENE_INFO_MAX_LIMIT)
 
@@ -2218,13 +2226,18 @@ class BlenderMCPServer(
 
             scene_info = {
                 "name": bpy.context.scene.name,
-                "object_count": total,
+                "object_count": len(every_object),
+                "matched_count": total,
+                "search": search or None,
                 "objects": objects,
                 "materials_count": len(bpy.data.materials),
                 "active_object": getattr(getattr(bpy.context, "view_layer", None), "objects", None).active.name
                 if getattr(getattr(getattr(bpy.context, "view_layer", None), "objects", None), "active", None)
                 else None,
-                "selected_objects": sorted(obj.name for obj in getattr(bpy.context, "selected_objects", ())),
+                # A count, not the names: a set dressed by linking selects hundreds of objects, and
+                # that list beside the page pushed every page over the reply budget. Each record
+                # carries its own `selected`.
+                "selected_count": len(getattr(bpy.context, "selected_objects", ())),
                 "mode": getattr(bpy.context, "mode", "UNKNOWN"),
                 "unit_settings": {
                     "system": bpy.context.scene.unit_settings.system,

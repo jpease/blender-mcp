@@ -176,6 +176,32 @@ def test_a_page_paged_under_a_prefixed_name_is_still_marked_truncated() -> None:
     assert result["data"]["lights_next_offset"] == len(result["data"]["lights"])
 
 
+def test_cutting_an_unpaged_sibling_leaves_the_real_pages_resume_point_alone() -> None:
+    """
+    Bare pagination keys describe the page `returned_count` counts, not every list beside it.
+
+    `list_scene_objects` returned a two-record `objects` page beside every selected object's name;
+    cutting that list rewrote the page's `next_offset` to 234, and paging on skipped 232 objects.
+    """
+    names = [f"Set_part_{index:04d}_geo" for index in range(_OVER_BUDGET * 2)]
+    data = {
+        "objects": [{"name": "A"}, {"name": "B"}],
+        "selected_objects": names,
+        "offset": _RESUMED_OFFSET,
+        "limit": 2,
+        "returned_count": 2,
+        "truncated": True,
+        "next_offset": _RESUMED_OFFSET + 2,
+    }
+
+    result = ok(data)
+
+    assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
+    assert len(result["data"]["selected_objects"]) < len(names)
+    assert result["data"]["returned_count"] == 2
+    assert result["data"]["next_offset"] == _RESUMED_OFFSET + 2
+
+
 def test_the_largest_list_is_the_one_cut() -> None:
     """Cutting a short sibling list would not bring the reply under budget."""
     data = {

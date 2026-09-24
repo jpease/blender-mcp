@@ -52,6 +52,34 @@ def _check_output_path_resolution(handler: RenderingHandlersMixin, scene: bpy.ty
         raise AssertionError("A render into a missing directory was accepted")
 
 
+def _check_missing_directory_is_created_on_request(handler: RenderingHandlersMixin, scene: bpy.types.Scene) -> None:
+    """Refuse a render into a missing directory unless asked to create it, then land the render there."""
+    with tempfile.TemporaryDirectory() as directory:
+        target = Path(directory) / "renders" / "sh030" / "hero.png"
+        try:
+            handler.render_scene(scene.name, str(target), confirm_render=True)
+        except ValueError as exc:
+            assert "create_directories=true" in str(exc), str(exc)
+        else:
+            raise AssertionError("A render into a missing directory was accepted without create_directories")
+        assert not target.parent.exists(), "a refused render created a directory"
+
+        rendered = handler.render_scene(scene.name, str(target), confirm_render=True, create_directories=True)
+        assert rendered["created_directory"] is True, rendered
+        assert target.is_file(), "the render did not land in the directory it created"
+        again = handler.render_scene(
+            scene.name, str(target), confirm_render=True, confirm_overwrite=True, create_directories=True
+        )
+        assert again["created_directory"] is False, again
+
+        plan_target = Path(directory) / "shots" / "beat_"
+        plan = handler.plan_render_animation(
+            scene.name, str(plan_target), confirm_frame_range=True, create_directories=True
+        )
+        assert plan["frames"], plan
+        assert not plan_target.parent.exists(), "planning an animation created its directory"
+
+
 def _check_directory_output_is_refused(handler: RenderingHandlersMixin, scene: bpy.types.Scene) -> None:
     """Refuse a directory path, which Blender would write as `<dir>0001.png` beside the folder."""
     with tempfile.TemporaryDirectory() as directory:
@@ -309,6 +337,7 @@ def main() -> None:
         assert rendered["pass_verification"] in {"RENDER_RESULT", "VIEW_LAYER_CONFIGURATION"}
 
     _check_output_path_resolution(handler, scene)
+    _check_missing_directory_is_created_on_request(handler, scene)
     _check_directory_output_is_refused(handler, scene)
     _check_frame_is_read_back_from_the_filename(handler, scene)
     _check_inline_reply_carries_the_bytes(handler, scene)

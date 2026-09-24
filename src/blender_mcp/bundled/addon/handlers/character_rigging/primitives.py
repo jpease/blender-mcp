@@ -101,6 +101,50 @@ def _custom_properties(owner):
     return result
 
 
+def _property_value_as_stored(owner, name, value):
+    """
+    Spell a custom-property value in the type the property already holds.
+
+    An ID property takes the type of whatever Python value is assigned to it, so writing a
+    JSON `0` into a float slider silently turns it into an int property. Keying it then flags
+    the F-Curve to round everything it evaluates, and that flag follows the property's type at
+    the latest key: one integral key left a face slider keyed 0.35 playing back 0, and 0.85
+    playing back 1, with every keyframe's stored value intact.
+
+    Args:
+        owner: The pose bone (or other ID-property holder) being written.
+        name: The property name.
+        value: The caller's value.
+
+    Returns:
+        The value converted to the stored property's scalar type; unchanged when the property
+        does not exist yet or is not a bool, int or float.
+
+    Raises:
+        ValueError: When the conversion would lose the value - a fraction into an integer
+            property, or anything but 0 or 1 into a boolean one.
+
+    """
+    if name not in owner:
+        return value
+    stored = owner[name]
+    label = f"Custom property '{name}' on '{owner.name}'"
+    # bool before int: a Python bool is an int, and a boolean property must stay one.
+    if isinstance(stored, bool):
+        if isinstance(value, bool):
+            return value
+        if value not in {0, 1}:
+            raise ValueError(f"{label} is a boolean; {value!r} is neither 0 nor 1")
+        return bool(value)
+    if isinstance(stored, int):
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(f"{label} is an integer; {value!r} would be rounded")
+        return int(value)
+    if isinstance(stored, float):
+        return float(value)
+    return value
+
+
 def _override_property_warning(armature_obj, bone_names):
     """
     Warn that a bare custom-property write on a library override will not survive the file.

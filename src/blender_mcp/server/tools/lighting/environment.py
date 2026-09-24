@@ -58,6 +58,7 @@ async def configure_world_background(
     missing world is created only when ``create_world`` is true and ``world_name`` is provided.
     Managed Background/World Output nodes are reused without clearing unrelated user nodes.
     ``transparent_film`` changes camera visibility, not the amount of world illumination.
+    To use a canon library's own World instead, link it with ``link_canon_library(world=...)``.
     """
     if color is None and strength is None and transparent_film is None:
         raise ToolError("Provide color, strength, or transparent_film")
