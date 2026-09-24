@@ -202,7 +202,7 @@ async def inspect_render_setup(
     limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     offset: Annotated[int, Field(ge=0)] = 0,
 ) -> dict:
-    """Inspect render engine, output, color, camera, view layers, passes, and compositor state."""
+    """Inspect render engine, output, display color management, camera, view layers, passes, and compositor state."""
     return await call_blender(
         "inspect_render_setup",
         {"scene_name": scene_name, "graph_sections": graph_sections, "limit": limit, "offset": offset},
@@ -215,6 +215,8 @@ async def configure_render_settings(
 ) -> dict:
     """
     Patch validated scene render settings without rendering or writing a file.
+
+    Display transform (view transform, look, exposure, gamma) is set by configure_color_management.
 
     The reply names the scene, lists the property paths the patch wrote ("changed", dotted for
     nested patches such as "output.image_format") and maps each to its resulting value.

@@ -11,6 +11,7 @@ from contextlib import contextmanager, suppress
 import bpy
 
 from ..file_paths import create_save_directory, enforce_roots
+from ..helpers import color_management_snapshot
 from ..image_reply import finalize_image_reply, image_destination
 from ..output_roots import configured_file_roots
 from ..render_properties import FLAT_ROUTES, NESTED_SECTIONS, RENDER_PATCH_PROPERTIES
@@ -857,6 +858,7 @@ class RenderingHandlersMixin:
     def inspect_render_setup(self, scene_name=None, graph_sections=None, limit=100, offset=0):
         scene = _scene(scene_name)
         result = _render_info(scene)
+        result["color_management"] = color_management_snapshot(scene)
         result["compositor"] = _compositor_info(scene, graph_sections, offset, limit)
         return result
 

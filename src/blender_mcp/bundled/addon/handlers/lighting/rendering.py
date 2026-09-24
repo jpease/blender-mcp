@@ -5,6 +5,7 @@ import os
 
 import bpy
 
+from ...helpers import color_management_snapshot
 from ._shared import (
     finite_number,
     object_in_scene,
@@ -12,7 +13,7 @@ from ._shared import (
     resolve_engine,
     scene_by_name,
 )
-from .inspection import _color_management_snapshot, _quality_snapshot
+from .inspection import _quality_snapshot
 
 CYCLES_FIELDS = {
     "samples",
@@ -247,12 +248,12 @@ class LightingRenderHandlers:
             raise ValueError("exposure must be in [-32, 32]")
         if "gamma" in patch and not 0 < finite_number(patch["gamma"], "gamma") <= 5:
             raise ValueError("gamma must be in (0, 5]")
-        before = _color_management_snapshot(scene)
+        before = color_management_snapshot(scene)
         try:
             patch_properties(settings, patch, {"view_transform", "look", "exposure", "gamma"})
         except TypeError as exc:
             raise ValueError(f"Color-management value is unavailable in the active OCIO configuration: {exc}") from exc
-        after = _color_management_snapshot(scene)
+        after = color_management_snapshot(scene)
         return {
             "scene": scene.name,
             "before": before,

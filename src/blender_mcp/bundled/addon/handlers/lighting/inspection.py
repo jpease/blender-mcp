@@ -10,6 +10,7 @@ import math
 import bpy
 import mathutils
 
+from ...helpers import color_management_snapshot
 from ._shared import (
     LIGHT_TYPES,
     bounded_page,
@@ -49,18 +50,6 @@ def _world_snapshot(world):
         "use_nodes": bool(world.use_nodes),
         "color": list(world.color),
         "node_tree": node_tree_snapshot(world.node_tree),
-    }
-
-
-def _color_management_snapshot(scene):
-    """Serialize display settings that affect lighting evaluation."""
-    settings = scene.view_settings
-    return {
-        "view_transform": settings.view_transform,
-        "look": settings.look,
-        "exposure": float(settings.exposure),
-        "exposure_multiplier": float(2.0**settings.exposure),
-        "gamma": float(settings.gamma),
     }
 
 
@@ -252,7 +241,7 @@ class LightingInspectionHandlers:
                 "length_unit": scene.unit_settings.length_unit,
             },
             "camera": scene.camera.name if scene.camera else None,
-            "color_management": _color_management_snapshot(scene),
+            "color_management": color_management_snapshot(scene),
             "world": _world_snapshot(scene.world),
             "lights_detail": bool(detail),
             "lights": [record(obj) for obj in lights[start:end]],

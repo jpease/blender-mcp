@@ -378,6 +378,7 @@ def _fake_scene(handlers, name="Scene"):
             ),
         ),
         view_layers=[_fake_view_layer(handlers)],
+        view_settings=types.SimpleNamespace(view_transform="AgX", look="None", exposure=0.0, gamma=1.0),
     )
 
 

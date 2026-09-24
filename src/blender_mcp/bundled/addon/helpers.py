@@ -33,6 +33,28 @@ def runtime_enum_item_name(owner, property_name, identifier):
     return bpy.types.UILayout.enum_item_name(owner, property_name, identifier)
 
 
+def color_management_snapshot(scene):
+    """
+    Serialize the scene's display transform: the view settings every render and preview passes through.
+
+    Args:
+        scene: The scene whose `view_settings` to read.
+
+    Returns:
+        dict: `view_transform`, `look`, `exposure` in stops, its `exposure_multiplier`
+        (`2 ** exposure`), and `gamma`.
+
+    """
+    settings = scene.view_settings
+    return {
+        "view_transform": settings.view_transform,
+        "look": settings.look,
+        "exposure": float(settings.exposure),
+        "exposure_multiplier": float(2.0**settings.exposure),
+        "gamma": float(settings.gamma),
+    }
+
+
 def get_blendermcp_addon_preferences(context=None):
     """
     Get add-on preferences object if available.

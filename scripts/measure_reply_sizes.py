@@ -2045,6 +2045,13 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
         # --- rendering: handlers/rendering.py -------------------------------------------
         "inspect_render_setup": lambda _scale: {
             **_render_info("CYCLES", 256),
+            "color_management": {
+                "view_transform": "AgX",
+                "look": "None",
+                "exposure": 0.0,
+                "exposure_multiplier": 1.0,
+                "gamma": 1.0,
+            },
             "compositor": {"use_nodes": True, "node_tree": None, "node_count": 0, "link_count": 0},
         },
         # `handlers/rendering.py:542 configure_render_settings`: the default reply carries only

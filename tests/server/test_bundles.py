@@ -564,7 +564,12 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # rest is `render_scene`'s create_directories, which `save_shot` already had: a render into a
 # shot's not-yet-made renders folder could only be refused, and `configure_world_background`'s
 # one-line pointer to the canon-World path, which a rehearsal looked for there and did not find.
-SHOT_MODE_BYTE_CEILING = 265_968
+#
+# Raised from 265,968, measured at 266,086 - 118 bytes: `configure_render_settings`' one-line
+# pointer to `configure_color_management`, and `inspect_render_setup` naming the display color
+# management it now reports. A client needing exposure per engine found no route from either and
+# fell back to a bare `bpy` script, though the validated tool was mounted in this same surface.
+SHOT_MODE_BYTE_CEILING = 266_086
 
 # The same rule as above, for the default, core-only surface.
 #

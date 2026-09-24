@@ -356,6 +356,14 @@ def main() -> None:
     assert inspected["engine"] == "BLENDER_WORKBENCH"
     assert inspected["compositor"]["nodes"]["returned_count"] == 2
     assert inspected["compositor"]["links"]["returned_count"] == 1
+    # The display transform is a render input the whole reply otherwise leaves out; an agent
+    # swapping engines reads exposure here, so it must be the scene's live value, not a default.
+    scene.view_settings.exposure = 1.5
+    color = handler.inspect_render_setup(scene.name)["color_management"]
+    assert color["view_transform"] == scene.view_settings.view_transform
+    assert math.isclose(color["exposure"], 1.5)
+    assert math.isclose(color["exposure_multiplier"], 2.0**1.5)
+    scene.view_settings.exposure = 0.0
 
     eevee = handler.configure_render_settings(
         scene.name,
