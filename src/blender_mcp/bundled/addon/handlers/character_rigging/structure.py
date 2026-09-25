@@ -24,7 +24,7 @@ import contextlib
 import bpy
 import mathutils
 
-from ...helpers import preserve_mode_and_selection, set_active
+from ...helpers import counted_page, preserve_mode_and_selection, set_active
 from .constraints import _copy_pose_constraint
 from .primitives import (
     _POSE_FIELDS,
@@ -194,6 +194,30 @@ def _working_armature_data(armature_obj):
     else:
         bpy.data.armatures.remove(original, do_unlink=True)
         working.name = original_name
+
+
+def _data_users_reply(armature_obj, users):
+    """
+    Report a rest-data edit's reach: the rig the caller named, and every object sharing its data.
+
+    Each user of the swapped armature data changed, but a shared rig can have any number of them
+    and the caller's next call names the rig, so `changed_objects` is that rig alone and the users
+    are counted by type beside a sample of their names.
+
+    Args:
+        armature_obj: The armature object the request named.
+        users: Every object whose data the edit swapped, the named rig included.
+
+    Returns:
+        dict[str, object]: `data_users_changed` as a `counted_page`, and `changed_objects`.
+
+    """
+    return {
+        "data_users_changed": counted_page(
+            sorted(users, key=lambda obj: obj.name), type_of=lambda obj: obj.type, name_of=lambda obj: obj.name
+        ),
+        "changed_objects": [armature_obj.name],
+    }
 
 
 @contextlib.contextmanager
@@ -444,13 +468,13 @@ class ArmatureStructureHandlersMixin:
             if found and policy == "ERROR":
                 raise ValueError(f"Bone '{name}' has references; use an explicit update/removal policy: {found[:10]}")
         # Bone names are evaluated in request order, which also makes chained renames deterministic.
-        changed_users = []
+        data_users = []
         with _working_armature_with_references(armature_obj, operations) as (
             armature_data,
             users,
             affected_dependencies,
         ):
-            changed_users = [obj.name for obj in users]
+            data_users = list(users)
             with preserve_mode_and_selection():
                 _enter_armature_edit(armature_obj)
                 try:
@@ -508,10 +532,6 @@ class ArmatureStructureHandlersMixin:
                             armature_data.collections_all[collection_name].assign(edit_bone)
                 finally:
                     _exit_object_mode()
-        changed_objects = set(changed_users)
-        changed_objects.update(
-            record["object"] for record in affected_dependencies if isinstance(record.get("object"), str)
-        )
         return {
             "armature_object": armature_obj.name,
             "armature_data": armature_obj.data.name,
@@ -521,8 +541,7 @@ class ArmatureStructureHandlersMixin:
             "deleted_bones": deleted,
             "dependencies_before": dependencies,
             "affected_dependencies": affected_dependencies,
-            "data_users_changed": changed_users,
-            "changed_objects": sorted(changed_objects),
+            **_data_users_reply(armature_obj, data_users),
             "changed_resources": [armature_obj.data.name],
             "warnings": ["Rest-pose edits can invalidate authored deformation and animation."]
             if _has_animation(armature_obj)
@@ -566,9 +585,9 @@ class ArmatureStructureHandlersMixin:
         for name, bone in source_bones.items():
             if abs(bone.head_local[axis_index]) <= 1e-7 and abs(bone.tail_local[axis_index]) <= 1e-7:
                 ambiguous.append(name)
-        changed_users = []
+        data_users = []
         with _working_armature_data(armature_obj) as (armature_data, users):
-            changed_users = [obj.name for obj in users]
+            data_users = list(users)
             with preserve_mode_and_selection():
                 _enter_armature_edit(armature_obj)
                 try:
@@ -623,8 +642,7 @@ class ArmatureStructureHandlersMixin:
             "source_to_target": name_map,
             "mirrored_constraints": mirrored_constraints,
             "centerline_ambiguities": ambiguous,
-            "data_users_changed": changed_users,
-            "changed_objects": changed_users,
+            **_data_users_reply(armature_obj, data_users),
             "changed_resources": [armature_obj.data.name],
             "warnings": [f"Source bones on the {axis} center plane produce overlapping mirrored geometry: {ambiguous}"]
             if ambiguous
@@ -687,9 +705,9 @@ class ArmatureStructureHandlersMixin:
         if cycles:
             raise ValueError(f"Bone collection hierarchy contains a cycle: {' -> '.join(cycles[0])}")
         displaced = []
-        changed_users = []
+        data_users = []
         with _working_armature_data(armature_obj) as (armature_data, users):
-            changed_users = [obj.name for obj in users]
+            data_users = list(users)
             for operation in operations:
                 if operation["operation"] == "CREATE" and armature_data.collections_all.get(operation["name"]) is None:
                     armature_data.collections.new(operation["name"])
@@ -741,8 +759,7 @@ class ArmatureStructureHandlersMixin:
             "armature_object": armature_obj.name,
             "collections": [_bone_collection_info(item) for item in armature_obj.data.collections_all],
             "displaced_memberships": displaced,
-            "data_users_changed": changed_users,
-            "changed_objects": changed_users,
+            **_data_users_reply(armature_obj, data_users),
             "changed_resources": [armature_obj.data.name],
         }
 

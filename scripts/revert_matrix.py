@@ -19,9 +19,9 @@ substring, so the prefix is how a group of rows is selected: `session:`, `barrie
 `server tools:`, `server instructions:`, `transport:`, `rig:`, `docker:`,
 `entrypoint:`, `quiet box:`, `reply budget:`, `lighting:`, `pose:`,
 `render settings:`, `strict args:`, `addon surface:`, `action assignment:`,
-`camera:`, `pagination:`, `simulation:`, `lint gate:` and `boundary:`. A
-`... control:` row is the deliberate opposite of its neighbour: it proves that
-over-enforcing the same line is caught too, either by the same node or by the
+`camera:`, `pagination:`, `simulation:`, `data users:`, `counted replies:`, `lint gate:` and
+`boundary:`. A `... control:` row is the deliberate opposite of its neighbour: it proves
+that over-enforcing the same line is caught too, either by the same node or by the
 sibling node that exists to say the guard can be passed.
 
 The rows live in `revert_rows/`, one module per stretch of the table, named for the area
@@ -66,6 +66,8 @@ from revert_rows import (
     artefact_truth,
     barrier,
     camera,
+    counted_replies,
+    data_users,
     docker,
     drain_and_viewport,
     error_paths,
@@ -103,6 +105,7 @@ from revert_rows.common import (
     CANDT,
     CAPT,
     CLIT,
+    CLOTHT,
     CONNFAILT,
     CONNT,
     CORET,
@@ -116,6 +119,7 @@ from revert_rows.common import (
     EVASION,
     FLT,
     FPT,
+    GNT,
     HOSTILE_LIB,
     KEYSTYLET,
     LIGHTT,
@@ -125,6 +129,8 @@ from revert_rows.common import (
     LISTT,
     LKT,
     MUTT,
+    NDOUTT,
+    NDSTATUST,
     OANIMT,
     OLT,
     PHT,
@@ -145,6 +151,7 @@ from revert_rows.common import (
     SFLT,
     SIT,
     SOIT,
+    SRVPHT,
     STRICTT,
     SURFT,
     SVT,
@@ -594,6 +601,23 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{RNAPT}::test_a_vector_read_back_is_its_numbers_not_its_repr",
     f"{LIQUIDT}::test_manage_liquid_cache_refuses_and_undoes_a_frame_range_blender_did_not_keep",
     f"{RBWT}::test_manage_rigid_body_cache_refuses_and_undoes_a_frame_range_blender_did_not_keep",
+    # --- a simulation reply counts the bodies, helpers and duplicates it touched ---
+    f"{RBWT}::test_a_cache_calculation_counts_its_bodies_and_names_none_of_them_as_changed",
+    f"{RBWT}::test_removing_a_rigs_helpers_counts_them_and_names_none_as_a_next_target",
+    f"{CLOTHT}::test_a_cloth_variant_counts_its_setup_and_names_the_variant",
+    f"{LIQUIDT}::test_a_liquid_variant_counts_members_by_role_and_names_its_domain",
+    # --- an edit reaching every user of one datablock counts them and names only the target ---
+    f"{CRTT}::test_a_rest_edit_on_widely_shared_armature_data_counts_its_users_and_names_only_the_rig",
+    f"{LIGHTT}::test_configuring_a_widely_shared_light_counts_its_users_and_names_only_the_light",
+    f"{GNT}::test_patching_a_widely_used_group_counts_its_user_objects_and_changes_only_the_group",
+    # --- a bulk call counts what it touched and names only what the caller acts on next ---
+    f"{SCENETOOLT}::test_removing_a_managed_rig_counts_its_members_and_names_none_as_a_next_target",
+    f"{SCENETOOLT}::test_reset_scene_counts_what_it_unlinked_and_names_the_scene_as_what_changed",
+    f"{SCENETOOLT}::test_a_collection_of_many_members_is_counted_and_is_itself_what_changed",
+    f"{NDSTATUST}::test_a_large_cleanup_counts_what_went_and_names_only_the_objects_that_lost_a_modifier",
+    f"{NDOUTT}::test_nd_outcome_publishes_the_change_list_a_handler_names_itself_in_place_of_the_targets",
+    f"{NDOUTT}::test_nd_outcome_cancelled_drops_a_change_list_the_handler_named",
+    f"{SRVPHT}::test_a_model_import_reports_the_roots_the_handler_named_not_every_imported_object",
 )
 
 # Nodes no single revert can break, each with the reason, so the gap check skips them.
@@ -779,6 +803,8 @@ REVERTS: list[Revert] = [
     *status_and_sampling.ROWS,
     *pagination.ROWS,
     *simulation.ROWS,
+    *data_users.ROWS,
+    *counted_replies.ROWS,
     *lint_gate.ROWS,
 ]
 

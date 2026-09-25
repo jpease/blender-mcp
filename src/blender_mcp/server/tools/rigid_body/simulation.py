@@ -119,7 +119,8 @@ async def manage_rigid_body_cache(
     confirm_bake=True; FREE discards the cache and requires confirm_free=True.
     confirm_external_overwrite additionally guards actions that would overwrite an existing external
     cache file. max_frame_steps bounds how many frames a single call may evaluate before returning
-    early.
+    early. Every action but INSPECT and CONFIGURE counts the rigid bodies the cache covers in
+    `simulated_objects` (`total`, `by_type`, up to 10 `names`) and names only the scene as changed.
     """
     patch = dump_input(settings) or {}
     if action == "CONFIGURE" and not patch:

@@ -791,7 +791,7 @@ def test_get_session_info_reports_the_dirty_flag_and_the_library_summary(
     info = server.get_session_info()
 
     assert info["is_dirty"] is True
-    assert info["libraries"] == [
+    assert info["libraries"]["records"] == [
         {
             "session_uid": 4271,
             "name": "canon.blend",
@@ -802,6 +802,28 @@ def test_get_session_info_reports_the_dirty_flag_and_the_library_summary(
             "is_missing": False,
         }
     ]
+
+
+def test_get_session_info_counts_every_library_and_carries_only_the_first_ten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fourteen links, three of them broken: the poll states both counts and summarizes ten."""
+    libraries = [
+        types.SimpleNamespace(
+            name=f"set_{index:02d}.blend",
+            filepath=f"//libs/set_{index:02d}.blend",
+            session_uid=5000 + index,
+            is_missing=index in {2, 11, 13},
+        )
+        for index in range(14)
+    ]
+    server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, libraries=libraries)
+
+    listed = server.get_session_info()["libraries"]
+
+    assert (listed["total"], listed["by_type"]) == (14, {"MISSING": 3, "PRESENT": 11})
+    assert (listed["limit"], listed["returned_count"], listed["truncated"]) == (10, 10, True)
+    assert [record["session_uid"] for record in listed["records"]] == list(range(5000, 5010))
 
 
 def test_get_addon_info_carries_the_session_epoch_and_the_current_filepath(
@@ -902,7 +924,7 @@ def test_the_library_summary_reports_identity_without_the_asset_library_layout(
     )
     server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, libraries=[absolute, relative])
 
-    libraries = server.get_session_info()["libraries"]
+    libraries = server.get_session_info()["libraries"]["records"]
 
     assert libraries == [
         {
@@ -943,7 +965,7 @@ def test_a_library_inside_the_project_tree_is_published_whole_and_says_it_was_no
     )
     server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, libraries=[library])
 
-    entry = server.get_session_info()["libraries"][0]
+    entry = server.get_session_info()["libraries"]["records"][0]
 
     assert entry["filepath"] == "//libs/props/canon.blend", "a resolvable project link was reduced"
     assert entry["filepath_redacted"] is False
@@ -966,7 +988,7 @@ def test_a_library_outside_the_project_tree_reports_its_leaf_as_a_redaction_not_
     )
     server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, libraries=[library])
 
-    entry = server.get_session_info()["libraries"][0]
+    entry = server.get_session_info()["libraries"]["records"][0]
 
     assert entry["filepath"] == "canon.blend", "the reduction stopped publishing the leaf"
     assert entry["filepath_redacted"] is True
@@ -985,7 +1007,7 @@ def test_a_missing_link_reports_is_missing_whether_or_not_its_path_was_redacted(
     inside = types.SimpleNamespace(name="canon.blend", filepath="//libs/canon.blend", session_uid=32, is_missing=True)
     server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, libraries=[outside, inside])
 
-    redacted, published = server.get_session_info()["libraries"]
+    redacted, published = server.get_session_info()["libraries"]["records"]
 
     assert (redacted["is_missing"], redacted["filepath_redacted"]) == (True, True)
     assert (published["is_missing"], published["filepath_redacted"]) == (True, False), (
@@ -1323,7 +1345,7 @@ def test_a_hostile_library_path_is_reduced_the_same_way_a_failure_note_is(
     library = types.SimpleNamespace(name="canon.blend", filepath=filepath, session_uid=7, is_missing=False)
     server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, libraries=[library])
 
-    reported = server.get_session_info()["libraries"][0]["filepath"]
+    reported = server.get_session_info()["libraries"]["records"][0]["filepath"]
 
     _assert_hygienic(reported, label, _MAX_REPORTED_LINK_CHARS, ascii_slash_allowed=True)
     for secret in forbidden:
@@ -1354,7 +1376,7 @@ def test_a_hostile_library_name_is_reduced_to_a_leaf_like_the_filepath_is(
     library = types.SimpleNamespace(name=name, filepath="//libs/canon.blend", session_uid=7, is_missing=False)
     server, _session, _bpy = _load_server(monkeypatch, libraries=[library])
 
-    reported = server.get_session_info()["libraries"][0]["name"]
+    reported = server.get_session_info()["libraries"]["records"][0]["name"]
 
     _assert_client_safe_leaf_text(reported, f"{label} (name)")
     for secret in forbidden:
@@ -1395,7 +1417,7 @@ def test_a_link_published_whole_names_nothing_above_its_own_shot(
     for label, filepath, _forbidden in _HOSTILE_LIBRARY_PATHS:
         library = types.SimpleNamespace(name="canon.blend", filepath=filepath, session_uid=7, is_missing=False)
         server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, libraries=[library])
-        reported = server.get_session_info()["libraries"][0]["filepath"]
+        reported = server.get_session_info()["libraries"]["records"][0]["filepath"]
         if not reported.startswith("//"):
             continue
         body = reported[2:]
@@ -1417,7 +1439,7 @@ def test_a_published_link_is_never_an_absolute_path(monkeypatch: pytest.MonkeyPa
     for label, filepath, _forbidden in _HOSTILE_LIBRARY_PATHS:
         library = types.SimpleNamespace(name="canon.blend", filepath=filepath, session_uid=7, is_missing=False)
         server, _session, _bpy = _load_server(monkeypatch, filepath=_SHOT, libraries=[library])
-        entry = server.get_session_info()["libraries"][0]
+        entry = server.get_session_info()["libraries"]["records"][0]
         reported = entry["filepath"]
         rooted = reported.startswith("/") and not reported.startswith("//")
         assert not rooted, f"{label}: an absolute path was published: {reported!r}"
@@ -1439,7 +1461,7 @@ def test_a_rooted_relative_prefix_is_not_reported_as_relative(monkeypatch: pytes
     genuine = types.SimpleNamespace(name="canon.blend", filepath="//libs/canon.blend", session_uid=4, is_missing=False)
     server, _session, _bpy = _load_server(monkeypatch, libraries=[rooted, genuine])
 
-    reported = server.get_session_info()["libraries"]
+    reported = server.get_session_info()["libraries"]["records"]
 
     assert reported[0]["is_relative"] is False, "a rooted // link was reported as relative"
     assert reported[1]["is_relative"] is True, "a genuine relative link stopped being reported as one"
@@ -1548,7 +1570,7 @@ def test_a_library_name_is_published_without_its_control_characters(monkeypatch:
     )
     server, _session, _bpy = _load_server(monkeypatch, libraries=[library])
 
-    reported = server.get_session_info()["libraries"][0]["name"]
+    reported = server.get_session_info()["libraries"]["records"][0]["name"]
 
     _assert_hygienic(reported, "library name", _MAX_SAFE_NAME_CHARS)
     assert reported == "canondneb.live.blend", (

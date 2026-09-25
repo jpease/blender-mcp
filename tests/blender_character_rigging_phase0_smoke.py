@@ -123,6 +123,8 @@ renamed = handler.patch_armature_bones(
     ],
 )
 assert renamed["renamed_bones"] == {"arm.L": "upper_arm.L"}
+assert renamed["changed_objects"] == ["HeroRig"]
+assert renamed["data_users_changed"]["names"] == ["HeroRig"]
 assert body.vertex_groups.get("upper_arm.L") is not None
 assert unrelated.vertex_groups.get("arm.L") is not None
 assert unrelated.vertex_groups.get("upper_arm.L") is None
@@ -323,6 +325,7 @@ assert driver_curve.driver.variables[0].targets[0].bone_target == ""
 
 mirrored = handler.mirror_armature_bones("HeroRig", ["upper_arm.L", "target.L"])
 assert mirrored["source_to_target"] == {"upper_arm.L": "upper_arm.R", "target.L": "target.R"}
+assert mirrored["changed_objects"] == ["HeroRig"]
 
 patched = handler.patch_armature_bones(
     "HeroRig",
@@ -396,6 +399,23 @@ json.dumps(
         validation,
     ]
 )
+
+# A dozen rigs sharing one armature: every one of them takes the edit, the reply counts them and
+# samples ten names, and changed_objects names only the rig the caller named.
+hero_rig = bpy.data.objects["HeroRig"]
+for index in range(11):
+    crowd_rig = bpy.data.objects.new(f"Crowd_{index:02d}", hero_rig.data)
+    bpy.context.scene.collection.objects.link(crowd_rig)
+shared_edit = handler.manage_bone_collections("HeroRig", [{"operation": "CREATE", "name": "Crowd"}])
+assert shared_edit["changed_objects"] == ["HeroRig"]
+shared_users = shared_edit["data_users_changed"]
+assert shared_users["total"] == 12
+assert shared_users["by_type"] == {"ARMATURE": 12}
+assert shared_users["truncated"] is True
+assert shared_users["names"] == [f"Crowd_{index:02d}" for index in range(10)]
+assert all(bpy.data.objects[f"Crowd_{index:02d}"].data == hero_rig.data for index in range(11))
+assert hero_rig.data.collections_all.get("Crowd") is not None
+json.dumps(shared_edit)
 
 # A custom property written on a library override reads back correctly in-session and is gone
 # after save and reopen: Blender carries no ID property write into an override. Only a warning

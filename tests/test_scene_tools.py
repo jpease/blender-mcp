@@ -383,3 +383,117 @@ def test_set_object_transform_reports_the_world_transform_the_scene_now_holds(
     assert reply["location"] == [1.0, 2.0, 3.0]
     assert reply["world_location"] == [11.0, 2.0, 3.0]
     assert [row[3] for row in reply["matrix_world"][:3]] == [11.0, 2.0, 3.0]
+
+
+class _Links(list):
+    """A collection's `objects` or `children`: link, unlink and look up by name."""
+
+    def link(self, item) -> None:
+        self.append(item)
+
+    def unlink(self, item) -> None:
+        self.remove(item)
+
+    def get(self, name, default=None):
+        return next((item for item in self if item.name == name), default)
+
+
+class _SceneObject(types.SimpleNamespace):
+    """A scene object carrying the ownership tags, links and slots the scene handlers read."""
+
+    def get(self, key, default=None):
+        return self.tags.get(key, default)
+
+
+def _scene_object(name: str, object_type: str, *, tags=None, material=None) -> _SceneObject:
+    return _SceneObject(
+        name=name,
+        type=object_type,
+        tags=tags or {},
+        override_library=None,
+        children=[],
+        users_collection=[types.SimpleNamespace(name="Shot Set")],
+        data=None,
+        material_slots=[types.SimpleNamespace(material=material)] if material else [],
+    )
+
+
+def _first_ten_of(names: list[str], total: int, by_type: dict[str, int]) -> dict:
+    """Describe a counted page of more than ten items: the exact totals and the first ten names."""
+    return {
+        "total": total,
+        "by_type": by_type,
+        "limit": 10,
+        "returned_count": 10,
+        "truncated": True,
+        "names": names[:10],
+    }
+
+
+def test_removing_a_managed_rig_counts_its_members_and_names_none_as_a_next_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fourteen rig members are gone: a count, ten names and their dependencies; one shared material once."""
+    paint = types.SimpleNamespace(name="Rig Paint", users=15)
+    crane = {"mcp_camera_rig_id": "crane"}
+    members = [_scene_object("Crane Root", "EMPTY", tags=crane)] + [
+        _scene_object(f"Crane Arm {index:02d}", "CAMERA" if index == 0 else "MESH", tags=crane, material=paint)
+        for index in range(13)
+    ]
+    floor = _scene_object("Set Floor", "MESH", material=paint)
+    objects = FakeCollection()
+    for obj in [floor, *members]:
+        objects[obj.name] = obj
+    addon, _bpy = load_addon(monkeypatch, data={"objects": objects})
+
+    reply = addon.BlenderMCPServer().remove_scene_objects(
+        managed_rig={"system": "CAMERA", "rig_id": "crane"}, confirm_remove=True
+    )
+
+    removed_names = [f"Crane Arm {index:02d}" for index in range(13)] + ["Crane Root"]
+    assert list(objects) == [floor]
+    assert reply["removed"] == _first_ten_of(removed_names, 14, {"CAMERA": 1, "EMPTY": 1, "MESH": 12})
+    assert list(reply["dependencies"]) == removed_names[:10]
+    assert reply["retained_shared_datablocks"] == [
+        {"kind": "MATERIAL", "name": "Rig Paint", "reason": "shared users remain"}
+    ]
+    assert reply["changed_objects"] == []
+
+
+def test_reset_scene_counts_what_it_unlinked_and_names_the_scene_as_what_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Twenty-three objects and twelve collections leave the scene; the reply counts them, names ten of each."""
+    objects = [_scene_object(f"Prop {index:02d}", "LIGHT" if index % 5 == 0 else "MESH") for index in range(23)]
+    collections = [types.SimpleNamespace(name=f"Set {index:02d}") for index in range(12)]
+    master = types.SimpleNamespace(objects=_Links(objects), children=_Links(collections))
+    scene = types.SimpleNamespace(name="Shot", objects=list(objects), collection=master)
+    addon, _bpy = load_addon(monkeypatch, data={"orphans_purge": lambda **_kwargs: 4}, scene=scene)
+
+    reply = addon.BlenderMCPServer().reset_scene(confirm_reset=True)
+
+    assert (list(master.objects), list(master.children)) == ([], [])
+    assert reply["unlinked_objects"] == _first_ten_of([obj.name for obj in objects], 23, {"LIGHT": 5, "MESH": 18})
+    assert reply["unlinked_collections"] == _first_ten_of(
+        [collection.name for collection in collections], 12, {"COLLECTION": 12}
+    )
+    assert reply["purged_datablock_count"] == 4
+    assert (reply["changed_objects"], reply["changed_resources"]) == ([], ["Shot"])
+
+
+def test_a_collection_of_many_members_is_counted_and_is_itself_what_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Linking twenty-five trees reports the collection's membership as a count, and the collection as changed."""
+    trees = [_scene_object(f"Tree {index:02d}", "EMPTY" if index >= 20 else "MESH") for index in range(25)]
+    objects = FakeCollection()
+    for tree in trees:
+        objects[tree.name] = tree
+    forest = types.SimpleNamespace(name="Forest", objects=_Links(), hide_viewport=False, hide_render=False)
+    addon, _bpy = load_addon(monkeypatch, data={"objects": objects, "collections": {"Forest": forest}})
+
+    reply = addon.BlenderMCPServer().manage_scene_collections("LINK_OBJECTS", "Forest", [tree.name for tree in trees])
+
+    assert list(forest.objects) == trees
+    assert reply["objects"] == _first_ten_of([tree.name for tree in trees], 25, {"EMPTY": 5, "MESH": 20})
+    assert (reply["changed_objects"], reply["changed_resources"]) == ([], ["Forest"])

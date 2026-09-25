@@ -6,6 +6,7 @@ import math
 import bpy
 import mathutils
 
+from ...helpers import counted_page
 from ._shared import (
     LIGHT_TYPES,
     collection_in_scene,
@@ -196,12 +197,13 @@ class LightConstructionHandlers:
         allowed = validate_light_patch(obj.data.type, patch)
         old, new = patch_properties(obj.data, patch, allowed)
         affected = sorted(
-            candidate.name for candidate in bpy.data.objects if candidate.type == "LIGHT" and candidate.data == obj.data
+            (candidate for candidate in bpy.data.objects if candidate.type == "LIGHT" and candidate.data == obj.data),
+            key=lambda candidate: candidate.name,
         )
         warnings = []
         if len(affected) > 1:
             warnings.append(
-                f"Light datablock '{obj.data.name}' has {len(affected)} object users; all listed objects changed."
+                f"Light datablock '{obj.data.name}' has {len(affected)} object users; every one of them changed."
             )
         return {
             "object": obj.name,
@@ -210,9 +212,11 @@ class LightConstructionHandlers:
             "old": old,
             "new": new,
             "effective": light_settings_snapshot(obj.data),
-            "data_users": affected,
+            "data_users": counted_page(
+                affected, type_of=lambda candidate: candidate.type, name_of=lambda candidate: candidate.name
+            ),
             "warnings": warnings,
-            "changed_objects": affected,
+            "changed_objects": [obj.name],
             "changed_resources": [obj.data.name],
         }
 

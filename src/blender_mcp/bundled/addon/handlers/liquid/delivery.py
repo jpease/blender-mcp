@@ -14,7 +14,7 @@ import bmesh
 import bpy
 import mathutils
 
-from ...helpers import preserve_mode_and_selection
+from ...helpers import counted_page, preserve_mode_and_selection
 from ..rna_patch import get_object, read_fields
 from ._geometry import _RIM_AXES
 from .inspection_and_setup import (
@@ -258,6 +258,19 @@ def _copy_materials(obj, material_map):
 def _collection_name(source, suffix):
     base = f"{source.name} {suffix}".strip()
     return base[:63]
+
+
+def _role_page(members):
+    """Count `(object, liquid role)` pairs by role beside a page of the objects' names."""
+    return counted_page(members, type_of=_member_role, name_of=_member_name)
+
+
+def _member_role(member):
+    return member[1]
+
+
+def _member_name(member):
+    return member[0].name
 
 
 def _modifier_order(obj):
@@ -657,7 +670,7 @@ class LiquidDeliveryHandlers:
                 role_collections[role] = child
         mapping = {}
         material_map = {}
-        animation_records = {}
+        animated = []
         variant_uuids = {}
         simulation_id = uuid.uuid4().hex
         source_visibility = (source_modifier.show_viewport, source_modifier.show_render)
@@ -670,9 +683,8 @@ class LiquidDeliveryHandlers:
                     duplicate.data.name = f"{duplicate.name} Data"
                 collection.objects.link(duplicate)
                 mapping[original] = duplicate
-                action = _copy_animation(original, duplicate, animation_policy)
-                if action:
-                    animation_records[duplicate.name] = action
+                if _copy_animation(original, duplicate, animation_policy):
+                    animated.append(duplicate)
                 if material_policy == "COPY":
                     _copy_materials(duplicate, material_map)
                 duplicate["blendermcp_liquid_simulation_id"] = simulation_id
@@ -744,20 +756,25 @@ class LiquidDeliveryHandlers:
                 for duplicate, object_uuid in variant_uuids.items()
             ],
         )
+        variant_objects = [(variant, "DOMAIN"), *[(mapping[original], role) for original, role, _c in dependencies]]
+        # The flows, effectors and forces a domain gathers can be many: they are counted by role, and
+        # the caller acts next on the variant domain (and on the source, when that is disabled).
         return {
-            "changed_objects": [item.name for item in mapping.values()]
-            + ([source.name] if disabled == source.name else []),
+            "changed_objects": [variant.name, *([source.name] if disabled == source.name else [])],
             "source_domain": source.name,
             "variant_domain": variant.name,
             "variant_modifier": variant_modifier.name,
             "variant_collection": collection.name,
             "simulation_id": simulation_id,
             "variant_domain_uuid": variant_uuid,
-            "variant_object_uuids": {duplicate.name: value for duplicate, value in variant_uuids.items()},
             "manifest_registered": manifest is not None,
-            "object_mapping": {original.name: duplicate.name for original, duplicate in mapping.items()},
+            "variant_objects": _role_page(variant_objects),
             "role_collections": {role: item.name for role, item in role_collections.items()},
-            "animation_actions": animation_records,
+            "animation_actions": counted_page(
+                list(dict.fromkeys(duplicate.animation_data.action for duplicate in animated)),
+                type_of=lambda action: action.id_type,
+                name_of=lambda action: action.name,
+            ),
             "policies": {
                 "mesh_data": mesh_data_policy,
                 "materials": material_policy,

@@ -7,7 +7,7 @@ from pydantic import Field
 
 from ..app import mcp
 from ._dispatch import send_blender_command
-from .envelope import ok
+from .envelope import envelope_for, ok
 
 BooleanMode = Literal["UNION", "DIFFERENCE", "INTERSECT"]
 LodMode = Literal["HIGH", "LOW"]
@@ -24,12 +24,14 @@ def _nd_outcome(
     changed_resources: list[str] | None = None,
 ) -> dict:
     """
-    Build the tool envelope for an ND operator result, gating success and
-    changed_objects/changed_resources on the handler's `cancelled` flag instead of
-    optimistically reporting the objects/resources the tool targeted.
+    Build the tool envelope for an ND operator result, gated on the handler's `cancelled` flag.
+
+    A cancelled operator changed nothing, so it reports ok:false and no changed objects or
+    resources, instead of optimistically reporting the ones the tool targeted.
 
     Args:
-        result: The raw dict returned by the Blender-side ND handler.
+        result: The raw dict returned by the Blender-side ND handler. Change lists it names
+            itself replace the two below, as `envelope_for` lifts them.
         changed_objects: Object names to report as changed when the operator was not cancelled.
         changed_resources: Non-object datablock names (e.g. materials) to report as changed when
             the operator was not cancelled.
@@ -39,8 +41,9 @@ def _nd_outcome(
 
     """
     if isinstance(result, dict) and result.get("cancelled"):
-        return ok(result, success=False, changed_objects=[], warnings=[_CANCELLED_WARNING])
-    return ok(result, changed_objects=changed_objects, changed_resources=changed_resources)
+        unchanged = {key: value for key, value in result.items() if key not in {"changed_objects", "changed_resources"}}
+        return ok(unchanged, success=False, changed_objects=[], warnings=[_CANCELLED_WARNING])
+    return envelope_for(result, changed_objects=changed_objects or (), changed_resources=changed_resources or ())
 
 
 @mcp.tool()
@@ -146,16 +149,16 @@ async def nd_clean_utils(ctx: Context, confirm: bool = False) -> dict:
         confirm: Must be True to run - this is scene-wide and destructive with no way to scope or preview it.
 
     Returns:
-        "removed_objects" (names of deleted ND utility objects, also reported in changed_objects) and
-        "removed_modifiers" (each as {"object", "modifier", "type"}).
+        "removed_objects" (deleted ND utility objects: total, by_type, up to 10 names) and
+        "removed_modifiers" (total, by_type, up to 10 {"object", "modifier", "type"} records).
+        changed_objects names the objects that lost a modifier.
 
     Raises:
         ToolError: If the operation cannot be completed.
 
     """
     result = await send_blender_command("nd_clean_utils", {"confirm": confirm})
-    removed = result.get("removed_objects", []) if isinstance(result, dict) else []
-    return _nd_outcome(result, changed_objects=removed)
+    return _nd_outcome(result)
 
 
 @mcp.tool()

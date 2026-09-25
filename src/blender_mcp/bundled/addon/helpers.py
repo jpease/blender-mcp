@@ -1,5 +1,7 @@
 import contextlib
 
+from collections.abc import Callable, Iterable, Sequence
+
 import bmesh
 import bpy
 import mathutils
@@ -12,6 +14,11 @@ from . import ADDON_ID
 # cannot import from here: the two pairs must agree.
 MIN_FRAME = -1_048_574
 MAX_FRAME = 1_048_574
+
+# A reply that could list every object or datablock it touched states the exact count and
+# the counts by type beside at most this many names; `detail`, where a tool takes it, asks
+# for records instead. Every record costs the agent's context for the rest of the session.
+MAX_LISTED_NAMES = 10
 
 
 def runtime_enum_item_name(owner, property_name, identifier):
@@ -517,6 +524,94 @@ def page_records(records, offset, limit, max_limit, *, key="records"):
         "next_offset": next_offset,
         key: records[start:end],
     }
+
+
+def count_by_type(type_names: Iterable[str]) -> dict[str, int]:
+    """
+    Count how many items carry each type name, so a reply can state what is there.
+
+    Args:
+        type_names: One type name per item - an object's `type`, a datablock's `id_type`,
+            or the `bpy.data` collection a removed datablock belonged to.
+
+    Returns:
+        dict[str, int]: Type name -> count, sorted by name so the reply is stable.
+
+    """
+    counts: dict[str, int] = {}
+    for name in type_names:
+        counts[name] = counts.get(name, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def record_page(
+    key: str, items: Sequence[object], describe: Callable[[object], object], limit: int
+) -> dict[str, object]:
+    """
+    Publish one bounded page of a sub-list, without the resume offset no command accepts.
+
+    The sub-lists this pages - a library's datablocks, the objects a call removed - belong
+    to commands that take no offset for them, so a `next_offset` here would name a parameter
+    every one of them rejects. The exact `total` sits beside the page and `detail` is the
+    other view; a caller that needs the rest narrows the request instead of resuming.
+
+    Args:
+        key: The page's result key.
+        items: Every item; only the first `limit` are described.
+        describe: Turns one item into its entry.
+        limit: Entries this page may carry.
+
+    Returns:
+        dict[str, object]: `limit`, `returned_count`, `truncated`, and `<key>`.
+
+    """
+    _start, end, truncated, _next_offset = paginate(len(items), 0, limit, limit)
+    shown = items[:end]
+    return {
+        "limit": limit,
+        "returned_count": len(shown),
+        "truncated": truncated,
+        key: [describe(item) for item in shown],
+    }
+
+
+def counted_page(
+    items: Sequence[object],
+    *,
+    type_of: Callable[[object], str],
+    name_of: Callable[[object], str],
+    describe: Callable[[object], object] | None = None,
+    limit: int = MAX_LISTED_NAMES,
+    detail: bool = False,
+) -> dict[str, object]:
+    """
+    Count a list by type and page it: a sample of names by default, records under `detail`.
+
+    Args:
+        items: Every item; the exact count is published whatever the page holds.
+        type_of: The type name `by_type` counts one item under.
+        name_of: The name one item is listed by.
+        describe: Turns one item into its record; required under `detail`.
+        limit: Entries the record page may carry under `detail`.
+        detail: Page records instead of names.
+
+    Returns:
+        dict[str, object]: `total`, `by_type`, and one `record_page`: up to
+        `MAX_LISTED_NAMES` `names`, or up to `limit` `records` under `detail`.
+
+    Raises:
+        ValueError: When `detail` is asked for without `describe`.
+
+    """
+    counted: dict[str, object] = {
+        "total": len(items),
+        "by_type": count_by_type(type_of(item) for item in items),
+    }
+    if not detail:
+        return {**counted, **record_page("names", items, name_of, MAX_LISTED_NAMES)}
+    if describe is None:
+        raise ValueError("counted_page needs describe to page records under detail")
+    return {**counted, **record_page("records", items, describe, limit)}
 
 
 def mesh_counts(obj):

@@ -47,7 +47,7 @@ SET_COLLECTION = "Canon Set"
 SET_ROOT = "SetRoot"
 SET_LAMP = "SetLamp"
 SET_PROPS = 120
-# `MAX_LISTED_NAMES` in handlers/linking.py.
+# `MAX_LISTED_NAMES` in bundled/addon/helpers.py.
 NAME_SAMPLE = 10
 
 

@@ -144,6 +144,9 @@ async def duplicate_liquid_setup_variant(
 
     Flow, effector, force, and guide dependencies discovered from the domain are duplicated. One domain
     is explicitly disabled so overlapping variants cannot evaluate together accidentally.
+    changed_objects names the variant domain (and the source, when its domain is disabled);
+    `variant_objects` counts every duplicate by liquid role and `animation_actions` the actions
+    they use (`total`, `by_type`, up to 10 `names`). A duplicate is named ``<source> <name_suffix>``.
     """
     return await call_blender(
         "duplicate_liquid_setup_variant",
@@ -159,7 +162,6 @@ async def duplicate_liquid_setup_variant(
             "animation_policy": animation_policy,
             "activation_policy": activation_policy,
         },
-        changed_objects=[source_domain_object_name],
     )
 
 

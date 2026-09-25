@@ -386,9 +386,7 @@ async def manage_scene_collections(
 ) -> dict:
     """Manage explicit scene collections without relying on selection or active context."""
     return await call_blender(
-        "manage_scene_collections",
-        {key: value for key, value in locals().items() if key != "ctx"},
-        changed_objects=object_names,
+        "manage_scene_collections", {key: value for key, value in locals().items() if key != "ctx"}
     )
 
 
@@ -564,5 +562,4 @@ async def remove_scene_objects(
             "confirm_remove": confirm_remove,
             "confirm_override_removal": confirm_override_removal,
         },
-        changed_objects=object_names or [],
     )

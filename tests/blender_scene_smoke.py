@@ -272,12 +272,14 @@ def main() -> None:
         ["Scene Smoke Curve", "Scene Smoke Points", "Scene Smoke Hair", "Scene Smoke Grease Pencil"],
         confirm_remove=True,
     )
-    assert set(removed["removed"]) == {
+    assert set(removed["removed"]["names"]) == {
         "Scene Smoke Curve",
         "Scene Smoke Points",
         "Scene Smoke Hair",
         "Scene Smoke Grease Pencil",
     }
+    assert removed["removed"]["by_type"] == {"CURVES": 1, "GREASEPENCIL": 1, "POINTCLOUD": 1, "CURVE": 1}
+    assert removed["changed_objects"] == []
 
     triangle_name = obj.name
     remaining_objects = sorted(o.name for o in bpy.context.scene.objects)
@@ -285,7 +287,9 @@ def main() -> None:
 
     reset = handler.reset_scene(confirm_reset=True)
     assert reset["scene"] == bpy.context.scene.name
-    assert set(reset["unlinked_objects"]) >= {triangle_name, "Scene Smoke Copy"}
+    assert reset["unlinked_objects"]["total"] == len(remaining_objects)
+    assert set(reset["unlinked_objects"]["names"]) >= {triangle_name, "Scene Smoke Copy"}
+    assert (reset["changed_objects"], reset["changed_resources"]) == ([], [bpy.context.scene.name])
     assert list(bpy.context.scene.objects) == []
     assert list(bpy.context.scene.collection.children) == []
     assert reset["purged_datablock_count"] > 0

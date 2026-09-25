@@ -230,6 +230,10 @@ assert decimated["role"] == "FLOW"
 assert supplied["created_proxy"] is False
 assert variant["cache_directory_resolved"] != delivery_domain["cache_directory_resolved"]
 assert variant["disabled_domain"] == "Delivery Domain Preview"
+assert variant["changed_objects"] == ["Delivery Domain Preview"]
+assert variant["variant_objects"]["by_type"]["DOMAIN"] == 1
+assert "Delivery Domain Preview" in variant["variant_objects"]["names"]
+assert variant["variant_objects"]["total"] == len(bpy.data.collections["Delivery Variant"].all_objects)
 assert performance["claims"]["exact_peak_memory"] is None
 assert performance["measured_evaluation"]["performed"] is False
 

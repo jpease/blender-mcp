@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+import types
 
 import pytest
 
@@ -10,7 +11,7 @@ from pydantic import ValidationError
 
 from blender_mcp.server.tools import _dispatch, character_rigging
 
-from .rig_doubles import _Action, _FCurve, _head_rig
+from .rig_doubles import _Action, _FCurve, _head_rig, _SceneObjects
 
 
 def _run(function, **kwargs):
@@ -310,3 +311,65 @@ def test_ensure_keys_into_an_existing_action_where_create_refuses_it(monkeypatch
     assert actions["CHAR1_sh030_pose"] is existing
     with pytest.raises(ValueError, match="Action already exists"):
         server.keyframe_character_pose("CHAR1_rig", "CHAR1_sh030_pose", 2.0, list(_POSE), action_policy="CREATE")
+
+
+class _BoneCollections(list):
+    """`Armature.collections_all`, doubling as `Armature.collections` for the root-level edits."""
+
+    def get(self, name, default=None):
+        return next((collection for collection in self if collection.name == name), default)
+
+    def new(self, name):
+        collection = types.SimpleNamespace(
+            name=name,
+            parent=None,
+            index=len(self),
+            child_number=len(self),
+            is_visible=True,
+            is_visible_effectively=True,
+            is_solo=False,
+            bones=[],
+        )
+        self.append(collection)
+        return collection
+
+
+class _ArmatureData:
+    """The armature datablock a rest-data edit copies, edits, and swaps onto every user."""
+
+    is_editable = True
+
+    def __init__(self, name):
+        self.name = name
+        self.bones = []
+        self.collections_all = _BoneCollections()
+        self.collections = self.collections_all
+
+    def copy(self):
+        return _ArmatureData(self.name)
+
+
+def test_a_rest_edit_on_widely_shared_armature_data_counts_its_users_and_names_only_the_rig(monkeypatch) -> None:
+    """A dozen rigs sharing one armature are counted and sampled; the rig the caller named is the change."""
+    shared = _ArmatureData("Crowd Skeleton")
+    rigs = [types.SimpleNamespace(name=f"Crowd_{index:02d}", type="ARMATURE", data=shared) for index in range(12)]
+    body = types.SimpleNamespace(name="Body", type="MESH", data=types.SimpleNamespace(name="Body Mesh"))
+    objects = _SceneObjects({obj.name: obj for obj in [*reversed(rigs), body]})
+    armatures = types.SimpleNamespace(remove=lambda _datablock, do_unlink=False: None)
+    addon, _bpy = load_addon(monkeypatch, data={"objects": objects, "armatures": armatures})
+
+    result = addon.BlenderMCPServer().manage_bone_collections("Crowd_07", [{"operation": "CREATE", "name": "MCH"}])
+
+    edited = rigs[7].data
+    assert edited is not shared
+    assert all(rig.data is edited for rig in rigs)
+    assert result["data_users_changed"] == {
+        "total": 12,
+        "by_type": {"ARMATURE": 12},
+        "limit": 10,
+        "returned_count": 10,
+        "truncated": True,
+        "names": [f"Crowd_{index:02d}" for index in range(10)],
+    }
+    assert result["changed_objects"] == ["Crowd_07"]
+    assert result["changed_resources"] == ["Crowd Skeleton"]

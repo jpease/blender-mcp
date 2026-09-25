@@ -155,6 +155,10 @@ cache_bake = handler.manage_rigid_body_cache(
     max_frame_steps=10,
 )
 assert cache_bake["point_cache_after"]["is_baked"] is True
+simulated = [obj for obj in scene.objects if obj.rigid_body is not None]
+assert cache_bake["changed_objects"] == []
+assert cache_bake["simulated_objects"]["total"] == len(simulated)
+assert cache_bake["simulated_objects"]["names"] == [obj.name for obj in simulated][:10]
 cache_free = handler.manage_rigid_body_cache(
     scene.name,
     action="FREE",
@@ -193,7 +197,7 @@ removed_constraint = handler.remove_rigid_body_components(
     "CONSTRAINT_SETTINGS",
     object_names=[constraint_name],
 )
-assert removed_constraint["removed"] == [constraint_name]
+assert removed_constraint["removed"]["names"] == [constraint_name]
 removed_body = handler.remove_rigid_body_components(
     scene.name,
     "BODY_SETTINGS",
@@ -206,13 +210,14 @@ removed_helper = handler.remove_rigid_body_components(
     object_names=["Simulation Wind"],
     confirm_destructive=True,
 )
-assert removed_helper["removed"] == ["Simulation Wind"]
+assert removed_helper["removed"]["names"] == ["Simulation Wind"]
+assert removed_helper["removed"]["total"] == 1 and removed_helper["changed_objects"] == []
 removed_world = handler.remove_rigid_body_components(
     scene.name,
     "WORLD",
     confirm_destructive=True,
 )
-assert removed_world["removed"] == [scene.name]
+assert removed_world["removed"]["names"] == [scene.name]
 
 json.dumps(
     [

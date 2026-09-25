@@ -25,18 +25,22 @@ _URL = "https://dl.polyhaven.org/file/ph-assets/Models/blend/1k/chair/chair_1k.b
 class _Loads:
     """Record `bpy.data.libraries.load` calls and append what they would import."""
 
-    def __init__(self, objects: list, *, error: Exception | None = None) -> None:
+    def __init__(
+        self, objects: list, *, error: Exception | None = None, imported: list[types.SimpleNamespace] | None = None
+    ) -> None:
         """
         Remember where imported objects go.
 
         Args:
             objects: The stub `bpy.data.objects` list.
             error: Raised from the load instead of importing, when given.
+            imported: The objects the file holds; one unparented `Chair` mesh when omitted.
 
         """
         self.calls: list[str] = []
         self._objects = objects
         self._error = error
+        self._imported = imported or [types.SimpleNamespace(name="Chair", session_uid=1, type="MESH", parent=None)]
 
     @contextlib.contextmanager
     def load(self, filepath: str, link: bool = False) -> Iterator[tuple[types.SimpleNamespace, types.SimpleNamespace]]:
@@ -57,12 +61,11 @@ class _Loads:
             raise self._error
         data_to = types.SimpleNamespace(objects=[])
         try:
-            yield types.SimpleNamespace(objects=["Chair"]), data_to
+            yield types.SimpleNamespace(objects=[obj.name for obj in self._imported]), data_to
         finally:
             # Blender reads the file when the block exits, so the import lands here.
-            imported = types.SimpleNamespace(name="Chair", session_uid=1)
-            data_to.objects = [imported]
-            self._objects.append(imported)
+            data_to.objects = list(self._imported)
+            self._objects.extend(self._imported)
 
 
 def _server(
@@ -71,6 +74,7 @@ def _server(
     *,
     link_to: Path | None = None,
     error: Exception | None = None,
+    imported: list[types.SimpleNamespace] | None = None,
 ) -> tuple[Any, _Loads]:
     """
     Build an addon server whose Poly Haven download writes a chosen file.
@@ -80,13 +84,14 @@ def _server(
         payload: Bytes the "download" writes, when not linking.
         link_to: Make the downloaded name a symlink to this file instead.
         error: Exception the library load raises, if any.
+        imported: The objects the downloaded file holds, as `_Loads` takes them.
 
     Returns:
         tuple: The server and the load recorder.
 
     """
     objects: list = []
-    loads = _Loads(objects, error=error)
+    loads = _Loads(objects, error=error, imported=imported)
     addon, bpy = load_addon(monkeypatch, data={"filepath": "", "objects": objects})
     bpy.data.libraries = types.SimpleNamespace(load=loads.load)
     bpy.context.collection = types.SimpleNamespace(objects=types.SimpleNamespace(link=lambda _obj: None))
@@ -118,8 +123,36 @@ def test_a_valid_downloaded_blend_is_still_imported(monkeypatch: pytest.MonkeyPa
     result = server.import_polyhaven_asset("chair", "models", file_format="blend")
 
     assert result.get("success") is True, result
-    assert result["imported_objects"] == ["Chair"]
+    assert result["imported_objects"]["names"] == ["Chair"]
+    assert result["changed_objects"] == ["Chair"]
     assert len(loads.calls) == 1
+
+
+def test_a_model_of_many_parts_is_counted_and_only_its_roots_are_changed_objects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rig root carrying fourteen parts, beside one loose part: a count, ten names, and the two roots."""
+    root = types.SimpleNamespace(name="Bench Root", session_uid=1, type="EMPTY", parent=None)
+    parts = [
+        types.SimpleNamespace(
+            name=f"Bench Part {index:02d}", session_uid=10 + index, type="EMPTY" if index > 11 else "MESH", parent=root
+        )
+        for index in range(14)
+    ]
+    loose = types.SimpleNamespace(name="Bench Shadow", session_uid=2, type="MESH", parent=None)
+    server, _loads = _server(monkeypatch, (FIXTURES / "empty_zstd.blend").read_bytes(), imported=[root, *parts, loose])
+
+    result = server.import_polyhaven_asset("bench", "models", file_format="blend")
+
+    assert result["imported_objects"] == {
+        "total": 16,
+        "by_type": {"EMPTY": 3, "MESH": 13},
+        "limit": 10,
+        "returned_count": 10,
+        "truncated": True,
+        "names": ["Bench Root", *(f"Bench Part {index:02d}" for index in range(9))],
+    }
+    assert result["changed_objects"] == ["Bench Root", "Bench Shadow"]
 
 
 def test_a_downloaded_blend_whose_header_is_not_a_blend_is_never_loaded(monkeypatch: pytest.MonkeyPatch) -> None:

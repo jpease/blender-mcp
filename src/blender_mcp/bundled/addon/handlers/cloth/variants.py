@@ -8,7 +8,7 @@ import uuid
 
 import bpy
 
-from ...helpers import sync_from_editmode
+from ...helpers import counted_page, sync_from_editmode
 from ..rna_patch import get_object
 from ._cache_helpers import _configure_independent_cache, _shared_cache_identity
 from ._deform_binding import _bind_deform_modifier, _unbind_deform_modifier
@@ -84,6 +84,26 @@ def _copy_mesh_materials(mesh):
         mesh.materials[index] = duplicate
         copied.append(duplicate)
     return copied
+
+
+def _object_page(objects):
+    """Count objects by type beside a page of their names, sorted so the page is stable."""
+    return counted_page(
+        sorted(objects, key=lambda obj: obj.name), type_of=lambda obj: obj.type, name_of=lambda obj: obj.name
+    )
+
+
+def _ownership_page(ownership):
+    """Count `(owner, record)` ownership pairs by role beside a page of their owners' names."""
+    return counted_page(ownership, type_of=_ownership_role, name_of=_ownership_owner)
+
+
+def _ownership_role(pair):
+    return pair[1]["role"]
+
+
+def _ownership_owner(pair):
+    return pair[0].name
 
 
 class ClothVariantHandlers:
@@ -189,7 +209,6 @@ class ClothVariantHandlers:
         copied_materials = []
         copied_actions = []
         ownership = []
-        source_map = {}
         simulation_id = uuid.uuid4().hex
         try:
             variant, data, materials, actions = _duplicate_object(
@@ -203,7 +222,6 @@ class ClothVariantHandlers:
             created.append((variant, data, materials, actions))
             copied_materials.extend(materials)
             copied_actions.extend(actions)
-            source_map[source.name] = variant.name
             for key in list(variant.keys()):
                 if key.startswith(_OWNERSHIP_PREFIX):
                     del variant[key]
@@ -261,7 +279,6 @@ class ClothVariantHandlers:
                         if key.startswith(_OWNERSHIP_PREFIX):
                             del duplicate[key]
                     duplicate_map[original.name] = duplicate
-                    source_map[original.name] = duplicate.name
                 return collection
 
             collider_collection = duplicate_group(colliders, "Colliders") if collider_policy == "DUPLICATE" else None
@@ -317,23 +334,25 @@ class ClothVariantHandlers:
             for modifier in variant.modifiers
             if modifier.type == "CLOTH"
         ]
+        copied_datablocks = [
+            *[data for _obj, data, _materials, _actions in created if data is not None],
+            *copied_materials,
+            *copied_actions,
+        ]
+        # A variant duplicates its whole setup, so the copies are counted, not listed: the caller
+        # acts next on the variant object and its collections.
         return {
-            "changed_objects": sorted(source_map.values()),
-            "changed_resources": list(
-                dict.fromkeys(
-                    [
-                        *[collection.name for collection in created_collections],
-                        *[data.name for _obj, data, _materials, _actions in created if data is not None],
-                        *[material.name for material in copied_materials],
-                        *[action.name for action in copied_actions],
-                    ]
-                )
-            ),
+            "changed_objects": [variant.name],
+            "changed_resources": [collection.name for collection in created_collections],
             "source_object": source.name,
             "variant_object": variant.name,
             "variant_collection": root_collection.name,
             "simulation_id": simulation_id,
-            "source_to_variant": source_map,
+            "copied_datablocks": counted_page(
+                list(dict.fromkeys(copied_datablocks)),
+                type_of=lambda datablock: datablock.id_type,
+                name_of=lambda datablock: datablock.name,
+            ),
             "policies": {
                 "mesh_data": mesh_data_policy,
                 "materials": material_policy,
@@ -343,9 +362,9 @@ class ClothVariantHandlers:
                 "render_surfaces": render_surface_policy,
             },
             "dependencies": {
-                "colliders": sorted(colliders),
-                "force_fields": sorted(effectors),
-                "render_surfaces": sorted(render_surfaces),
+                "colliders": _object_page(colliders.values()),
+                "force_fields": _object_page(effectors.values()),
+                "render_surfaces": _object_page(render_surfaces.values()),
                 "unremapped_attachment_targets": sorted(
                     {
                         target.name
@@ -359,7 +378,7 @@ class ClothVariantHandlers:
             "point_caches": caches,
             "mesh_data_shared": variant.data == source.data,
             "shape_keys_shared": getattr(variant.data, "shape_keys", None) == getattr(source.data, "shape_keys", None),
-            "ownership": [record for _owner, record in ownership],
+            "ownership": _ownership_page(ownership),
             "warnings": ["Shared dependencies remain intentionally coupled to the source setup."]
             if "SHARE" in {collider_policy, force_field_policy, animation_policy, mesh_data_policy}
             else [],

@@ -679,6 +679,151 @@ def test_variant_requires_explicit_dependency_policies(monkeypatch) -> None:
     assert params["render_surface_policy"] == "DUPLICATE"
 
 
+class _Links(list):
+    """A collection's `objects`/`children`: linkable, and `in` tests a name as Blender's does."""
+
+    def link(self, item) -> None:
+        self.append(item)
+
+    def __contains__(self, name) -> bool:
+        return any(item.name == name for item in self)
+
+
+class _Collection:
+    def __init__(self, name, objects=()) -> None:
+        self.name = name
+        self.children = _Links()
+        self.objects = _Links(objects)
+        self.all_objects = self.objects
+
+
+class _Mesh:
+    id_type = "MESH"
+
+    def __init__(self, name) -> None:
+        self.name = name
+
+    def copy(self):
+        return _Mesh(f"{self.name}.001")
+
+
+class _Modifier:
+    def __init__(self, modifier_type, collision_collection=None, effector_collection=None) -> None:
+        self.name = modifier_type.title()
+        self.type = modifier_type
+        self.point_cache = types.SimpleNamespace(is_baked=False, is_baking=False)
+        self.collision_settings = types.SimpleNamespace(collection=collision_collection)
+        self.settings = types.SimpleNamespace(effector_weights=types.SimpleNamespace(collection=effector_collection))
+
+    def copy(self):
+        return _Modifier(self.type, self.collision_settings.collection, self.settings.effector_weights.collection)
+
+
+class _Modifiers(list):
+    def get(self, name):
+        return next((modifier for modifier in self if modifier.name == name), None)
+
+
+class _ClothSceneObject:
+    """An object with custom properties, modifiers and `copy()`, compared by identity as Blender IDs are."""
+
+    def __init__(self, name, object_type="MESH", modifiers=(), data=None, field=None) -> None:
+        self.name = name
+        self.type = object_type
+        self.modifiers = _Modifiers(modifiers)
+        self.data = data
+        self.field = field
+        self.animation_data = None
+        self._properties = {}
+
+    def copy(self):
+        duplicate = _ClothSceneObject(
+            self.name, self.type, [modifier.copy() for modifier in self.modifiers], self.data, self.field
+        )
+        duplicate._properties = dict(self._properties)
+        return duplicate
+
+    def keys(self):
+        return self._properties.keys()
+
+    def __setitem__(self, key, value) -> None:
+        self._properties[key] = value
+
+    def __delitem__(self, key) -> None:
+        del self._properties[key]
+
+
+def test_a_cloth_variant_counts_its_setup_and_names_the_variant(monkeypatch) -> None:
+    """57 duplicated dependencies are counted by type and role; changed_objects names the variant alone."""
+    colliders = [
+        _ClothSceneObject(
+            f"Collider {index:02d}", modifiers=[_Modifier("COLLISION")], data=_Mesh(f"Collider {index:02d}")
+        )
+        for index in range(50)
+    ]
+    effectors = [
+        _ClothSceneObject(f"Wind {index}", "EMPTY", field=types.SimpleNamespace(type="WIND")) for index in range(7)
+    ]
+    cloth_modifier = _Modifier("CLOTH", _Collection("Colliders", colliders), _Collection("Effectors", effectors))
+    source = _ClothSceneObject("Cape", modifiers=[cloth_modifier], data=_Mesh("Cape"))
+    created_collections = []
+
+    def new_collection(name):
+        created_collections.append(_Collection(name))
+        return created_collections[-1]
+
+    existing = {obj.name: obj for obj in [source, *colliders, *effectors]}
+    addon, _bpy = load_addon(
+        monkeypatch,
+        data={
+            "objects": types.SimpleNamespace(get=existing.get),
+            "collections": types.SimpleNamespace(get=lambda _name: None, new=new_collection),
+        },
+    )
+    variants = sys.modules[f"{addon.__name__}.handlers.cloth.variants"]
+    scene = types.SimpleNamespace(collection=_Collection("Scene Collection"), objects=list(existing.values()))
+    monkeypatch.setattr(variants, "get_object", lambda _name, _types: source)
+    monkeypatch.setattr(variants, "sync_from_editmode", lambda _obj: None)
+    monkeypatch.setattr(
+        variants, "_scene_context_for_object", lambda _obj: (scene, types.SimpleNamespace(update=lambda: None))
+    )
+    monkeypatch.setattr(variants, "_configure_independent_cache", lambda *_args: None)
+    monkeypatch.setattr(variants, "_shared_cache_identity", lambda _cache: None)
+    monkeypatch.setattr(variants, "_cache_info", lambda _cache: {})
+
+    reply = variants.ClothVariantHandlers().duplicate_cloth_setup_variant(
+        "Cape", "Cape Final", "Cape Final Setup", " Final", "COPY", "SHARE", "SHARE", "DUPLICATE", "DUPLICATE", "OMIT"
+    )
+
+    assert reply["changed_objects"] == ["Cape Final"]
+    assert reply["changed_resources"] == [
+        "Cape Final Setup",
+        "Cape Final Setup Colliders",
+        "Cape Final Setup Effectors",
+    ]
+    assert reply["dependencies"]["colliders"] == {
+        "total": 50,
+        "by_type": {"MESH": 50},
+        "limit": 10,
+        "returned_count": 10,
+        "truncated": True,
+        "names": [f"Collider {index:02d}" for index in range(10)],
+    }
+    assert reply["dependencies"]["force_fields"]["names"] == [f"Wind {index}" for index in range(7)]
+    assert reply["dependencies"]["force_fields"]["truncated"] is False
+    assert reply["ownership"] == {
+        "total": 58,
+        "by_type": {"cloth_variant": 1, "variant_collider": 50, "variant_effector": 7},
+        "limit": 10,
+        "returned_count": 10,
+        "truncated": True,
+        "names": ["Cape Final", *[f"Collider {index:02d} Final" for index in range(9)]],
+    }
+    assert reply["copied_datablocks"]["total"] == 51
+    assert reply["copied_datablocks"]["by_type"] == {"MESH": 51}
+    assert reply["copied_datablocks"]["returned_count"] == 10
+
+
 def test_render_surface_serializes_typed_modifier_patches(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(

@@ -5,6 +5,7 @@ from typing import Any
 
 import bpy
 
+from ...helpers import counted_page
 from ..node_graph import apply_graph_operation
 from ._shared import (
     add_interface_socket,
@@ -45,6 +46,24 @@ def atomic_group_edit(group, edit: Callable[[Any], Any]):
     bpy.data.node_groups.remove(group, do_unlink=True)
     working.name = original_name
     return working, result
+
+
+def _user_objects_page(users: list[dict[str, Any]]) -> dict[str, object]:
+    """
+    Count the objects whose modifiers run a node group, by type, beside a sample of their names.
+
+    Every one of them evaluates the edited group, but a shared group can drive any number of
+    objects and the caller's next call names the group, which `changed_resources` carries.
+
+    Args:
+        users: `group_users` records: one per modifier, so an object can appear more than once.
+
+    Returns:
+        dict[str, object]: A `counted_page` over the distinct user objects.
+
+    """
+    objects = [bpy.data.objects[name] for name in sorted({user["object"] for user in users})]
+    return counted_page(objects, type_of=lambda obj: obj.type, name_of=lambda obj: obj.name)
 
 
 def _apply_graph_operation(group, operation: dict[str, Any], name_map: dict[str, str]) -> None:
@@ -177,10 +196,9 @@ class GeometryNodesAuthoringHandlersMixin:
         return {
             "node_group": replacement.name,
             "changes": changes,
-            "affected_users": affected_users,
+            "affected_users": _user_objects_page(affected_users),
             "migration_policy": migration_policy,
             "changed_resources": [replacement.name],
-            "changed_objects": sorted({user["object"] for user in affected_users}),
         }
 
     def patch_geometry_node_graph(self, node_group_name, operations):
@@ -200,6 +218,6 @@ class GeometryNodesAuthoringHandlersMixin:
             "name_map": name_map,
             "node_count": len(replacement.nodes),
             "link_count": len(replacement.links),
+            "affected_users": _user_objects_page(users),
             "changed_resources": [replacement.name],
-            "changed_objects": sorted({user["object"] for user in users}),
         }

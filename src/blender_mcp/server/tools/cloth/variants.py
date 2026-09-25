@@ -36,6 +36,9 @@ async def duplicate_cloth_setup_variant(
     Vertex groups copy with the object. Shape keys follow ``mesh_data_policy``; material slots and
     actions follow their own policies. Collision/effector dependencies and render surfaces are
     discovered from the source setup, then either shared or duplicated as explicitly requested.
+    A duplicate is named ``<source><name_suffix>``. changed_objects names the variant object and
+    changed_resources its collections; `dependencies`, `ownership` and `copied_datablocks` count
+    the rest (`total`, `by_type`, up to 10 `names`).
     """
     return await call_blender(
         "duplicate_cloth_setup_variant",
@@ -52,5 +55,4 @@ async def duplicate_cloth_setup_variant(
             "render_surface_policy": render_surface_policy,
             "cache_directory": cache_directory,
         },
-        changed_objects=[source_object_name],
     )

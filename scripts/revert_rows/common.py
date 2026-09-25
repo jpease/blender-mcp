@@ -114,6 +114,22 @@ ADDON_RNA_PATCH = ROOT / "src/blender_mcp/bundled/addon/handlers/rna_patch.py"
 ADDON_SIMULATION_CACHE = ROOT / "src/blender_mcp/bundled/addon/handlers/simulation_cache.py"
 ADDON_LIQUID_INSPECTION = ROOT / "src/blender_mcp/bundled/addon/handlers/liquid/inspection_and_setup.py"
 ADDON_RIGID_BODY_INSPECTION = ROOT / "src/blender_mcp/bundled/addon/handlers/rigid_body/inspection_and_setup.py"
+# The simulation handlers whose reply could name every body, helper or duplicated member of a
+# setup, and now counts them beside the one object or scene the caller acts on next.
+ADDON_RIGID_BODY_SIMULATION = ROOT / "src/blender_mcp/bundled/addon/handlers/rigid_body/simulation.py"
+ADDON_RIGID_BODY_LIFECYCLE = ROOT / "src/blender_mcp/bundled/addon/handlers/rigid_body/lifecycle.py"
+ADDON_CLOTH_VARIANTS = ROOT / "src/blender_mcp/bundled/addon/handlers/cloth/variants.py"
+ADDON_LIQUID_DELIVERY = ROOT / "src/blender_mcp/bundled/addon/handlers/liquid/delivery.py"
+# The three handlers whose edit reaches every object sharing one datablock - an armature, a
+# light, a Geometry Nodes group - and counts those users instead of naming each as changed.
+ADDON_CR_STRUCTURE = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/structure.py"
+ADDON_LIGHTING_CONSTRUCTION = ROOT / "src/blender_mcp/bundled/addon/handlers/lighting/construction.py"
+ADDON_GN_AUTHORING = ROOT / "src/blender_mcp/bundled/addon/handlers/geometry_nodes/authoring.py"
+# The ND cleanup handler and the ND and Poly Haven tool wrappers, whose replies could name every
+# object a scene-wide cleanup or a model import touched, and now count them.
+ADDON_ND = ROOT / "src/blender_mcp/bundled/addon/handlers/nd.py"
+SERVER_ND_TOOL = ROOT / "src/blender_mcp/server/tools/nd.py"
+SERVER_POLYHAVEN_TOOL = ROOT / "src/blender_mcp/server/tools/polyhaven.py"
 
 # Short names for the test files rows cite. Node ids carry parameter text
 # verbatim, so the rows would otherwise be unreadably long lines.
@@ -184,6 +200,11 @@ DISPT = "tests/server/tools/test_dispatch.py"
 RNAPT = "tests/test_rna_patch.py"
 LIQUIDT = "tests/server/tools/liquid/test_tools.py"
 RBWT = "tests/server/tools/rigid_body/test_workflows.py"
+CLOTHT = "tests/server/tools/cloth/test_tools.py"
+GNT = "tests/server/tools/geometry_nodes/test_tools.py"
+NDSTATUST = "tests/server/tools/test_nd_status.py"
+NDOUTT = "tests/server/tools/test_nd_outcome.py"
+SRVPHT = "tests/server/tools/test_polyhaven.py"
 HOSTILE_LIB = f"{SESSIONT}::test_a_hostile_library_path_is_reduced_the_same_way_a_failure_note_is"
 # The `name` half of the same table, with short ids so a row can list its nodes; the
 # `filepath` half's ids run to hundreds of characters.

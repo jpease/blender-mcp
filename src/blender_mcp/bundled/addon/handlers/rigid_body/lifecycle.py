@@ -3,7 +3,7 @@
 
 import bpy
 
-from ...helpers import preserve_mode_and_selection, set_active
+from ...helpers import counted_page, preserve_mode_and_selection, set_active
 from .inspection_and_setup import (
     _add_rigid_body,
     _body_snapshot,
@@ -14,6 +14,15 @@ from .inspection_and_setup import (
     _scene,
     _view_layer_for,
 )
+
+
+def _removed_page(items, type_of):
+    """Count what a removal took away by type, beside a page of its names."""
+    return counted_page(items, type_of=type_of, name_of=lambda item: item.name)
+
+
+def _object_type(obj):
+    return obj.type
 
 
 def _remove_constraint(scene, obj):
@@ -57,11 +66,12 @@ class RigidBodyLifecycleHandlers:
             _require_finished(result, "bpy.ops.rigidbody.world_remove")
             if scene.rigidbody_world is not None:
                 raise RuntimeError("Rigid-body world remains after world_remove reported FINISHED")
+            # Nothing removed is a next target: `removed` names the scene whose world went.
             return {
                 "changed_objects": [],
                 "changed_resources": [scene.name],
                 "component_type": component_type,
-                "removed": [scene.name],
+                "removed": _removed_page([scene], lambda _scene: "RIGIDBODY_WORLD"),
                 "cache_before": cache_before,
                 "undo_recoverable": True,
             }
@@ -81,11 +91,12 @@ class RigidBodyLifecycleHandlers:
                 raise ValueError(f"Objects are missing or not tagged rigid-body helpers: {missing}")
             if not candidates:
                 raise ValueError("No tagged rigid-body helpers matched the requested scope")
-            removed = [obj.name for obj in candidates]
+            # A rig's helpers can be many and are gone: counted in `removed`, none to act on next.
+            removed = _removed_page(candidates, _object_type)
             for obj in candidates:
                 bpy.data.objects.remove(obj, do_unlink=True)
             return {
-                "changed_objects": removed,
+                "changed_objects": [],
                 "component_type": component_type,
                 "removed": removed,
                 "rig_id": rig_id,
@@ -154,9 +165,9 @@ class RigidBodyLifecycleHandlers:
                     _restore_fields(obj.rigid_body_constraint, snapshot)
             raise
         return {
-            "changed_objects": removed,
+            "changed_objects": [],
             "component_type": component_type,
-            "removed": removed,
+            "removed": _removed_page(objects, _object_type),
             "mesh_objects_retained": component_type == "BODY_SETTINGS",
             "cache_before": cache_before,
             "cache_freed": bool(cache_before and cache_before["is_baked"]),

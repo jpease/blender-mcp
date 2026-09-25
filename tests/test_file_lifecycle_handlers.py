@@ -593,7 +593,7 @@ def test_open_shot_reports_the_new_session_and_asks_for_a_rehandshake(
     # name. Reporting the second under the first had two tools disagreeing by the linked set.
     assert result["object_count"] == len(bpy.context.scene.objects) == 1
     assert result["datablock_object_count"] == len(bpy.data.objects) == 2
-    assert result["libraries"] == []
+    assert (result["libraries"]["total"], result["libraries"]["records"]) == (0, [])
     assert result["capabilities_changed"] is False
     assert result["rehandshake_required"] is True
     assert result["discarded_unsaved_changes"] is False

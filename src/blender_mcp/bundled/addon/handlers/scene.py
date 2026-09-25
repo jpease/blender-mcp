@@ -10,9 +10,11 @@ import mathutils
 
 from ..helpers import (
     MAX_FRAME,
+    MAX_LISTED_NAMES,
     MIN_FRAME,
     apply_modifier,
     bounded_int,
+    counted_page,
     modifier_result,
     paginate,
     rotation_as_native_list,
@@ -1224,12 +1226,13 @@ class SceneHandlersMixin:
             return {"removed": collection_name, "changed_resources": [collection_name]}
         elif action != "CREATE":
             raise ValueError(f"Unsupported collection action: {action}")
+        # The collection is what the caller acts on next; its members, however many, are counted.
         return {
             "name": collection.name,
-            "objects": [obj.name for obj in collection.objects],
+            "objects": _counted_objects(list(collection.objects)),
             "hide_viewport": collection.hide_viewport,
             "hide_render": collection.hide_render,
-            "changed_objects": [obj.name for obj in objects],
+            "changed_objects": [],
             "changed_resources": [collection.name],
         }
 
@@ -1459,7 +1462,7 @@ class SceneHandlersMixin:
             raise ValueError(
                 "Deleting a library-override object does not survive Blender's own liboverride "
                 "resync and will be recreated the next time this file is opened. Overrides: "
-                f"{override_names}. Pass confirm_override_removal=True to delete them anyway, or "
+                f"{_name_sample(override_names)}. Pass confirm_override_removal=True to delete them anyway, or "
                 "call set_object_visibility(hide_render=True, hide_viewport=True) instead, which "
                 "changes a property rather than removing the ID and survives the resync."
             )
@@ -1477,30 +1480,43 @@ class SceneHandlersMixin:
             }
             for obj in objects
         }
+        # Counted while the objects still exist: a removed object's type and name read nothing.
+        removed = _counted_objects(objects)
+        sampled = [obj.name for obj in objects[:MAX_LISTED_NAMES]]
         for obj in objects:
             bpy.data.objects.remove(obj, do_unlink=True)
-        retained = []
+        # Keyed by datablock: a rig's members sharing one material retain it once, not once each.
+        retained = {}
         for dependency in dependencies.values():
             data_name = dependency["data"]
             if data_name and dependency["data_users_before"] and dependency["data_users_before"] > 1:
-                retained.append({"kind": "OBJECT_DATA", "name": data_name, "reason": "shared users remain"})
+                retained["OBJECT_DATA", data_name] = {
+                    "kind": "OBJECT_DATA",
+                    "name": data_name,
+                    "reason": "shared users remain",
+                }
             for material in dependency["materials"]:
                 if material["users_before"] > 1:
-                    retained.append({"kind": "MATERIAL", "name": material["name"], "reason": "shared users remain"})
+                    retained["MATERIAL", material["name"]] = {
+                        "kind": "MATERIAL",
+                        "name": material["name"],
+                        "reason": "shared users remain",
+                    }
         warnings = []
         if override_names:
             warnings.append(
                 "Deleted library-override object(s) will be recreated by Blender's liboverride "
-                f"resync the next time this file is opened: {override_names}. Use "
+                f"resync the next time this file is opened: {_name_sample(override_names)}. Use "
                 "set_object_visibility to hide them durably instead of deleting them."
             )
+        # Nothing removed is left to act on, so no name is a next target: `removed` counts them.
         return {
-            "removed": object_names,
+            "removed": removed,
             "selector": selector,
-            "dependencies": dependencies,
-            "retained_shared_datablocks": retained,
+            "dependencies": {name: dependencies[name] for name in sampled},
+            "retained_shared_datablocks": list(retained.values()),
             "purged_datablocks": [],
-            "changed_objects": object_names,
+            "changed_objects": [],
             "warnings": warnings,
         }
 
@@ -1512,11 +1528,16 @@ class SceneHandlersMixin:
             raise ValueError(f"Scene not found: {scene_name}")
 
         master = scene.collection
-        unlinked_objects = sorted(obj.name for obj in scene.objects)
+        # Counted before anything is unlinked or purged: a purged object reads nothing.
+        unlinked_objects = _counted_objects(sorted(scene.objects, key=lambda obj: obj.name))
         for obj in list(master.objects):
             master.objects.unlink(obj)
 
-        unlinked_collections = sorted(child.name for child in master.children)
+        unlinked_collections = counted_page(
+            sorted(master.children, key=lambda child: child.name),
+            type_of=lambda _child: "COLLECTION",
+            name_of=lambda child: child.name,
+        )
         for child in list(master.children):
             master.children.unlink(child)
 
@@ -1524,13 +1545,14 @@ class SceneHandlersMixin:
         if purge_orphaned_data:
             purged_datablock_count = bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=False, do_recursive=True)
 
+        # The emptied scene is the next target; what left it is counted, not named in full.
         return {
             "scene": scene.name,
             "unlinked_objects": unlinked_objects,
             "unlinked_collections": unlinked_collections,
             "purged_datablock_count": purged_datablock_count,
-            "changed_objects": unlinked_objects,
-            "changed_resources": unlinked_collections,
+            "changed_objects": [],
+            "changed_resources": [scene.name],
         }
 
     def validate_scene(self, scene_name, scope=None, max_findings=300, offset=0):
@@ -1604,3 +1626,33 @@ def _base_counts(obj):
     if obj.type != "MESH":
         return None
     return {"vertices": len(obj.data.vertices), "edges": len(obj.data.edges), "polygons": len(obj.data.polygons)}
+
+
+def _counted_objects(objects):
+    """
+    Count objects by type beside a sample of their names.
+
+    Args:
+        objects: Every object the reply accounts for, in the order the sample should follow.
+
+    Returns:
+        dict: `helpers.counted_page` over the objects, typed by `Object.type`.
+
+    """
+    return counted_page(objects, type_of=lambda obj: obj.type, name_of=lambda obj: obj.name)
+
+
+def _name_sample(names):
+    """
+    Name at most `MAX_LISTED_NAMES` of `names` in a message, saying how many more there are.
+
+    Args:
+        names: Every name the message is about.
+
+    Returns:
+        str: The first names, comma-separated, and `(+N more)` when some were left out.
+
+    """
+    shown = ", ".join(names[:MAX_LISTED_NAMES])
+    extra = len(names) - MAX_LISTED_NAMES
+    return f"{shown} (+{extra} more)" if extra > 0 else shown

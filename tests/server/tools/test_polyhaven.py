@@ -4,11 +4,23 @@ from blender_mcp.server.tools import _dispatch, polyhaven
 from blender_mcp.server.tools.polyhaven import _polyhaven_changed
 
 
-def test_models_reports_imported_objects_as_changed_objects() -> None:
-    changed_objects, changed_resources = _polyhaven_changed("models", {"imported_objects": ["Chair", "Chair.001"]})
+def test_a_model_import_reports_the_roots_the_handler_named_not_every_imported_object(monkeypatch) -> None:
+    """The handler counts a model's parts and names its roots; the envelope carries only the roots."""
+    imported = {"total": 16, "by_type": {"EMPTY": 3, "MESH": 13}, "truncated": True, "names": ["Bench Root"]}
 
-    assert changed_objects == ["Chair", "Chair.001"]
-    assert changed_resources == []
+    class Connection:
+        def send_command(self, command, params):
+            assert command == "import_polyhaven_asset"
+            return {"success": True, "imported_objects": imported, "changed_objects": ["Bench Root", "Bench Shadow"]}
+
+    monkeypatch.setattr(_dispatch, "get_blender_connection", Connection)
+
+    result = asyncio.run(polyhaven.import_polyhaven_asset(ctx=None, asset_id="bench", asset_type="models"))
+
+    assert result["changed_objects"] == ["Bench Root", "Bench Shadow"]
+    assert result["changed_resources"] == []
+    assert result["data"]["imported_objects"] == imported
+    assert "changed_objects" not in result["data"]
 
 
 def test_textures_reports_material_and_maps_as_changed_resources() -> None:

@@ -9,6 +9,7 @@ Label prefixes: `get_addon_status:`, `linking:`, `server tools:`, `reply budget:
 """
 
 from .common import (
+    ADDON_HELPERS,
     ADDON_LIGHTING_INSPECTION,
     ADDON_LIGHTING_RENDERING,
     ADDON_LIGHTING_SHARED,
@@ -72,11 +73,11 @@ ROWS: list[Revert] = [
     # --- what a library links is counted by type; the names, then the records, are pages ---
     Revert(
         "linking: the datablock counts by type go away, leaving only how many there are",
-        ADDON_LINKING,
+        ADDON_HELPERS,
         (
             "    counted: dict[str, object] = {\n"
             '        "total": len(items),\n'
-            '        "by_type": summarize_type_counts(str(getattr(item, "id_type", "")) for item in items),\n'
+            '        "by_type": count_by_type(type_of(item) for item in items),\n'
             "    }\n"
         ),
         '    counted: dict[str, object] = {"total": len(items)}\n',
@@ -87,14 +88,14 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "linking: the type counts keep the order the datablocks arrived in, so one mix reads two ways",
-        ADDON_LINKING,
+        ADDON_HELPERS,
         "    return dict(sorted(counts.items()))",
         "    return counts",
         (f"{LKT}::test_type_counts_are_ordered_by_type_whatever_order_the_datablocks_arrived_in",),
     ),
     Revert(
         "linking: a bounded sub-list offers an offset to resume from, which every one of these commands rejects",
-        ADDON_LINKING,
+        ADDON_HELPERS,
         '        "limit": limit,\n        "returned_count": len(shown),',
         '        "limit": limit,\n        "offset": 0,\n        "next_offset": len(shown),\n'
         '        "returned_count": len(shown),',
@@ -105,9 +106,9 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "linking: the default datablock page carries the records, not the names",
-        ADDON_LINKING,
-        '    return {**counted, **_record_page("names", items, _display_name, MAX_LISTED_NAMES)}\n',
-        '    return {**counted, **_record_page("records", items, describe, limit)}\n',
+        ADDON_HELPERS,
+        '        return {**counted, **record_page("names", items, name_of, MAX_LISTED_NAMES)}\n',
+        '        return {**counted, **record_page("records", items, describe, limit)}\n',
         (
             f"{LKT}::test_a_reload_reports_what_it_replaced_by_type_without_the_records[reload_library]",
             f"{LKT}::test_a_reload_reports_what_it_replaced_by_type_without_the_records[relocate_library]",
@@ -115,14 +116,14 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "linking: detail is ignored, so a library's datablock records are unreachable",
-        ADDON_LINKING,
-        ('    if detail:\n        return {**counted, **_record_page("records", items, describe, limit)}\n'),
-        ('    if False:\n        return {**counted, **_record_page("records", items, describe, limit)}\n'),
+        ADDON_HELPERS,
+        '    if not detail:\n        return {**counted, **record_page("names", items, name_of, MAX_LISTED_NAMES)}\n',
+        '    if True:\n        return {**counted, **record_page("names", items, name_of, MAX_LISTED_NAMES)}\n',
         (f"{LKT}::test_list_libraries_lists_the_datablock_records_only_on_request",),
     ),
     Revert(
         "linking: the default name page grows to the record cap, so a listing is ten times its size",
-        ADDON_LINKING,
+        ADDON_HELPERS,
         "MAX_LISTED_NAMES = 10\n",
         "MAX_LISTED_NAMES = 100\n",
         (f"{LKT}::test_list_libraries_bounds_the_datablocks_it_lists_per_library",),
@@ -130,8 +131,8 @@ ROWS: list[Revert] = [
     Revert(
         "linking: an override's objects page carries records by default, not a sample of names",
         ADDON_LINKING,
-        "    listed = _counted_page(objects, _override_entry, MAX_LISTED_DATABLOCKS, detail=detail)",
-        "    listed = _counted_page(objects, _override_entry, MAX_LISTED_DATABLOCKS, detail=True)",
+        "        describe=_override_entry,\n        limit=MAX_LISTED_DATABLOCKS,\n        detail=detail,\n",
+        "        describe=_override_entry,\n        limit=MAX_LISTED_DATABLOCKS,\n        detail=True,\n",
         (f"{LKT}::test_create_override_counts_the_objects_it_made_with_a_sample_of_names",),
     ),
     Revert(
@@ -160,8 +161,10 @@ ROWS: list[Revert] = [
     Revert(
         "linking: link_canon_library ignores detail for the objects it instanced",
         ADDON_LINKING,
-        "_counted_page(brought_in, _linked_entry, MAX_LISTED_DATABLOCKS, detail=detail)",
-        "_counted_page(brought_in, _linked_entry, MAX_LISTED_DATABLOCKS, detail=False)",
+        "            brought_in,\n            type_of=_id_type,\n            name_of=_display_name,\n"
+        "            describe=_linked_entry,\n            limit=MAX_LISTED_DATABLOCKS,\n            detail=detail,\n",
+        "            brought_in,\n            type_of=_id_type,\n            name_of=_display_name,\n"
+        "            describe=_linked_entry,\n            limit=MAX_LISTED_DATABLOCKS,\n            detail=False,\n",
         (f"{LKT}::test_link_detail_pages_the_members_as_records",),
     ),
     Revert(

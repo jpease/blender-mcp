@@ -1803,14 +1803,14 @@ def test_type_counts_are_ordered_by_type_whatever_order_the_datablocks_arrived_i
 ) -> None:
     """`by_type` is read by an agent across replies, so two libraries holding the same mix must read the same."""
     server, _bpy, _world = _server(monkeypatch)
-    linking = _linking_module(server)
+    helpers = sys.modules[f"{type(server).__module__.rsplit('.', 1)[0]}.helpers"]
 
-    forward = linking.summarize_type_counts(["OBJECT", "MESH", "OBJECT", "COLLECTION"])
-    shuffled = linking.summarize_type_counts(["COLLECTION", "OBJECT", "MESH", "OBJECT"])
+    forward = helpers.count_by_type(["OBJECT", "MESH", "OBJECT", "COLLECTION"])
+    shuffled = helpers.count_by_type(["COLLECTION", "OBJECT", "MESH", "OBJECT"])
 
     assert forward == {"COLLECTION": 1, "MESH": 1, "OBJECT": 2}
     assert list(forward) == list(shuffled) == ["COLLECTION", "MESH", "OBJECT"]
-    assert linking.summarize_type_counts(()) == {}
+    assert helpers.count_by_type(()) == {}
 
 
 def test_only_a_datablock_this_unlink_emptied_counts_as_orphaned(monkeypatch: pytest.MonkeyPatch) -> None:

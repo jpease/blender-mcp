@@ -28,6 +28,7 @@ from dataclasses import dataclass
 import bpy
 
 from ..file_paths import BLENDER_RELATIVE_PREFIX, canonical_path, create_save_directory
+from ..helpers import MAX_LISTED_NAMES, count_by_type, record_page
 from ..library_digest import require_digest_roots
 from ..session import session_snapshot
 from ..text_hygiene import client_safe_text
@@ -311,6 +312,31 @@ def _save_report(request: SaveRequest, outcome: SaveOutcome) -> dict[str, object
     return result
 
 
+def _counted_libraries() -> dict[str, object]:
+    """
+    Count the linked libraries beside a sample of their summaries.
+
+    A shot can link any number of libraries and this rides on every session poll and
+    swap, so it carries the count and the first few; `list_libraries` pages them all.
+
+    Returns:
+        dict[str, object]: `total`, `by_type` (`PRESENT` or `MISSING`, by whether the
+        library's file was found - the one fact a poll must not miss past the sample),
+        and a `record_page` of up to `MAX_LISTED_NAMES` `records`, each as
+        `library_summary` describes.
+
+    """
+    frame = path_frame()
+    libraries = list(bpy.data.libraries)
+    return {
+        "total": len(libraries),
+        "by_type": count_by_type(
+            "MISSING" if getattr(library, "is_missing", False) else "PRESENT" for library in libraries
+        ),
+        **record_page("records", libraries, lambda library: library_summary(library, frame=frame), MAX_LISTED_NAMES),
+    }
+
+
 class FileLifecycleHandlersMixin:
     """
     Report and change which .blend the session holds.
@@ -337,15 +363,14 @@ class FileLifecycleHandlersMixin:
             `session_indeterminate` (bool, true after an aborted swap until a
             load completes, while the drain loop refuses all but this command,
             `get_addon_info` and the swap commands); `is_dirty` (bool, unsaved
-            work a swap would destroy); and `libraries`, one entry per linked
-            library as `library_summary` describes.
+            work a swap would destroy); and `libraries`, as `_counted_libraries`
+            counts them.
 
         """
-        frame = path_frame()
         return {
             **session_snapshot(),
             "is_dirty": bool(bpy.data.is_dirty),
-            "libraries": [library_summary(library, frame=frame) for library in bpy.data.libraries],
+            "libraries": _counted_libraries(),
         }
 
     def _capability_names(self) -> frozenset[str]:
@@ -397,8 +422,7 @@ class FileLifecycleHandlersMixin:
             # two tools disagreeing by exactly the linked set: 31 against 16.
             report["object_count"] = len(bpy.context.scene.objects)
             report["datablock_object_count"] = len(bpy.data.objects)
-            frame = path_frame()
-            report["libraries"] = [library_summary(library, frame=frame) for library in bpy.data.libraries]
+            report["libraries"] = _counted_libraries()
             report["capabilities_changed"] = self._capability_names() != capabilities_before
         except _POST_SWAP_READ_ERRORS as exc:
             print(f"BlenderMCP: the swap completed but its report is partial: {exc!s}")

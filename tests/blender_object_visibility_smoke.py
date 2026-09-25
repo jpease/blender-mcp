@@ -108,7 +108,7 @@ def main() -> None:
         removed_override = handler.remove_scene_objects(
             [library_object_name], confirm_remove=True, confirm_override_removal=True
         )
-        assert library_object_name in removed_override["removed"]
+        assert library_object_name in removed_override["removed"]["names"]
         assert any("liboverride resync" in warning for warning in removed_override["warnings"])
         # The linked (non-override) source datablock is untouched and may still answer to this
         # name; only the local override itself must be gone, which is the object this test made.

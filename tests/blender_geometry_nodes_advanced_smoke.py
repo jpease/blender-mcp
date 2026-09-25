@@ -219,6 +219,47 @@ def main() -> None:
         confirm_delete=True,
     )
     assert "FINISHED" in deleted["operator_result"]
+
+    # A group a dozen objects run: each edit reaches them all, the reply counts them and samples
+    # ten names, and the group - a resource, not an object - is the only named change.
+    handler.create_geometry_node_group("Crowd Scatter", geometry_types=["MESH"])
+    crowd_mesh = bpy.data.meshes.new("Crowd Mesh")
+    for index in range(12):
+        crowd_object = bpy.data.objects.new(f"Crowd_{index:02d}", crowd_mesh)
+        bpy.context.scene.collection.objects.link(crowd_object)
+        handler.attach_geometry_nodes_modifier(
+            crowd_object.name, node_group_name="Crowd Scatter", modifier_name="Crowd Scatter"
+        )
+    expected_users = {
+        "total": 12,
+        "by_type": {"MESH": 12},
+        "limit": 10,
+        "returned_count": 10,
+        "truncated": True,
+        "names": [f"Crowd_{index:02d}" for index in range(10)],
+    }
+    patched = handler.patch_geometry_node_graph(
+        "Crowd Scatter", [{"operation": "ADD_NODE", "bl_idname": "GeometryNodeJoinGeometry", "new_name": "Join"}]
+    )
+    assert patched["affected_users"] == expected_users
+    assert "changed_objects" not in patched
+    assert patched["changed_resources"] == ["Crowd Scatter"]
+    interfaced = handler.edit_node_group_interface(
+        "Crowd Scatter",
+        [
+            {
+                "operation": "ADD_SOCKET",
+                "socket": {"name": "Density", "direction": "INPUT", "socket_type": "NodeSocketFloat"},
+            }
+        ],
+    )
+    assert interfaced["affected_users"] == expected_users
+    assert "changed_objects" not in interfaced
+    replacement = bpy.data.node_groups["Crowd Scatter"]
+    assert all(
+        bpy.data.objects[f"Crowd_{index:02d}"].modifiers["Crowd Scatter"].node_group == replacement
+        for index in range(12)
+    )
     print("GEOMETRY_NODES_ADVANCED_SMOKE_OK")
 
 

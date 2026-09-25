@@ -81,6 +81,8 @@ def main() -> None:
 
     configured = handler.configure_light("Key Light", {"exposure": 1.0, "use_shadow": True})
     assert math.isclose(configured["new"]["exposure"], 1.0)
+    assert configured["changed_objects"] == ["Key Light"]
+    assert configured["data_users"]["names"] == ["Key Light"]
 
     aimed = handler.aim_light(scene.name, "Key Light", target_point=(0.0, 0.0, 0.0))
     assert aimed["method"] == "STATIC_ROTATION"
@@ -267,6 +269,24 @@ def main() -> None:
     assert all("transform" in record for record in handler.inspect_lighting_setup(scene.name, detail=True)["lights"])
     validated = handler.validate_lighting_setup(scene.name, "EEVEE")
     assert "findings" in validated
+
+    # A dozen practicals sharing one bulb: the patch reaches all of them, the reply counts them and
+    # samples ten names, and changed_objects names only the light the caller named.
+    bulb = bpy.data.lights.new("Practical Bulb", "POINT")
+    for index in range(12):
+        scene.collection.objects.link(bpy.data.objects.new(f"Practical_{index:02d}", bulb))
+    shared = handler.configure_light("Practical_05", {"energy": 40.0})
+    assert shared["changed_objects"] == ["Practical_05"]
+    assert shared["changed_resources"] == ["Practical Bulb"]
+    assert shared["data_users"] == {
+        "total": 12,
+        "by_type": {"LIGHT": 12},
+        "limit": 10,
+        "returned_count": 10,
+        "truncated": True,
+        "names": [f"Practical_{index:02d}" for index in range(10)],
+    }
+    assert all(math.isclose(bpy.data.objects[f"Practical_{index:02d}"].data.energy, 40.0) for index in range(12))
 
     print("LIGHTING_SMOKE_OK")
 

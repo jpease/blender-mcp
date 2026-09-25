@@ -10,7 +10,7 @@ from pydantic import Field
 
 from ..app import mcp
 from ._dispatch import send_blender_command
-from .envelope import ok
+from .envelope import envelope_for, ok
 
 logger = logging.getLogger("BlenderMCPServer")
 
@@ -23,6 +23,9 @@ def _polyhaven_changed(asset_type: str, result: dict) -> tuple[list[str], list[s
     """
     Split a Polyhaven import result into (changed_objects, changed_resources) by asset type.
 
+    A model import names its own roots in the reply's `changed_objects`, which `envelope_for`
+    lifts in place of this pair.
+
     Args:
         asset_type: The asset_type the import was requested with (`hdris`, `textures`, or `models`).
         result: The raw dict returned by the Blender-side Polyhaven import handler.
@@ -32,8 +35,6 @@ def _polyhaven_changed(asset_type: str, result: dict) -> tuple[list[str], list[s
         asset ID itself into either list.
 
     """
-    if asset_type == "models":
-        return result.get("imported_objects", []), []
     if asset_type == "textures":
         resources = ([result["material"]] if result.get("material") else []) + list(result.get("maps", []))
         return [], resources
@@ -152,12 +153,12 @@ async def import_polyhaven_asset(
             GLTF/FBX for models.
 
     Returns:
-        a "message" string, plus asset_type-specific fields: for `models`, "imported_objects" (also reported in
-        this response's changed_objects); for `textures`, "material" and "maps" (also reported in
-        changed_resources); for `hdris`, "image_name", "image_path", and "world". HDRIs are retained in a
-        stable Blender data cache and configured through the non-destructive managed World graph. The image is
-        also reported in changed_resources. changed_objects/changed_resources never contain the Polyhaven
-        asset_id itself.
+        a "message" string, plus asset_type-specific fields: for `models`, "imported_objects" (total,
+        by_type, up to 10 names; changed_objects names the model's roots); for `textures`, "material"
+        and "maps" (also reported in changed_resources); for `hdris`, "image_name", "image_path", and
+        "world". HDRIs are retained in a stable Blender data cache and configured through the
+        non-destructive managed World graph. The image is also reported in changed_resources.
+        changed_objects/changed_resources never contain the Polyhaven asset_id itself.
 
     Raises:
         ToolError: If the operation cannot be completed.
@@ -178,7 +179,7 @@ async def import_polyhaven_asset(
         if not result.get("success"):
             raise ToolError(f"Failed to download asset: {result.get('message', 'Unknown error')}")
         changed_objects, changed_resources = _polyhaven_changed(asset_type, result)
-        return ok(result, changed_objects=changed_objects, changed_resources=changed_resources)
+        return envelope_for(result, changed_objects=changed_objects, changed_resources=changed_resources)
     except ToolError:
         raise
     except Exception as e:

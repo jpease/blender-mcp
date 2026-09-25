@@ -11,6 +11,7 @@ from .common import (
     ADDON_BLEND_FILES,
     ADDON_CANDIDATES,
     ADDON_FILE_PATHS,
+    ADDON_HELPERS,
     ADDON_LINKING,
     ADDON_POLYHAVEN,
     ADDON_SERVER_CORE,
@@ -270,7 +271,7 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "linking: the per-library datablock list is uncapped",
-        ADDON_LINKING,
+        ADDON_HELPERS,
         "    shown = items[:end]\n",
         "    shown = list(items)\n",
         (f"{LKT}::test_list_libraries_bounds_the_datablocks_it_lists_per_library",),
@@ -409,7 +410,7 @@ ROWS: list[Revert] = [
     Revert(
         "linking: the removal report counts only the libraries",
         ADDON_LINKING,
-        '            "removed_by_type": summarize_type_counts(before[uid].collection for uid in removed),\n',
+        '            "removed_by_type": count_by_type(before[uid].collection for uid in removed),\n',
         '            "removed_by_type": {"libraries": len(removed_libraries)},\n',
         (f"{LKT}::test_unlink_reports_exactly_what_it_removed",),
     ),

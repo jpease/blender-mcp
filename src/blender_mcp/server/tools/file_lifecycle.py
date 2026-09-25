@@ -29,13 +29,14 @@ async def get_session_info(ctx: Context) -> dict:
 
     Returns:
         session_id, session_epoch, current_filepath (None if never saved), is_dirty,
-        session_indeterminate, last_load_error, last_save_error, and libraries (each with
-        session_uid, name, filepath, filepath_redacted, filepath_redaction_reason,
-        is_relative, is_missing). filepath is a // link (absolute if never saved) when the
-        library resolves inside the file roots (none set: the .blend's folder); otherwise its
-        leaf, with filepath_redacted=true and a filepath_redaction_reason: DIRECTORY,
-        UNRESOLVABLE, OUTSIDE_ROOTS, TOO_LONG or UNSAFE_COMPONENT. A leaf is not a broken
-        link: is_missing reports breakage, is_relative the stored form.
+        session_indeterminate, last_load_error, last_save_error, and libraries: total, by_type
+        (PRESENT/MISSING), up to 10 records of session_uid, name, filepath, filepath_redacted,
+        filepath_redaction_reason, is_relative, is_missing; list_libraries pages all. filepath
+        is a // link (absolute if never saved) when the library resolves inside the file roots
+        (none set: the .blend's folder); otherwise its leaf, with filepath_redacted=true and a
+        filepath_redaction_reason: DIRECTORY, UNRESOLVABLE, OUTSIDE_ROOTS, TOO_LONG or
+        UNSAFE_COMPONENT. A leaf is not a broken link: is_missing reports breakage, is_relative
+        the stored form.
 
     """
     return await call_blender("get_session_info", {})
@@ -66,10 +67,9 @@ async def open_shot(
     Returns:
         filepath, scene_name, object_count (the reopened scene's own objects, the number
         list_scene_objects reports), datablock_object_count (every object datablock in the
-        file, which a linked hierarchy makes larger), libraries, session_id, session_epoch,
-        capabilities_changed, rehandshake_required, discarded_unsaved_changes, note, and
-        warnings when part of the swap report could not be read. Each library's filepath
-        is published as get_session_info describes.
+        file, which a linked hierarchy makes larger), libraries (as get_session_info), session_id,
+        session_epoch, capabilities_changed, rehandshake_required, discarded_unsaved_changes, note,
+        and warnings when part of the swap report could not be read.
 
     """
     return await call_blender(

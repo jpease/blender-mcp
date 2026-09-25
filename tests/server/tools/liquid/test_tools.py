@@ -1097,3 +1097,100 @@ def test_manage_liquid_cache_resume_pending_marker_counts_as_directory_ownership
     )
 
     assert result["action"] == "RESUME"
+
+
+class _LiquidCollection(_FakeIdObject):
+    def __init__(self, name, objects=()) -> None:
+        super().__init__(name)
+        self.objects = types.SimpleNamespace(link=lambda _obj: None)
+        self.children = types.SimpleNamespace(link=lambda _child: None)
+        self.all_objects = list(objects)
+
+
+class _Action:
+    id_type = "ACTION"
+    copies = 0
+
+    def __init__(self, name) -> None:
+        self.name = name
+
+    def copy(self):
+        _Action.copies += 1
+        return _Action(f"{self.name}.{_Action.copies:03d}")
+
+
+class _LiquidModifiers(list):
+    def get(self, name):
+        return next((modifier for modifier in self if modifier.name == name), None)
+
+
+class _LiquidSceneObject(_FakeIdObject):
+    """An object whose copy carries its own domain settings, compared by identity as Blender IDs are."""
+
+    def __init__(self, name, modifiers=(), action=None) -> None:
+        super().__init__(name)
+        self.data = None
+        self.modifiers = _LiquidModifiers(modifiers)
+        self.animation_data = types.SimpleNamespace(action=action) if action else None
+
+    def copy(self):
+        modifiers = [
+            types.SimpleNamespace(**{**vars(modifier), "domain_settings": types.SimpleNamespace(**vars(settings))})
+            if (settings := getattr(modifier, "domain_settings", None)) is not None
+            else modifier
+            for modifier in self.modifiers
+        ]
+        duplicate = _LiquidSceneObject(self.name, modifiers)
+        duplicate.animation_data = self.animation_data
+        return duplicate
+
+    def animation_data_create(self) -> None:
+        self.animation_data = types.SimpleNamespace(action=None)
+
+
+def test_a_liquid_variant_counts_members_by_role_and_names_its_domain(tmp_path, monkeypatch) -> None:
+    """57 flows and effectors are counted by role; changed_objects names the variant domain alone."""
+    addon, _handler = load_liquid_handler(monkeypatch)
+    delivery = sys.modules[f"{addon.__name__}.handlers.liquid.delivery"]
+    bpy = sys.modules["bpy"]
+    bpy.path = types.SimpleNamespace(abspath=lambda path: path)
+    bpy.context.view_layer = types.SimpleNamespace(update=lambda: None)
+    motion = _Action("Pour")
+    flows = [_LiquidSceneObject(f"Tap {index:02d}", action=motion if index < 12 else None) for index in range(50)]
+    effectors = [_LiquidSceneObject(f"Rock {index}") for index in range(7)]
+    settings = types.SimpleNamespace(
+        cache_directory="/source-cache",
+        fluid_group=_LiquidCollection("Flows", flows),
+        effector_group=_LiquidCollection("Effectors", effectors),
+        force_collection=None,
+        guide_parent=None,
+    )
+    modifier = types.SimpleNamespace(name="Fluid", type="FLUID", fluid_type="DOMAIN", domain_settings=settings)
+    modifier.show_viewport = modifier.show_render = True
+    source = _LiquidSceneObject("Domain", [modifier])
+    bpy.data.objects = types.SimpleNamespace(get=lambda _name: None)
+    bpy.data.collections = types.SimpleNamespace(get=lambda _name: None, new=_LiquidCollection)
+    bpy.data.scenes = [
+        types.SimpleNamespace(objects={"Domain"}, collection=_LiquidCollection("Scene Collection")),
+    ]
+    monkeypatch.setattr(delivery, "_get_domain", lambda *_args: (source, modifier, settings))
+    monkeypatch.setattr(delivery, "_check_unique_cache_path", lambda *_args: None)
+    monkeypatch.setattr(delivery, "_register_owned_objects", lambda *_args: None)
+    monkeypatch.setattr(delivery, "_cache_state", lambda _settings: {})
+
+    reply = delivery.LiquidDeliveryHandlers().duplicate_liquid_setup_variant(
+        "Domain", "Fluid", "Domain Preview", "Preview Setup", "Preview", str(tmp_path)
+    )
+
+    assert reply["changed_objects"] == ["Domain Preview"]
+    assert reply["variant_objects"] == {
+        "total": 58,
+        "by_type": {"DOMAIN": 1, "EFFECTOR": 7, "FLOW": 50},
+        "limit": 10,
+        "returned_count": 10,
+        "truncated": True,
+        "names": ["Domain Preview", *[f"Tap {index:02d} Preview" for index in range(9)]],
+    }
+    assert reply["animation_actions"]["total"] == 12
+    assert reply["animation_actions"]["by_type"] == {"ACTION": 12}
+    assert reply["animation_actions"]["truncated"] is True

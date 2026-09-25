@@ -12,7 +12,7 @@ from itertools import combinations
 import bpy
 import mathutils
 
-from ...helpers import preserve_mode_and_selection
+from ...helpers import counted_page, preserve_mode_and_selection
 from .inspection_and_setup import (
     _aabb_overlap,
     _bounds,
@@ -362,11 +362,18 @@ class RigidBodySimulationHandlers:
                 scene.frame_set(original_frame, subframe=original_subframe)
                 _view_layer_for(scene).update()
             frame_count = len(frames)
+        # The cache belongs to the scene's world: the caller acts next on the scene, so the
+        # bodies whose motion the cache now holds are counted here rather than listed as changed.
         return {
-            "changed_objects": [obj.name for obj in scene.objects if obj.rigid_body is not None],
+            "changed_objects": [],
             "changed_resources": [scene.name],
             "scene": scene.name,
             "action": action,
+            "simulated_objects": counted_page(
+                [obj for obj in scene.objects if obj.rigid_body is not None],
+                type_of=lambda obj: obj.type,
+                name_of=lambda obj: obj.name,
+            ),
             "frame_steps": frame_count,
             "operator_scope": "EXACT_RIGID_BODY_WORLD_POINT_CACHE",
             "point_cache_before": before,

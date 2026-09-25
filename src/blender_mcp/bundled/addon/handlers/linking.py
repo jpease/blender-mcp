@@ -35,7 +35,7 @@ from ..candidates import describe_candidates as _candidates
 from ..candidates import display_name as _display_name
 from ..candidates import session_uid_of as _uid_of
 from ..file_paths import canonical_path
-from ..helpers import bounded_int, page_records, paginate
+from ..helpers import MAX_LISTED_NAMES, bounded_int, count_by_type, counted_page, page_records
 from ..text_hygiene import client_safe_name_leaf, client_safe_text
 from ..transaction import replacing_library_contents
 from .blend_files import (
@@ -49,10 +49,8 @@ from .blend_files import (
 
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
-# Per library or override: a canon library can link thousands of datablocks, and every
-# record costs the agent's context for the rest of the session. The default reply reports
-# the exact count and the counts by type beside this many names; `detail` asks for records.
-MAX_LISTED_NAMES = 10
+# Per library or override: a canon library can link thousands of datablocks. The default
+# reply counts them beside `MAX_LISTED_NAMES` names; `detail` pages up to this many records.
 MAX_LISTED_DATABLOCKS = 100
 MAX_LINK_NAMES = 100
 MAX_UNLINK_UIDS = 100
@@ -169,6 +167,20 @@ def _scene(scene_uid: object) -> object:
     return scenes[0]
 
 
+def _id_type(datablock: object) -> str:
+    """
+    Name the type a datablock is counted under in a reply's `by_type`.
+
+    Args:
+        datablock: The datablock.
+
+    Returns:
+        str: Its `id_type`, or an empty string for something that has none.
+
+    """
+    return str(getattr(datablock, "id_type", ""))
+
+
 def _linked_entry(datablock: object) -> dict[str, object]:
     """
     Describe a datablock linked from a library.
@@ -215,53 +227,6 @@ def _override_entry(datablock: object) -> dict[str, object]:
     }
 
 
-def summarize_type_counts(type_names: Iterable[str]) -> dict[str, int]:
-    """
-    Count how many items carry each type name, so a reply can state what is there.
-
-    Args:
-        type_names: One type name per item - an `id_type` for the datablocks a library
-            links, a `bpy.data` collection name for the datablocks an unlink removed.
-
-    Returns:
-        dict[str, int]: Type name -> count, sorted by name so the reply is stable.
-
-    """
-    counts: dict[str, int] = {}
-    for name in type_names:
-        counts[name] = counts.get(name, 0) + 1
-    return dict(sorted(counts.items()))
-
-
-def _record_page(key: str, items: Sequence[object], describe: object, limit: int) -> dict[str, object]:
-    """
-    Publish one bounded page of a sub-list, without the resume offset no command accepts.
-
-    The sub-lists this pages - a library's datablocks, an override's objects - belong to
-    commands that take no datablock offset, so a `next_offset` here would name a parameter
-    every one of them rejects. The exact `total` sits beside the page and `detail` is the
-    other view; a caller that needs the rest narrows the request instead of resuming.
-
-    Args:
-        key: The page's result key.
-        items: Every item; only the first `limit` are described.
-        describe: Turns one item into its entry.
-        limit: Entries this page may carry.
-
-    Returns:
-        dict[str, object]: `limit`, `returned_count`, `truncated`, and `<key>`.
-
-    """
-    _start, end, truncated, _next_offset = paginate(len(items), 0, limit, limit)
-    shown = items[:end]
-    return {
-        "limit": limit,
-        "returned_count": len(shown),
-        "truncated": truncated,
-        key: [describe(item) for item in shown],  # type: ignore[operator]
-    }
-
-
 def _library_details(library: object) -> dict[str, object]:
     """
     Describe a library: `library_summary`'s identity plus what a reload decision needs.
@@ -287,30 +252,6 @@ def _library_details(library: object) -> dict[str, object]:
     }
 
 
-def _counted_page(items: Sequence[object], describe: object, limit: int, *, detail: bool) -> dict[str, object]:
-    """
-    Count a sub-list by type and page it: names by default, records under `detail`.
-
-    Args:
-        items: Every item; the exact count is published whatever the page holds.
-        describe: Turns one item into its record, under `detail`.
-        limit: Entries the record page may carry.
-        detail: Page records instead of names.
-
-    Returns:
-        dict[str, object]: `total`, `by_type`, and one `_record_page`: up to
-        `MAX_LISTED_NAMES` `names`, or up to `limit` `records` under `detail`.
-
-    """
-    counted: dict[str, object] = {
-        "total": len(items),
-        "by_type": summarize_type_counts(str(getattr(item, "id_type", "")) for item in items),
-    }
-    if detail:
-        return {**counted, **_record_page("records", items, describe, limit)}
-    return {**counted, **_record_page("names", items, _display_name, MAX_LISTED_NAMES)}
-
-
 def _linked_datablocks(library: object, *, detail: bool) -> dict[str, object]:
     """
     Report what a library links, from `Library.users_id`.
@@ -329,7 +270,16 @@ def _linked_datablocks(library: object, *, detail: bool) -> dict[str, object]:
 
     """
     items = list(getattr(library, "users_id", ()) or ())
-    return {"datablocks": _counted_page(items, _linked_entry, MAX_LISTED_DATABLOCKS, detail=detail)}
+    return {
+        "datablocks": counted_page(
+            items,
+            type_of=_id_type,
+            name_of=_display_name,
+            describe=_linked_entry,
+            limit=MAX_LISTED_DATABLOCKS,
+            detail=detail,
+        )
+    }
 
 
 def _missing_warnings(library: object) -> dict[str, object]:
@@ -642,7 +592,14 @@ def _override_hierarchy(
             unlinked.append((parent, collection))
             replaced += 1
     objects = list(override.all_objects)
-    listed = _counted_page(objects, _override_entry, MAX_LISTED_DATABLOCKS, detail=detail)
+    listed = counted_page(
+        objects,
+        type_of=_id_type,
+        name_of=_display_name,
+        describe=_override_entry,
+        limit=MAX_LISTED_DATABLOCKS,
+        detail=detail,
+    )
     return {
         "override": _override_entry(override),
         "scene_uid": _uid_of(scene),
@@ -1078,7 +1035,7 @@ def _place_linked(
 
     Returns:
         dict[str, object]: `changed_objects` (the roots of what came into the scene),
-        `instanced_objects` (every object the instances put there, counted as `_counted_page`
+        `instanced_objects` (every object the instances put there, counted as `counted_page`
         does; None under `as_override`) and `overrides` (one `create_override` report per
         collection under `as_override`, else empty).
 
@@ -1092,7 +1049,14 @@ def _place_linked(
     brought_in = _distinct([*members, *linked_objects])
     return {
         "changed_objects": _root_names(brought_in),
-        "instanced_objects": _counted_page(brought_in, _linked_entry, MAX_LISTED_DATABLOCKS, detail=detail),
+        "instanced_objects": counted_page(
+            brought_in,
+            type_of=_id_type,
+            name_of=_display_name,
+            describe=_linked_entry,
+            limit=MAX_LISTED_DATABLOCKS,
+            detail=detail,
+        ),
         "overrides": [],
     }
 
@@ -1141,7 +1105,7 @@ class LinkingHandlersMixin:
             `library` (`library_summary` plus `version`, `needs_liboverride_resync`, `users`),
             `library_already_linked`, `scene_uid`, `collections` / `objects` linked (uid, name,
             id_type), `instanced_objects` (every object the instanced collections and objects
-            put in the scene, counted as `_counted_page` does; None under `as_override`),
+            put in the scene, counted as `counted_page` does; None under `as_override`),
             `world` (the linked World, or None) with `previous_world` (the name the scene's
             world had, or None), and `overrides` (one `create_override` report per collection
             when `as_override`).
@@ -1374,12 +1338,12 @@ class LinkingHandlersMixin:
             "removed_libraries": removed_libraries,
             "already_removed_uids": already_removed,
             "removed_count": len(removed),
-            "removed_by_type": summarize_type_counts(before[uid].collection for uid in removed),
+            "removed_by_type": count_by_type(before[uid].collection for uid in removed),
             "removed_sample": [
                 {"name": _display_name(before[uid]), "id_type": before[uid].id_type}
                 for uid in removed[:MAX_LISTED_NAMES]
             ],
             "purged_orphans": len(purged),
-            "purged_by_type": summarize_type_counts(purged),
+            "purged_by_type": count_by_type(purged),
             "other_libraries_removed": sorted(other_before - surviving),
         }

@@ -54,8 +54,10 @@ FIXTURE = ROOT / "tests/fixtures/blend/empty_zstd.blend"
 _PACKAGE = types.ModuleType("probe_addon")
 _PACKAGE.__path__ = [str(ADDON_DIR)]  # type: ignore[attr-defined]
 # `handlers.file_lifecycle` stamps the add-on version and protocol into a saved file's
-# provenance block. The real `__init__` would register Blender classes, so only the two
-# constants are provided, with fixed values so a version bump cannot move this transcript.
+# provenance block, and `helpers` reads the add-on id. The real `__init__` would register
+# Blender classes, so only those constants are provided, with fixed values so a version bump
+# cannot move this transcript.
+_PACKAGE.ADDON_ID = "blender_mcp_probe"  # type: ignore[attr-defined]
 _PACKAGE.ADDON_PROTOCOL_VERSION = 0  # type: ignore[attr-defined]
 _PACKAGE.bl_info = {"version": (0, 0, 0)}  # type: ignore[attr-defined]
 sys.modules["probe_addon"] = _PACKAGE

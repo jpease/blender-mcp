@@ -135,6 +135,84 @@ def test_manage_rigid_body_cache_refuses_and_undoes_a_frame_range_blender_did_no
     assert (cache.frame_start, cache.frame_end) == (1, 250)
 
 
+def _counted_objects(objects, by_type):
+    """Build the counted page of more than ten `objects`: exact totals and the first ten names."""
+    return {
+        "total": len(objects),
+        "by_type": by_type,
+        "limit": 10,
+        "returned_count": 10,
+        "truncated": True,
+        "names": [obj.name for obj in objects[:10]],
+    }
+
+
+def test_a_cache_calculation_counts_its_bodies_and_names_none_of_them_as_changed(monkeypatch) -> None:
+    """57 bodies is a count, a by-type split and ten names; the caller acts next on the scene."""
+    addon, _bpy = load_addon(monkeypatch, data={})
+    simulation = sys.modules[f"{addon.__name__}.handlers.rigid_body.simulation"]
+    bodies = [
+        types.SimpleNamespace(
+            name=f"Shard {index:02d}", type="EMPTY" if index % 8 == 3 else "MESH", rigid_body=object()
+        )
+        for index in range(57)
+    ]
+    ground = types.SimpleNamespace(name="Ground Plate", type="MESH", rigid_body=None)
+    cache = _EndClampingPointCache()
+    cache.frame_end = 10
+    scene = types.SimpleNamespace(
+        name="Scene",
+        rigidbody_world=types.SimpleNamespace(point_cache=cache),
+        objects=[ground, *bodies],
+        frame_current=1,
+        frame_subframe=0.0,
+        frame_set=lambda _frame, subframe=0.0: None,
+    )
+    monkeypatch.setattr(simulation, "_scene", lambda _name: scene)
+    monkeypatch.setattr(simulation, "_view_layer_for", lambda *_args: types.SimpleNamespace(update=lambda: None))
+
+    reply = simulation.RigidBodySimulationHandlers().manage_rigid_body_cache(
+        "Scene", action="CALCULATE_TO_FRAME", calculate_frame=10
+    )
+
+    assert reply["changed_objects"] == []
+    assert reply["changed_resources"] == ["Scene"]
+    assert reply["simulated_objects"] == _counted_objects(bodies, {"EMPTY": 7, "MESH": 50})
+
+
+class _TaggedHelper(types.SimpleNamespace):
+    """A scene object carrying the rigid-body ownership tags `remove_rigid_body_components` reads."""
+
+    def get(self, key, default=None):
+        return self.tags.get(key, default)
+
+
+def test_removing_a_rigs_helpers_counts_them_and_names_none_as_a_next_target(monkeypatch) -> None:
+    """A rig's 57 helpers are gone: `removed` counts them; nothing is left for changed_objects to name."""
+    removed = []
+    addon, _bpy = load_addon(
+        monkeypatch,
+        data={"objects": types.SimpleNamespace(remove=lambda obj, do_unlink: removed.append(obj.name))},
+    )
+    lifecycle = sys.modules[f"{addon.__name__}.handlers.rigid_body.lifecycle"]
+    owned = {"blendermcp_rigid_body_role": "PROXY", "blendermcp_rigid_body_rig_id": "debris"}
+    helpers = [
+        _TaggedHelper(name=f"Debris Proxy {index:02d}", type="EMPTY" if index % 3 else "MESH", tags=owned)
+        for index in range(57)
+    ]
+    other_rig = _TaggedHelper(name="Bridge Proxy", type="MESH", tags={**owned, "blendermcp_rigid_body_rig_id": "b"})
+    scene = types.SimpleNamespace(name="Scene", rigidbody_world=None, objects=[other_rig, *helpers])
+    monkeypatch.setattr(lifecycle, "_scene", lambda _name: scene)
+
+    reply = lifecycle.RigidBodyLifecycleHandlers().remove_rigid_body_components(
+        "Scene", "TAGGED_HELPERS", rig_id="debris", confirm_destructive=True
+    )
+
+    assert removed == [helper.name for helper in helpers]
+    assert reply["changed_objects"] == []
+    assert reply["removed"] == _counted_objects(helpers, {"EMPTY": 38, "MESH": 19})
+
+
 def test_force_field_model_rejects_unknown_and_nonfinite_values() -> None:
     with pytest.raises(ValidationError, match="extra_forbidden"):
         rigid_body.RigidBodyForceField(object_name="Wind", field_type="WIND", arbitrary=True)  # type: ignore[call-arg]

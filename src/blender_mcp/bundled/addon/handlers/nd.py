@@ -1,6 +1,9 @@
 import bpy
 
 from ..helpers import (
+    MAX_LISTED_NAMES,
+    count_by_type,
+    counted_page,
     exit_edit_mode,
     get_mesh_object,
     mesh_counts,
@@ -8,6 +11,7 @@ from ..helpers import (
     nd_configure_object_as_util,
     nd_view3d_override,
     preserve_mode_and_selection,
+    record_page,
     select_objects,
 )
 
@@ -110,7 +114,10 @@ class NDHandlersMixin:
             confirm: Must be True to run - this is scene-wide and destructive with no way to scope it.
 
         Returns:
-            Result produced by the operation.
+            dict: `removed_objects` (the deleted utility objects, counted by type beside a sample
+            of names), `removed_modifiers` (counted by modifier type beside a sample of
+            `{object, modifier, type}` records), and `changed_objects`: the surviving objects
+            that lost a modifier, which are what the caller inspects next.
 
         Raises:
             ValueError: If the operation cannot be completed.
@@ -121,12 +128,12 @@ class NDHandlersMixin:
                 "Pass confirm=True to run nd_clean_utils - it removes orphaned ND utility objects/modifiers "
                 "scene-wide with no way to scope or preview the change"
             )
-        before_objects = {obj.name for obj in bpy.data.objects}
+        before_types = {obj.name: obj.type for obj in bpy.data.objects}
         before_modifiers = {obj.name: [(mod.name, mod.type) for mod in obj.modifiers] for obj in bpy.data.objects}
         with preserve_mode_and_selection(), nd_view3d_override():
             _result, cancelled = nd_call("clean_utils", "INVOKE_DEFAULT")
         after_objects = {obj.name for obj in bpy.data.objects}
-        removed_objects = sorted(before_objects - after_objects)
+        removed_objects = sorted(before_types.keys() - after_objects)
         removed_modifiers = []
         for name, mods in before_modifiers.items():
             obj = bpy.data.objects.get(name)
@@ -136,11 +143,18 @@ class NDHandlersMixin:
             for mod_name, mod_type in mods:
                 if (mod_name, mod_type) not in after_mods:
                     removed_modifiers.append({"object": name, "modifier": mod_name, "type": mod_type})
+        # A scene-wide cleanup can remove any number of either; both are counted, not listed.
         return {
             "status": "cleaned",
-            "removed_objects": removed_objects,
-            "removed_modifiers": removed_modifiers,
+            "removed_objects": counted_page(removed_objects, type_of=before_types.__getitem__, name_of=str),
+            # A modifier is named only together with its object, so the sample carries records.
+            "removed_modifiers": {
+                "total": len(removed_modifiers),
+                "by_type": count_by_type(record["type"] for record in removed_modifiers),
+                **record_page("records", removed_modifiers, dict, MAX_LISTED_NAMES),
+            },
             "cancelled": cancelled,
+            "changed_objects": sorted({record["object"] for record in removed_modifiers}),
         }
 
     def nd_create_id_material(self, object_names, material_name):

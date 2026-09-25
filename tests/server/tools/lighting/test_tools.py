@@ -428,3 +428,38 @@ def test_light_inventory_tools_forward_the_detail_flag(monkeypatch) -> None:
         ("list_lights", True),
         ("inspect_lighting_setup", True),
     ]
+
+
+class _ObjectsByName(dict):
+    """`bpy.data.objects`: name lookups, and an iteration that yields the objects themselves."""
+
+    def __iter__(self):
+        return iter(self.values())
+
+
+def test_configuring_a_widely_shared_light_counts_its_users_and_names_only_the_light(monkeypatch) -> None:
+    """A datablock shared by a dozen lamps is counted and sampled, and only the named light is the change."""
+    shared_data = types.SimpleNamespace(name="Practical Bulb", type="POINT", energy=100.0)
+    lamps = [
+        types.SimpleNamespace(name=f"Practical_{index:02d}", type="LIGHT", data=shared_data) for index in range(12)
+    ]
+    unshared = types.SimpleNamespace(
+        name="Key", type="LIGHT", data=types.SimpleNamespace(name="Key Light", type="POINT", energy=5.0)
+    )
+    mesh = types.SimpleNamespace(name="Lampshade", type="MESH", data=shared_data)
+    objects = _ObjectsByName({obj.name: obj for obj in [*reversed(lamps), unshared, mesh]})
+    addon, _bpy = load_addon(monkeypatch, data={"objects": objects})
+
+    result = addon.BlenderMCPServer().configure_light("Practical_05", {"energy": 40.0})
+
+    assert all(lamp.data.energy == pytest.approx(40.0) for lamp in lamps)
+    assert result["data_users"] == {
+        "total": 12,
+        "by_type": {"LIGHT": 12},
+        "limit": 10,
+        "returned_count": 10,
+        "truncated": True,
+        "names": [f"Practical_{index:02d}" for index in range(10)],
+    }
+    assert result["changed_objects"] == ["Practical_05"]
+    assert result["changed_resources"] == ["Practical Bulb"]

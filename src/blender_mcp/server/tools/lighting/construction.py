@@ -125,7 +125,7 @@ async def configure_light(ctx: Context, light_name: str, patch: LightPatch) -> d
     Patch only supplied settings on one existing light.
 
     The tool rejects settings that do not apply to the light's actual type and returns before/after
-    values. If the light datablock is shared, every object user is reported as changed. It never
+    values. If its datablock is shared, data_users counts every object that changed. It never
     accepts a free-form RNA property name and does not change transforms or nodes.
     """
     payload = dump_input(patch)

@@ -586,7 +586,11 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # which parameter each of its pages resumes through: `children_next_offset` goes back as
 # `child_offset`, a name a caller cannot guess, and the envelope's resume hint now names the reply
 # key rather than an `offset=` the tool does not take.
-SHOT_MODE_BYTE_CEILING = 277_372
+#
+# Raised from 277,372, measured at 277,392 - 20 bytes, all of it `get_session_info` saying its
+# `libraries` is now counted with a sample and that `list_libraries` pages the rest (+73), less a
+# shorter `open_shot` (-50): a session with hundreds of linked libraries listed every one.
+SHOT_MODE_BYTE_CEILING = 277_392
 
 # The same rule as above, for the default, core-only surface.
 #
@@ -623,7 +627,10 @@ SHOT_MODE_BYTE_CEILING = 277_372
 # furnished set listed 50 of 2,988 objects on every call. 353 is `get_addon_status`'
 # `render_devices`, without which a GPU request silently rendering on the CPU was invisible. The
 # rest is the library tools' reply shapes and the path-redaction rule now stated as it is applied.
-DEFAULT_MODE_BYTE_CEILING = 92_559
+#
+# Raised from 92,559, measured at 92,582 - 23 bytes: the same `get_session_info`/`open_shot`
+# change as the shot ceiling above.
+DEFAULT_MODE_BYTE_CEILING = 92_582
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

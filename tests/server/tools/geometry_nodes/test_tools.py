@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+import types
 
 import pytest
 
@@ -359,3 +360,81 @@ def test_copy_group_serializes_object_duplication_policy(monkeypatch) -> None:
         "collision_policy": "UNIQUE",
     }
     assert result["changed_objects"] == ["Forest Variant"]
+
+
+class _Collection(list):
+    """A `bpy.data` collection: iterated as datablocks, looked up by each one's current name."""
+
+    def get(self, name: str, default: object = None) -> object:
+        return next((held for held in self if held.name == name), default)
+
+    def __getitem__(self, key):  # type: ignore[override]
+        if isinstance(key, str):
+            found = self.get(key)
+            if found is None:
+                raise KeyError(key)
+            return found
+        return super().__getitem__(key)
+
+    def remove(self, datablock, do_unlink=False) -> None:  # type: ignore[override]
+        del self[next(index for index, held in enumerate(self) if held is datablock)]
+
+
+class _NodeGroup:
+    """The slice of a GeometryNodeTree an atomic graph patch reads: its name, copy, and graph."""
+
+    bl_idname = "GeometryNodeTree"
+    library = None
+    is_editable = True
+
+    def __init__(self, name: str, node_groups: _Collection) -> None:
+        self.name = name
+        self.nodes: list[object] = []
+        self.links: list[object] = []
+        self._node_groups = node_groups
+
+    def copy(self) -> "_NodeGroup":
+        working = _NodeGroup(f"{self.name}.001", self._node_groups)
+        self._node_groups.append(working)
+        return working
+
+
+def test_patching_a_widely_used_group_counts_its_user_objects_and_changes_only_the_group(monkeypatch) -> None:
+    """A dozen objects running the group are counted and sampled; the group is the only named change."""
+    node_groups = _Collection()
+    group = _NodeGroup("Scatter", node_groups)
+    node_groups.append(group)
+
+    def user(name: str, object_type: str, modifier_count: int = 1) -> types.SimpleNamespace:
+        modifiers = [
+            types.SimpleNamespace(name=f"GN {index}", type="NODES", node_group=group) for index in range(modifier_count)
+        ]
+        return types.SimpleNamespace(name=name, type=object_type, modifiers=modifiers)
+
+    users = [user(f"Rock_{index:02d}", "MESH", modifier_count=2 if index == 0 else 1) for index in range(11)]
+    users.append(user("Grass", "CURVES"))
+    bystander = types.SimpleNamespace(name="Ground", type="MESH", modifiers=[])
+    objects = _Collection([*reversed(users), bystander])
+    addon, _bpy = load_addon(monkeypatch, data={"objects": objects, "node_groups": node_groups})
+
+    result = addon.BlenderMCPServer().patch_geometry_node_graph("Scatter", [])
+
+    replacement = node_groups["Scatter"]
+    assert replacement is not group
+    assert all(modifier.node_group is replacement for obj in users for modifier in obj.modifiers)
+    assert result["affected_users"] == {
+        "total": 12,
+        "by_type": {"CURVES": 1, "MESH": 11},
+        "limit": 10,
+        "returned_count": 10,
+        "truncated": True,
+        "names": ["Grass", *(f"Rock_{index:02d}" for index in range(9))],
+    }
+    monkeypatch.setattr(_dispatch, "send_command", lambda _command, _params=None: result)
+    envelope = _run(
+        geometry_nodes.patch_geometry_node_graph,
+        node_group_name="Scatter",
+        operations=[geometry_nodes.GraphEdit(operation="ADD_NODE", bl_idname="GeometryNodeJoinGeometry")],
+    )
+    assert envelope["changed_objects"] == []
+    assert envelope["changed_resources"] == ["Scatter"]

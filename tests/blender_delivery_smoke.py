@@ -123,7 +123,7 @@ assert bpy.data.filepath == str(blend_path), "save_as_mainfile(copy=True) moved 
 with bpy.data.libraries.load(str(library_path), link=True) as (data_from, data_to):  # pyright: ignore[reportGeneralTypeIssues]
     data_to.objects = list(data_from.objects)[:1]
 
-linked = server.get_session_info()["libraries"]
+linked = server.get_session_info()["libraries"]["records"]
 assert len(linked) == 1, linked
 assert linked[0]["filepath"] == "//libs/canon.blend", linked[0]
 assert linked[0]["filepath_redacted"] is False, linked[0]
@@ -139,11 +139,11 @@ canon_path = Path(work) / "canon" / "set.blend"
 canon_path.parent.mkdir()
 bpy.ops.wm.save_as_mainfile(filepath=str(canon_path), copy=True)
 bpy.data.libraries[0].filepath = "//../canon/set.blend"
-beside = server.get_session_info()["libraries"][0]
+beside = server.get_session_info()["libraries"]["records"][0]
 assert (beside["filepath"], beside["filepath_redaction_reason"]) == ("set.blend", "OUTSIDE_ROOTS"), beside
 os.environ["BLENDERMCP_FILE_ROOTS"] = work
 try:
-    beside = server.get_session_info()["libraries"][0]
+    beside = server.get_session_info()["libraries"]["records"][0]
     assert beside["filepath"] == "//../canon/set.blend", beside
     assert beside["filepath_redacted"] is False, beside
     beside_entries = [entry for entry in server.inspect_delivery(scene.name)["entries"] if entry["kind"] == "LIBRARY"]
@@ -153,7 +153,7 @@ finally:
 
 # The same library, linked relatively, is published whole and reports no redaction.
 bpy.data.libraries[0].filepath = "//libs/canon.blend"
-relative_entry = server.get_session_info()["libraries"][0]
+relative_entry = server.get_session_info()["libraries"]["records"][0]
 assert relative_entry["filepath"] == "//libs/canon.blend", relative_entry
 assert relative_entry["filepath_redacted"] is False, relative_entry
 assert relative_entry["filepath_redaction_reason"] is None, relative_entry

@@ -109,7 +109,8 @@ async def edit_node_group_interface(
     Apply a preflighted batch of interface socket and panel edits by stable identifier.
 
     Removing or changing socket types requires ``ALLOW_BREAKING`` because modifier overrides and
-    links may be invalidated. The result lists every affected modifier user.
+    links may be invalidated. affected_users counts the objects that use the group;
+    get_geometry_node_graph's IDENTITY section names each modifier.
     """
     return await call_blender(
         "edit_node_group_interface",
@@ -133,7 +134,7 @@ async def patch_geometry_node_graph(
 
     The complete patch is validated before mutation. Node types and writable properties are
     runtime-checked; socket endpoints use identifiers with an optional index fallback. If any
-    operation fails, the original graph is restored.
+    operation fails, the original graph is restored. affected_users counts the objects that use it.
     """
     return await call_blender(
         "patch_geometry_node_graph",

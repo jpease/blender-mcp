@@ -30,8 +30,9 @@ class FakeMatrix:
 
 
 class FakeObject:
-    def __init__(self, name, modifiers=None) -> None:
+    def __init__(self, name, modifiers=None, object_type="MESH") -> None:
         self.name = name
+        self.type = object_type
         self.modifiers = list(modifiers or [])
         self.parent = None
         self.matrix_world = FakeMatrix(f"{name}-world")
@@ -285,9 +286,63 @@ def test_nd_clean_utils_reports_removed_objects_and_modifiers(monkeypatch) -> No
     result = server.nd_clean_utils(confirm=True)
 
     assert result["status"] == "cleaned"
-    assert result["removed_objects"] == ["UtilCutter"]
-    assert result["removed_modifiers"] == [{"object": "Kept", "modifier": "Array", "type": "ARRAY"}]
+    assert result["removed_objects"] == {
+        "total": 1,
+        "by_type": {"MESH": 1},
+        "limit": 10,
+        "returned_count": 1,
+        "truncated": False,
+        "names": ["UtilCutter"],
+    }
+    assert result["removed_modifiers"] == {
+        "total": 1,
+        "by_type": {"ARRAY": 1},
+        "limit": 10,
+        "returned_count": 1,
+        "truncated": False,
+        "records": [{"object": "Kept", "modifier": "Array", "type": "ARRAY"}],
+    }
+    assert result["changed_objects"] == ["Kept"]
     assert result["cancelled"] is False
+
+
+def test_a_large_cleanup_counts_what_went_and_names_only_the_objects_that_lost_a_modifier(monkeypatch) -> None:
+    """Thirty cutters and twenty-four orphaned modifiers are counts and samples; the hosts are the next target."""
+    objects = FakeObjectsCollection()
+    hosts = [
+        FakeObject(f"Panel {index}", modifiers=[FakeModifier(f"Cut {cut}", "BOOLEAN") for cut in range(8)])
+        for index in range(3)
+    ]
+    cutters = [FakeObject(f"Cutter {index:02d}", object_type="EMPTY" if index % 3 else "MESH") for index in range(30)]
+    for obj in [*hosts, *cutters]:
+        objects[obj.name] = obj
+
+    def fake_clean_utils(*_a, **_k):
+        for cutter in cutters:
+            del objects[cutter.name]
+        for host in hosts:
+            host.modifiers = []
+        return {"FINISHED"}
+
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True, objects=objects)
+    monkeypatch.setattr(sys.modules["bpy"].ops.nd, "clean_utils", fake_clean_utils)
+
+    result = addon.BlenderMCPServer().nd_clean_utils(confirm=True)
+
+    assert result["removed_objects"] == {
+        "total": 30,
+        "by_type": {"EMPTY": 20, "MESH": 10},
+        "limit": 10,
+        "returned_count": 10,
+        "truncated": True,
+        "names": [f"Cutter {index:02d}" for index in range(10)],
+    }
+    modifiers = result["removed_modifiers"]
+    assert (modifiers["total"], modifiers["by_type"], modifiers["truncated"]) == (24, {"BOOLEAN": 24}, True)
+    assert modifiers["records"] == [
+        {"object": "Panel 0", "modifier": f"Cut {cut}", "type": "BOOLEAN"} for cut in range(8)
+    ] + [{"object": "Panel 1", "modifier": f"Cut {cut}", "type": "BOOLEAN"} for cut in range(2)]
+    assert result["changed_objects"] == ["Panel 0", "Panel 1", "Panel 2"]
 
 
 def test_nd_clean_utils_reports_nothing_removed_when_scene_is_already_clean(monkeypatch) -> None:
@@ -301,9 +356,24 @@ def test_nd_clean_utils_reports_nothing_removed_when_scene_is_already_clean(monk
 
     assert result == {
         "status": "cleaned",
-        "removed_objects": [],
-        "removed_modifiers": [],
+        "removed_objects": {
+            "total": 0,
+            "by_type": {},
+            "limit": 10,
+            "returned_count": 0,
+            "truncated": False,
+            "names": [],
+        },
+        "removed_modifiers": {
+            "total": 0,
+            "by_type": {},
+            "limit": 10,
+            "returned_count": 0,
+            "truncated": False,
+            "records": [],
+        },
         "cancelled": False,
+        "changed_objects": [],
     }
 
 

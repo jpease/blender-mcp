@@ -9,6 +9,7 @@ import bpy
 
 from ..constants import REQ_HEADERS
 from ..file_paths import PathOutsideRootsError, resolve_blend_path, sanitize_blender_error
+from ..helpers import counted_page
 from ..network import download_file, get_json
 from .blend_files import refuse_scripts_auto_execute
 
@@ -436,7 +437,9 @@ def _imported_model_reply(asset_id, file_info: dict, file_format: str, temp_dir:
         temp_dir: The download directory.
 
     Returns:
-        dict: `success`, `message` and `imported_objects`, or `error`.
+        dict: `success`, `message`, `imported_objects` (counted by type beside a sample of
+        names) and `changed_objects` - the imported roots, which no other imported object
+        parents - or `error`.
 
     """
     main_file_path = _downloaded_model_files(file_info, temp_dir)
@@ -444,13 +447,18 @@ def _imported_model_reply(asset_id, file_info: dict, file_format: str, temp_dir:
     refusal = _run_model_import(file_format, main_file_path, temp_dir)
     if refusal is not None:
         return refusal
-    imported_objects = [obj.name for obj in bpy.data.objects if obj.session_uid not in before_ids]
-    if not imported_objects:
+    imported = [obj for obj in bpy.data.objects if obj.session_uid not in before_ids]
+    if not imported:
         return {"error": "Blender imported no objects from the downloaded model"}
+    imported_ids = {obj.session_uid for obj in imported}
     return {
         "success": True,
         "message": f"Model {asset_id} imported successfully",
-        "imported_objects": imported_objects,
+        "imported_objects": counted_page(imported, type_of=lambda obj: obj.type, name_of=lambda obj: obj.name),
+        # A model is moved or scaled by its roots; the members under them are counted above.
+        "changed_objects": [
+            obj.name for obj in imported if obj.parent is None or obj.parent.session_uid not in imported_ids
+        ],
     }
 
 

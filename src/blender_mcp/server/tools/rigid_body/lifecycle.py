@@ -28,7 +28,9 @@ async def remove_rigid_body_components(
     tools (proxies, colliders, constraint empties) selected by rig_id and/or object_names (at least
     one required); WORLD removes scene_name's entire rigid body world and accepts neither
     object_names nor rig_id. TAGGED_HELPERS and WORLD delete objects outright rather than just
-    clearing settings, so both require confirm_destructive=True.
+    clearing settings, so both require confirm_destructive=True. `removed` counts what went
+    (`total`, `by_type`, up to 10 `names`; for WORLD, the scene whose world it was), and
+    changed_objects stays empty: nothing removed is a next target.
     """
     names = object_names or []
     if component_type in {"BODY_SETTINGS", "CONSTRAINT_SETTINGS"} and not names:
@@ -48,5 +50,4 @@ async def remove_rigid_body_components(
             "rig_id": rig_id,
             "confirm_destructive": confirm_destructive,
         },
-        changed_objects=names,
     )

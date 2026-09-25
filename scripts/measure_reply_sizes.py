@@ -558,7 +558,7 @@ _LIBRARY_DETAILS: Mapping[str, object] = MappingProxyType(
 
 # Page sizes the handlers apply to their own record lists, mirrored here so a count above a cap
 # grows only a reply's count and pagination fields, exactly as it does in Blender.
-_MAX_LISTED_NAMES = 10  # `handlers/linking.py:53`, the default page of datablock names
+_MAX_LISTED_NAMES = 10  # `helpers.py MAX_LISTED_NAMES`, the default page of names a counted list carries
 _MESH_ELEMENT_PAGE = 100  # `tools/viewport.py get_mesh_data` default limit
 # `tools/character_rigging/posing.py sample_deformed_geometry` default limit. Smaller than
 # get_mesh_data's because each record adds a displacement to a position and a normal.
@@ -576,11 +576,11 @@ _LIBRARY_NOTE = (
 
 def _linked_datablocks(total: int) -> dict[str, object]:
     """
-    Mirror `handlers/linking.py:302 _linked_datablocks` through `:253 _record_page`, without `detail`.
+    Mirror `handlers/linking.py _linked_datablocks` through `helpers.py counted_page`, without `detail`.
 
     The reference library links materials, meshes and the collection they hang off, so the
     `by_type` histogram a real reply carries is three entries wide. `detail=true` would
-    replace `names` with `handlers/linking.py:192 _linked_entry` records; the default is
+    replace `names` with `handlers/linking.py _linked_entry` records; the default is
     what every call that does not ask for them pays.
 
     Args:
@@ -606,7 +606,7 @@ def _linked_datablocks(total: int) -> dict[str, object]:
 
 def _counted_objects(total: int, suffix: str) -> dict[str, object]:
     """
-    Mirror `handlers/linking.py _counted_page` over objects, without `detail`.
+    Mirror `helpers.py counted_page` over linked objects (`by_type` is their `id_type`), without `detail`.
 
     Args:
         total: How many objects the link or override brought in.
@@ -624,6 +624,29 @@ def _counted_objects(total: int, suffix: str) -> dict[str, object]:
         "returned_count": listed,
         "truncated": total > _MAX_LISTED_NAMES,
         "names": [f"prop_{index:03d}{suffix}" for index in range(listed)],
+    }
+
+
+def _counted_libraries(total: int) -> dict[str, object]:
+    """
+    Mirror `handlers/file_lifecycle.py _counted_libraries`, which every session poll and swap carries.
+
+    Args:
+        total: How many libraries the open file links; the reference shot links one.
+
+    Returns:
+        dict[str, object]: The exact total, the present/missing split and up to ten summaries.
+
+    """
+    listed = min(total, _MAX_LISTED_NAMES)
+    summary = {key: _LIBRARY_DETAILS[key] for key in ("session_uid", "name", "filepath")}
+    return {
+        "total": total,
+        "by_type": {"PRESENT": total} if total else {},
+        "limit": _MAX_LISTED_NAMES,
+        "returned_count": listed,
+        "truncated": total > _MAX_LISTED_NAMES,
+        "records": [dict(summary) for _ in range(listed)],
     }
 
 
@@ -1119,9 +1142,18 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "assignments": [{"child_object_name": "set_001", "parent_object_name": "Hero"}],
             "changed_objects": ["set_001"],
         },
+        # `handlers/scene.py manage_scene_collections`: the collection is the change; its members
+        # are counted the way `helpers.counted_page` counts objects, and a new one has none.
         "manage_scene_collections": lambda _scale: {
             "name": "Receivers",
-            "objects": [],
+            "objects": {
+                "total": 0,
+                "by_type": {},
+                "limit": _MAX_LISTED_NAMES,
+                "returned_count": 0,
+                "truncated": False,
+                "names": [],
+            },
             "hide_viewport": False,
             "hide_render": False,
             "changed_objects": [],
@@ -1143,10 +1175,18 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "hide_select": False,
             "changed_objects": ["Scratch_Proxy"],
         },
-        # `handlers/scene.py:1424 remove_scene_objects`, the core-surface way a session takes
-        # back a scratch object it made; it reports what each removal released and what stayed.
+        # `handlers/scene.py remove_scene_objects`, the core-surface way a session takes back a
+        # scratch object it made: what went is counted, with the dependencies of the named sample
+        # and each shared datablock that stayed; nothing removed is left to name as changed.
         "remove_scene_objects": lambda _scale: {
-            "removed": ["Scratch_Proxy"],
+            "removed": {
+                "total": 1,
+                "by_type": {"MESH": 1},
+                "limit": _MAX_LISTED_NAMES,
+                "returned_count": 1,
+                "truncated": False,
+                "names": ["Scratch_Proxy"],
+            },
             "selector": None,
             "dependencies": {
                 "Scratch_Proxy": {
@@ -1159,7 +1199,7 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             },
             "retained_shared_datablocks": [{"kind": "MATERIAL", "name": "Hero_Skin", "reason": "shared users remain"}],
             "purged_datablocks": [],
-            "changed_objects": ["Scratch_Proxy"],
+            "changed_objects": [],
         },
         "set_viewport_overlay": lambda _scale: {"toggle": "CAVITY", "enabled": True},
         "get_viewport_screenshot": lambda _scale: {
@@ -1175,7 +1215,7 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "last_load_error": None,
             "last_save_error": None,
             "is_dirty": True,
-            "libraries": [{key: _LIBRARY_DETAILS[key] for key in ("session_uid", "name", "filepath")}],
+            "libraries": _counted_libraries(1),
         },
         # `handlers/delivery.py:inspect_delivery`. A representative shot references one canon
         # library, a dozen textures, a font, both simulation caches and its own output template.
@@ -1228,7 +1268,7 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "discarded_unsaved_changes": False,
             "scene_name": "Scene",
             "object_count": scale.objects,
-            "libraries": [{key: _LIBRARY_DETAILS[key] for key in ("session_uid", "name", "filepath")}],
+            "libraries": _counted_libraries(1),
             "capabilities_changed": False,
         },
         "reset_session": lambda _scale: {
@@ -1239,7 +1279,7 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "discarded_unsaved_changes": False,
             "scene_name": "Scene",
             "object_count": 0,
-            "libraries": [],
+            "libraries": _counted_libraries(0),
             "capabilities_changed": False,
         },
         # `handlers/linking.py:830 link_canon_library`.
@@ -1557,6 +1597,8 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "changed_objects": ["Bounce"],
             "changed_resources": ["Bounce Light"],
         },
+        # `handlers/lighting/construction.py configure_light`: one unshared light, so its only
+        # data user is itself, counted the way `helpers.counted_page` counts objects.
         "configure_light": lambda _scale: {
             "object": "Key",
             "light_data": "Key Light",
@@ -1564,7 +1606,14 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "old": {"energy": 1000.0},
             "new": {"energy": 800.0},
             "effective": dict(_LIGHT_SETTINGS),
-            "data_users": ["Key"],
+            "data_users": {
+                "total": 1,
+                "by_type": {"LIGHT": 1},
+                "limit": _MAX_LISTED_NAMES,
+                "returned_count": 1,
+                "truncated": False,
+                "names": ["Key"],
+            },
             "warnings": [],
             "changed_objects": ["Key"],
             "changed_resources": ["Key Light"],
