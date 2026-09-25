@@ -27,7 +27,7 @@ async def list_scene_objects(
         ctx: MCP request context.
         limit: Maximum number of objects to return in this page (default 25, capped at 200).
         offset: Index of the first object to return, for paging through a scene with more objects than fit in one page.
-        search: Only objects whose name contains this, case-insensitively ("char1_" finds every CHAR1_ object).
+        search: Only objects whose name contains this, case-insensitively ("char1_" finds each CHAR1_).
             Paging then runs over the matches.
 
     Returns:

@@ -292,7 +292,9 @@ def test_confirming_the_displacement_moves_the_rig_onto_the_new_action(monkeypat
     """The caller may well mean it - the confirmation is what says so."""
     server, animation, _root_motion = _rig_driven_by_root_motion(monkeypatch)
 
-    reply = server.keyframe_character_pose("CHAR1_rig", "CHAR1_sh030_pose", 1.0, list(_POSE), confirm_displace_action=True)
+    reply = server.keyframe_character_pose(
+        "CHAR1_rig", "CHAR1_sh030_pose", 1.0, list(_POSE), confirm_displace_action=True
+    )
 
     assert reply["assigned_action"] == "CHAR1_sh030_pose"
     assert reply["unassigned_action"] == "CHAR1_sh030_root"

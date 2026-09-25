@@ -709,7 +709,9 @@ def _armature_target_handler(monkeypatch):
 
     """
     armature_data = types.SimpleNamespace(name="CHAR1_rig", id_type="ARMATURE", animation_data=None)
-    rig = types.SimpleNamespace(name="CHAR1_rig", id_type="OBJECT", data=armature_data, animation_data=None, library=None)
+    rig = types.SimpleNamespace(
+        name="CHAR1_rig", id_type="OBJECT", data=armature_data, animation_data=None, library=None
+    )
     objects = FakeCollection()
     objects["CHAR1_rig"] = rig
     slot = types.SimpleNamespace(identifier="OBCHAR1_rig", handle=7, target_id_type="OBJECT", name_display="CHAR1_rig")

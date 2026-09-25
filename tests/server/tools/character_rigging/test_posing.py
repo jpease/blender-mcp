@@ -305,7 +305,9 @@ def test_a_roll_that_moves_nothing_measurable_warns_and_quotes_what_it_measured(
     rest_direction = head.matrix.to_3x3().col[1].copy()
     rest_origin = head.matrix.translation.copy()
 
-    rolled = server.set_character_pose("CHAR1_rig", [{"bone_name": head.name, "rotate": {"axis": "-Y", "degrees": 60.0}}])
+    rolled = server.set_character_pose(
+        "CHAR1_rig", [{"bone_name": head.name, "rotate": {"axis": "-Y", "degrees": 60.0}}]
+    )
     rolled_direction = head.matrix.to_3x3().col[1].copy()
     rolled_origin = head.matrix.translation.copy()
     bent = server.set_character_pose("CHAR1_rig", [{"bone_name": head.name, "rotate": {"axis": "Z", "degrees": 60.0}}])
@@ -392,7 +394,9 @@ def test_a_deforming_bone_with_no_reachable_mesh_says_what_it_did_not_measure(mo
     """
     server, _rig, _animation, _posing, _spine, head = _head_rig(monkeypatch)
 
-    rolled = server.set_character_pose("CHAR1_rig", [{"bone_name": head.name, "rotate": {"axis": "Y", "degrees": 30.0}}])
+    rolled = server.set_character_pose(
+        "CHAR1_rig", [{"bone_name": head.name, "rotate": {"axis": "Y", "degrees": 30.0}}]
+    )
 
     notice = rolled["warnings"][0]
     assert "no mesh bound to this armature carries a vertex group named after it" in notice, notice
@@ -416,7 +420,9 @@ def test_a_bounded_vertex_scan_says_its_radius_is_a_floor(monkeypatch) -> None:
     origin = rig.matrix_world @ head.bone.head_local
     along = ((rig.matrix_world @ head.bone.tail_local) - origin).normalized()
     on_axis = [tuple(origin + along * (0.001 * index)) for index in range(module._MAX_TWIST_WEIGHTED_VERTICES + 1)]
-    sys.modules["bpy"].data.objects["CHAR1_face_msh"] = _skinned_mesh("CHAR1_face_msh", rig, {"CHAR1_head_jnt": on_axis})
+    sys.modules["bpy"].data.objects["CHAR1_face_msh"] = _skinned_mesh(
+        "CHAR1_face_msh", rig, {"CHAR1_head_jnt": on_axis}
+    )
 
     rolled = server.set_character_pose(
         "CHAR1_rig", [{"bone_name": "CHAR1_head_jnt", "rotate": {"axis": "Y", "degrees": 30.0}}]
@@ -986,7 +992,9 @@ def test_the_two_call_shapes_are_exclusive_and_named_in_the_refusal(monkeypatch)
     with pytest.raises(ValueError, match="exactly one of frame with poses"):
         server.keyframe_character_pose("CHAR1_rig", "CHAR1_sh030_motion")
     with pytest.raises(ValueError, match="exactly one of frame with poses"):
-        server.keyframe_character_pose("CHAR1_rig", "CHAR1_sh030_motion", 1.0, pose, keys=[{"frame": 2.0, "poses": pose}])
+        server.keyframe_character_pose(
+            "CHAR1_rig", "CHAR1_sh030_motion", 1.0, pose, keys=[{"frame": 2.0, "poses": pose}]
+        )
     with pytest.raises(ValueError, match="requires both frame and poses"):
         server.keyframe_character_pose("CHAR1_rig", "CHAR1_sh030_motion", 1.0)
 
