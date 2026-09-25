@@ -293,7 +293,8 @@
     "bake_retopology_maps": [
       "cage_extrusion",
       "cage_object_name",
-      "confirm",
+      "confirm_bake",
+      "confirm_overwrite",
       "height",
       "high_poly_object_names",
       "map_type",
@@ -303,7 +304,6 @@
       "normal_swizzle",
       "object_name",
       "output_path",
-      "overwrite",
       "uv_map_name",
       "width"
     ],
@@ -322,7 +322,8 @@
     "bake_texture_map": [
       "cage_extrusion",
       "cage_object_name",
-      "confirm",
+      "confirm_bake",
+      "confirm_overwrite",
       "height",
       "high_poly_object_names",
       "map_type",
@@ -332,7 +333,6 @@
       "normal_swizzle",
       "object_name",
       "output_path",
-      "overwrite",
       "target_engine",
       "uv_map_name",
       "width"
@@ -1032,7 +1032,7 @@
     "create_override": [
       "collection_uid",
       "detail",
-      "scene_uid"
+      "scene_name"
     ],
     "create_pbr_material": [
       "material_name",
@@ -1451,7 +1451,7 @@
     ],
     "generate_retopology_lods": [
       "collection_name",
-      "confirm",
+      "confirm_generate",
       "levels",
       "object_name",
       "profile",
@@ -1464,20 +1464,20 @@
     "get_camera_rig_info": [
       "animation_limit",
       "animation_offset",
-      "child_limit",
-      "child_offset",
+      "children_limit",
+      "children_offset",
       "descendant_depth",
       "object_name",
       "scene_name"
     ],
     "get_character_rig_info": [
       "armature_object_name",
-      "bone_limit",
       "bone_names",
-      "bone_offset",
-      "dependency_limit",
-      "dependency_offset",
-      "include_custom_properties"
+      "dependent_meshes_limit",
+      "dependent_meshes_offset",
+      "include_custom_properties",
+      "limit",
+      "offset"
     ],
     "get_cloth_object_info": [
       "object_name",
@@ -1702,18 +1702,20 @@
       "filepath",
       "objects",
       "relative",
-      "scene_uid",
+      "scene_name",
       "world"
     ],
     "list_character_bones": [
       "armature_object_name",
       "bone_names",
       "custom_properties",
+      "custom_properties_limit",
+      "custom_properties_offset",
       "deformed_meshes",
+      "deformed_meshes_limit",
+      "deformed_meshes_offset",
       "limit",
-      "mesh_offset",
       "offset",
-      "property_offset",
       "rest_axes"
     ],
     "list_libraries": [
@@ -1778,7 +1780,7 @@
       "action",
       "confirm_bake",
       "confirm_external_overwrite",
-      "confirm_free_bake",
+      "confirm_free",
       "max_bake_frames",
       "modifier_name",
       "object_name",
@@ -1900,7 +1902,7 @@
     "manage_retopology_checkpoint": [
       "action",
       "checkpoint_name",
-      "confirm",
+      "confirm_destructive",
       "object_name"
     ],
     "manage_rigid_body_cache": [
@@ -1924,7 +1926,7 @@
     ],
     "manage_uv_maps": [
       "action",
-      "confirm",
+      "confirm_remove",
       "new_name",
       "object_name",
       "source_uv_map_name",
@@ -2247,7 +2249,7 @@
       "scene_name"
     ],
     "reset_session": [
-      "confirm"
+      "confirm_reset"
     ],
     "run_geometry_nodes_tool": [
       "confirm_destructive",
@@ -2508,7 +2510,7 @@
       "use_object_transform"
     ],
     "unlink_libraries": [
-      "confirm",
+      "confirm_unlink",
       "library_uids",
       "purge_orphans"
     ],
@@ -2611,5 +2613,5 @@
       "scope"
     ]
   },
-  "protocol_version": 46
+  "protocol_version": 47
 }

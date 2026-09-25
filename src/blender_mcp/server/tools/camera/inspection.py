@@ -15,8 +15,8 @@ async def get_camera_rig_info(
     scene_name: str,
     object_name: str,
     descendant_depth: Annotated[int, Field(ge=0, le=12)] = 4,
-    child_limit: Annotated[int, Field(ge=1, le=200)] = 50,
-    child_offset: Annotated[int, Field(ge=0, le=1999)] = 0,
+    children_limit: Annotated[int, Field(ge=1, le=200)] = 50,
+    children_offset: Annotated[int, Field(ge=0, le=1999)] = 0,
     animation_limit: Annotated[int, Field(ge=1, le=500)] = 100,
     animation_offset: Annotated[int, Field(ge=0, le=4999)] = 0,
 ) -> dict:
@@ -25,9 +25,8 @@ async def get_camera_rig_info(
 
     The result labels local and world transforms separately and includes camera optics, DOF,
     constraints, drivers, actions, render gate, active-camera state, camera markers, rig metadata,
-    and a bounded descendant page. Continue pages by passing `children_next_offset` as
-    `child_offset` and `animation_next_offset` as `animation_offset`. This tool never evaluates
-    another frame and never changes the scene.
+    and a bounded descendant page. Continue pages with the returned next offsets. This tool never
+    evaluates another frame and never changes the scene.
     """
     return await call_blender(
         "get_camera_rig_info",
@@ -35,8 +34,8 @@ async def get_camera_rig_info(
             "scene_name": scene_name,
             "object_name": object_name,
             "descendant_depth": descendant_depth,
-            "child_limit": child_limit,
-            "child_offset": child_offset,
+            "children_limit": children_limit,
+            "children_offset": children_offset,
             "animation_limit": animation_limit,
             "animation_offset": animation_offset,
         },

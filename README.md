@@ -271,7 +271,6 @@ for fine-grained control. Modes are curated presets over bundles and compose wit
 | `lighting` | lighting inspection, environment, render-quality settings (construction is separate, see `lighting-construction`) |
 | `lighting-construction` | creating/aiming/linking lights, studio-lighting presets (also carries all of `lighting`'s render-quality tools — `configure_lighting_quality`, `configure_color_management`, `render_lighting_preview` — since the studio-lighting preset calls the last one directly) |
 | `texture` | materials/textures |
-| `texture-lighting` | **deprecated**, kept for existing configs: `texture` + `lighting` + `lighting-construction` |
 | `rendering` | render, background render jobs (`manage_render_job`), inspect render output |
 | `assets` | Poly Haven, Sketchfab |
 

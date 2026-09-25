@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
 
-from .bundles import BUNDLES, CANONICAL_BUNDLES, CORE_MODULES
+from .bundles import BUNDLES, CORE_MODULES
 
 # The bundle name reported for a tool in `CORE_MODULES`. Not a key of `BUNDLES`: core is
 # mounted unconditionally, so it is never something to add to the environment variable.
@@ -94,7 +94,7 @@ def _module_tool_names(module_name: str) -> frozenset[str]:
 @functools.cache
 def bundle_tool_names() -> Mapping[str, frozenset[str]]:
     """
-    Map every canonical bundle, plus `core`, to the tool names it mounts.
+    Map every bundle, plus `core`, to the tool names it mounts.
 
     Bundles overlap: `lighting` and `lighting-construction` share a module, so a name can
     appear under both. That is the truth a caller needs -- either bundle mounts it.
@@ -104,8 +104,8 @@ def bundle_tool_names() -> Mapping[str, frozenset[str]]:
 
     """
     mapping = {CORE_BUNDLE: frozenset().union(*(_module_tool_names(name) for name in CORE_MODULES))}
-    for bundle in CANONICAL_BUNDLES:
-        mapping[bundle] = frozenset().union(*(_module_tool_names(name) for name in BUNDLES[bundle]))
+    for bundle, modules in BUNDLES.items():
+        mapping[bundle] = frozenset().union(*(_module_tool_names(name) for name in modules))
     return MappingProxyType(mapping)
 
 
@@ -148,11 +148,11 @@ def unmounted_bundle_counts(mounted: frozenset[str]) -> dict[str, int]:
 
     Returns:
         Bundle name to how many of its tools are absent, for bundles missing at least one,
-        ordered as `CANONICAL_BUNDLES` declares them.
+        ordered as `BUNDLES` declares them.
 
     """
     counts = {}
-    for bundle in CANONICAL_BUNDLES:
+    for bundle in BUNDLES:
         absent = len(bundle_tool_names()[bundle] - mounted)
         if absent:
             counts[bundle] = absent

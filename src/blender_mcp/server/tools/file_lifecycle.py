@@ -132,18 +132,18 @@ async def save_shot(
 
 
 @mcp.tool()
-async def reset_session(ctx: Context, confirm: bool = False) -> dict:
+async def reset_session(ctx: Context, confirm_reset: bool = False) -> dict:
     """
     Replace the open database with an empty factory scene, discarding it and any unsaved work.
 
-    Requires `confirm=true`; discarding is this command's only effect. Invalidates the
+    Requires `confirm_reset=true`; discarding is this command's only effect. Invalidates the
     session like `open_shot`: `session_epoch` moves and capabilities may change, so
     re-handshake (`get_addon_status`) and treat every library `session_uid` held before this
     call as stale.
 
     Args:
         ctx: MCP request context.
-        confirm: Required to discard the open file and any unsaved work.
+        confirm_reset: Required to discard the open file and any unsaved work.
 
     Returns:
         filepath (None), scene_name, object_count (the scene's own objects),
@@ -152,7 +152,7 @@ async def reset_session(ctx: Context, confirm: bool = False) -> dict:
         note, and warnings when part of the swap report could not be read.
 
     """
-    return await call_blender("reset_session", {"confirm": confirm})
+    return await call_blender("reset_session", {"confirm_reset": confirm_reset})
 
 
 @mcp.tool()
@@ -164,7 +164,7 @@ async def link_canon_library(
     world: Annotated[str | None, Field(min_length=1)] = None,
     as_override: bool = False,
     relative: bool = False,
-    scene_uid: int | None = None,
+    scene_name: str | None = None,
     detail: bool = False,
 ) -> dict:
     """
@@ -185,12 +185,12 @@ async def link_canon_library(
         world: One World name inside the library file, linked and assigned as the scene's world.
         as_override: Override each linked collection's hierarchy instead of instancing it.
         relative: Store the library path relative to the open file; needs a saved session.
-        scene_uid: Scene to link into; needed only when the file has more than one scene.
+        scene_name: Local scene to link into; needed only when the file has more than one.
         detail: Page the objects brought in as records (session_uid, id_type, indirect and
             missing flags) instead of names; under as_override, each override's objects.
 
     Returns:
-        library (as list_libraries), library_already_linked, scene_uid, collections, objects,
+        library (as list_libraries), library_already_linked, scene_name, collections, objects,
         instanced_objects (total, by_type and one page of names, or records under detail;
         None under as_override), world, previous_world, overrides (as create_override).
         changed_objects names only the root objects - those no other linked object parents,
@@ -206,7 +206,7 @@ async def link_canon_library(
             "world": world,
             "as_override": as_override,
             "relative": relative,
-            "scene_uid": scene_uid,
+            "scene_name": scene_name,
             "detail": detail,
         },
     )
@@ -214,7 +214,7 @@ async def link_canon_library(
 
 @mcp.tool()
 async def create_override(
-    ctx: Context, collection_uid: int, scene_uid: int | None = None, detail: bool = False
+    ctx: Context, collection_uid: int, scene_name: str | None = None, detail: bool = False
 ) -> dict:
     """
     Make a linked collection's hierarchy editable in the shot by overriding it (Route C).
@@ -227,20 +227,20 @@ async def create_override(
     Args:
         ctx: MCP request context.
         collection_uid: The linked collection's session_uid.
-        scene_uid: Scene to override into; only needed when the file has more than one scene.
+        scene_name: Local scene to override into; needed only when the file has more than one.
         detail: List the override's objects as records (session_uid, editability, the linked
             original each references) instead of names.
 
     Returns:
         override (session_uid, is_editable, is_system_override, reference_uid,
-        hierarchy_root_uid), scene_uid, replaced_instances, and objects (total, by_type and one
+        hierarchy_root_uid), scene_name, replaced_instances, and objects (total, by_type and one
         page of names, or records under detail). changed_objects names the override's root
         objects - those no other override object parents - not every member.
 
     """
     return await call_blender(
         "create_override",
-        {"collection_uid": collection_uid, "scene_uid": scene_uid, "detail": detail},
+        {"collection_uid": collection_uid, "scene_name": scene_name, "detail": detail},
     )
 
 
@@ -326,13 +326,13 @@ async def relocate_library(ctx: Context, library_uid: int, filepath: str, detail
 async def unlink_libraries(
     ctx: Context,
     library_uids: list[int],
-    confirm: bool = False,
+    confirm_unlink: bool = False,
     purge_orphans: bool = False,
 ) -> dict:
     """
     Remove exactly the named libraries and every datablock linked from them.
 
-    Requires `confirm=true`; touches only the libraries named by `library_uids`
+    Requires `confirm_unlink=true`; touches only the libraries named by `library_uids`
     (`session_uid`s from `list_libraries`), what they link, and the local override objects
     made from what they link. Refuses an indirect library - one reached only through another
     library. `purge_orphans=true` also removes local datablocks this unlink leaves with no
@@ -341,7 +341,7 @@ async def unlink_libraries(
     Args:
         ctx: MCP request context.
         library_uids: The libraries' session_uids to remove, 1 to 100.
-        confirm: Required; this command deletes user data.
+        confirm_unlink: Required; this command deletes user data.
         purge_orphans: Also remove local datablocks this unlink leaves without users.
 
     Returns:
@@ -353,7 +353,7 @@ async def unlink_libraries(
     """
     return await call_blender(
         "unlink_libraries",
-        {"library_uids": library_uids, "confirm": confirm, "purge_orphans": purge_orphans},
+        {"library_uids": library_uids, "confirm_unlink": confirm_unlink, "purge_orphans": purge_orphans},
     )
 
 

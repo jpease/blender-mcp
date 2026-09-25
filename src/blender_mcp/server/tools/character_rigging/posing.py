@@ -155,9 +155,11 @@ async def list_character_bones(
     rest_axes: bool = False,
     bone_names: Annotated[list[str] | None, Field(min_length=1, max_length=200)] = None,
     custom_properties: bool = False,
-    property_offset: Annotated[int, Field(ge=0, le=99_999)] = 0,
+    custom_properties_limit: Annotated[int, Field(ge=1, le=40)] = 40,
+    custom_properties_offset: Annotated[int, Field(ge=0, le=99_999)] = 0,
     deformed_meshes: bool = False,
-    mesh_offset: Annotated[int, Field(ge=0, le=99_999)] = 0,
+    deformed_meshes_limit: Annotated[int, Field(ge=1, le=200)] = 200,
+    deformed_meshes_offset: Annotated[int, Field(ge=0, le=99_999)] = 0,
 ) -> dict:
     """
     List a rig's bone names, parents, and deform flags so a pose can name real bones.
@@ -187,13 +189,15 @@ async def list_character_bones(
             take in their own custom_properties. A face rig commonly puts hundreds on one
             control bone, so name that bone in bone_names rather than paging the rig with this
             on.
-        property_offset: Where to resume inside each reported bone's property list, when a bone
-            holds more than one page of them. Pass the item's custom_property_next_offset.
+        custom_properties_limit: Properties per bone per page.
+        custom_properties_offset: Where to resume inside each reported bone's property list, when
+            a bone holds more than one page of them. Pass the item's custom_properties_next_offset.
         deformed_meshes: Also name the meshes this rig deforms. Independent of the bone page: a
             bone's deform flag says it deforms something, never what. This is the set
             sample_deformed_geometry measures; frame_camera_on_objects frames the members of it
             the render shows and names the rest in its excluded_objects.
-        mesh_offset: Where to resume in that list; pass its next_offset while truncated.
+        deformed_meshes_limit: Meshes per page.
+        deformed_meshes_offset: Where to resume in that list; pass deformed_meshes_next_offset.
 
     Returns:
         armature_object, and bones with items (name, parent - null for a root - and deform,
@@ -212,15 +216,16 @@ async def list_character_bones(
         order, a parent before its children.
 
         With custom_properties, each item also carries custom_properties (name, value, and
-        min/max where the property defines a slider range), custom_property_count (how many the
-        bone holds in total) and custom_property_next_offset (null once the page reaches the
-        end). Values are read from the pose bone, so on a library override they are the
-        override's, and a bare write to one does not survive a reload - key it instead.
+        min/max where the property defines a slider range) with custom_properties_total (how
+        many the bone holds), _offset, _returned_count, _truncated and _next_offset (null once
+        the page reaches the end). Values are read from the pose bone, so on a library override
+        they are the override's, and a bare write to one does not survive a reload - key it
+        instead.
 
-        With deformed_meshes, the reply also carries deformed_meshes: items (object, binding -
+        With deformed_meshes, the reply also carries deformed_meshes (object, binding -
         MODIFIER, PARENT or BOTH - and modifier_enabled, false where a hidden Armature modifier
-        is why a bound mesh does not move), total, offset, limit, truncated and next_offset.
-        Meshes outside the scene are not listed.
+        is why a bound mesh does not move) with deformed_meshes_total, _offset, _returned_count,
+        _truncated and _next_offset. Meshes outside the scene are not listed.
 
     """
     return await call_blender(
@@ -232,9 +237,11 @@ async def list_character_bones(
             "rest_axes": rest_axes,
             "bone_names": bone_names,
             "custom_properties": custom_properties,
-            "property_offset": property_offset,
+            "custom_properties_limit": custom_properties_limit,
+            "custom_properties_offset": custom_properties_offset,
             "deformed_meshes": deformed_meshes,
-            "mesh_offset": mesh_offset,
+            "deformed_meshes_limit": deformed_meshes_limit,
+            "deformed_meshes_offset": deformed_meshes_offset,
         },
     )
 

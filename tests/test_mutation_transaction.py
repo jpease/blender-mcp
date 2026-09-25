@@ -64,7 +64,7 @@ def test_a_refused_request_is_logged_without_a_traceback(monkeypatch, caplog) ->
     server = addon.BlenderMCPServer()
 
     def refuses():
-        raise ValueError("reset_session discards the open file; pass confirm=true")
+        raise ValueError("reset_session discards the open file; pass confirm_reset=true")
 
     def breaks():
         raise RuntimeError("boom")
@@ -75,14 +75,14 @@ def test_a_refused_request_is_logged_without_a_traceback(monkeypatch, caplog) ->
         refusal = server.execute_command_internal({"type": "list_scene_objects", "params": {}})
         fault = server.execute_command_internal({"type": "broken", "params": {}})
 
-    assert refusal == {"status": "error", "message": "reset_session discards the open file; pass confirm=true"}
+    assert refusal == {"status": "error", "message": "reset_session discards the open file; pass confirm_reset=true"}
     assert fault == {"status": "error", "message": "boom"}
 
     by_message = {record.getMessage(): record for record in caplog.records}
     refused = next(record for message, record in by_message.items() if "refused" in message)
     failed = next(record for message, record in by_message.items() if "failed in its handler" in message)
     assert refused.exc_info is None, "a refusal still carries a traceback"
-    assert "pass confirm=true" in refused.getMessage(), "the refusal does not say what was refused"
+    assert "pass confirm_reset=true" in refused.getMessage(), "the refusal does not say what was refused"
     assert failed.exc_info is not None, "an unexpected failure lost its traceback"
 
 

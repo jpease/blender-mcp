@@ -247,7 +247,7 @@ assert "visual correctness was not inferred" in validation["verification"]
 pager = _new_object("Smoke Pager Root")
 for index in range(3):
     _new_object(f"Smoke Pager Child {index}").parent = pager
-paged = handler.get_camera_rig_info(scene.name, pager.name, child_limit=1, child_offset=1)
+paged = handler.get_camera_rig_info(scene.name, pager.name, children_limit=1, children_offset=1)
 assert (paged["children_total"], paged["children_offset"], paged["children_returned_count"]) == (3, 1, 1), paged
 assert paged["children_next_offset"] == 2, paged
 assert paged["animation_offset"] == 0, paged

@@ -16,7 +16,7 @@ import math
 import bpy
 import mathutils
 
-from ...helpers import deforming_meshes, paginate, sync_from_editmode
+from ...helpers import deforming_meshes, paginate, prefixed_page, sync_from_editmode
 from ..action_assignment import action_fcurve_collections, assign_named_action, cycled_curve_extent
 from ..key_style import KeyStyle, style_point
 from .axes import (
@@ -64,19 +64,19 @@ _FRAME_TOLERANCE = 1e-6
 # One call may pose 500 bones, and the envelope lifts warnings whole rather than paging them,
 # so every per-bone notice list below names up to this many bones and then counts the rest.
 _MAX_CYCLE_WARNINGS = 4
-# How many of one bone's custom properties a page carries. A face control bone can hold 199
-# sliders, which is more than the 8 KiB reply budget fits whole, so the page is bounded here
-# and `custom_property_next_offset` resumes it; the envelope's own shortening cuts whole bones
-# and could not reach inside one.
+# The largest, and default, page of one bone's custom properties. A face control bone can hold
+# 199 sliders, which is more than the 8 KiB reply budget fits whole, so a bone's page is bounded
+# here and `custom_properties_next_offset` resumes it.
 _MAX_BONE_PROPERTIES = 40
 # At or past this, a custom property's UI range is Blender's "unbounded" rather than a slider a
 # rig author drew: an unbounded float answers +-FLT_MAX (3.4028235e+38) and an int the 32-bit
 # limits, measured on Blender 5.2. Reporting either would put two meaningless fields on every
 # property of a 199-slider bone.
 _UNBOUNDED_PROPERTY_LIMIT = 2_147_483_647
-# Deformed meshes per page. A character is body, hair, clothing, eyes, brows and teeth - a
-# couple of dozen at most - so one page covers every real rig and `mesh_offset` exists for the
-# scene that proves otherwise rather than leaving `truncated` with nowhere to resume from.
+# The largest, and default, page of deformed meshes. A character is body, hair, clothing, eyes,
+# brows and teeth - a couple of dozen at most - so one page covers every real rig and
+# `deformed_meshes_offset` exists for the scene that proves otherwise rather than leaving
+# `deformed_meshes_truncated` with nowhere to resume from.
 _MAX_DEFORMED_MESHES = 200
 
 
@@ -1464,7 +1464,7 @@ def _property_bounds(pose_bone, name):
     return bounds
 
 
-def _bone_custom_properties(pose_bone, offset):
+def _bone_custom_properties(pose_bone, offset, limit):
     """
     Page one pose bone's custom properties, which is where a rig keeps its sliders.
 
@@ -1477,19 +1477,22 @@ def _bone_custom_properties(pose_bone, offset):
     Args:
         pose_bone: The bone to read, or None when the rest bone has no pose bone.
         offset: Where in this bone's sorted property names to resume.
+        limit: Properties this page may carry, at most `_MAX_BONE_PROPERTIES`.
 
     Returns:
-        tuple: (records, total, next_offset). Each record is `name`, `value`, and `min`/`max`
-        where the property defines them. `next_offset` is None once the page reaches the end.
+        dict: `custom_properties` - each record `name`, `value`, and `min`/`max` where the
+        property defines them - with its `custom_properties_*` pagination keys.
 
     """
-    if pose_bone is None:
-        return [], 0, None
     names = sorted(key for key in getattr(pose_bone, "keys", lambda: ())() if key != "_RNA_UI")
-    page = names[offset : offset + _MAX_BONE_PROPERTIES]
-    records = [{"name": name, "value": _plain(pose_bone[name]), **_property_bounds(pose_bone, name)} for name in page]
-    consumed = offset + len(page)
-    return records, len(names), consumed if consumed < len(names) else None
+    return prefixed_page(
+        "custom_properties",
+        names,
+        offset,
+        limit,
+        _MAX_BONE_PROPERTIES,
+        describe=lambda name: {"name": name, "value": _plain(pose_bone[name]), **_property_bounds(pose_bone, name)},
+    )
 
 
 # --- Measuring what an axis actually does, rather than reading it off the rest pose ---------
@@ -1703,7 +1706,7 @@ def _probe_record(axis, degrees, before, after, references):
     return record
 
 
-def _deformed_mesh_page(armature, mesh_offset):
+def _deformed_mesh_page(armature, offset, limit):
     """
     Page the meshes this armature deforms, and say how each one is bound to it.
 
@@ -1714,26 +1717,22 @@ def _deformed_mesh_page(armature, mesh_offset):
 
     Args:
         armature: The armature object to resolve.
-        mesh_offset: Where to resume in the bound list.
+        offset: Where to resume in the bound list.
+        limit: Meshes this page may carry, at most `_MAX_DEFORMED_MESHES`.
 
     Returns:
-        dict: A page of `{object, binding, modifier_enabled}` with the envelope's usual
-        total/offset/limit/truncated/next_offset.
+        dict: `deformed_meshes` - each record `{object, binding, modifier_enabled}` - with its
+        `deformed_meshes_*` pagination keys.
 
     """
-    bound = deforming_meshes(armature)
-    start, end, truncated, next_offset = paginate(len(bound), mesh_offset, _MAX_DEFORMED_MESHES, _MAX_DEFORMED_MESHES)
-    return {
-        "items": [
-            {"object": mesh.name, "binding": binding, "modifier_enabled": enabled}
-            for mesh, binding, enabled in bound[start:end]
-        ],
-        "total": len(bound),
-        "offset": start,
-        "limit": _MAX_DEFORMED_MESHES,
-        "truncated": truncated,
-        "next_offset": next_offset,
-    }
+    return prefixed_page(
+        "deformed_meshes",
+        deforming_meshes(armature),
+        offset,
+        limit,
+        _MAX_DEFORMED_MESHES,
+        describe=lambda bound: {"object": bound[0].name, "binding": bound[1], "modifier_enabled": bound[2]},
+    )
 
 
 class PoseAnimationHandlersMixin:
@@ -1747,17 +1746,19 @@ class PoseAnimationHandlersMixin:
         rest_axes=False,
         bone_names=None,
         custom_properties=False,
-        property_offset=0,
+        custom_properties_limit=_MAX_BONE_PROPERTIES,
+        custom_properties_offset=0,
         deformed_meshes=False,
-        mesh_offset=0,
+        deformed_meshes_limit=_MAX_DEFORMED_MESHES,
+        deformed_meshes_offset=0,
     ):
         """Page the armature's rest bones with their parent, deform flag, optional rest axes and sliders."""
         armature = _armature_object(armature_object_name)
-        _validate_limit_offset(limit, offset, _MAX_BONE_PAGE, "bone")
-        if isinstance(property_offset, bool) or int(property_offset) < 0:
-            raise ValueError("property_offset must be a non-negative integer")
-        if isinstance(mesh_offset, bool) or int(mesh_offset) < 0:
-            raise ValueError("mesh_offset must be a non-negative integer")
+        _validate_limit_offset(limit, offset, _MAX_BONE_PAGE)
+        _validate_limit_offset(
+            custom_properties_limit, custom_properties_offset, _MAX_BONE_PROPERTIES, "custom_properties"
+        )
+        _validate_limit_offset(deformed_meshes_limit, deformed_meshes_offset, _MAX_DEFORMED_MESHES, "deformed_meshes")
         # Rest-bone names, parents and deform flags are edited in Edit Mode, which keeps its own
         # copy of the armature until it exits; flush it rather than report stale bones.
         sync_from_editmode(armature)
@@ -1782,12 +1783,11 @@ class PoseAnimationHandlersMixin:
             if custom_properties:
                 # The pose bone, not the rest bone: the two hold separate ID property stores,
                 # and the sliders a pose call writes are the pose bone's.
-                properties, total, property_next = _bone_custom_properties(
-                    armature.pose.bones.get(bone.name), int(property_offset)
+                item.update(
+                    _bone_custom_properties(
+                        armature.pose.bones.get(bone.name), custom_properties_offset, custom_properties_limit
+                    )
                 )
-                item["custom_properties"] = properties
-                item["custom_property_count"] = total
-                item["custom_property_next_offset"] = property_next
             items.append(item)
         reply = {"armature_object": armature.name}
         if rest_axes:
@@ -1801,7 +1801,7 @@ class PoseAnimationHandlersMixin:
             "next_offset": next_offset,
         }
         if deformed_meshes:
-            reply["deformed_meshes"] = _deformed_mesh_page(armature, mesh_offset)
+            reply.update(_deformed_mesh_page(armature, deformed_meshes_offset, deformed_meshes_limit))
         return reply
 
     def probe_bone_axis(

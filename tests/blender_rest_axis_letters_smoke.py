@@ -332,7 +332,22 @@ assert math.isclose(by_name["expr_smile"]["min"], 0.0, abs_tol=1e-6), by_name
 assert math.isclose(by_name["expr_smile"]["max"], 1.0, abs_tol=1e-6), by_name
 # A property with no authored UI data has no range to state and spends no bytes saying so.
 assert "max" not in by_name["sk_brow_up_in_L"], by_name
-assert (sliders["custom_property_count"], sliders["custom_property_next_offset"]) == (2, None), sliders
+assert (sliders["custom_properties_total"], sliders["custom_properties_next_offset"]) == (2, None), sliders
+# A page smaller than the bone's sliders stops there and resumes where it stopped.
+first_slider, second_slider = (
+    handler.list_character_bones(
+        wide.name,
+        bone_names=[BONE],
+        custom_properties=True,
+        custom_properties_limit=1,
+        custom_properties_offset=offset,
+    )["bones"]["items"][0]
+    for offset in (0, 1)
+)
+assert [record["name"] for record in first_slider["custom_properties"]] == ["expr_smile"], first_slider
+assert first_slider["custom_properties_next_offset"] == 1, first_slider
+assert [record["name"] for record in second_slider["custom_properties"]] == ["sk_brow_up_in_L"], second_slider
+assert second_slider["custom_properties_next_offset"] is None, second_slider
 print(f"sliders on {BONE}: {sliders['custom_properties']}")
 
 print("REST_AXIS_LETTERS_SMOKE_OK")

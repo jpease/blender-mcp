@@ -119,17 +119,17 @@ ROWS: list[Revert] = [
         (f"{SFLT}::test_save_shot_destructive_hint_is_explicit_not_schema_derived",),
     ),
     Revert(
-        "server tools: reset_session's confirm default is unpinned to True",
+        "server tools: reset_session's confirm_reset default is unpinned to True",
         SERVER_FILE_LIFECYCLE_TOOL,
-        "async def reset_session(ctx: Context, confirm: bool = False) -> dict:",
-        "async def reset_session(ctx: Context, confirm: bool = True) -> dict:",
+        "async def reset_session(ctx: Context, confirm_reset: bool = False) -> dict:",
+        "async def reset_session(ctx: Context, confirm_reset: bool = True) -> dict:",
         (f"{SFLT}::test_reset_session_defaults",),
     ),
     Revert(
-        "server tools: reset_session does not forward confirm",
+        "server tools: reset_session does not forward confirm_reset",
         SERVER_FILE_LIFECYCLE_TOOL,
-        '    return await call_blender("reset_session", {"confirm": confirm})',
-        '    return await call_blender("reset_session", {"confirm": False})',
+        '    return await call_blender("reset_session", {"confirm_reset": confirm_reset})',
+        '    return await call_blender("reset_session", {"confirm_reset": False})',
         (f"{SFLT}::test_reset_session_forwards_confirm",),
     ),
     Revert(
@@ -142,29 +142,29 @@ ROWS: list[Revert] = [
     Revert(
         "server tools: link_canon_library does not forward detail",
         SERVER_FILE_LIFECYCLE_TOOL,
-        '            "scene_uid": scene_uid,\n            "detail": detail,\n',
-        '            "scene_uid": scene_uid,\n            "detail": False,\n',
+        '            "scene_name": scene_name,\n            "detail": detail,\n',
+        '            "scene_name": scene_name,\n            "detail": False,\n',
         (f"{SFLT}::test_link_canon_library_forwards_every_parameter",),
     ),
     Revert(
         "server tools: link_canon_library's relative=False default is unpinned to True",
         SERVER_FILE_LIFECYCLE_TOOL,
-        "    relative: bool = False,\n    scene_uid: int | None = None,\n    detail: bool = False,\n) -> dict:",
-        "    relative: bool = True,\n    scene_uid: int | None = None,\n    detail: bool = False,\n) -> dict:",
+        "    relative: bool = False,\n    scene_name: str | None = None,\n    detail: bool = False,\n) -> dict:",
+        "    relative: bool = True,\n    scene_name: str | None = None,\n    detail: bool = False,\n) -> dict:",
         (f"{SFLT}::test_link_canon_library_defaults",),
     ),
     Revert(
-        "server tools: create_override drops scene_uid before forwarding it",
+        "server tools: create_override drops scene_name before forwarding it",
         SERVER_FILE_LIFECYCLE_TOOL,
-        '        {"collection_uid": collection_uid, "scene_uid": scene_uid, "detail": detail},',
-        '        {"collection_uid": collection_uid, "scene_uid": None, "detail": detail},',
+        '        {"collection_uid": collection_uid, "scene_name": scene_name, "detail": detail},',
+        '        {"collection_uid": collection_uid, "scene_name": None, "detail": detail},',
         (f"{SFLT}::test_create_override_forwards_every_parameter",),
     ),
     Revert(
-        "server tools: create_override's scene_uid=None default is unpinned",
+        "server tools: create_override's scene_name=None default is unpinned",
         SERVER_FILE_LIFECYCLE_TOOL,
-        "    ctx: Context, collection_uid: int, scene_uid: int | None = None, detail: bool = False\n",
-        "    ctx: Context, collection_uid: int, scene_uid: int | None = 999, detail: bool = False\n",
+        "    ctx: Context, collection_uid: int, scene_name: str | None = None, detail: bool = False\n",
+        '    ctx: Context, collection_uid: int, scene_name: str | None = "Scene", detail: bool = False\n',
         (f"{SFLT}::test_create_override_defaults",),
     ),
     Revert(
@@ -219,15 +219,15 @@ ROWS: list[Revert] = [
     Revert(
         "server tools: unlink_libraries does not forward purge_orphans",
         SERVER_FILE_LIFECYCLE_TOOL,
-        '{"library_uids": library_uids, "confirm": confirm, "purge_orphans": purge_orphans},',
-        '{"library_uids": library_uids, "confirm": confirm, "purge_orphans": False},',
+        '{"library_uids": library_uids, "confirm_unlink": confirm_unlink, "purge_orphans": purge_orphans},',
+        '{"library_uids": library_uids, "confirm_unlink": confirm_unlink, "purge_orphans": False},',
         (f"{SFLT}::test_unlink_libraries_forwards_every_parameter",),
     ),
     Revert(
-        "server tools: unlink_libraries' confirm=False default is unpinned to True",
+        "server tools: unlink_libraries' confirm_unlink=False default is unpinned to True",
         SERVER_FILE_LIFECYCLE_TOOL,
-        "    confirm: bool = False,\n    purge_orphans: bool = False,\n) -> dict:",
-        "    confirm: bool = True,\n    purge_orphans: bool = False,\n) -> dict:",
+        "    confirm_unlink: bool = False,\n    purge_orphans: bool = False,\n) -> dict:",
+        "    confirm_unlink: bool = True,\n    purge_orphans: bool = False,\n) -> dict:",
         (f"{SFLT}::test_unlink_libraries_defaults",),
     ),
     Revert(
@@ -345,18 +345,18 @@ ROWS: list[Revert] = [
     Revert(
         "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 277_392",
-        # One byte below the *measured* payload (277,392). The ceiling sits exactly on it now, but
+        "SHOT_MODE_BYTE_CEILING = 277_769",
+        # One byte below the *measured* payload (277,769). The ceiling sits exactly on it now, but
         # a ceiling with headroom would let a revert to itself-minus-one pass and prove nothing.
-        "SHOT_MODE_BYTE_CEILING = 277_391",
+        "SHOT_MODE_BYTE_CEILING = 277_768",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
         "server tools: the default ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 92_582",
-        # Same rule: one byte below the measured core payload (92,582), not below the ceiling.
-        "DEFAULT_MODE_BYTE_CEILING = 92_581",
+        "DEFAULT_MODE_BYTE_CEILING = 92_624",
+        # Same rule: one byte below the measured core payload (92,624), not below the ceiling.
+        "DEFAULT_MODE_BYTE_CEILING = 92_623",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
@@ -372,6 +372,20 @@ ROWS: list[Revert] = [
             f"{BUNT}::test_advertised_parameter_descriptions_do_not_restate_the_schema[None]",
             f"{BUNT}::test_advertised_parameter_descriptions_do_not_restate_the_schema[shot]",
         ),
+    ),
+    Revert(
+        "server tools: confirm_free no longer marks a tool destructive",
+        SERVER_DOCUMENTATION,
+        '        "confirm_free",\n',
+        "",
+        (f"{TDT}::test_a_flag_that_frees_a_cache_or_replaces_a_file_marks_its_tool_destructive[confirm_free]",),
+    ),
+    Revert(
+        "server tools: confirm_overwrite no longer marks a tool destructive",
+        SERVER_DOCUMENTATION,
+        '        "confirm_overwrite",\n',
+        "",
+        (f"{TDT}::test_a_flag_that_frees_a_cache_or_replaces_a_file_marks_its_tool_destructive[confirm_overwrite]",),
     ),
     Revert(
         "server tools: a parameter the name and schema already describe gets a generated sentence again",

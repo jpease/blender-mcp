@@ -149,10 +149,11 @@ def _pagination_names(owner: dict, key: str) -> dict[str, str] | None:
     """
     Find the pagination keys that describe one page of records.
 
-    A payload pages either with bare names beside its page or with names prefixed by the
-    list's own key, which is how `inspect_lighting_setup` reports `lights_truncated`. Without
-    both spellings the shortening would leave a reply saying `truncated: false` about a page it
-    had just cut.
+    A payload pages either with bare names beside its page - a tool's primary page, which it
+    pages through `offset` - or with names prefixed by the list's own key, which is how a
+    secondary page such as `get_camera_rig_info`'s `children` reports `children_truncated` and
+    pages through `children_offset`. Without both spellings the shortening would leave a reply
+    saying `truncated: false` about a page it had just cut.
 
     A list's own prefixed names win over bare ones, and bare names describe one list only: when
     `returned_count` identifies a sibling as the page, this list is not it. Otherwise cutting an
@@ -293,10 +294,9 @@ def _resume_hint(owner: dict, key: str, kept: int) -> str:
     """
     How the records a cut to `kept` drops can still be read.
 
-    A bare page resumes through the tool's `offset`. A prefixed page belongs to a tool whose
-    parameter for it the envelope cannot name - `get_camera_rig_info` takes `child_offset` for its
-    `children` page - so the hint names the reply key the tool documents, never an `offset=` the
-    tool may not accept.
+    A page resumes through the parameter its own offset key is named for: `offset` for a tool's
+    primary page, `<key>_offset` for a secondary page, whose parameters and reply keys share the
+    list's own key as their prefix.
 
     Args:
         owner: The dict holding the page.
@@ -310,10 +310,7 @@ def _resume_hint(owner: dict, key: str, kept: int) -> str:
     names = _pagination_names(owner, key)
     if names is None or "next_offset" not in names:
         return _NARROW_SCOPE
-    resume_at = _page_offset(owner, names) + kept
-    if names["next_offset"] != "next_offset":
-        return f"continue from {names['next_offset']}={resume_at}"
-    return f"continue with offset={resume_at}"
+    return f"continue with {names['offset']}={_page_offset(owner, names) + kept}"
 
 
 def _staged(reply: dict, cuts: Sequence[PageCut], pending: str | None = None) -> dict:

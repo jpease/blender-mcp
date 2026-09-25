@@ -29,7 +29,7 @@ CORE_MODULES: tuple[str, ...] = (
 
 # A dotted entry names one submodule of a package. The package `__init__.py` must stay lazy
 # (see `tools/_lazy_package.py`), because importing a submodule runs it first.
-_BUNDLES_BASE: Mapping[str, tuple[str, ...]] = MappingProxyType(
+BUNDLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "core-authoring": ("mesh", "model"),
         # `rigs` is left to `camera-rigs`: a shot rarely builds a new rig.
@@ -59,24 +59,6 @@ _BUNDLES_BASE: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "assets": ("polyhaven", "sketchfab"),
     }
 )
-
-# `texture-lighting` is a deprecated alias so existing client configs keep working. Built from
-# the split bundles so it cannot drift from them. It is excluded from `CANONICAL_BUNDLES`
-# because it names no tool the split bundles do not, and a report that listed both would
-# offer an agent two spellings of one choice.
-DEPRECATED_BUNDLE_ALIASES: frozenset[str] = frozenset({"texture-lighting"})
-
-BUNDLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
-    {
-        **_BUNDLES_BASE,
-        "texture-lighting": (
-            _BUNDLES_BASE["texture"] + _BUNDLES_BASE["lighting"] + _BUNDLES_BASE["lighting-construction"]
-        ),
-    }
-)
-
-# Every bundle an agent should be offered by name, alias-free.
-CANONICAL_BUNDLES: tuple[str, ...] = tuple(name for name in BUNDLES if name not in DEPRECATED_BUNDLE_ALIASES)
 
 # Import these rather than respelling them. `scripts/measure_catalog.py` cannot; see why there.
 TOOLSETS_ENV_VAR = "BLENDER_MCP_TOOLSETS"
@@ -179,8 +161,7 @@ def resolve_toolset_bundles(raw_value: str | None) -> tuple[str, ...]:
     Resolve a raw `BLENDER_MCP_TOOLSETS` value into the bundle names it selects.
 
     `core` is not among them: it is implicit and always mounted, and naming it here would
-    imply it could be deselected. `all` expands to every canonical bundle, so the deprecated
-    alias never appears unless it was the thing asked for.
+    imply it could be deselected. `all` expands to every bundle.
 
     Args:
         raw_value: The raw environment variable value, or None if unset.
@@ -205,7 +186,7 @@ def resolve_toolset_bundles(raw_value: str | None) -> tuple[str, ...]:
             f"Available bundles: {_format_names(BUNDLES)}, or {ALL_SENTINEL!r}."
         )
     if any(name.lower() == ALL_SENTINEL for name in requested):
-        return CANONICAL_BUNDLES
+        return tuple(BUNDLES)
     return _expand_modes(requested)
 
 

@@ -66,7 +66,7 @@ Info: Saved as "shot_d.blend"
 === E. unlink one of two libraries, with purge_orphans ===
 Info: Saved as "shot_e.blend"
   before: OnlyUsedByTheOverride users = 1  UserScratchMaterial users = 0
-  [unlink without confirm] ValueError -> 'unlink_libraries removes each named library and every datablock linked from it; pass confirm=true'
+  [unlink without confirm] ValueError -> 'unlink_libraries removes each named library and every datablock linked from it; pass confirm_unlink=true'
   report: {'removed_libraries': [{'session_uid': 1409, 'name': 'canon.blend', 'filepath': '//canon.blend', 'filepath_redacted': False, 'filepath_redaction_reason': None, 'is_relative': False, 'is_missing': False}], 'already_removed_uids': [], 'removed_count': 5, 'removed_by_type': {'collections': 1, 'libraries': 1, 'meshes': 1, 'objects': 2}, 'removed_sample': [{'name': 'canon.blend', 'id_type': 'LIBRARY'}, {'name': 'CanonHero', 'id_type': 'COLLECTION'}, {'name': 'HeroBody', 'id_type': 'OBJECT'}, {'name': 'HeroBodyMesh', 'id_type': 'MESH'}, {'name': 'HeroBody', 'id_type': 'OBJECT'}], 'purged_orphans': 1, 'purged_by_type': {'materials': 1}, 'other_libraries_removed': []}
   unnamed library and its datablocks all alive: True
   user's zero-user material alive: True UserScratchMaterial

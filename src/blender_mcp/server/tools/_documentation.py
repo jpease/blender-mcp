@@ -197,11 +197,7 @@ _PARAMETER_DESCRIPTIONS: dict[str, str] = {
         "Rigid-body collision layer indices, each from 1 to 20, this object belongs to; two rigid bodies can "
         "collide only if they share at least one layer."
     ),
-    "confirm": (
-        "Explicit acknowledgement required for the consequential operation; false performs no confirmed "
-        "destructive action."
-    ),
-    "confirm_bake": "Explicit acknowledgement that a synchronous bake may be expensive and will create cache data.",
+    "confirm_bake": "Explicit acknowledgement that a synchronous bake may be expensive and will store its result.",
     "confirm_commit": (
         "Explicit acknowledgement that live data will be committed into base data and cannot be reversed through MCP."
     ),
@@ -498,7 +494,6 @@ def _is_destructive(name: str, schema: Mapping[str, Any]) -> bool:
         "confirm_baked_removal",
         "confirm_delete_baked_cache",
         "confirm_free",
-        "confirm_free_bake",
         "confirm_overwrite",
         "confirm_replace_weights",
         "overwrite",

@@ -1091,19 +1091,37 @@ def test_create_override_takes_the_scene_from_bpy_data_not_bpy_context(
 
 
 def test_create_override_refuses_to_guess_between_scenes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """With two scenes and no `scene_uid`, the refusal lists both uids; with one, it overrides into that scene."""
+    """With two scenes and no `scene_name`, the refusal names both; with one named, it overrides into that scene."""
     server, _bpy, world = _server(monkeypatch)
     _library, collection = _linked(server, world, _canon(tmp_path, world))
     second = StubScene(world, "Scene.001")
     world.data["scenes"].append(second)
 
     refused = run_command(server, "create_override", collection_uid=collection.session_uid)
-    chosen = run_command(server, "create_override", collection_uid=collection.session_uid, scene_uid=second.session_uid)
+    chosen = run_command(server, "create_override", collection_uid=collection.session_uid, scene_name="Scene.001")
 
     assert refused["status"] == "error"
-    assert str(world.scene.session_uid) in refused["message"] and str(second.session_uid) in refused["message"]
+    assert "'Scene'" in refused["message"] and "'Scene.001'" in refused["message"]
     assert chosen["status"] == "success", chosen
     assert world.override_calls[-1][1] is second
+
+
+def test_a_linked_scene_is_neither_a_target_nor_a_rival_to_the_local_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A link lands only in a local scene: a linked scene's name is refused, and the one local scene needs no name."""
+    server, _bpy, world = _server(monkeypatch)
+    library, collection = _linked(server, world, _canon(tmp_path, world))
+    linked_scene = StubScene(world, "Shot")
+    linked_scene.library = library
+    world.data["scenes"].append(linked_scene)
+
+    refused = run_command(server, "create_override", collection_uid=collection.session_uid, scene_name="Shot")
+    chosen = run_command(server, "create_override", collection_uid=collection.session_uid)
+
+    assert refused["status"] == "error"
+    assert chosen["status"] == "success", chosen
+    assert [scene for _target, scene, _layer, _kwargs in world.override_calls] == [world.scene]
 
 
 def test_create_override_resolves_by_session_uid_among_same_named_collections(
@@ -1567,12 +1585,12 @@ def test_an_unknown_library_uid_is_refused(monkeypatch: pytest.MonkeyPatch, tmp_
 def test_unlink_refuses_without_a_real_confirmation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, confirm: object
 ) -> None:
-    """Deleting linked data needs `confirm=True`, and only the bool."""
+    """Deleting linked data needs `confirm_unlink=True`, and only the bool."""
     server, _bpy, world = _server(monkeypatch)
     library, _collection = _linked(server, world, _canon(tmp_path, world))
     uids = _uids(world)
 
-    response = run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm=confirm)
+    response = run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm_unlink=confirm)
 
     assert response["status"] == "error"
     assert _uids(world) == uids
@@ -1586,7 +1604,7 @@ def test_unlink_never_touches_a_library_that_was_not_named(monkeypatch: pytest.M
     kept, _c2 = _linked(server, world, _canon(tmp_path, world, "b.blend"))
     kept_uids = {kept.session_uid, *(db.session_uid for db in kept.users_id)}
 
-    response = run_command(server, "unlink_libraries", library_uids=[named.session_uid], confirm=True)
+    response = run_command(server, "unlink_libraries", library_uids=[named.session_uid], confirm_unlink=True)
 
     assert response["status"] == "success", response
     assert world.data["libraries"].removed == [named]
@@ -1600,7 +1618,9 @@ def test_unlink_resolves_every_uid_before_removing_anything(monkeypatch: pytest.
     library, _collection = _linked(server, world, _canon(tmp_path, world))
     uids = _uids(world)
 
-    response = run_command(server, "unlink_libraries", library_uids=[library.session_uid, 999_999_999], confirm=True)
+    response = run_command(
+        server, "unlink_libraries", library_uids=[library.session_uid, 999_999_999], confirm_unlink=True
+    )
 
     assert response["status"] == "error"
     assert "999999999" in response["message"]
@@ -1622,7 +1642,7 @@ def test_unlink_requires_an_explicit_bounded_uid_list(
     uids = _uids(world)
     value = {"empty": [], "bool": [True], "string": ["1"], "big": [1] * 101}[shape]
 
-    response = run_command(server, "unlink_libraries", library_uids=value, confirm=True)
+    response = run_command(server, "unlink_libraries", library_uids=value, confirm_unlink=True)
 
     assert response["status"] == "error"
     assert _uids(world) == uids
@@ -1636,7 +1656,7 @@ def test_unlink_reports_exactly_what_it_removed(monkeypatch: pytest.MonkeyPatch,
     before = _uids(world)
 
     result = run_command(
-        server, "unlink_libraries", library_uids=[library.session_uid, library.session_uid], confirm=True
+        server, "unlink_libraries", library_uids=[library.session_uid, library.session_uid], confirm_unlink=True
     )["result"]
 
     removed = before - _uids(world)
@@ -1667,7 +1687,7 @@ def test_unlinking_a_large_library_counts_what_went_and_names_only_a_sample(
     for index in range(MANY * 4):
         world.data["meshes"].append(StubID(world, f"M{index}", "MESH", library=library))
 
-    result = run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True)["result"]
+    result = run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm_unlink=True)["result"]
 
     assert result["removed_count"] == MANY * 4 + len(("canon.blend", "CanonHero", "HeroBody"))
     assert result["removed_by_type"] == {"collections": 1, "libraries": 1, "meshes": MANY * 4, "objects": 1}
@@ -1685,7 +1705,7 @@ def test_unlink_refuses_an_indirect_library(monkeypatch: pytest.MonkeyPatch, tmp
     for datablock in library.users_id:
         datablock.is_library_indirect = True
 
-    response = run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True)
+    response = run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm_unlink=True)
 
     assert response["status"] == "error"
     assert "indirect" in response["message"]
@@ -1705,7 +1725,7 @@ def test_unlink_purges_only_when_asked_and_only_what_it_orphaned(
         scratch.users = 0
 
         result = run_command(
-            server, "unlink_libraries", library_uids=[library.session_uid], confirm=True, purge_orphans=purge
+            server, "unlink_libraries", library_uids=[library.session_uid], confirm_unlink=True, purge_orphans=purge
         )["result"]
 
         assert scratch in world.data["materials"]
@@ -1739,7 +1759,7 @@ def test_unlink_never_removes_a_datablock_an_earlier_removal_freed(
     world.data["libraries"].remove = cascading_remove  # type: ignore[method-assign]
 
     response = run_command(
-        server, "unlink_libraries", library_uids=[first.session_uid, second.session_uid], confirm=True
+        server, "unlink_libraries", library_uids=[first.session_uid, second.session_uid], confirm_unlink=True
     )
 
     assert response["status"] == "success", response
@@ -1755,7 +1775,7 @@ def test_an_unlink_failure_reaches_the_client_sanitized(monkeypatch: pytest.Monk
     library, _collection = _linked(server, world, canonical)
     world.remove_error = RuntimeError(f"Error: cannot free library '{canonical}'")
 
-    response = run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True)
+    response = run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm_unlink=True)
 
     assert response["status"] == "error"
     _assert_no_path(response["message"], tmp_path.name)
@@ -1786,7 +1806,7 @@ def test_a_part_way_unlink_failure_carries_what_it_already_removed(
     world.data["libraries"].remove = fail_on_the_second  # type: ignore[method-assign]
 
     with pytest.raises(_linking_module(server).PartialUnlinkError) as caught:
-        server.unlink_libraries([first.session_uid, second.session_uid], confirm=True)  # type: ignore[attr-defined]
+        server.unlink_libraries([first.session_uid, second.session_uid], confirm_unlink=True)  # type: ignore[attr-defined]
 
     assert [entry["session_uid"] for entry in caught.value.removed_libraries] == [first.session_uid]
     assert caught.value.already_removed_uids == []
@@ -1862,7 +1882,7 @@ def test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_doe
         run_command(server, "list_libraries"),
         run_command(server, "reload_library", library_uid=library.session_uid),
         run_command(server, "relocate_library", library_uid=library.session_uid, filepath=target),
-        run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True),
+        run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm_unlink=True),
     ]
 
     assert [r["status"] for r in responses] == ["success"] * 5, responses
@@ -1870,18 +1890,35 @@ def test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_doe
 
 
 def test_no_linking_command_takes_a_datablock_name_as_a_handle(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every handle is a uid; `collections` / `objects` / `world` name contents of the library *file*."""
+    """
+    Every handle on a linked datablock is a uid; the only names are of library *file* contents and the local scene.
+
+    `collections` / `objects` / `world` name what is inside the library file, which has no uid
+    yet. `scene_name` names the local scene a link or override lands in: local scene names are
+    unique and a linked scene is never a target, so the name collision a uid survives cannot
+    reach it. Any other name, on a collection or a library, would be ambiguous after an override.
+    """
     server, _bpy, _world = _server(monkeypatch)
     library_file_names = {
         ("link_canon_library", "collections"),
         ("link_canon_library", "objects"),
         ("link_canon_library", "world"),
     }
-    non_handles = {"filepath", "limit", "offset", "confirm", "purge_orphans", "as_override", "relative", "detail"}
+    local_scene_names = {("link_canon_library", "scene_name"), ("create_override", "scene_name")}
+    non_handles = {
+        "filepath",
+        "limit",
+        "offset",
+        "confirm_unlink",
+        "purge_orphans",
+        "as_override",
+        "relative",
+        "detail",
+    }
 
     for command in LINKING_COMMANDS:
         for name in inspect.signature(getattr(server, command)).parameters:
-            if (command, name) in library_file_names or name in non_handles:
+            if (command, name) in library_file_names | local_scene_names or name in non_handles:
                 continue
             assert name.endswith(("_uid", "_uids")), f"{command}({name}) is not a session_uid handle"
 
@@ -2275,7 +2312,7 @@ def test_library_names_are_reduced_without_touching_the_filesystem(
     relocated = run_command(server, "relocate_library", library_uid=library.session_uid, filepath=target)
     for datablock in library.users_id:
         datablock.is_library_indirect = True
-    refused = run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True)
+    refused = run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm_unlink=True)
 
     assert listed["status"] == "success", listed
     assert listed["result"]["libraries"][0]["name"] == "canon.blend"

@@ -8,7 +8,7 @@ import json
 import bpy
 
 from ..rna_patch import get_object, patch_rna, restore_rna, validate_rna_value
-from ..simulation_cache import set_cache_frame_range
+from ..simulation_cache import require_cache_confirmation, set_cache_frame_range
 from ._cache_helpers import (
     _all_cloth_caches,
     _cloth_cache_dependency_issues,
@@ -56,7 +56,7 @@ class ClothLifecycleHandlers:
         action="INSPECT",
         patch=None,
         confirm_bake=False,
-        confirm_free_bake=False,
+        confirm_free=False,
         confirm_external_overwrite=False,
         max_bake_frames=250,
     ):
@@ -167,9 +167,8 @@ class ClothLifecycleHandlers:
             }
 
         frame_count = (cache.frame_end - cache.frame_start) // cache.frame_step + 1
+        require_cache_confirmation(action, confirm_bake=confirm_bake, confirm_free=confirm_free)
         if action in {"BAKE", "BAKE_FROM_CACHE"}:
-            if not confirm_bake:
-                raise ValueError(f"{action} requires confirm_bake=True")
             if cache.is_baked:
                 raise ValueError("Point cache is already baked")
             if dependency_issues:
@@ -190,8 +189,6 @@ class ClothLifecycleHandlers:
                     f"state={json.dumps(_cache_info(cache))}"
                 )
         else:
-            if not confirm_free_bake:
-                raise ValueError("FREE requires confirm_free_bake=True")
             if not cache.is_baked:
                 raise ValueError("Point cache is not baked")
             if cache.use_external and external["entries"] and not confirm_external_overwrite:

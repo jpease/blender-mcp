@@ -8,7 +8,9 @@ ignore `filepath` and the relocate operator renames the library.
 
 Handles are `session_uid`s, because after an override a collection and its
 override share a name. Only `link_canon_library` takes names, of datablocks
-inside the library file. A uid lasts until the next file load or library reload.
+inside the library file, and a link or override names the local scene it lands
+in: a local scene's name is unique, and a linked scene is never a target. A uid
+lasts until the next file load or library reload.
 
 `reload_library`, `relocate_library` and `unlink_libraries` bypass the mutation
 transaction: a reload gives linked datablocks new uids, so a rollback would
@@ -145,26 +147,71 @@ def _by_session_uid(datablocks: Iterable[object], uid: int, kind: str) -> object
     )
 
 
-def _scene(scene_uid: object) -> object:
+def _scene(scene_name: object) -> object:
     """
-    Pick the scene from `bpy.data`, never from `bpy.context`, and never by guessing.
+    Pick the local scene a link or override lands in, from `bpy.data`, never from `bpy.context`, never by guessing.
+
+    The scene is named rather than given by uid: a local scene's name is unique, and only a
+    local scene can take a link or an override, so a linked scene is not a candidate at all.
 
     Args:
-        scene_uid: The client's `scene_uid`, or None when the file has one scene.
+        scene_name: The client's `scene_name`, or None when the file has one local scene.
 
     Returns:
         object: The scene.
 
     Raises:
-        ValueError: For an unknown uid, or no uid when the file has several scenes.
+        ValueError: For a name no local scene has, or no name when the file has several local scenes.
 
     """
-    scenes = list(bpy.data.scenes)
-    if scene_uid is not None:
-        return _by_session_uid(scenes, _require_uid("scene_uid", scene_uid), "scene")
+    scenes = [scene for scene in bpy.data.scenes if getattr(scene, "library", None) is None]
+    if scene_name is not None:
+        return _local_scene_named(scenes, scene_name)
     if len(scenes) != 1:
-        raise ValueError(f"the open file has {len(scenes)} scenes; pass scene_uid, one of: {_candidates(scenes)}")
+        raise ValueError(
+            f"the open file has {len(scenes)} local scenes; pass scene_name, one of: {_scene_names(scenes)}"
+        )
     return scenes[0]
+
+
+def _local_scene_named(scenes: Sequence[object], scene_name: object) -> object:
+    """
+    Resolve `scene_name` among the local scenes, refusing a name only a linked scene has.
+
+    Args:
+        scenes: The file's local scenes.
+        scene_name: The client's `scene_name`.
+
+    Returns:
+        object: The local scene with that name.
+
+    Raises:
+        ValueError: When it is not a string, or no local scene has it.
+
+    """
+    if not isinstance(scene_name, str):
+        raise ValueError("scene_name must be a string, the name of a local scene")
+    for scene in scenes:
+        if getattr(scene, "name", None) == scene_name:
+            return scene
+    linked = any(getattr(scene, "name", None) == scene_name for scene in bpy.data.scenes)
+    reason = "is a linked scene, and a link or override lands only in a local one" if linked else "names no scene"
+    raise ValueError(f"scene_name {client_safe_text(scene_name)!r} {reason}; pass one of: {_scene_names(scenes)}")
+
+
+def _scene_names(scenes: Sequence[object]) -> str:
+    """
+    Name the candidate scenes for a refusal, bounded like every other candidate list.
+
+    Args:
+        scenes: The local scenes.
+
+    Returns:
+        str: Their names, at most `MAX_CANDIDATES` of them, with a `, and N more` tail when there were more.
+
+    """
+    shown = ", ".join(repr(_display_name(scene)) for scene in scenes[:_MAX_CANDIDATES])
+    return shown if len(scenes) <= _MAX_CANDIDATES else f"{shown}, and {len(scenes) - _MAX_CANDIDATES} more"
 
 
 def _id_type(datablock: object) -> str:
@@ -563,7 +610,7 @@ def _override_hierarchy(
             roots are in `changed_objects` either way.
 
     Returns:
-        dict[str, object]: `override` (see `_override_entry`), `scene_uid`,
+        dict[str, object]: `override` (see `_override_entry`), `scene_name`,
         `replaced_instances`, and `objects` with their exact `total` and
         `by_type`, plus a page of names, or of `records` under `detail`.
 
@@ -602,7 +649,7 @@ def _override_hierarchy(
     )
     return {
         "override": _override_entry(override),
-        "scene_uid": _uid_of(scene),
+        "scene_name": _display_name(scene),
         "replaced_instances": replaced,
         "objects": listed,
     }
@@ -902,13 +949,13 @@ def _newly_orphaned(before: dict[int, CensusEntry]) -> list[tuple[str, object]]:
     return [candidates[uid] for uid in compute_orphaned(before, current)]
 
 
-def _libraries_to_unlink(library_uids: object, confirm: bool) -> list[object]:
+def _libraries_to_unlink(library_uids: object, confirm_unlink: bool) -> list[object]:
     """
     Validate an unlink request and resolve every library before anything is removed.
 
     Args:
         library_uids: The client's uid list.
-        confirm: The validated confirmation flag.
+        confirm_unlink: The validated confirmation flag.
 
     Returns:
         list[object]: The libraries, de-duplicated in request order.
@@ -921,9 +968,9 @@ def _libraries_to_unlink(library_uids: object, confirm: bool) -> list[object]:
     if not isinstance(library_uids, list) or not 0 < len(library_uids) <= MAX_UNLINK_UIDS:
         raise ValueError(f"library_uids must be a list of 1 to {MAX_UNLINK_UIDS} session_uids from list_libraries")
     uids = list(dict.fromkeys(_require_uid("library_uids entry", uid) for uid in library_uids))
-    if not confirm:
+    if not confirm_unlink:
         raise ValueError(
-            "unlink_libraries removes each named library and every datablock linked from it; pass confirm=true"
+            "unlink_libraries removes each named library and every datablock linked from it; pass confirm_unlink=true"
         )
     libraries = [_library(uid) for uid in uids]
     indirect = [library for library in libraries if is_indirect_library(library)]
@@ -1073,7 +1120,7 @@ class LinkingHandlersMixin:
         world: object = None,
         as_override: object = False,
         relative: object = False,
-        scene_uid: object = None,
+        scene_name: object = None,
         detail: object = False,
     ) -> dict[str, object]:
         """
@@ -1095,7 +1142,7 @@ class LinkingHandlersMixin:
                 `world` is linked as it is either way.
             relative: Store the library path relative to the open file; refused in a never-saved session,
                 where Blender would silently store it absolute.
-            scene_uid: The scene to instance or override into; optional when the file has one scene.
+            scene_name: The local scene to instance or override into; optional when the file has one local scene.
             detail: Page the objects this call brought in as records instead of names, as
                 `create_override` does for an override's objects.
 
@@ -1103,7 +1150,7 @@ class LinkingHandlersMixin:
             dict[str, object]: `changed_objects` (the roots of what came into the scene - the
             objects no other one of them parents - not every member of a linked hierarchy),
             `library` (`library_summary` plus `version`, `needs_liboverride_resync`, `users`),
-            `library_already_linked`, `scene_uid`, `collections` / `objects` linked (uid, name,
+            `library_already_linked`, `scene_name`, `collections` / `objects` linked (uid, name,
             id_type), `instanced_objects` (every object the instanced collections and objects
             put in the scene, counted as `counted_page` does; None under `as_override`),
             `world` (the linked World, or None) with `previous_world` (the name the scene's
@@ -1133,7 +1180,7 @@ class LinkingHandlersMixin:
             raise ValueError("relative needs a saved open file to be relative to; save_shot first or pass false")
         canonical = checked_blend_path(filepath, must_exist=True)
         refuse_scripts_auto_execute("link_canon_library")
-        scene = _scene(scene_uid)
+        scene = _scene(scene_name)
         libraries_before = {library.session_uid for library in bpy.data.libraries}
         linked_collections, linked_objects, linked_worlds = _load_linked(
             filepath, canonical, relative, collection_names, object_names, world_names
@@ -1144,7 +1191,7 @@ class LinkingHandlersMixin:
             "changed_objects": placed["changed_objects"],
             "library": _library_details(library),
             "library_already_linked": library.session_uid in libraries_before,
-            "scene_uid": _uid_of(scene),
+            "scene_name": _display_name(scene),
             "collections": [_linked_entry(item) for item in linked_collections],
             "objects": [_linked_entry(item) for item in linked_objects],
             "instanced_objects": placed["instanced_objects"],
@@ -1158,7 +1205,7 @@ class LinkingHandlersMixin:
 
     @staticmethod
     def create_override(
-        collection_uid: object, *, scene_uid: object = None, detail: object = False
+        collection_uid: object, *, scene_name: object = None, detail: object = False
     ) -> dict[str, object]:
         """
         Make a linked collection's hierarchy editable in the shot (Route C).
@@ -1169,21 +1216,21 @@ class LinkingHandlersMixin:
 
         Args:
             collection_uid: The **linked** collection's `session_uid`.
-            scene_uid: The scene to override into; optional when the file has one scene.
+            scene_name: The local scene to override into; optional when the file has one local scene.
             detail: Page the override's objects as records instead of names;
                 `changed_objects` names their roots either way.
 
         Returns:
             dict[str, object]: `changed_objects` (the override's root objects),
             `override` (`session_uid`, `is_system_override`, `reference_uid`,
-            `hierarchy_root_uid`, ...), `scene_uid`, `replaced_instances`, and
+            `hierarchy_root_uid`, ...), `scene_name`, `replaced_instances`, and
             `objects` counted by type with a page of names, or records under `detail`.
 
         """
         uid = _require_uid("collection_uid", collection_uid)
         collection = _by_session_uid(bpy.data.collections, uid, "collection")
         refuse_scripts_auto_execute("create_override")
-        report = _override_all([collection], _scene(scene_uid), detail=require_bool("detail", detail))[0]
+        report = _override_all([collection], _scene(scene_name), detail=require_bool("detail", detail))[0]
         return {**report, "changed_objects": _override_root_names([report])}
 
     @staticmethod
@@ -1294,7 +1341,7 @@ class LinkingHandlersMixin:
 
     @staticmethod
     def unlink_libraries(
-        library_uids: object, *, confirm: object = False, purge_orphans: object = False
+        library_uids: object, *, confirm_unlink: object = False, purge_orphans: object = False
     ) -> dict[str, object]:
         """
         Remove exactly the named libraries and everything linked from them.
@@ -1308,7 +1355,7 @@ class LinkingHandlersMixin:
 
         Args:
             library_uids: The libraries' `session_uid`s, 1 to `MAX_UNLINK_UIDS`.
-            confirm: Must be True.
+            confirm_unlink: Must be True.
             purge_orphans: Also remove local datablocks this unlink left without users.
 
         Returns:
@@ -1322,9 +1369,9 @@ class LinkingHandlersMixin:
             part-way is a `RuntimeError` listing the uids already removed.
 
         """
-        confirm = require_bool("confirm", confirm)
+        confirm_unlink = require_bool("confirm_unlink", confirm_unlink)
         purge_orphans = require_bool("purge_orphans", purge_orphans)
-        libraries = _libraries_to_unlink(library_uids, confirm)
+        libraries = _libraries_to_unlink(library_uids, confirm_unlink)
         uids = [library.session_uid for library in libraries]  # type: ignore[attr-defined]
         known = tuple(path for library in libraries for path in _library_paths(library))
         other_before = {library.session_uid for library in bpy.data.libraries} - set(uids)

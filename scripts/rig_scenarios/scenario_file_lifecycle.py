@@ -27,7 +27,7 @@ Rounds:
    a confirmed in-place save succeeds.
 5. `[save_shot, set_object_transform]` pipelined, then `open_shot` without
    `discard_unsaved` is refused, because the edit is still unsaved.
-6. `reset_session` is refused without `confirm`, then runs: the epoch moves once,
+6. `reset_session` is refused without `confirm_reset`, then runs: the epoch moves once,
    the scene is empty, and the addon still serves.
 
 Fails by raising; a clean return is a pass.
@@ -220,8 +220,8 @@ def _reset_round(rig: Rig, epoch: int) -> None:
         epoch: The epoch before the reset.
 
     """
-    _refused(rig, "reset without confirm", ("reset_session", {}), epoch, "confirm")
-    reset = rig.send("reset_session", {"confirm": True})
+    _refused(rig, "reset without confirm", ("reset_session", {}), epoch, "confirm_reset")
+    reset = rig.send("reset_session", {"confirm_reset": True})
     assert reset["status"] == "success", reset
     result = reset["result"]
     assert result["session_epoch"] == epoch + 1, f"reset must move the epoch exactly once: {result}"

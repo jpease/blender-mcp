@@ -526,6 +526,57 @@ def page_records(records, offset, limit, max_limit, *, key="records"):
     }
 
 
+def prefixed_page[T](
+    prefix: str,
+    items: Sequence[T],
+    offset: int,
+    limit: int,
+    max_limit: int,
+    *,
+    describe: Callable[[T], object] | None = None,
+    capped: bool | None = None,
+) -> dict[str, object]:
+    """
+    Cut one secondary page out of a list, its pagination keys named after the list.
+
+    A tool pages its primary list through bare `limit`/`offset`; every other list it pages
+    takes `<prefix>_limit`/`<prefix>_offset`, where `<prefix>` is that list's own reply key. The
+    reply echoes the same prefix, so a caller hands `<prefix>_next_offset` back as
+    `<prefix>_offset`, and the reply envelope - which pairs a list with the keys named after
+    it - resumes a budget-shortened page from its own `<prefix>_offset` and names that
+    parameter in its warning.
+
+    Args:
+        prefix: The list's key in the reply, and the stem of its paging parameters.
+        items: Every item, in page order.
+        offset: The requested start.
+        limit: The requested page size, clamped to [1, max_limit].
+        max_limit: The largest page this reply may carry.
+        describe: Turns one item into its reply record; the item itself when omitted.
+        capped: Whether `items` was itself cut short while being gathered. Omitted for a list
+            gathered whole, which then carries no `_scan_capped` key.
+
+    Returns:
+        dict: The page under `prefix`, with `<prefix>_total`, `_offset`, `_returned_count`,
+        `_truncated`, `_next_offset` (None on the last page) and, when `capped` is given,
+        `_scan_capped`.
+
+    """
+    start, end, truncated, next_offset = paginate(len(items), offset, limit, max_limit)
+    page = [describe(item) for item in items[start:end]] if describe else list(items[start:end])
+    result: dict[str, object] = {
+        prefix: page,
+        f"{prefix}_total": len(items),
+        f"{prefix}_offset": start,
+        f"{prefix}_returned_count": len(page),
+        f"{prefix}_truncated": truncated or bool(capped),
+        f"{prefix}_next_offset": next_offset,
+    }
+    if capped is not None:
+        result[f"{prefix}_scan_capped"] = capped
+    return result
+
+
 def count_by_type(type_names: Iterable[str]) -> dict[str, int]:
     """
     Count how many items carry each type name, so a reply can state what is there.

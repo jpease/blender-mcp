@@ -111,8 +111,8 @@ ROWS: list[Revert] = [
         # surface moved and the number did not - has to be re-pointed at the new pair.
         "addon surface: the dispatch table moved while the protocol number stayed where it was",
         ADDON_MANAGER,
+        "EXPECTED_ADDON_PROTOCOL_VERSION = 47",
         "EXPECTED_ADDON_PROTOCOL_VERSION = 46",
-        "EXPECTED_ADDON_PROTOCOL_VERSION = 45",
         (
             f"{SURFT}::test_snapshot_records_the_protocol_version_the_server_expects",
             f"{SURFT}::test_both_protocol_constants_agree",

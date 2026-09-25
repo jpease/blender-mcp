@@ -129,7 +129,7 @@ async def nd_mark_as_util(
 
 
 @mcp.tool()
-async def nd_clean_utils(ctx: Context, confirm: bool = False) -> dict:
+async def nd_clean_utils(ctx: Context, confirm_clean: bool = False) -> dict:
     """
     Remove orphaned boolean/array/mirror/lattice modifiers and their ND utility objects, scene-wide.
 
@@ -146,7 +146,7 @@ async def nd_clean_utils(ctx: Context, confirm: bool = False) -> dict:
 
     Args:
         ctx: MCP request context.
-        confirm: Must be True to run - this is scene-wide and destructive with no way to scope or preview it.
+        confirm_clean: Must be True to run - this is scene-wide and destructive with no way to scope or preview it.
 
     Returns:
         "removed_objects" (deleted ND utility objects: total, by_type, up to 10 names) and
@@ -157,7 +157,7 @@ async def nd_clean_utils(ctx: Context, confirm: bool = False) -> dict:
         ToolError: If the operation cannot be completed.
 
     """
-    result = await send_blender_command("nd_clean_utils", {"confirm": confirm})
+    result = await send_blender_command("nd_clean_utils", {"confirm_clean": confirm_clean})
     return _nd_outcome(result)
 
 

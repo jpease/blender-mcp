@@ -156,18 +156,18 @@ def test_reset_session_defaults(monkeypatch) -> None:
     asyncio.run(file_lifecycle.reset_session(ctx=None))
 
     _command, params = connection.calls[0]
-    assert params == {"confirm": False}
+    assert params == {"confirm_reset": False}
 
 
 def test_reset_session_forwards_confirm(monkeypatch) -> None:
     connection = _Connection()
     monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
-    asyncio.run(file_lifecycle.reset_session(ctx=None, confirm=True))
+    asyncio.run(file_lifecycle.reset_session(ctx=None, confirm_reset=True))
 
     command, params = connection.calls[0]
     assert command == "reset_session"
-    assert params == {"confirm": True}
+    assert params == {"confirm_reset": True}
 
 
 def test_link_canon_library_forwards_every_parameter(monkeypatch) -> None:
@@ -183,7 +183,7 @@ def test_link_canon_library_forwards_every_parameter(monkeypatch) -> None:
             world="CanonWorld",
             as_override=True,
             relative=True,
-            scene_uid=7,
+            scene_name="Shot",
             detail=True,
         )
     )
@@ -197,7 +197,7 @@ def test_link_canon_library_forwards_every_parameter(monkeypatch) -> None:
         "world": "CanonWorld",
         "as_override": True,
         "relative": True,
-        "scene_uid": 7,
+        "scene_name": "Shot",
         "detail": True,
     }
 
@@ -210,7 +210,7 @@ def test_link_canon_library_defaults(monkeypatch) -> None:
     asyncio.run(file_lifecycle.link_canon_library(ctx=None, filepath="/canon/hero.blend"))
 
     _command, params = connection.calls[0]
-    assert (params["as_override"], params["relative"], params["scene_uid"], params["detail"]) == (
+    assert (params["as_override"], params["relative"], params["scene_name"], params["detail"]) == (
         False,
         False,
         None,
@@ -247,18 +247,18 @@ def test_create_override_defaults(monkeypatch) -> None:
     asyncio.run(file_lifecycle.create_override(ctx=None, collection_uid=42))
 
     _command, params = connection.calls[0]
-    assert params == {"collection_uid": 42, "scene_uid": None, "detail": False}
+    assert params == {"collection_uid": 42, "scene_name": None, "detail": False}
 
 
 def test_create_override_forwards_every_parameter(monkeypatch) -> None:
     connection = _Connection()
     monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
-    asyncio.run(file_lifecycle.create_override(ctx=None, collection_uid=42, scene_uid=7, detail=True))
+    asyncio.run(file_lifecycle.create_override(ctx=None, collection_uid=42, scene_name="Shot", detail=True))
 
     command, params = connection.calls[0]
     assert command == "create_override"
-    assert params == {"collection_uid": 42, "scene_uid": 7, "detail": True}
+    assert params == {"collection_uid": 42, "scene_name": "Shot", "detail": True}
 
 
 def test_list_libraries_defaults(monkeypatch) -> None:
@@ -308,11 +308,11 @@ def test_unlink_libraries_forwards_every_parameter(monkeypatch) -> None:
     connection = _Connection()
     monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
-    asyncio.run(file_lifecycle.unlink_libraries(ctx=None, library_uids=[1, 2], confirm=True, purge_orphans=True))
+    asyncio.run(file_lifecycle.unlink_libraries(ctx=None, library_uids=[1, 2], confirm_unlink=True, purge_orphans=True))
 
     command, params = connection.calls[0]
     assert command == "unlink_libraries"
-    assert params == {"library_uids": [1, 2], "confirm": True, "purge_orphans": True}
+    assert params == {"library_uids": [1, 2], "confirm_unlink": True, "purge_orphans": True}
 
 
 def test_unlink_libraries_defaults(monkeypatch) -> None:
@@ -322,7 +322,7 @@ def test_unlink_libraries_defaults(monkeypatch) -> None:
     asyncio.run(file_lifecycle.unlink_libraries(ctx=None, library_uids=[1]))
 
     _command, params = connection.calls[0]
-    assert params == {"library_uids": [1], "confirm": False, "purge_orphans": False}
+    assert params == {"library_uids": [1], "confirm_unlink": False, "purge_orphans": False}
 
 
 def test_inspect_delivery_forwards_every_parameter(monkeypatch) -> None:

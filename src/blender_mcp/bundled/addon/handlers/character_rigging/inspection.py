@@ -25,7 +25,7 @@ from collections import Counter, defaultdict
 
 import bpy
 
-from ...helpers import evaluated_world_bounds, paginate, spread_indices, sync_from_editmode
+from ...helpers import evaluated_world_bounds, paginate, prefixed_page, spread_indices, sync_from_editmode
 from .constraints import _constraint_dependency_cycle
 from .contracts import DEFORMED_SAMPLE_LIMITATIONS
 from .primitives import (
@@ -243,22 +243,21 @@ class RigInspectionHandlersMixin:
     def get_character_rig_info(
         self,
         armature_object_name,
-        bone_limit=100,
-        bone_offset=0,
+        limit=100,
+        offset=0,
         bone_names=None,
-        dependency_limit=100,
-        dependency_offset=0,
+        dependent_meshes_limit=100,
+        dependent_meshes_offset=0,
         include_custom_properties=True,
     ):
         armature_obj = _armature_object(armature_object_name)
         bpy.context.view_layer.update()
-        _validate_limit_offset(bone_limit, bone_offset, 500, "bone")
-        _validate_limit_offset(dependency_limit, dependency_offset, 500, "dependency")
+        _validate_limit_offset(limit, offset, 500)
+        _validate_limit_offset(dependent_meshes_limit, dependent_meshes_offset, 500, "dependent_meshes")
         bones = _selected_bones(armature_obj, bone_names)
-        start, end, truncated, next_offset = paginate(len(bones), bone_offset, bone_limit, 500)
-        dependencies = _dependent_meshes(armature_obj)
-        dep_start, dep_end, dep_truncated, dep_next = paginate(
-            len(dependencies), dependency_offset, dependency_limit, 500
+        start, end, truncated, next_offset = paginate(len(bones), offset, limit, 500)
+        dependent_meshes = prefixed_page(
+            "dependent_meshes", _dependent_meshes(armature_obj), dependent_meshes_offset, dependent_meshes_limit, 500
         )
         return {
             "armature_object": armature_obj.name,
@@ -287,7 +286,7 @@ class RigInspectionHandlersMixin:
                 "items": [_bone_info(bone, include_custom_properties) for bone in bones[start:end]],
                 "total": len(bones),
                 "offset": start,
-                "limit": bone_limit,
+                "limit": limit,
                 "truncated": truncated,
                 "next_offset": next_offset,
                 "coordinate_space": "ARMATURE_LOCAL_REST",
@@ -304,14 +303,7 @@ class RigInspectionHandlersMixin:
             "armature_data_custom_properties": _custom_properties(armature_obj.data)
             if include_custom_properties
             else None,
-            "dependent_meshes": {
-                "items": dependencies[dep_start:dep_end],
-                "total": len(dependencies),
-                "offset": dep_start,
-                "limit": dependency_limit,
-                "truncated": dep_truncated,
-                "next_offset": dep_next,
-            },
+            **dependent_meshes,
         }
 
     def get_skinning_info(

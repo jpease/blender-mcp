@@ -150,11 +150,11 @@ async def generate_retopology_lods(
         ]
     ]
     | None = None,
-    confirm: bool = False,
+    confirm_generate: bool = False,
 ) -> dict:
     """Generate materialized, validated LOD meshes from an approved master.
 
-    This operation requires `confirm=True` because it applies Decimate or
+    This operation requires `confirm_generate=True` because it applies Decimate or
     QuadriFlow to newly created derivatives. The master and its modifier stack
     remain untouched; each LOD begins as an evaluated data-layer-preserving
     copy. `levels` is a list of objects with a strictly decreasing `ratio` in

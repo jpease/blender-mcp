@@ -68,8 +68,8 @@ class TextureBakingHandlers:
         normal_space="TANGENT",
         normal_swizzle=("POS_X", "POS_Y", "POS_Z"),
         target_engine="CYCLES",
-        overwrite=False,
-        confirm=False,
+        confirm_overwrite=False,
+        confirm_bake=False,
     ):
         """Generalize the production bake command to same-object and high-to-low sources."""
         requested = str(map_type).upper()
@@ -111,8 +111,8 @@ class TextureBakingHandlers:
                 margin=margin,
                 normal_space=normal_space,
                 normal_swizzle=normal_swizzle,
-                overwrite=overwrite,
-                confirm=confirm,
+                confirm_overwrite=confirm_overwrite,
+                confirm_bake=confirm_bake,
             )
         finally:
             for slot, original in replaced_slots:

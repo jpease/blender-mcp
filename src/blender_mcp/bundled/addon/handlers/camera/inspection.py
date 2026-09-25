@@ -3,7 +3,7 @@
 
 import bpy
 
-from ...helpers import bounded_int, paginate
+from ...helpers import bounded_int, prefixed_page
 from ._shared import (
     _MAX_RIG_DESCENDANTS,
     _TARGETED_CONSTRAINTS,
@@ -35,40 +35,6 @@ def _finding(severity, code, obj, prop, message, remediation, frame=None):
     if frame is not None:
         result["frame"] = frame
     return result
-
-
-def _prefixed_page(prefix, items, offset, limit, ceiling, capped, record=None):
-    """
-    Cut one page out of a list and name its pagination keys after the list.
-
-    The page's own `<prefix>_offset` is what the reply envelope resumes a budget-shortened page
-    from; without it a page requested past the start resumed from 0.
-
-    Args:
-        prefix: The list's key in the reply.
-        items: Every item, in page order.
-        offset: The requested start.
-        limit: The requested page size.
-        ceiling: The largest page size `paginate` allows.
-        capped: Whether `items` was itself cut short while being gathered.
-        record: Turns one item into its reply record; the item itself when omitted.
-
-    Returns:
-        dict: The page and its `_total`, `_offset`, `_returned_count`, `_truncated`,
-        `_next_offset` and `_scan_capped` keys.
-
-    """
-    start, end, truncated, next_offset = paginate(len(items), offset, limit, ceiling)
-    page = [record(item) for item in items[start:end]] if record else items[start:end]
-    return {
-        prefix: page,
-        f"{prefix}_total": len(items),
-        f"{prefix}_offset": start,
-        f"{prefix}_returned_count": len(page),
-        f"{prefix}_truncated": truncated or capped,
-        f"{prefix}_next_offset": next_offset,
-        f"{prefix}_scan_capped": capped,
-    }
 
 
 def _member_record(entry):
@@ -133,16 +99,16 @@ class _InspectionMixin:
         scene_name,
         object_name,
         descendant_depth=4,
-        child_limit=50,
-        child_offset=0,
+        children_limit=50,
+        children_offset=0,
         animation_limit=100,
         animation_offset=0,
     ):
         scene = _scene(scene_name)
         root = _object(object_name, scene=scene)
         descendant_depth = bounded_int("descendant_depth", descendant_depth, 0, 12)
-        child_limit = bounded_int("child_limit", child_limit, 1, 200)
-        child_offset = bounded_int("child_offset", child_offset, 0, _MAX_RIG_DESCENDANTS - 1)
+        children_limit = bounded_int("children_limit", children_limit, 1, 200)
+        children_offset = bounded_int("children_offset", children_offset, 0, _MAX_RIG_DESCENDANTS - 1)
         animation_limit = bounded_int("animation_limit", animation_limit, 1, 500)
         animation_offset = bounded_int("animation_offset", animation_offset, 0, _MAX_ANIMATION_RECORDS - 1)
         descendants, descendants_capped = _descendants(root, descendant_depth)
@@ -159,16 +125,22 @@ class _InspectionMixin:
             "active_scene_camera": scene.camera == root,
             "camera_markers": _rig_camera_markers(scene, root, descendants),
             "render_gate": _render_gate(scene.render),
-            **_prefixed_page(
-                "children", descendants, child_offset, child_limit, 200, descendants_capped, _member_record
+            **prefixed_page(
+                "children",
+                descendants,
+                children_offset,
+                children_limit,
+                200,
+                describe=_member_record,
+                capped=descendants_capped,
             ),
-            **_prefixed_page(
+            **prefixed_page(
                 "animation",
                 animation,
                 animation_offset,
                 animation_limit,
                 500,
-                len(animation) >= _MAX_ANIMATION_RECORDS,
+                capped=len(animation) >= _MAX_ANIMATION_RECORDS,
             ),
         }
         if root.type == "CAMERA":

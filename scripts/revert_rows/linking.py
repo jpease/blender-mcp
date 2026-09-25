@@ -152,7 +152,7 @@ ROWS: list[Revert] = [
     Revert(
         "linking: create_override takes the scene from bpy.context",
         ADDON_LINKING,
-        '        report = _override_all([collection], _scene(scene_uid), detail=require_bool("detail", detail))[0]\n',
+        '        report = _override_all([collection], _scene(scene_name), detail=require_bool("detail", detail))[0]\n',
         '        report = _override_all([collection], bpy.context.scene, detail=require_bool("detail", detail))[0]\n',
         (f"{LKT}::test_create_override_takes_the_scene_from_bpy_data_not_bpy_context",),
     ),
@@ -169,6 +169,23 @@ ROWS: list[Revert] = [
         "    if len(scenes) != 1:\n",
         "    if False:\n",
         (f"{LKT}::test_create_override_refuses_to_guess_between_scenes",),
+    ),
+    Revert(
+        "linking: a linked scene is a target, and a rival for the one local scene",
+        ADDON_LINKING,
+        '    scenes = [scene for scene in bpy.data.scenes if getattr(scene, "library", None) is None]\n',
+        "    scenes = list(bpy.data.scenes)\n",
+        (f"{LKT}::test_a_linked_scene_is_neither_a_target_nor_a_rival_to_the_local_one",),
+    ),
+    Revert(
+        "linking: scene_name is not compared, so the first local scene is used whatever it names",
+        ADDON_LINKING,
+        '        if getattr(scene, "name", None) == scene_name:\n',
+        "        if True:\n",
+        (
+            f"{LKT}::test_create_override_refuses_to_guess_between_scenes",
+            f"{LKT}::test_a_linked_scene_is_neither_a_target_nor_a_rival_to_the_local_one",
+        ),
     ),
     Revert(
         "linking: a local or override collection is not refused before Blender is asked",
@@ -356,17 +373,17 @@ ROWS: list[Revert] = [
         ),
     ),
     Revert(
-        "linking: unlink runs without confirm",
+        "linking: unlink runs without confirm_unlink",
         ADDON_LINKING,
-        "    if not confirm:\n",
+        "    if not confirm_unlink:\n",
         "    if False:\n",
         (f"{LKT}::test_unlink_refuses_without_a_real_confirmation[false]",),
     ),
     Revert(
-        "linking: unlink's confirm is coerced with bool()",
+        "linking: unlink's confirm_unlink is coerced with bool()",
         ADDON_LINKING,
-        '        confirm = require_bool("confirm", confirm)\n',
-        "        confirm = bool(confirm)\n",
+        '        confirm_unlink = require_bool("confirm_unlink", confirm_unlink)\n',
+        "        confirm_unlink = bool(confirm_unlink)\n",
         (
             f"{LKT}::test_unlink_refuses_without_a_real_confirmation[string]",
             f"{LKT}::test_unlink_refuses_without_a_real_confirmation[int]",
@@ -486,10 +503,10 @@ ROWS: list[Revert] = [
         "linking: create_override grows a name handle",
         ADDON_LINKING,
         "    def create_override(\n"
-        "        collection_uid: object, *, scene_uid: object = None, detail: object = False\n"
+        "        collection_uid: object, *, scene_name: object = None, detail: object = False\n"
         "    ) -> dict[str, object]:\n",
         "    def create_override(\n"
-        "        collection_uid: object, *, scene_uid: object = None, detail: object = False,\n"
+        "        collection_uid: object, *, scene_name: object = None, detail: object = False,\n"
         "        collection_name: object = None,\n"
         "    ) -> dict[str, object]:\n",
         (f"{LKT}::test_no_linking_command_takes_a_datablock_name_as_a_handle",),

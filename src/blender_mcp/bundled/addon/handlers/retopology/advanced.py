@@ -955,10 +955,12 @@ class _AdvancedMixin:
         reproject=False,
         projection_offset=0.0,
         transfer_data_types=None,
-        confirm=False,
+        confirm_generate=False,
     ):
-        if not confirm:
-            raise ValueError("generate_retopology_lods requires confirm=True because it materializes reduced meshes")
+        if not confirm_generate:
+            raise ValueError(
+                "generate_retopology_lods requires confirm_generate=True because it materializes reduced meshes"
+            )
         master = get_mesh_object(object_name)
         profile = _validate_profile(profile)
         offset = _finite(projection_offset, "projection_offset")

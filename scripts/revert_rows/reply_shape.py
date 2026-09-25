@@ -237,10 +237,10 @@ ROWS: list[Revert] = [
         ),
     ),
     Revert(
-        "reply budget: a prefixed page's resume hint names an offset= its tool may not take",
+        "reply budget: a prefixed page's resume hint names offset= instead of its own <key>_offset",
         SERVER_ENVELOPE,
-        '    if names["next_offset"] != "next_offset":\n',
-        "    if False:\n",
+        "    return f\"continue with {names['offset']}={_page_offset(owner, names) + kept}\"\n",
+        '    return f"continue with offset={_page_offset(owner, names) + kept}"\n',
         (
             f"{ENVT}::test_a_camera_rig_page_resumes_from_the_offset_it_was_requested_at",
             f"{ENVT}::test_each_shortened_pages_warning_names_that_page_and_no_other",

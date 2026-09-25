@@ -289,9 +289,11 @@ def test_bone_listing_is_registered_read_only_and_paginates(monkeypatch) -> None
         "rest_axes": False,
         "bone_names": None,
         "custom_properties": False,
-        "property_offset": 0,
+        "custom_properties_limit": 40,
+        "custom_properties_offset": 0,
         "deformed_meshes": False,
-        "mesh_offset": 0,
+        "deformed_meshes_limit": 200,
+        "deformed_meshes_offset": 0,
     }
     assert calls == [("list_character_bones", expected)]
     advertised = character_rigging.mcp._tool_manager._tools["list_character_bones"].parameters["properties"]
@@ -319,11 +321,11 @@ def test_bone_listing_validates_the_armature_object(monkeypatch) -> None:
 def test_bone_listing_bounds_the_requested_page(monkeypatch) -> None:
     server, _flushes = _fake_armature(monkeypatch, [_bone("root")])
 
-    with pytest.raises(ValueError, match="bone_limit must be in"):
+    with pytest.raises(ValueError, match=r"^limit must be in"):
         server.list_character_bones("HeroRig", limit=0)
-    with pytest.raises(ValueError, match="bone_limit must be in"):
+    with pytest.raises(ValueError, match=r"^limit must be in"):
         server.list_character_bones("HeroRig", limit=201)
-    with pytest.raises(ValueError, match="bone_offset must be non-negative"):
+    with pytest.raises(ValueError, match=r"^offset must be non-negative"):
         server.list_character_bones("HeroRig", offset=-1)
 
 
@@ -380,7 +382,7 @@ def test_bone_listing_reports_the_sliders_a_pose_call_has_to_name(monkeypatch) -
         {"name": "expr_squint", "value": 0.25},
         {"name": "label", "value": "face"},
     ]
-    assert (reported["custom_property_count"], reported["custom_property_next_offset"]) == (3, None)
+    assert (reported["custom_properties_total"], reported["custom_properties_next_offset"]) == (3, None)
 
 
 def _skin(name, *, modifier_for=None, parent=None, parent_type="OBJECT", show_viewport=True):
@@ -419,17 +421,21 @@ def test_bone_listing_names_the_meshes_the_rig_actually_deforms(monkeypatch) -> 
     bpy.context.scene.objects = scene_objects
 
     quiet = server.list_character_bones("HeroRig")
-    listed = server.list_character_bones("HeroRig", deformed_meshes=True)["deformed_meshes"]
+    listed = server.list_character_bones("HeroRig", deformed_meshes=True)
 
     assert "deformed_meshes" not in quiet, "an extra section costs bytes; it is opt-in"
-    assert listed["items"] == [
+    assert listed["deformed_meshes"] == [
         {"object": "body", "binding": "MODIFIER", "modifier_enabled": True},
         {"object": "hair", "binding": "PARENT", "modifier_enabled": None},
         {"object": "coat", "binding": "BOTH", "modifier_enabled": True},
         # The answer to "it is bound, so why does it not move?", which a name list cannot give.
         {"object": "brows", "binding": "MODIFIER", "modifier_enabled": False},
     ]
-    assert (listed["total"], listed["truncated"], listed["next_offset"]) == (4, False, None)
+    assert (
+        listed["deformed_meshes_total"],
+        listed["deformed_meshes_truncated"],
+        listed["deformed_meshes_next_offset"],
+    ) == (4, False, None)
 
 
 def test_a_rig_deforming_more_meshes_than_one_page_is_resumable(monkeypatch) -> None:
@@ -439,17 +445,44 @@ def test_a_rig_deforming_more_meshes_than_one_page_is_resumable(monkeypatch) -> 
     armature = bpy.data.objects["HeroRig"]
     bpy.context.scene.objects = [_skin(f"part_{index:03d}", modifier_for=armature) for index in range(205)]
 
-    first = server.list_character_bones("HeroRig", deformed_meshes=True)["deformed_meshes"]
-    resumed = server.list_character_bones("HeroRig", deformed_meshes=True, mesh_offset=first["next_offset"])[
-        "deformed_meshes"
-    ]
+    first = server.list_character_bones("HeroRig", deformed_meshes=True)
+    resumed = server.list_character_bones(
+        "HeroRig", deformed_meshes=True, deformed_meshes_offset=first["deformed_meshes_next_offset"]
+    )
 
-    assert (first["total"], first["truncated"], first["next_offset"]) == (205, True, 200)
-    assert len(first["items"]) == 200
-    assert [item["object"] for item in resumed["items"]] == [f"part_{index:03d}" for index in range(200, 205)]
-    assert (resumed["truncated"], resumed["next_offset"]) == (False, None)
-    with pytest.raises(ValueError, match="mesh_offset must be a non-negative integer"):
-        server.list_character_bones("HeroRig", deformed_meshes=True, mesh_offset=-1)
+    assert (
+        first["deformed_meshes_total"],
+        first["deformed_meshes_truncated"],
+        first["deformed_meshes_next_offset"],
+    ) == (205, True, 200)
+    assert len(first["deformed_meshes"]) == 200
+    assert [item["object"] for item in resumed["deformed_meshes"]] == [f"part_{index:03d}" for index in range(200, 205)]
+    assert (resumed["deformed_meshes_truncated"], resumed["deformed_meshes_next_offset"]) == (False, None)
+    with pytest.raises(ValueError, match="deformed_meshes_offset must be non-negative"):
+        server.list_character_bones("HeroRig", deformed_meshes=True, deformed_meshes_offset=-1)
+
+
+def test_a_mesh_page_smaller_than_the_default_is_honoured_and_resumes_where_it_stopped(monkeypatch) -> None:
+    """A caller that asks for fewer meshes than the default page gets that many, and the rest next."""
+    server, _flushes = _fake_armature(monkeypatch, [_bone("head")])
+    bpy = sys.modules["bpy"]
+    armature = bpy.data.objects["HeroRig"]
+    bpy.context.scene.objects = [_skin(f"part_{index}", modifier_for=armature) for index in range(5)]
+
+    first = server.list_character_bones("HeroRig", deformed_meshes=True, deformed_meshes_limit=2)
+    rest = server.list_character_bones(
+        "HeroRig",
+        deformed_meshes=True,
+        deformed_meshes_limit=3,
+        deformed_meshes_offset=first["deformed_meshes_next_offset"],
+    )
+
+    assert [item["object"] for item in first["deformed_meshes"]] == ["part_0", "part_1"]
+    assert (first["deformed_meshes_truncated"], first["deformed_meshes_next_offset"]) == (True, 2)
+    assert [item["object"] for item in rest["deformed_meshes"]] == ["part_2", "part_3", "part_4"]
+    assert (rest["deformed_meshes_truncated"], rest["deformed_meshes_next_offset"]) == (False, None)
+    with pytest.raises(ValueError, match=r"deformed_meshes_limit must be in \[1, 200\]"):
+        server.list_character_bones("HeroRig", deformed_meshes=True, deformed_meshes_limit=201)
 
 
 def test_a_bone_carrying_more_sliders_than_one_page_is_resumable(monkeypatch) -> None:
@@ -460,15 +493,39 @@ def test_a_bone_carrying_more_sliders_than_one_page_is_resumable(monkeypatch) ->
 
     first = server.list_character_bones("HeroRig", custom_properties=True)["bones"]["items"][0]
     resumed = server.list_character_bones(
-        "HeroRig", custom_properties=True, property_offset=first["custom_property_next_offset"]
+        "HeroRig", custom_properties=True, custom_properties_offset=first["custom_properties_next_offset"]
     )["bones"]["items"][0]
 
     assert [record["name"] for record in first["custom_properties"]] == names[:40]
-    assert (first["custom_property_count"], first["custom_property_next_offset"]) == (45, 40)
+    assert (first["custom_properties_total"], first["custom_properties_next_offset"]) == (45, 40)
     assert [record["name"] for record in resumed["custom_properties"]] == names[40:]
-    assert resumed["custom_property_next_offset"] is None
-    with pytest.raises(ValueError, match="property_offset must be a non-negative integer"):
-        server.list_character_bones("HeroRig", custom_properties=True, property_offset=-1)
+    assert resumed["custom_properties_next_offset"] is None
+    with pytest.raises(ValueError, match="custom_properties_offset must be non-negative"):
+        server.list_character_bones("HeroRig", custom_properties=True, custom_properties_offset=-1)
+
+
+def test_a_slider_page_smaller_than_the_default_is_honoured_and_resumes_where_it_stopped(monkeypatch) -> None:
+    """A caller that asks for fewer sliders than the default page gets that many, and the rest next."""
+    names = [f"sk_{index:03d}" for index in range(25)]
+    face = _SliderBone("face_ctrl", dict.fromkeys(names, 0.0))
+    server, _flushes = _fake_armature(monkeypatch, [_bone("face_ctrl")], pose_bones={"face_ctrl": face})
+
+    first = server.list_character_bones("HeroRig", custom_properties=True, custom_properties_limit=10)["bones"][
+        "items"
+    ][0]
+    second = server.list_character_bones(
+        "HeroRig",
+        custom_properties=True,
+        custom_properties_limit=10,
+        custom_properties_offset=first["custom_properties_next_offset"],
+    )["bones"]["items"][0]
+
+    assert [record["name"] for record in first["custom_properties"]] == names[:10]
+    assert (first["custom_properties_truncated"], first["custom_properties_next_offset"]) == (True, 10)
+    assert [record["name"] for record in second["custom_properties"]] == names[10:20]
+    assert (second["custom_properties_offset"], second["custom_properties_next_offset"]) == (10, 20)
+    with pytest.raises(ValueError, match=r"custom_properties_limit must be in \[1, 40\]"):
+        server.list_character_bones("HeroRig", custom_properties=True, custom_properties_limit=41)
 
 
 # Full-precision floats, as Blender hands a pose matrix back: the rounding is only visible on

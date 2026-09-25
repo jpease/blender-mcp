@@ -221,11 +221,26 @@ def _unique_names(values, label):
         raise ValueError(f"Duplicate {label}: {', '.join(str(value) for value in duplicates)}")
 
 
-def _validate_limit_offset(limit, offset, maximum, label):
+def _validate_limit_offset(limit, offset, maximum, prefix=None):
+    """
+    Refuse a page size outside [1, maximum] or a negative offset, naming the parameter at fault.
+
+    Args:
+        limit: The requested page size.
+        offset: The requested start.
+        maximum: The largest page size accepted.
+        prefix: A secondary page's own prefix, as in `<prefix>_limit`; None for the tool's
+            primary page, which it pages through bare `limit`/`offset`.
+
+    Raises:
+        ValueError: When either value is out of range.
+
+    """
+    limit_name, offset_name = (f"{prefix}_limit", f"{prefix}_offset") if prefix else ("limit", "offset")
     if isinstance(limit, bool) or not 1 <= int(limit) <= maximum:
-        raise ValueError(f"{label}_limit must be in [1, {maximum}]")
+        raise ValueError(f"{limit_name} must be in [1, {maximum}]")
     if isinstance(offset, bool) or int(offset) < 0:
-        raise ValueError(f"{label}_offset must be non-negative")
+        raise ValueError(f"{offset_name} must be non-negative")
 
 
 def _bone_path_token(bone_name):

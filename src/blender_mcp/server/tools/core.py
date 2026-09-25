@@ -13,7 +13,7 @@ from pydantic import Field
 
 from ...addon_manager import EXPECTED_ADDON_PROTOCOL_VERSION, AddonHandshake
 from ..app import mcp
-from ..bundles import CANONICAL_BUNDLES, TOOLSETS_ENV_VAR
+from ..bundles import BUNDLES, TOOLSETS_ENV_VAR
 from ..connection import BlenderTransportError, force_addon_handshake, get_blender_connection
 from ..mount_map import (
     CORE_BUNDLE,
@@ -128,7 +128,7 @@ def _toolset_payload(mounted: frozenset[str]) -> dict[str, object]:
     return {
         "env_var": TOOLSETS_ENV_VAR,
         "requested": os.getenv(TOOLSETS_ENV_VAR),
-        "mounted_bundles": [CORE_BUNDLE, *(name for name in CANONICAL_BUNDLES if by_bundle[name] <= mounted)],
+        "mounted_bundles": [CORE_BUNDLE, *(name for name in BUNDLES if by_bundle[name] <= mounted)],
         "mounted_tool_count": len(mounted),
         # Bundle name to how many of its tools are absent here. Non-empty is the normal case:
         # the whole catalog at once fills a context window, which is why bundles exist.

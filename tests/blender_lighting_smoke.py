@@ -266,6 +266,13 @@ def main() -> None:
     assert inspected["world"]["name"] == "Lighting World"
     assert inspected["lights_detail"] is False
     assert all("transform" not in record for record in inspected["lights"])
+    # The light inventory is the snapshot's primary page, keyed like list_lights' own.
+    assert (inspected["offset"], inspected["returned_count"], inspected["next_offset"]) == (
+        0,
+        len(inspected["lights"]),
+        None,
+    ), inspected
+    assert inspected["total"] == len(inspected["lights"]), inspected
     assert all("transform" in record for record in handler.inspect_lighting_setup(scene.name, detail=True)["lights"])
     validated = handler.validate_lighting_setup(scene.name, "EEVEE")
     assert "findings" in validated

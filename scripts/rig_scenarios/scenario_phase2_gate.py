@@ -153,7 +153,7 @@ def _step_reset_and_open(counted: _Counted, shot: Path) -> int:
         int: The epoch after the open.
 
     """
-    reset = counted.send("reset_session", {"confirm": True})
+    reset = counted.send("reset_session", {"confirm_reset": True})
     assert reset["status"] == "success", reset
     epoch = int(reset["result"]["session_epoch"])
 

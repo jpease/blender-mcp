@@ -326,7 +326,7 @@ second_uids = {
     *(d["session_uid"] for d in server.list_libraries(detail=True)["libraries"][1]["datablocks"]["records"]),
 }
 attempt("unlink without confirm", lambda: server.unlink_libraries([first["library"]["session_uid"]]))
-report = server.unlink_libraries([first["library"]["session_uid"]], confirm=True, purge_orphans=True)
+report = server.unlink_libraries([first["library"]["session_uid"]], confirm_unlink=True, purge_orphans=True)
 print("  report:", report)
 alive = {datablock.session_uid for name, datablock in linking._iter_ids()}
 print("  unnamed library and its datablocks all alive:", second_uids <= alive)

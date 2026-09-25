@@ -5,12 +5,15 @@ The documentation pass must add meaning, not restate the JSON Schema.
 writes is advertised in each session's `tools/list` payload. A description that only repeats the
 name, type, default, range or enum the schema already carries is pure context cost, so the
 generator must leave it out. These tests pin that rule on the generator itself; `test_bundles.py`
-pins it on the payload a real server process advertises.
+pins it on the payload a real server process advertises. The same pass sets each tool's destructive
+hint, which a flag gating the loss of data earns whatever the tool is called.
 """
 
 import copy
 
 from typing import Any
+
+import pytest
 
 from blender_mcp.server.tools import _documentation
 
@@ -167,3 +170,15 @@ def test_nested_models_still_reject_unknown_fields() -> None:
     _documentation._describe_schema(schema)
     assert schema["additionalProperties"] is False
     assert schema["$defs"]["Patch"]["additionalProperties"] is False
+
+
+@pytest.mark.parametrize("flag", ["confirm_free", "confirm_overwrite"])
+def test_a_flag_that_frees_a_cache_or_replaces_a_file_marks_its_tool_destructive(flag: str) -> None:
+    """
+    The settled names for freeing a cache and replacing a file each earn the hint on their own.
+
+    `tally_frames` matches no destructive prefix and is not listed by name, so only the flag can
+    mark it; a flag renamed without its entry in the conditional set leaves the hint off silently.
+    """
+    assert not _documentation._is_destructive("tally_frames", {"properties": {}})
+    assert _documentation._is_destructive("tally_frames", {"properties": {flag: {"type": "boolean"}}})

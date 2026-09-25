@@ -621,7 +621,7 @@ def test_open_shot_reports_that_the_capability_set_followed_the_file(
         ("save_shot", "relative_remap"),
         ("save_shot", "confirm_overwrite"),
         ("save_shot", "create_directories"),
-        ("reset_session", "confirm"),
+        ("reset_session", "confirm_reset"),
     ],
 )
 def test_a_flag_that_is_not_a_real_bool_is_refused(
@@ -876,13 +876,13 @@ def test_save_shot_refuses_a_blender_relative_path_in_an_unsaved_session(
 
 
 def test_reset_session_without_confirm_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reset discards the session, so it needs `confirm=True`."""
+    """Reset discards the session, so it needs `confirm_reset=True`."""
     server, _bpy, wm = _server(monkeypatch, is_dirty=True)
 
     response = run_command(server, "reset_session")
 
     assert response["status"] == "error"
-    assert "confirm" in response["message"]
+    assert "confirm_reset" in response["message"]
     assert wm.calls == []
 
 
@@ -893,7 +893,7 @@ def test_reset_session_reads_the_empty_factory_startup_file_and_never_factory_se
     server, _bpy, wm = _server(monkeypatch, filepath="/shots/sq010.blend", is_dirty=True)
     before = server.get_session_info()["session_epoch"]  # type: ignore[attr-defined]
 
-    response = run_command(server, "reset_session", confirm=True)
+    response = run_command(server, "reset_session", confirm_reset=True)
 
     assert response["status"] == "success", response
     assert [name for name, _ in wm.calls] == ["read_homefile"]
@@ -911,7 +911,7 @@ def test_a_runtime_error_from_the_reset_operator_is_a_clean_error_response(monke
     server, _bpy, wm = _server(monkeypatch, filepath="/Users/someone/shots/sq010.blend")
     wm.failures["read_homefile"] = RuntimeError('Error: Cannot read file "/Users/someone/shots/sq010.blend"\n')
 
-    response = run_command(server, "reset_session", confirm=True)
+    response = run_command(server, "reset_session", confirm_reset=True)
 
     assert response["status"] == "error"
     _assert_no_absolute_path(response["message"], "/Users/someone/shots/sq010.blend")
@@ -1004,9 +1004,9 @@ def _liveness_case(case: str, tmp_path: Path, wm: _RecordingWm) -> tuple[str, di
         "save ok": ("save_shot", {"filepath": str(tmp_path / "saved.blend")}, "success"),
         "save refused": ("save_shot", {"filepath": str(shot)}, "error"),
         "save raises": ("save_shot", {"filepath": str(tmp_path / "saved.blend")}, "error"),
-        "reset ok": ("reset_session", {"confirm": True}, "success"),
+        "reset ok": ("reset_session", {"confirm_reset": True}, "success"),
         "reset refused": ("reset_session", {}, "error"),
-        "reset raises": ("reset_session", {"confirm": True}, "error"),
+        "reset raises": ("reset_session", {"confirm_reset": True}, "error"),
     }
     if case.endswith("raises"):
         operator = {"open_shot": "open_mainfile", "save_shot": "save_as_mainfile", "reset_session": "read_homefile"}

@@ -100,7 +100,7 @@ def _check_bounded_replies(tmp: Path) -> None:
     assert (instanced["total"], instanced["by_type"]) == (members, {"OBJECT": members}), instanced
     assert instanced["truncated"] and len(instanced["names"]) == NAME_SAMPLE, instanced
 
-    removed = LinkingHandlersMixin.unlink_libraries([linked["library"]["session_uid"]], confirm=True)
+    removed = LinkingHandlersMixin.unlink_libraries([linked["library"]["session_uid"]], confirm_unlink=True)
     assert not bpy.data.libraries, "the unlink left the library behind"
     assert "removed_uids" not in removed and "removed_uids_truncated" not in removed, sorted(removed)
     assert removed["removed_by_type"]["objects"] == members, removed["removed_by_type"]

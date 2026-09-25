@@ -397,7 +397,7 @@ class _TargetMixin:
                 "next_offset": next_offset,
             }
 
-    def manage_retopology_checkpoint(self, action, object_name, checkpoint_name=None, confirm=False):
+    def manage_retopology_checkpoint(self, action, object_name, checkpoint_name=None, confirm_destructive=False):
         action = str(action).upper()
         if action not in {"CREATE", "LIST", "COMPARE", "RESTORE", "DELETE"}:
             raise ValueError("action must be CREATE, LIST, COMPARE, RESTORE, or DELETE")
@@ -499,8 +499,10 @@ class _TargetMixin:
                 "count_delta": {key: current_counts[key] - backup_counts[key] for key in current_counts},
                 "transform_matches": transform_matches,
             }
-        if not confirm:
-            raise ValueError(f"{action} requires confirm=True because it changes recoverable checkpoint data")
+        if not confirm_destructive:
+            raise ValueError(
+                f"{action} requires confirm_destructive=True because it changes recoverable checkpoint data"
+            )
         if action == "DELETE":
             backup_object_name = checkpoint.name
             backup_mesh = checkpoint.data

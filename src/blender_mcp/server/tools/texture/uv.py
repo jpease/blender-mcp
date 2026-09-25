@@ -18,13 +18,13 @@ async def manage_uv_maps(
     uv_map_name: str | None = None,
     new_name: str | None = None,
     source_uv_map_name: str | None = None,
-    confirm: bool = False,
+    confirm_remove: bool = False,
 ) -> dict:
     """
     List or perform one explicit UV-map lifecycle action on a named mesh.
 
     CREATE never replaces; DUPLICATE copies loop UVs; RENAME preserves references; ACTIVATE and
-    SET_RENDER are distinct. REMOVE requires `confirm=True` and reports material nodes referencing it.
+    SET_RENDER are distinct. REMOVE requires `confirm_remove=True` and reports material nodes referencing it.
     """
     if action != "LIST" and uv_map_name is None and action not in {"CREATE", "DUPLICATE"}:
         raise ToolError("uv_map_name is required for this action")

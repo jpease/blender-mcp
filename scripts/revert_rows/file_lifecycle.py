@@ -264,7 +264,7 @@ ROWS: list[Revert] = [
                 "save_shot-compress",
                 "save_shot-relative_remap",
                 "save_shot-confirm_overwrite",
-                "reset_session-confirm",
+                "reset_session-confirm_reset",
             )
         ),
     ),
@@ -335,13 +335,13 @@ ROWS: list[Revert] = [
         ),
     ),
     Revert(
-        "file lifecycle: reset_session runs without confirm",
+        "file lifecycle: reset_session runs without confirm_reset",
         ADDON_FILE_LIFECYCLE,
-        '        if not require_bool("confirm", confirm):\n',
-        '        if not require_bool("confirm", True):\n',
+        '        if not require_bool("confirm_reset", confirm_reset):\n',
+        '        if not require_bool("confirm_reset", True):\n',
         (
             f"{FLT}::test_reset_session_without_confirm_is_refused",
-            f"{FLT}::test_a_flag_that_is_not_a_real_bool_is_refused[reset_session-confirm]",
+            f"{FLT}::test_a_flag_that_is_not_a_real_bool_is_refused[reset_session-confirm_reset]",
             f"{FLT}::test_each_file_command_is_answered_exactly_once_through_the_drain_loop[reset refused]",
         ),
     ),

@@ -383,11 +383,11 @@ class _ProductionMixin:
         margin=16,
         normal_space="TANGENT",
         normal_swizzle=("POS_X", "POS_Y", "POS_Z"),
-        overwrite=False,
-        confirm=False,
+        confirm_overwrite=False,
+        confirm_bake=False,
     ):
-        if not confirm:
-            raise ValueError("Baking is expensive and writes a file; call again with confirm=True")
+        if not confirm_bake:
+            raise ValueError("Baking is expensive and writes a file; call again with confirm_bake=True")
         obj = get_mesh_object(object_name)
         high_objects = [get_mesh_object(value) for value in (high_poly_object_names or [])]
         if obj in high_objects:
@@ -414,8 +414,8 @@ class _ProductionMixin:
         if not path.parent.is_dir():
             raise ValueError(f"Output directory does not exist: {path.parent}")
         existed = path.exists()
-        if existed and not overwrite:
-            raise ValueError(f"Output file already exists: {path}; set overwrite=True to replace it")
+        if existed and not confirm_overwrite:
+            raise ValueError(f"Output file already exists: {path}; set confirm_overwrite=True to replace it")
         width, height, margin = int(width), int(height), int(margin)
         if not 1 <= width <= 32768 or not 1 <= height <= 32768:
             raise ValueError("width and height must be between 1 and 32768")

@@ -46,18 +46,18 @@ async def bake_texture_map(
         Literal["POS_X", "NEG_X", "POS_Y", "NEG_Y", "POS_Z", "NEG_Z"],
     ] = ("POS_X", "POS_Y", "POS_Z"),
     target_engine: Literal["CYCLES", "EEVEE", "BLENDER_EEVEE_NEXT"] = "CYCLES",
-    overwrite: bool = False,
-    confirm: bool = False,
+    confirm_overwrite: bool = False,
+    confirm_bake: bool = False,
 ) -> dict:
     """
     Bake one native or semantic map atomically through Cycles to an explicit file.
 
-    `confirm=True` is required because baking is expensive and writes a file. Omit high-poly sources
+    `confirm_bake=True` is required because baking is expensive and writes a file. Omit high-poly sources
     for same-object baking. BASE_COLOR, METALLIC, and OPACITY are temporarily routed through
     emission without modifying original materials. Blender context and render engine are restored.
     """
-    if not confirm:
-        raise ToolError("Set confirm=True to run the bake")
+    if not confirm_bake:
+        raise ToolError("Set confirm_bake=True to run the bake")
     params = {k: v for k, v in locals().items() if k != "ctx"}
     params["output_path"] = absolute_path(output_path, "output_path")
     return await call_blender("bake_texture_map", params, changed_objects=[object_name])

@@ -259,7 +259,7 @@ def test_bake_reports_image_as_changed_resource(monkeypatch) -> None:
             high_poly_object_names=["High"],
             map_type="NORMAL",
             output_path="/tmp/normal.exr",
-            confirm=True,
+            confirm_bake=True,
         )
     )
 
@@ -290,7 +290,7 @@ def test_bake_reports_image_as_changed_resource(monkeypatch) -> None:
         (
             advanced.generate_retopology_lods,
             "generate_retopology_lods",
-            {"object_name": "Low", "levels": [{"ratio": 0.5}], "confirm": True},
+            {"object_name": "Low", "levels": [{"ratio": 0.5}], "confirm_generate": True},
             {"created_objects": ["Low_LOD1"]},
         ),
     ],

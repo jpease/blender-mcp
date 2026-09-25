@@ -36,8 +36,8 @@ Info: Saved as "saved.blend"
 Info: Saved "saved.blend"
   [save_shot() in place, confirmed] OK -> {'filepath': '<real-tmp>/t6_handlers_<rand>/saved.blend', 'saved_in_place': True, 'overwrote_existing': True, 'created_directory': False, 'compress': False, 'relative_remap': False, 'session_id': '<uid>', 'session_epoch': 4, 'provenance_written': True, 'provenance_ingredients': 0}
   in-place header=b'BLENDER17-01'
-  [reset_session()] ValueError -> 'reset_session discards the open file and any unsaved work; pass confirm=true'
-  [reset_session(confirm=True)] OK -> {'session_id': '<uid>', 'session_epoch': 5, 'filepath': None, 'rehandshake_required': True, 'note': "The open database was replaced: session_epoch moved, and the addon's capabilities follow the file. The server re-handshakes automatically on the next command; call get_addon_status to see the new session before relying on a cached capability list.", 'discarded_unsaved_changes': False, 'scene_name': 'Scene', 'object_count': 0, 'datablock_object_count': 0, 'libraries': {'total': 0, 'by_type': {}, 'limit': 10, 'returned_count': 0, 'truncated': False, 'records': []}, 'capabilities_changed': False}
+  [reset_session()] ValueError -> 'reset_session discards the open file and any unsaved work; pass confirm_reset=true'
+  [reset_session(confirm_reset=True)] OK -> {'session_id': '<uid>', 'session_epoch': 5, 'filepath': None, 'rehandshake_required': True, 'note': "The open database was replaced: session_epoch moved, and the addon's capabilities follow the file. The server re-handshakes automatically on the next command; call get_addon_status to see the new session before relying on a cached capability list.", 'discarded_unsaved_changes': False, 'scene_name': 'Scene', 'object_count': 0, 'datablock_object_count': 0, 'libraries': {'total': 0, 'by_type': {}, 'limit': 10, 'returned_count': 0, 'truncated': False, 'records': []}, 'capabilities_changed': False}
   after reset: objects=0 filepath=''
   epoch 2 -> 5 across 3 swaps (2 opens, 1 reset)
 

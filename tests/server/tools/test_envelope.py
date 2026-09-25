@@ -158,24 +158,24 @@ def test_the_keys_the_shortening_adds_are_inside_the_budget_it_measured() -> Non
 
 def test_a_page_paged_under_a_prefixed_name_is_still_marked_truncated() -> None:
     """
-    `inspect_lighting_setup` pages its inventory as `lights_truncated`/`lights_next_offset`.
+    `get_camera_rig_info` pages its action records as `animation_truncated`/`animation_next_offset`.
 
-    Recognizing only the bare spelling left the reply claiming `lights_truncated: false` about a
-    page the budget had just cut, with no offset to resume from.
+    Recognizing only the bare spelling left the reply claiming `animation_truncated: false` about
+    a page the budget had just cut, with no offset to resume from.
     """
     data = {
-        "lights": _records(_OVER_BUDGET),
-        "lights_total": _OVER_BUDGET,
-        "lights_offset": 0,
-        "lights_truncated": False,
-        "lights_next_offset": None,
+        "animation": _records(_OVER_BUDGET),
+        "animation_total": _OVER_BUDGET,
+        "animation_offset": 0,
+        "animation_truncated": False,
+        "animation_next_offset": None,
     }
 
     result = ok(data)
 
     assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
-    assert result["data"]["lights_truncated"] is True
-    assert result["data"]["lights_next_offset"] == len(result["data"]["lights"])
+    assert result["data"]["animation_truncated"] is True
+    assert result["data"]["animation_next_offset"] == len(result["data"]["animation"])
 
 
 def test_a_page_whose_owner_takes_no_offset_is_marked_truncated_but_offers_none() -> None:
@@ -323,20 +323,20 @@ def test_each_shortened_pages_warning_names_that_page_and_no_other() -> None:
     shortened = [warning for warning in result["warnings"] if "was shortened to" in warning]
     assert shortened == [
         f"files was shortened to {len(payload['files'])} of {_OVER_BUDGET} records to stay within the "
-        f"{REPLY_BYTE_BUDGET}-byte reply budget; continue from files_next_offset={len(payload['files'])}.",
+        f"{REPLY_BYTE_BUDGET}-byte reply budget; continue with files_offset={len(payload['files'])}.",
         f"progress was shortened to {len(payload['progress'])} of {_OVER_BUDGET // 2} records to stay "
-        f"within the {REPLY_BYTE_BUDGET}-byte reply budget; continue from "
-        f"progress_next_offset={_RESUMED_OFFSET + len(payload['progress'])}.",
+        f"within the {REPLY_BYTE_BUDGET}-byte reply budget; continue with "
+        f"progress_offset={_RESUMED_OFFSET + len(payload['progress'])}.",
     ]
 
 
 def test_a_camera_rig_page_resumes_from_the_offset_it_was_requested_at() -> None:
     """
-    `get_camera_rig_info` pages `children` through a parameter named `child_offset`.
+    A secondary page resumes from its own offset, through the parameter named after it.
 
-    Its reply carried only `children_next_offset`, so a page requested at child_offset=50 and cut
-    by the budget was resumed from 0 - re-reading the fifty children already seen - and the warning
-    said `offset=`, a parameter the tool does not take.
+    `get_camera_rig_info` pages `children` through `children_offset`. A page requested at
+    children_offset=50 and cut by the budget was resumed from 0 - re-reading the fifty children
+    already seen - and the warning said `offset=`, a parameter the tool does not take.
     """
     data = {
         "children": _records(_OVER_BUDGET),
@@ -352,8 +352,8 @@ def test_a_camera_rig_page_resumes_from_the_offset_it_was_requested_at() -> None
 
     assert 0 < kept < _OVER_BUDGET
     assert result["data"]["children_next_offset"] == 50 + kept
-    assert any(warning.endswith(f"continue from children_next_offset={50 + kept}.") for warning in result["warnings"])
-    assert not any("offset=" in warning and "children_next_offset=" not in warning for warning in result["warnings"])
+    assert any(warning.endswith(f"continue with children_offset={50 + kept}.") for warning in result["warnings"])
+    assert not any("offset=" in warning and "children_offset=" not in warning for warning in result["warnings"])
 
 
 def test_a_reply_too_big_at_one_record_per_page_says_so_rather_than_offering_an_offset() -> None:

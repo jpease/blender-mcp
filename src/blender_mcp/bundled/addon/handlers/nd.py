@@ -102,7 +102,7 @@ class NDHandlersMixin:
             "parent": parent_obj.name if parent_obj else None,
         }
 
-    def nd_clean_utils(self, confirm=False):
+    def nd_clean_utils(self, confirm_clean=False):
         """
         Remove orphaned boolean/array/mirror/lattice modifiers and their ND utility objects, scene-wide.
 
@@ -111,7 +111,7 @@ class NDHandlersMixin:
         dry-run isn't feasible without reimplementing ND's own cleanup logic.
 
         Args:
-            confirm: Must be True to run - this is scene-wide and destructive with no way to scope it.
+            confirm_clean: Must be True to run - this is scene-wide and destructive with no way to scope it.
 
         Returns:
             dict: `removed_objects` (the deleted utility objects, counted by type beside a sample
@@ -123,9 +123,9 @@ class NDHandlersMixin:
             ValueError: If the operation cannot be completed.
 
         """
-        if not confirm:
+        if not confirm_clean:
             raise ValueError(
-                "Pass confirm=True to run nd_clean_utils - it removes orphaned ND utility objects/modifiers "
+                "Pass confirm_clean=True to run nd_clean_utils - it removes orphaned ND utility objects/modifiers "
                 "scene-wide with no way to scope or preview the change"
             )
         before_types = {obj.name: obj.type for obj in bpy.data.objects}

@@ -263,7 +263,7 @@ def test_nd_clean_utils_requires_confirm(monkeypatch) -> None:
     addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
     server = addon.BlenderMCPServer()
 
-    with pytest.raises(ValueError, match="Pass confirm=True"):
+    with pytest.raises(ValueError, match="confirm_clean=True"):
         server.nd_clean_utils()
 
 
@@ -283,7 +283,7 @@ def test_nd_clean_utils_reports_removed_objects_and_modifiers(monkeypatch) -> No
     monkeypatch.setattr(sys.modules["bpy"].ops.nd, "clean_utils", fake_clean_utils)
     server = addon.BlenderMCPServer()
 
-    result = server.nd_clean_utils(confirm=True)
+    result = server.nd_clean_utils(confirm_clean=True)
 
     assert result["status"] == "cleaned"
     assert result["removed_objects"] == {
@@ -327,7 +327,7 @@ def test_a_large_cleanup_counts_what_went_and_names_only_the_objects_that_lost_a
     addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True, objects=objects)
     monkeypatch.setattr(sys.modules["bpy"].ops.nd, "clean_utils", fake_clean_utils)
 
-    result = addon.BlenderMCPServer().nd_clean_utils(confirm=True)
+    result = addon.BlenderMCPServer().nd_clean_utils(confirm_clean=True)
 
     assert result["removed_objects"] == {
         "total": 30,
@@ -352,7 +352,7 @@ def test_nd_clean_utils_reports_nothing_removed_when_scene_is_already_clean(monk
     addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True, objects=objects)
     server = addon.BlenderMCPServer()
 
-    result = server.nd_clean_utils(confirm=True)
+    result = server.nd_clean_utils(confirm_clean=True)
 
     assert result == {
         "status": "cleaned",
@@ -382,6 +382,6 @@ def test_nd_clean_utils_surfaces_cancelled(monkeypatch) -> None:
     monkeypatch.setattr(sys.modules["bpy"].ops.nd, "clean_utils", lambda *_a, **_k: {"CANCELLED"})
     server = addon.BlenderMCPServer()
 
-    result = server.nd_clean_utils(confirm=True)
+    result = server.nd_clean_utils(confirm_clean=True)
 
     assert result["cancelled"] is True

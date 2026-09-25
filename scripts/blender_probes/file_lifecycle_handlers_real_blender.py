@@ -183,7 +183,7 @@ print(f"  reopened objects={sorted(o.name for o in bpy.data.objects)}")
 attempt("save_shot() in place, confirmed", lambda: server.save_shot(confirm_overwrite=True))
 print(f"  in-place header={header(saved)!r}")
 attempt("reset_session()", server.reset_session)
-attempt("reset_session(confirm=True)", lambda: server.reset_session(confirm=True))
+attempt("reset_session(confirm_reset=True)", lambda: server.reset_session(confirm_reset=True))
 print(f"  after reset: objects={len(bpy.data.objects)} filepath={bpy.data.filepath!r}")
 print(f"  epoch {epoch} -> {session.session_snapshot()['session_epoch']} across 3 swaps (2 opens, 1 reset)")
 

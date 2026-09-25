@@ -558,7 +558,7 @@ class FileLifecycleHandlersMixin:
         ingredients = _save_with_provenance(request)
         return _save_report(request, SaveOutcome(created_directory, ingredients, broken_links))
 
-    def reset_session(self, confirm: object = False) -> dict[str, object]:
+    def reset_session(self, confirm_reset: object = False) -> dict[str, object]:
         """
         Replace the open database with an empty factory scene, as a pooled worker's reset step.
 
@@ -568,22 +568,22 @@ class FileLifecycleHandlersMixin:
         makes the reset scene the same on every machine. The load fires
         `load_post`, which moves the epoch, so this does not increment it.
 
-        `confirm=True` is the only consent needed, because discarding the session
+        `confirm_reset=True` is the only consent needed, because discarding the session
         is the command's whole purpose.
 
         Args:
-            confirm: Must be True.
+            confirm_reset: Must be True.
 
         Returns:
             dict[str, object]: As `open_shot`, with `filepath` None.
 
         Raises:
-            ValueError: Without `confirm=True`; nothing was reset.
+            ValueError: Without `confirm_reset=True`; nothing was reset.
             RuntimeError: When Blender could not reset.
 
         """
-        if not require_bool("confirm", confirm):
-            raise ValueError("reset_session discards the open file and any unsaved work; pass confirm=true")
+        if not require_bool("confirm_reset", confirm_reset):
+            raise ValueError("reset_session discards the open file and any unsaved work; pass confirm_reset=true")
         dirty = bool(bpy.data.is_dirty)
         capabilities_before = self._capability_names()
         previous = bpy.data.filepath

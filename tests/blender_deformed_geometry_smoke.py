@@ -243,17 +243,17 @@ bpy.context.scene.collection.objects.link(prop)
 prop.parent = rig
 bpy.context.view_layer.update()
 
-bound = handler.list_character_bones("SmokeRig", deformed_meshes=True)["deformed_meshes"]
+bound = handler.list_character_bones("SmokeRig", deformed_meshes=True)
 
-assert [item["object"] for item in bound["items"]] == ["SmokeBody"], bound
-assert bound["items"][0] == {"object": "SmokeBody", "binding": "MODIFIER", "modifier_enabled": True}, bound
-assert (bound["total"], bound["truncated"]) == (1, False), bound
+assert [item["object"] for item in bound["deformed_meshes"]] == ["SmokeBody"], bound
+assert bound["deformed_meshes"][0] == {"object": "SmokeBody", "binding": "MODIFIER", "modifier_enabled": True}, bound
+assert (bound["deformed_meshes_total"], bound["deformed_meshes_truncated"]) == (1, False), bound
 assert "deformed_meshes" not in handler.list_character_bones("SmokeRig"), "the section must be opt-in"
 # A mesh disabled in the viewport still binds; the flag says why it would not move.
 body.modifiers["Armature"].show_viewport = False
 bpy.context.view_layer.update()
 disabled = handler.list_character_bones("SmokeRig", deformed_meshes=True)["deformed_meshes"]
-assert disabled["items"][0]["modifier_enabled"] is False, disabled
+assert disabled[0]["modifier_enabled"] is False, disabled
 body.modifiers["Armature"].show_viewport = True
 
 print(f"rest max displacement {at_rest['displacement']['maximum_m']:.3e} m")

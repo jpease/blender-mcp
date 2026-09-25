@@ -112,7 +112,7 @@ async def manage_retopology_checkpoint(
     action: CheckpointAction,
     object_name: str,
     checkpoint_name: str | None = None,
-    confirm: bool = False,
+    confirm_destructive: bool = False,
 ) -> dict:
     """
     Create, list, compare, restore, or delete recoverable mesh checkpoints.
@@ -120,13 +120,18 @@ async def manage_retopology_checkpoint(
     CREATE copies the mesh, local transform, modifier settings, vertex groups,
     and custom attributes into a hidden backup collection. LIST needs only the
     target name. COMPARE reports count/hash differences without mutation.
-    RESTORE and DELETE require `confirm=True`; RESTORE replaces the target's
+    RESTORE and DELETE require `confirm_destructive=True`; RESTORE replaces the target's
     mesh and relevant object state while keeping the checkpoint available.
     Provide `checkpoint_name` for every action except LIST.
     """
     reply = await send_blender_command(
         "manage_retopology_checkpoint",
-        {"action": action, "object_name": object_name, "checkpoint_name": checkpoint_name, "confirm": confirm},
+        {
+            "action": action,
+            "object_name": object_name,
+            "checkpoint_name": checkpoint_name,
+            "confirm_destructive": confirm_destructive,
+        },
     )
     normalized_action = action.upper()
     if normalized_action == "RESTORE":

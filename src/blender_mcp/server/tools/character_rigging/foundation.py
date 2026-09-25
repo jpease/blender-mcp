@@ -523,11 +523,11 @@ _pose_constraint_adapter = TypeAdapter(PoseConstraintSpec)
 async def get_character_rig_info(
     ctx: Context,
     armature_object_name: str,
-    bone_limit: Annotated[int, Field(ge=1, le=500)] = 100,
-    bone_offset: Annotated[int, Field(ge=0, le=99_999)] = 0,
+    limit: Annotated[int, Field(ge=1, le=500)] = 100,
+    offset: Annotated[int, Field(ge=0, le=99_999)] = 0,
     bone_names: Annotated[list[str] | None, Field(min_length=1, max_length=200)] = None,
-    dependency_limit: Annotated[int, Field(ge=1, le=500)] = 100,
-    dependency_offset: Annotated[int, Field(ge=0, le=99_999)] = 0,
+    dependent_meshes_limit: Annotated[int, Field(ge=1, le=500)] = 100,
+    dependent_meshes_offset: Annotated[int, Field(ge=0, le=99_999)] = 0,
     include_custom_properties: bool = True,
 ) -> dict:
     """
@@ -535,7 +535,7 @@ async def get_character_rig_info(
 
     Rest coordinates are armature-local; pose records include armature-space and world-space
     matrices. bone_names reports only these exact bones, in armature order, instead of paging
-    bone_offset through the whole rig - the same filter list_character_bones takes, for the same
+    offset through the whole rig - the same filter list_character_bones takes, for the same
     reason: naming three bones off a 187-bone rig otherwise costs several paginated calls, and
     this tool's per-bone payload is heavier than list_character_bones's.
     """
@@ -543,11 +543,11 @@ async def get_character_rig_info(
         "get_character_rig_info",
         {
             "armature_object_name": armature_object_name,
-            "bone_limit": bone_limit,
-            "bone_offset": bone_offset,
+            "limit": limit,
+            "offset": offset,
             "bone_names": bone_names,
-            "dependency_limit": dependency_limit,
-            "dependency_offset": dependency_offset,
+            "dependent_meshes_limit": dependent_meshes_limit,
+            "dependent_meshes_offset": dependent_meshes_offset,
             "include_custom_properties": include_custom_properties,
         },
     )

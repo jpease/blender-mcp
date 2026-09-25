@@ -359,12 +359,6 @@ def test_mount_map_knows_nothing_it_cannot_mount() -> None:
     assert known_tool_names() == set(_tool_names_for_toolsets(ALL_SENTINEL))
 
 
-def test_texture_lighting_alias_resolves_to_the_full_pre_split_surface() -> None:
-    """The retired fused bundle name stays usable, losing no capability for an existing config."""
-    expected = set(BUNDLES["texture"]) | set(BUNDLES["lighting"]) | set(BUNDLES["lighting-construction"])
-    assert set(resolve_toolset_modules("texture-lighting")) - set(resolve_toolset_modules(None)) == expected
-
-
 def test_shot_and_asset_modes_share_only_the_core_surface() -> None:
     """Selecting shot must not drag in asset authoring, and vice versa."""
     core = set(_tool_names_for_toolsets(None))
@@ -582,15 +576,17 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # `max_duration_seconds` contract. 75 is `list_character_bones`. The rest is the core surface
 # below.
 #
-# Raised from 277,300, measured at 277,372 - 72 bytes, all of it `get_camera_rig_info` naming
-# which parameter each of its pages resumes through: `children_next_offset` goes back as
-# `child_offset`, a name a caller cannot guess, and the envelope's resume hint now names the reply
-# key rather than an `offset=` the tool does not take.
-#
 # Raised from 277,372, measured at 277,392 - 20 bytes, all of it `get_session_info` saying its
 # `libraries` is now counted with a sample and that `list_libraries` pages the rest (+73), less a
 # shorter `open_shot` (-50): a session with hundreds of linked libraries listed every one.
-SHOT_MODE_BYTE_CEILING = 277_392
+#
+# Raised from 277,392, measured at 277,769 - 377 bytes, from one name per concept. 421 is
+# `list_character_bones`' custom-property and deformed-mesh pages taking the `<list>_limit`/
+# `<list>_offset` pair every other secondary page takes (they had an offset and no limit, and a
+# parameter name that matched no reply key). 39 is `confirm_reset`/`confirm_unlink` replacing a
+# bare `confirm`. `get_camera_rig_info` gives back 60: its pages resume through `children_offset`
+# now, so the sentence mapping `children_next_offset` onto `child_offset` is gone.
+SHOT_MODE_BYTE_CEILING = 277_769
 
 # The same rule as above, for the default, core-only surface.
 #
@@ -630,7 +626,10 @@ SHOT_MODE_BYTE_CEILING = 277_392
 #
 # Raised from 92,559, measured at 92,582 - 23 bytes: the same `get_session_info`/`open_shot`
 # change as the shot ceiling above.
-DEFAULT_MODE_BYTE_CEILING = 92_582
+#
+# Raised from 92,582, measured at 92,624 - 42 bytes: `confirm_reset`/`confirm_unlink` replacing a
+# bare `confirm`, and `scene_name` replacing `scene_uid` on the two linking tools.
+DEFAULT_MODE_BYTE_CEILING = 92_624
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

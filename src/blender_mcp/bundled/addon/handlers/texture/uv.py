@@ -180,7 +180,7 @@ class TextureUVHandlers:
     """Inspect and safely mutate UV layers and seam attributes."""
 
     def manage_uv_maps(
-        self, object_name, action, uv_map_name=None, new_name=None, source_uv_map_name=None, confirm=False
+        self, object_name, action, uv_map_name=None, new_name=None, source_uv_map_name=None, confirm_remove=False
     ):
         obj, action = mesh_object(object_name), str(action).upper()
         layers = obj.data.uv_layers
@@ -230,8 +230,8 @@ class TextureUVHandlers:
             elif action == "SET_RENDER":
                 layer.active_render = True
             elif action == "REMOVE":
-                if not confirm:
-                    raise ValueError("Removing a UV map requires confirm=True")
+                if not confirm_remove:
+                    raise ValueError("Removing a UV map requires confirm_remove=True")
                 references = _uv_references(layer.name)
                 layers.remove(layer)
                 return {

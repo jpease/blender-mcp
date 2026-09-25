@@ -109,6 +109,7 @@ from revert_rows.common import (
     CONNFAILT,
     CONNT,
     CORET,
+    CRFT,
     CRTT,
     CTRLT,
     DEFORMT,
@@ -218,6 +219,11 @@ NEW_NODES_IN_EXISTING_FILES = (
     # --- which meshes a rig deforms, without moving a camera to find out ---
     f"{CTRLT}::test_bone_listing_names_the_meshes_the_rig_actually_deforms",
     f"{CTRLT}::test_a_rig_deforming_more_meshes_than_one_page_is_resumable",
+    # --- a secondary page honours its own limit as well as its own offset ---
+    f"{CTRLT}::test_a_mesh_page_smaller_than_the_default_is_honoured_and_resumes_where_it_stopped",
+    f"{CTRLT}::test_a_slider_page_smaller_than_the_default_is_honoured_and_resumes_where_it_stopped",
+    # --- a secondary page's budget-cut hint names that page's own offset, not the bones' ---
+    f"{CRFT}::test_a_budget_cut_dependent_mesh_page_resumes_through_its_own_offset",
     # --- the drain timer follows the traffic instead of a flat 50 ms poll ---
     f"{THREADT}::test_a_command_makes_the_next_drain_follow_within_the_active_poll",
     f"{THREADT}::test_the_drain_poll_relaxes_once_the_session_goes_quiet",
@@ -404,6 +410,9 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{TDT}::test_units_and_datablock_semantics_survive",
     f"{TDT}::test_a_non_numeric_parameter_is_never_labelled_with_scene_units",
     f"{TDT}::test_a_nested_model_title_is_not_spliced_into_its_parameters",
+    # --- a renamed gating flag keeps its tool's destructive hint ---
+    f"{TDT}::test_a_flag_that_frees_a_cache_or_replaces_a_file_marks_its_tool_destructive[confirm_free]",
+    f"{TDT}::test_a_flag_that_frees_a_cache_or_replaces_a_file_marks_its_tool_destructive[confirm_overwrite]",
     f"{BUNT}::test_advertised_parameter_descriptions_do_not_restate_the_schema[None]",
     f"{BUNT}::test_advertised_parameter_descriptions_do_not_restate_the_schema[shot]",
     f"{BUNT}::test_advertised_parameter_descriptions_contain_no_letter_split_words[None]",

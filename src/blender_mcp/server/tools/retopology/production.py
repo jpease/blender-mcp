@@ -159,15 +159,15 @@ async def bake_retopology_maps(
     margin: Annotated[int, Field(ge=0)] = 16,
     normal_space: Literal["TANGENT", "OBJECT"] = "TANGENT",
     normal_swizzle: tuple[str, str, str] = ("POS_X", "POS_Y", "POS_Z"),
-    overwrite: bool = False,
-    confirm: bool = False,
+    confirm_overwrite: bool = False,
+    confirm_bake: bool = False,
 ) -> dict:
     """
     Bake one validated high-to-low map to an explicit file path.
 
-    This is synchronous and potentially expensive, so `confirm=True` is
+    This is synchronous and potentially expensive, so `confirm_bake=True` is
     required. The absolute `output_path` parent must exist; an existing file is
-    rejected unless `overwrite=True`. The low mesh needs non-empty UVs and is
+    rejected unless `confirm_overwrite=True`. The low mesh needs non-empty UVs and is
     selected-active while every named high mesh is selected as a source.
     Cycles, selection, active object, active UV, and active material image nodes
     are restored in `finally`. A supplied cage must have topology identical to

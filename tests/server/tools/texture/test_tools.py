@@ -199,7 +199,7 @@ def test_destructive_or_expensive_inputs_are_gated_before_dispatch(monkeypatch):
     connection = StubConnection()
     monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
 
-    with pytest.raises(ToolError, match="confirm=True"):
+    with pytest.raises(ToolError, match="confirm_bake"):
         run_tool(texture.bake_texture_map, object_name="Low", map_type="NORMAL", output_path="/tmp/n.png")
     with pytest.raises(ToolError, match="confirm_cycles"):
         run_tool(texture.render_pbr_material_preview, material_name="Paint", target_engine="CYCLES")

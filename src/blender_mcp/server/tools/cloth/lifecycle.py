@@ -42,7 +42,7 @@ async def manage_cloth_cache(
     action: CacheAction = "INSPECT",
     patch: PointCachePatch | None = None,
     confirm_bake: bool = False,
-    confirm_free_bake: bool = False,
+    confirm_free: bool = False,
     confirm_external_overwrite: bool = False,
     max_bake_frames: Annotated[int, Field(ge=1)] = 250,
 ) -> dict:
@@ -62,7 +62,7 @@ async def manage_cloth_cache(
             "action": action,
             "patch": dump_input(patch),
             "confirm_bake": confirm_bake,
-            "confirm_free_bake": confirm_free_bake,
+            "confirm_free": confirm_free,
             "confirm_external_overwrite": confirm_external_overwrite,
             "max_bake_frames": max_bake_frames,
         },

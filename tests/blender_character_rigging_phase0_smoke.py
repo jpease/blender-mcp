@@ -374,6 +374,14 @@ cleaned = handler.clean_skin_weights(body.name, "HeroRig", normalize="DEFORM")
 assert cleaned["residual_unweighted_vertices"] == []
 inspection = handler.get_character_rig_info("HeroRig")
 assert inspection["bones"]["total"] == 8
+assert body.name in {record["object"] for record in inspection["dependent_meshes"]}, inspection
+assert inspection["dependent_meshes_total"] == len(inspection["dependent_meshes"]), inspection
+assert inspection["dependent_meshes_next_offset"] is None, inspection
+paged_inspection = handler.get_character_rig_info("HeroRig", limit=3, offset=3)
+assert (paged_inspection["bones"]["offset"], paged_inspection["bones"]["next_offset"]) == (3, 6), paged_inspection
+assert [record["name"] for record in paged_inspection["pose_bones"]] == [
+    item["name"] for item in inspection["bones"]["items"][3:6]
+], paged_inspection
 named_inspection = handler.get_character_rig_info("HeroRig", bone_names=["finger_tip.L", "upper_arm.L"])
 assert named_inspection["bones"]["total"] == 2
 assert {item["name"] for item in named_inspection["bones"]["items"]} == {"finger_tip.L", "upper_arm.L"}

@@ -16,6 +16,7 @@ from .common import (
     ADDON_SERVER_CORE,
     ANIMT,
     CORET,
+    CRFT,
     CTRLT,
     DEFORMT,
     DRT,
@@ -231,9 +232,35 @@ ROWS: list[Revert] = [
         # `truncated` with nowhere to resume from is the one paging shape the envelope forbids.
         "rig reading: the deformed-mesh page ignores the offset it told the caller to resume from",
         ADDON_POSING,
-        "paginate(len(bound), mesh_offset, _MAX_DEFORMED_MESHES, _MAX_DEFORMED_MESHES)",
-        "paginate(len(bound), 0, _MAX_DEFORMED_MESHES, _MAX_DEFORMED_MESHES)",
+        "        deforming_meshes(armature),\n        offset,\n",
+        "        deforming_meshes(armature),\n        0,\n",
         (f"{CTRLT}::test_a_rig_deforming_more_meshes_than_one_page_is_resumable",),
+    ),
+    Revert(
+        "rig reading: the deformed-mesh page ignores the limit the caller asked for",
+        ADDON_POSING,
+        "        offset,\n        limit,\n        _MAX_DEFORMED_MESHES,\n",
+        "        offset,\n        _MAX_DEFORMED_MESHES,\n        _MAX_DEFORMED_MESHES,\n",
+        (f"{CTRLT}::test_a_mesh_page_smaller_than_the_default_is_honoured_and_resumes_where_it_stopped",),
+    ),
+    Revert(
+        "rig reading: a bone's slider page ignores the limit the caller asked for",
+        ADDON_POSING,
+        "        offset,\n        limit,\n        _MAX_BONE_PROPERTIES,\n",
+        "        offset,\n        _MAX_BONE_PROPERTIES,\n        _MAX_BONE_PROPERTIES,\n",
+        (f"{CTRLT}::test_a_slider_page_smaller_than_the_default_is_honoured_and_resumes_where_it_stopped",),
+    ),
+    Revert(
+        # The shape it had: bare keys nested under the list, which the envelope can only resume
+        # through `offset=` - the bone page's parameter on this tool, so it is accepted.
+        "rig reading: a budget-cut dependent-mesh page is resumed through the bone page's offset",
+        ADDON_CR_INSPECTION,
+        "            **dependent_meshes,\n",
+        '            "dependent_meshes": {\n'
+        '                "items": dependent_meshes.pop("dependent_meshes"),\n'
+        '                **{key.removeprefix("dependent_meshes_"): value for key, value in dependent_meshes.items()},\n'
+        "            },\n",
+        (f"{CRFT}::test_a_budget_cut_dependent_mesh_page_resumes_through_its_own_offset",),
     ),
     Revert(
         # Transport parenting is not skinning: a prop that rides the rig is not part of the
