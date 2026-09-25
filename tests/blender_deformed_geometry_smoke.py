@@ -20,7 +20,6 @@ Run with::
 import importlib
 import math
 import sys
-import types
 
 from pathlib import Path
 
@@ -28,12 +27,11 @@ import bpy
 
 from mathutils import Quaternion, Vector
 
-addon_path = Path(__file__).resolve().parents[1] / "src" / "blender_mcp" / "bundled" / "addon"
+sys.path.append(str(Path(__file__).resolve().parent))
+from smoke_addon import load_addon
+
 package_name = "blender_mcp_deformed_geometry_smoke"
-addon = types.ModuleType(package_name)
-addon.__path__ = [str(addon_path)]
-addon.ADDON_ID = package_name
-sys.modules[package_name] = addon
+load_addon(package_name)
 CharacterRiggingHandlersMixin = importlib.import_module(
     f"{package_name}.handlers.character_rigging"
 ).CharacterRiggingHandlersMixin

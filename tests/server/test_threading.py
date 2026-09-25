@@ -1,8 +1,8 @@
 """
 Tests for the addon's socket server threading model (no Blender required).
 
-server_core.py cannot be imported without bpy, so BlenderMCPServer is lifted
-out by AST and executed against stubs.
+The add-on is loaded once against the suite's shared fake Blender
+(`conftest.load_addon_for_module`), with a main-thread-only timer stub.
 
 The bug these cover: commands used to be dispatched by calling
 bpy.app.timers.register() from a client thread. bpy.app.timers is main-thread
@@ -15,25 +15,17 @@ from __future__ import annotations
 
 import ast
 import dataclasses
-import functools
-import itertools
 import json
-import logging
 import socket
-import sys
 import threading
 import time
 import types
 
-from collections.abc import Callable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass
-from types import MappingProxyType
-from typing import Literal
 
 import pytest
 
-from conftest import ROOT_ADDON, install_file_lifecycle_handler_lists, load_addon_source_module
+from conftest import ROOT_ADDON, load_addon_for_module
 
 SERVER_CORE = ROOT_ADDON.parent / "server_core.py"
 
@@ -121,31 +113,22 @@ class _StubWindowManagerOps:
         raise KeyboardInterrupt("stub open_mainfile: aborted part-way through the load")
 
 
-def _load_server_core():
+def _load_server_core() -> tuple[types.ModuleType, list[object], types.ModuleType, _StubWindowManagerOps]:
     """
-    Compile server_core.py's module body from source against stub modules.
+    Load the add-on with this suite's timers and file operators in the fake `bpy`.
 
     execute_command is overridden per-instance by every test in this file (see
     _make_server), so the real dispatch table and handler mixins are never
-    invoked - only __init__/start/stop/the socket loop are exercised. The
-    mixins only need to exist as base classes for the ClassDef to compile.
+    invoked - only __init__/start/stop/the socket loop are exercised.
 
-    Everything except the imports is lifted, not just `BlenderMCPServer`: the
-    class calls module-level helpers (`extract_frames`, `parse_command_frame`)
-    and reads the module-level `COMMANDS` registry, which would be missing
-    names at call time if only the ClassDef were executed.
+    The real `session.py` handlers are registered, as the add-on's `register()`
+    would, so barrier tests see the epoch a stub swap moves.
 
-    `session.py` is the exception: the real module runs against the same `bpy`
-    stub, so barrier tests see the epoch a stub swap moves.
+    Returns:
+        tuple: `server_core`, the live timer registrations, the add-on's own
+        `session` module, and the `bpy.ops.wm` stub.
+
     """
-    source = SERVER_CORE.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-
-    body: list[ast.stmt] = [node for node in tree.body if not isinstance(node, (ast.Import, ast.ImportFrom))]
-    assert any(isinstance(node, ast.ClassDef) and node.name == "BlenderMCPServer" for node in body), (
-        "BlenderMCPServer not found in server_core.py"
-    )
-
     main_thread = threading.current_thread()
     registered: list[object] = []
 
@@ -174,109 +157,19 @@ def _load_server_core():
         def is_registered(self, fn) -> bool:
             return any(existing is fn for existing in registered)
 
-    handlers = types.ModuleType("bpy.app.handlers")
-    handlers.persistent = lambda fn: fn
-    install_file_lifecycle_handler_lists(handlers)
-
-    app = types.ModuleType("bpy.app")
-    app.background = False
-    app.timers = Timers()
-    app.handlers = handlers
-
-    bpy = types.ModuleType("bpy")
-    bpy.app = app
-    bpy.context = types.SimpleNamespace(scene=types.SimpleNamespace())
-    bpy.data = types.SimpleNamespace(filepath="", is_dirty=False, libraries=[])
+    addon, bpy = load_addon_for_module(data={"filepath": "", "is_dirty": False, "libraries": []})
+    bpy.app.timers = Timers()
     window_manager_ops = _StubWindowManagerOps(bpy)
-    bpy.ops = types.SimpleNamespace(wm=window_manager_ops)
-
-    # Installed only for this exec: a lingering sys.modules["bpy"] would change
-    # what later test modules import.
-    installed = {name: sys.modules.get(name) for name in ("bpy", "bpy.app", "bpy.app.handlers")}
-    sys.modules["bpy"] = bpy
-    sys.modules["bpy.app"] = bpy.app
-    sys.modules["bpy.app.handlers"] = handlers
-    try:
-        session = load_addon_source_module("session.py", "blender_mcp_addon_session_threading")
-    finally:
-        for name, previous in installed.items():
-            if previous is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = previous
-    session.register_handlers()
-
-    # BlenderMCPServer's real base classes; the tests here never call a
-    # handler method (execute_command is stubbed per-instance in
-    # _make_server), so empty stand-ins are enough to satisfy the ClassDef.
-    mixin_names = (
-        "ViewportHandlersMixin",
-        "AnimationHandlersMixin",
-        "CameraHandlersMixin",
-        "LightingHandlers",
-        "CharacterRiggingHandlersMixin",
-        "RigidBodyHandlersMixin",
-        "RetopologyHandlersMixin",
-        "MeshHandlersMixin",
-        "ModelHandlersMixin",
-        "ClothHandlersMixin",
-        "LiquidHandlersMixin",
-        "SceneHandlersMixin",
-        "ScenePhysicsHandlersMixin",
-        "ObjectAnimationHandlersMixin",
-        "RenderingHandlersMixin",
-        "RenderJobHandlersMixin",
-        "NDHandlersMixin",
-        "PolyhavenHandlersMixin",
-        "SketchfabHandlersMixin",
-        "FileLifecycleHandlersMixin",
-        "LinkingHandlersMixin",
-        "DeliveryHandlersMixin",
-    )
-
-    namespace = {
-        "bpy": bpy,
-        # Evaluated while the module body executes: two lru_cache decorators and
-        # the annotations on the pure helpers and their tables.
-        "functools": functools,
-        "itertools": itertools,
-        "logging": logging,
-        "dataclass": dataclass,
-        "MappingProxyType": MappingProxyType,
-        "Literal": Literal,
-        "Callable": Callable,
-        "Mapping": Mapping,
-        "socket": socket,
-        "threading": threading,
-        "json": json,
-        "time": time,
-        "queue": __import__("queue"),
-        "os": __import__("os"),
-        "suppress": suppress,
-        "get_blendermcp_addon_preferences": lambda context=None: None,
-        "session_snapshot": session.session_snapshot,
-        "mark_session_indeterminate": session.mark_session_indeterminate,
-        # Same `session` module as the names above, so an abort and the next
-        # command share one piece of state.
-        "session_is_indeterminate": session.session_is_indeterminate,
-        # Same module again: a flag from a second copy of `session.py` would never
-        # move, letting guard tests pass for the wrong reason.
-        "load_in_flight": session.load_in_flight,
-        **{name: type(name, (), {}) for name in mixin_names},
-    }
-    exec(compile(ast.Module(body=body, type_ignores=[]), "<addon>", "exec"), namespace)
-    return namespace, registered, session, window_manager_ops
+    bpy.ops.wm = window_manager_ops
+    addon.session.register_handlers()
+    return addon.server_core, registered, addon.session, window_manager_ops
 
 
-_core, _registered, _session, _window_manager_ops = _load_server_core()
-BlenderMCPServer = _core["BlenderMCPServer"]
-# The pure halves of framing and dispatch, re-exported so the suites that test
-# them directly (tests/server/test_socket_unicode.py) need no second loader.
-extract_frames = _core["extract_frames"]
-parse_command_frame = _core["parse_command_frame"]
-# The one command registry, re-exported so a classification assertion reads the
-# same table the dispatcher does.
-COMMANDS = _core["COMMANDS"]
+_server_core, _registered, _session, _window_manager_ops = _load_server_core()
+BlenderMCPServer = _server_core.BlenderMCPServer
+# The one command registry, so a classification assertion reads the same table
+# the dispatcher does.
+COMMANDS = _server_core.COMMANDS
 
 
 def _free_port():
@@ -794,7 +687,7 @@ class _RecordingClient:
 
 def _advertise(server: object, *cmd_types: str) -> None:
     """
-    Give a harness server a dispatch table, since the real one needs real mixins.
+    Give a harness server a dispatch table of its own, so no real handler runs.
 
     The barrier fires only for a swap command that has a handler, so each
     barrier test must say which commands this server can dispatch.

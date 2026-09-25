@@ -24,9 +24,8 @@ from typing import Any
 
 import pytest
 
-from conftest import REPO_ROOT
+from conftest import REPO_ROOT, load_file_command_addon, run_command
 from pydantic_core import to_json
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools.envelope import REPLY_BYTE_BUDGET, envelope_for
 
@@ -646,24 +645,6 @@ class OperatorTripwire:
         return refuse
 
 
-def _abspath(bpy: types.ModuleType, path: str) -> str:
-    """
-    Mimic `bpy.path.abspath`, including the unsaved-session behaviour.
-
-    Args:
-        bpy: The stub module.
-        path: The path.
-
-    Returns:
-        str: The expanded path.
-
-    """
-    if not path.startswith("//"):
-        return path
-    base = bpy.data.filepath
-    return os.path.join(os.path.dirname(base), path[2:]) if base else path[2:]
-
-
 def _server(monkeypatch: pytest.MonkeyPatch, *, filepath: str = "") -> tuple[object, types.ModuleType, World]:
     """
     Build a real server over the full addon, backed by the stub database.
@@ -676,9 +657,7 @@ def _server(monkeypatch: pytest.MonkeyPatch, *, filepath: str = "") -> tuple[obj
         tuple: The server, the stub `bpy`, and the world.
 
     """
-    monkeypatch.delenv("BLENDERMCP_FILE_ROOTS", raising=False)
-    monkeypatch.delenv("BLENDERMCP_OUTPUT_ROOTS", raising=False)
-    addon, bpy = _load_addon(monkeypatch, data={})
+    addon, bpy = load_file_command_addon(monkeypatch, data={})
     world = World(bpy)
     transaction = sys.modules[f"{addon.__name__}.transaction"]
     bpy.transaction_flag = transaction.library_replace_in_progress
@@ -709,29 +688,8 @@ def _server(monkeypatch: pytest.MonkeyPatch, *, filepath: str = "") -> tuple[obj
         setattr(decoy, flag, False)
     bpy.context.scene = decoy
     bpy.context.view_layer = types.SimpleNamespace(name="ContextDecoyLayer")
-    bpy.path = types.SimpleNamespace(abspath=lambda path: _abspath(bpy, path))
-    bpy.context.preferences = types.SimpleNamespace(
-        filepaths=types.SimpleNamespace(use_scripts_auto_execute=False),
-        edit=types.SimpleNamespace(use_global_undo=True),
-    )
     bpy.ops.wm = OperatorTripwire()
     return addon.BlenderMCPServer(), bpy, world
-
-
-def _run(server: object, cmd_type: str, **params: object) -> dict:
-    """
-    Dispatch a command through production's own `execute_command`.
-
-    Args:
-        server: The server.
-        cmd_type: The command.
-        **params: Its parameters.
-
-    Returns:
-        dict: The response envelope.
-
-    """
-    return server.execute_command({"type": cmd_type, "params": params})  # type: ignore[attr-defined]
 
 
 def _canon(tmp_path: Path, world: World, name: str = "canon.blend") -> str:
@@ -789,7 +747,7 @@ def _linked(server: object, world: World, canonical: str) -> tuple[StubLibrary, 
         tuple: The library and the linked collection.
 
     """
-    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"])
+    response = run_command(server, "link_canon_library", filepath=canonical, collections=["CanonHero"])
     assert response["status"] == "success", response
     library = next(lib for lib in world.data["libraries"] if lib.filepath == canonical)
     collection = next(c for c in world.data["collections"] if c.library is library)
@@ -833,7 +791,7 @@ def test_link_validates_its_path_before_blender_reads_it(monkeypatch: pytest.Mon
     server, _bpy, world = _server(monkeypatch)
 
     for path in (str(tmp_path / "missing.blend"), str(tmp_path), "//canon.blend"):
-        response = _run(server, "link_canon_library", filepath=path, collections=["CanonHero"])
+        response = run_command(server, "link_canon_library", filepath=path, collections=["CanonHero"])
         assert response["status"] == "error", path
         _assert_no_path(response["message"])
     assert world.load_calls == []
@@ -848,9 +806,9 @@ def test_link_enforces_the_file_roots(monkeypatch: pytest.MonkeyPatch, tmp_path:
     allowed, refused = _canon(inside, world), _canon(outside, world)
     monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(inside))
 
-    assert _run(server, "link_canon_library", filepath=refused, collections=["CanonHero"])["status"] == "error"
+    assert run_command(server, "link_canon_library", filepath=refused, collections=["CanonHero"])["status"] == "error"
     assert world.load_calls == []
-    assert _run(server, "link_canon_library", filepath=allowed, collections=["CanonHero"])["status"] == "success"
+    assert run_command(server, "link_canon_library", filepath=allowed, collections=["CanonHero"])["status"] == "success"
 
 
 def test_link_refuses_a_name_absent_from_the_file_and_leaves_no_library(
@@ -860,7 +818,7 @@ def test_link_refuses_a_name_absent_from_the_file_and_leaves_no_library(
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
 
-    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero", "NoSuchHero"])
+    response = run_command(server, "link_canon_library", filepath=canonical, collections=["CanonHero", "NoSuchHero"])
 
     assert response["status"] == "error"
     assert "NoSuchHero" in response["message"]
@@ -878,7 +836,9 @@ def test_a_link_that_fails_after_linking_rolls_its_library_back(
     before = _uids(world)
     world.override_returns_none = True
 
-    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"], as_override=True)
+    response = run_command(
+        server, "link_canon_library", filepath=canonical, collections=["CanonHero"], as_override=True
+    )
 
     assert response["status"] == "error"
     assert list(world.data["libraries"]) == []
@@ -890,7 +850,9 @@ def test_link_instances_what_it_linked_so_a_save_keeps_it(monkeypatch: pytest.Mo
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
 
-    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"], objects=["Crate"])
+    response = run_command(
+        server, "link_canon_library", filepath=canonical, collections=["CanonHero"], objects=["Crate"]
+    )
 
     assert response["status"] == "success", response
     result = response["result"]
@@ -912,9 +874,11 @@ def test_link_names_default_to_none_and_are_not_shared_across_calls(
 
     assert parameters["collections"].default is None
     assert parameters["objects"].default is None
-    assert _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"])["status"] == "success"
-    second = _run(server, "link_canon_library", filepath=canonical)
-    third = _run(server, "link_canon_library", filepath=canonical)
+    assert (
+        run_command(server, "link_canon_library", filepath=canonical, collections=["CanonHero"])["status"] == "success"
+    )
+    second = run_command(server, "link_canon_library", filepath=canonical)
+    third = run_command(server, "link_canon_library", filepath=canonical)
 
     assert second["status"] == "error" and third["status"] == "error"
     assert "collections" in second["message"] and "objects" in second["message"]
@@ -926,7 +890,9 @@ def test_link_as_override_uses_route_c_not_create_liboverrides(monkeypatch: pyte
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
 
-    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"], as_override=True)
+    response = run_command(
+        server, "link_canon_library", filepath=canonical, collections=["CanonHero"], as_override=True
+    )
 
     assert response["status"] == "success", response
     kwargs = world.load_calls[0][1]
@@ -951,7 +917,9 @@ def test_link_names_the_roots_it_brought_in_and_counts_every_member(
     server, _bpy, world = _server(monkeypatch)
     canonical = _furnished(tmp_path, world)
 
-    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonSet"], objects=["Crate"])
+    response = run_command(
+        server, "link_canon_library", filepath=canonical, collections=["CanonSet"], objects=["Crate"]
+    )
 
     assert response["status"] == "success", response
     result = response["result"]
@@ -968,7 +936,9 @@ def test_link_detail_pages_the_members_as_records(monkeypatch: pytest.MonkeyPatc
     server, _bpy, world = _server(monkeypatch)
     canonical = _furnished(tmp_path, world)
 
-    result = _run(server, "link_canon_library", filepath=canonical, collections=["CanonSet"], detail=True)["result"]
+    result = run_command(server, "link_canon_library", filepath=canonical, collections=["CanonSet"], detail=True)[
+        "result"
+    ]
 
     members = result["instanced_objects"]
     assert (members["returned_count"], members["truncated"]) == (LISTED_CAP, True)
@@ -985,7 +955,7 @@ def test_link_as_override_names_the_override_roots_and_counts_the_rest(
     server, _bpy, world = _server(monkeypatch)
     canonical = _furnished(tmp_path, world)
 
-    result = _run(server, "link_canon_library", filepath=canonical, collections=["CanonSet"], as_override=True)[
+    result = run_command(server, "link_canon_library", filepath=canonical, collections=["CanonSet"], as_override=True)[
         "result"
     ]
 
@@ -996,7 +966,7 @@ def test_link_as_override_names_the_override_roots_and_counts_the_rest(
     assert len(override["objects"]["names"]) == NAME_CAP
     again = _furnished(tmp_path, world, "again.blend")
 
-    detailed = _run(
+    detailed = run_command(
         server, "link_canon_library", filepath=again, collections=["CanonSet"], as_override=True, detail=True
     )
 
@@ -1010,7 +980,7 @@ def test_a_linked_set_reply_fits_the_budget_with_every_root_named(
     server, _bpy, world = _server(monkeypatch)
     canonical = _furnished(tmp_path, world)
 
-    result = _run(server, "link_canon_library", filepath=canonical, collections=["CanonSet"])["result"]
+    result = run_command(server, "link_canon_library", filepath=canonical, collections=["CanonSet"])["result"]
     envelope = envelope_for(result)
 
     assert envelope["changed_objects"] == ["Lamp", "SetRoot"]
@@ -1022,9 +992,9 @@ def test_create_override_reports_the_override_objects(monkeypatch: pytest.Monkey
     """Overriding an already-linked collection names the override's roots too."""
     server, _bpy, world = _server(monkeypatch)
     canonical = _furnished(tmp_path, world)
-    linked = _run(server, "link_canon_library", filepath=canonical, collections=["CanonSet"])["result"]
+    linked = run_command(server, "link_canon_library", filepath=canonical, collections=["CanonSet"])["result"]
 
-    response = _run(server, "create_override", collection_uid=linked["collections"][0]["session_uid"])
+    response = run_command(server, "create_override", collection_uid=linked["collections"][0]["session_uid"])
 
     assert response["status"] == "success", response
     assert response["result"]["changed_objects"] == ["Lamp", "SetRoot"]
@@ -1036,7 +1006,7 @@ def test_link_refuses_as_override_with_objects(monkeypatch: pytest.MonkeyPatch, 
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
 
-    response = _run(server, "link_canon_library", filepath=canonical, objects=["Crate"], as_override=True)
+    response = run_command(server, "link_canon_library", filepath=canonical, objects=["Crate"], as_override=True)
 
     assert response["status"] == "error"
     assert world.load_calls == []
@@ -1047,7 +1017,7 @@ def test_link_refuses_relative_in_a_never_saved_session(monkeypatch: pytest.Monk
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
 
-    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"], relative=True)
+    response = run_command(server, "link_canon_library", filepath=canonical, collections=["CanonHero"], relative=True)
 
     assert response["status"] == "error"
     assert "relative" in response["message"]
@@ -1060,7 +1030,9 @@ def test_link_flags_must_be_real_bools(monkeypatch: pytest.MonkeyPatch, tmp_path
     server, _bpy, world = _server(monkeypatch, filepath=str(tmp_path / "shot.blend"))
     canonical = _canon(tmp_path, world)
 
-    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"], **{flag: "false"})
+    response = run_command(
+        server, "link_canon_library", filepath=canonical, collections=["CanonHero"], **{flag: "false"}
+    )
 
     assert response["status"] == "error"
     assert world.load_calls == []
@@ -1074,7 +1046,7 @@ def test_a_blender_link_failure_reaches_the_client_without_its_path(
     canonical = _canon(tmp_path, world)
     world.load_errors[canonical] = OSError(LINK_TRUNCATED.replace(f"{_LIFECYCLE_WORK}/truncated.blend", canonical))
 
-    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"])
+    response = run_command(server, "link_canon_library", filepath=canonical, collections=["CanonHero"])
 
     assert response["status"] == "error"
     assert "Missing DNA block" in response["message"]
@@ -1094,7 +1066,7 @@ def test_create_override_passes_do_fully_editable_true_explicitly(
     server, _bpy, world = _server(monkeypatch)
     _library, collection = _linked(server, world, _canon(tmp_path, world))
 
-    response = _run(server, "create_override", collection_uid=collection.session_uid)
+    response = run_command(server, "create_override", collection_uid=collection.session_uid)
 
     assert response["status"] == "success", response
     assert len(world.override_calls) == 1
@@ -1111,7 +1083,7 @@ def test_create_override_takes_the_scene_from_bpy_data_not_bpy_context(
     server, bpy, world = _server(monkeypatch)
     _library, collection = _linked(server, world, _canon(tmp_path, world))
 
-    _run(server, "create_override", collection_uid=collection.session_uid)
+    run_command(server, "create_override", collection_uid=collection.session_uid)
 
     _target, scene, view_layer, _kwargs = world.override_calls[0]
     assert scene is world.scene and scene is not bpy.context.scene
@@ -1125,8 +1097,8 @@ def test_create_override_refuses_to_guess_between_scenes(monkeypatch: pytest.Mon
     second = StubScene(world, "Scene.001")
     world.data["scenes"].append(second)
 
-    refused = _run(server, "create_override", collection_uid=collection.session_uid)
-    chosen = _run(server, "create_override", collection_uid=collection.session_uid, scene_uid=second.session_uid)
+    refused = run_command(server, "create_override", collection_uid=collection.session_uid)
+    chosen = run_command(server, "create_override", collection_uid=collection.session_uid, scene_uid=second.session_uid)
 
     assert refused["status"] == "error"
     assert str(world.scene.session_uid) in refused["message"] and str(second.session_uid) in refused["message"]
@@ -1140,11 +1112,11 @@ def test_create_override_resolves_by_session_uid_among_same_named_collections(
     """After an override `CanonHero` names two collections; the uid picks the linked one, the override is refused."""
     server, _bpy, world = _server(monkeypatch)
     _library, collection = _linked(server, world, _canon(tmp_path, world))
-    first = _run(server, "create_override", collection_uid=collection.session_uid)
+    first = run_command(server, "create_override", collection_uid=collection.session_uid)
     override_uid = first["result"]["override"]["session_uid"]
 
-    again = _run(server, "create_override", collection_uid=collection.session_uid)
-    on_override = _run(server, "create_override", collection_uid=override_uid)
+    again = run_command(server, "create_override", collection_uid=collection.session_uid)
+    on_override = run_command(server, "create_override", collection_uid=override_uid)
 
     assert [c.name for c in world.data["collections"]] == ["CanonHero", "CanonHero"]
     assert again["status"] == "error" and str(override_uid) in again["message"]
@@ -1161,7 +1133,7 @@ def test_create_override_refuses_a_uid_that_is_not_an_integer(
     _library, collection = _linked(server, world, _canon(tmp_path, world))
     collection.session_uid = 1
 
-    response = _run(server, "create_override", collection_uid=uid)
+    response = run_command(server, "create_override", collection_uid=uid)
 
     assert response["status"] == "error"
     assert world.override_calls == []
@@ -1175,7 +1147,7 @@ def test_create_override_reports_same_named_linked_and_override_objects_distingu
     _library, collection = _linked(server, world, _canon(tmp_path, world))
     linked_body = collection.objects[0]
 
-    result = _run(server, "create_override", collection_uid=collection.session_uid, detail=True)["result"]
+    result = run_command(server, "create_override", collection_uid=collection.session_uid, detail=True)["result"]
 
     assert [o.name for o in world.data["objects"]].count("HeroBody") == len(("override", "linked original"))
     (reported,) = result["objects"]["records"]
@@ -1193,7 +1165,7 @@ def test_create_override_counts_the_objects_it_made_with_a_sample_of_names(
     server, _bpy, world = _server(monkeypatch)
     _library, collection = _linked(server, world, _canon(tmp_path, world))
 
-    result = _run(server, "create_override", collection_uid=collection.session_uid)["result"]
+    result = run_command(server, "create_override", collection_uid=collection.session_uid)["result"]
 
     assert result["objects"] == {
         "total": 1,
@@ -1214,7 +1186,7 @@ def test_create_override_replaces_the_linked_instance_it_overrides(
     server, _bpy, world = _server(monkeypatch)
     _library, collection = _linked(server, world, _canon(tmp_path, world))
 
-    result = _run(server, "create_override", collection_uid=collection.session_uid)["result"]
+    result = run_command(server, "create_override", collection_uid=collection.session_uid)["result"]
 
     children = world.scene.collection.children
     assert [c.session_uid for c in children] == [result["override"]["session_uid"]]
@@ -1231,7 +1203,7 @@ def test_create_override_that_blender_declines_is_an_error_and_rolls_back(
     before = _uids(world)
     world.override_returns_none = True
 
-    response = _run(server, "create_override", collection_uid=collection.session_uid)
+    response = run_command(server, "create_override", collection_uid=collection.session_uid)
 
     assert response["status"] == "error"
     assert "created no override" in response["message"]
@@ -1245,7 +1217,7 @@ def test_an_override_failure_reaches_the_client_sanitized(monkeypatch: pytest.Mo
     _library, collection = _linked(server, world, canonical)
     world.override_error = RuntimeError(f"Error: cannot override from '{canonical}'")
 
-    response = _run(server, "create_override", collection_uid=collection.session_uid)
+    response = run_command(server, "create_override", collection_uid=collection.session_uid)
 
     assert response["status"] == "error"
     _assert_no_path(response["message"], tmp_path.name)
@@ -1265,7 +1237,7 @@ def test_list_libraries_paginates_and_reports_what_a_reload_decision_needs(
     libraries[1].is_missing = True
     libraries[1].needs_liboverride_resync = True
 
-    page = _run(server, "list_libraries", limit=PAGE, offset=1, detail=True)["result"]
+    page = run_command(server, "list_libraries", limit=PAGE, offset=1, detail=True)["result"]
 
     assert (page["total"], page["offset"], page["limit"]) == (len(libraries), 1, PAGE)
     assert (page["returned_count"], page["truncated"], page["next_offset"]) == (2, False, None)
@@ -1277,8 +1249,21 @@ def test_list_libraries_paginates_and_reports_what_a_reload_decision_needs(
     assert {d["session_uid"] for d in records} == {db.session_uid for db in libraries[1].users_id}
     assert {d["name"] for d in records} == {"CanonHero", "HeroBody"}
     assert second["session_uid"] == libraries[2].session_uid and second["is_missing"] is False
-    shortened = _run(server, "list_libraries", limit=PAGE)["result"]
+    shortened = run_command(server, "list_libraries", limit=PAGE)["result"]
     assert (shortened["truncated"], shortened["next_offset"]) == (True, PAGE)
+
+
+def test_list_libraries_offset_past_the_last_library_reports_the_empty_page_where_they_end(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An over-run is the empty final page, and it starts at the total, not at the offset asked for."""
+    server, _bpy, world = _server(monkeypatch)
+    _linked(server, world, _canon(tmp_path, world))
+
+    page = run_command(server, "list_libraries", offset=5)["result"]
+
+    assert page["libraries"] == []
+    assert (page["total"], page["offset"], page["truncated"], page["next_offset"]) == (1, 1, False, None)
 
 
 @pytest.mark.parametrize(
@@ -1290,7 +1275,7 @@ def test_list_libraries_bounds_its_page(monkeypatch: pytest.MonkeyPatch, params:
     """A limit that is zero, too large, a bool or a string is refused, as is a negative or bool offset."""
     server, _bpy, _world = _server(monkeypatch)
 
-    assert _run(server, "list_libraries", **params)["status"] == "error"
+    assert run_command(server, "list_libraries", **params)["status"] == "error"
 
 
 def test_list_libraries_bounds_the_datablocks_it_lists_per_library(
@@ -1302,7 +1287,7 @@ def test_list_libraries_bounds_the_datablocks_it_lists_per_library(
     for index in range(MANY):
         world.data["meshes"].append(StubID(world, f"M{index}", "MESH", library=library))
 
-    (entry,) = _run(server, "list_libraries")["result"]["libraries"]
+    (entry,) = run_command(server, "list_libraries")["result"]["libraries"]
 
     listed = entry["datablocks"]
     assert listed["total"] == MANY + len(("CanonHero", "HeroBody"))
@@ -1321,7 +1306,7 @@ def test_list_libraries_lists_the_datablock_records_only_on_request(
     for index in range(MANY):
         world.data["meshes"].append(StubID(world, f"M{index}", "MESH", library=library))
 
-    (entry,) = _run(server, "list_libraries", detail=True)["result"]["libraries"]
+    (entry,) = run_command(server, "list_libraries", detail=True)["result"]["libraries"]
 
     listed = entry["datablocks"]
     assert listed["total"] == MANY + len(("CanonHero", "HeroBody"))
@@ -1341,7 +1326,7 @@ def test_a_truncated_datablock_page_offers_no_offset_to_resume_from(
     for index in range(MANY):
         world.data["meshes"].append(StubID(world, f"M{index}", "MESH", library=library))
 
-    (entry,) = _run(server, "list_libraries", detail=detail)["result"]["libraries"]
+    (entry,) = run_command(server, "list_libraries", detail=detail)["result"]["libraries"]
 
     listed = entry["datablocks"]
     assert listed["truncated"] is True
@@ -1364,7 +1349,7 @@ def test_a_detail_listing_shortened_by_the_budget_still_offers_no_datablock_offs
     for index in range(MANY):
         world.data["meshes"].append(StubID(world, f"M{index}", "MESH", library=library))
 
-    envelope = envelope_for(_run(server, "list_libraries", detail=True)["result"])
+    envelope = envelope_for(run_command(server, "list_libraries", detail=True)["result"])
 
     listed = envelope["data"]["libraries"][0]["datablocks"]
     assert len(to_json(envelope, fallback=str, indent=2)) <= REPLY_BYTE_BUDGET
@@ -1397,7 +1382,7 @@ def test_reload_library_uses_the_data_api_inside_the_replace_flag(
     library, _collection = _linked(server, world, _canon(tmp_path, world))
     before = {db.session_uid for db in library.users_id}
 
-    response = _run(server, "reload_library", library_uid=library.session_uid, detail=True)
+    response = run_command(server, "reload_library", library_uid=library.session_uid, detail=True)
 
     assert response["status"] == "success", response
     assert world.reload_calls == [(library, True)]
@@ -1417,7 +1402,7 @@ def test_a_reload_reports_what_it_replaced_by_type_without_the_records(
     library, _collection = _linked(server, world, _canon(tmp_path, world))
     extra = {"filepath": _canon(tmp_path, world, "canon_v2.blend")} if command == "relocate_library" else {}
 
-    result = _run(server, command, library_uid=library.session_uid, **extra)["result"]
+    result = run_command(server, command, library_uid=library.session_uid, **extra)["result"]
 
     listed = result["datablocks"]
     assert listed["total"] == len(("CanonHero", "HeroBody"))
@@ -1449,7 +1434,7 @@ def test_reload_failure_reaches_the_client_sanitized_from_a_captured_blender_err
     library.reload_error = RuntimeError(RELOAD_ABSOLUTE)
     uids = _uids(world)
 
-    response = _run(server, "reload_library", library_uid=library.session_uid)
+    response = run_command(server, "reload_library", library_uid=library.session_uid)
 
     assert response["status"] == "error"
     assert "invalid path" in response["message"] and "canon.blend" in response["message"]
@@ -1472,7 +1457,7 @@ def test_reload_failure_of_a_relative_link_under_a_comma_directory_is_sanitized(
     library.filepath = "//canon.blend"
     library.reload_error = RuntimeError(RELOAD_RELATIVE_SMITH)
 
-    response = _run(server, "reload_library", library_uid=library.session_uid)
+    response = run_command(server, "reload_library", library_uid=library.session_uid)
 
     assert response["status"] == "error"
     assert "invalid path" in response["message"]
@@ -1488,7 +1473,7 @@ def test_a_reload_failure_in_an_unsaved_session_still_names_the_library(
     library.filepath = "//canon.blend"
     library.reload_error = RuntimeError(RELOAD_ABSOLUTE)
 
-    response = _run(server, "reload_library", library_uid=library.session_uid)
+    response = run_command(server, "reload_library", library_uid=library.session_uid)
 
     assert response["status"] == "error"
     assert "library 'canon.blend'" in response["message"], response["message"]
@@ -1503,7 +1488,7 @@ def test_relocate_assigns_the_canonical_path_reloads_and_reports_the_name_both_s
     target = _canon(tmp_path, world, "canon_v2.blend")
     spelled = os.path.join(os.path.dirname(target), ".", "canon_v2.blend")
 
-    response = _run(server, "relocate_library", library_uid=library.session_uid, filepath=spelled)
+    response = run_command(server, "relocate_library", library_uid=library.session_uid, filepath=spelled)
 
     assert response["status"] == "success", response
     assert library.filepath_during_reload == [target]
@@ -1525,7 +1510,7 @@ def test_relocate_validates_the_new_path_through_the_roots(monkeypatch: pytest.M
     monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(inside))
 
     for path in (refused, str(inside / "missing.blend")):
-        response = _run(server, "relocate_library", library_uid=library.session_uid, filepath=path)
+        response = run_command(server, "relocate_library", library_uid=library.session_uid, filepath=path)
         assert response["status"] == "error"
         _assert_no_path(response["message"], tmp_path.name)
     assert world.reload_calls == []
@@ -1537,7 +1522,7 @@ def test_relocate_refuses_a_file_another_library_already_links(monkeypatch: pyte
     first, _c1 = _linked(server, world, _canon(tmp_path, world, "a.blend"))
     second, _c2 = _linked(server, world, _canon(tmp_path, world, "b.blend"))
 
-    response = _run(server, "relocate_library", library_uid=first.session_uid, filepath=second.filepath)
+    response = run_command(server, "relocate_library", library_uid=first.session_uid, filepath=second.filepath)
 
     assert response["status"] == "error"
     assert str(second.session_uid) in response["message"]
@@ -1554,7 +1539,7 @@ def test_a_failed_relocate_restores_the_previous_path_and_is_sanitized(
     target = _canon(tmp_path, world, "canon_v2.blend")
     library.reload_error = RuntimeError(RELOAD_ABSOLUTE.replace(f"{_RELOAD_WORK}/gone.blend", target))
 
-    response = _run(server, "relocate_library", library_uid=library.session_uid, filepath=target)
+    response = run_command(server, "relocate_library", library_uid=library.session_uid, filepath=target)
 
     assert response["status"] == "error"
     assert library.filepath == previous
@@ -1567,7 +1552,7 @@ def test_an_unknown_library_uid_is_refused(monkeypatch: pytest.MonkeyPatch, tmp_
     server, _bpy, world = _server(monkeypatch)
     extra = {"filepath": _canon(tmp_path, world)} if command == "relocate_library" else {}
 
-    response = _run(server, command, library_uid=999_999_999, **extra)
+    response = run_command(server, command, library_uid=999_999_999, **extra)
 
     assert response["status"] == "error"
     assert "list_libraries" in response["message"]
@@ -1587,7 +1572,7 @@ def test_unlink_refuses_without_a_real_confirmation(
     library, _collection = _linked(server, world, _canon(tmp_path, world))
     uids = _uids(world)
 
-    response = _run(server, "unlink_libraries", library_uids=[library.session_uid], confirm=confirm)
+    response = run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm=confirm)
 
     assert response["status"] == "error"
     assert _uids(world) == uids
@@ -1601,7 +1586,7 @@ def test_unlink_never_touches_a_library_that_was_not_named(monkeypatch: pytest.M
     kept, _c2 = _linked(server, world, _canon(tmp_path, world, "b.blend"))
     kept_uids = {kept.session_uid, *(db.session_uid for db in kept.users_id)}
 
-    response = _run(server, "unlink_libraries", library_uids=[named.session_uid], confirm=True)
+    response = run_command(server, "unlink_libraries", library_uids=[named.session_uid], confirm=True)
 
     assert response["status"] == "success", response
     assert world.data["libraries"].removed == [named]
@@ -1615,7 +1600,7 @@ def test_unlink_resolves_every_uid_before_removing_anything(monkeypatch: pytest.
     library, _collection = _linked(server, world, _canon(tmp_path, world))
     uids = _uids(world)
 
-    response = _run(server, "unlink_libraries", library_uids=[library.session_uid, 999_999_999], confirm=True)
+    response = run_command(server, "unlink_libraries", library_uids=[library.session_uid, 999_999_999], confirm=True)
 
     assert response["status"] == "error"
     assert "999999999" in response["message"]
@@ -1637,7 +1622,7 @@ def test_unlink_requires_an_explicit_bounded_uid_list(
     uids = _uids(world)
     value = {"empty": [], "bool": [True], "string": ["1"], "big": [1] * 101}[shape]
 
-    response = _run(server, "unlink_libraries", library_uids=value, confirm=True)
+    response = run_command(server, "unlink_libraries", library_uids=value, confirm=True)
 
     assert response["status"] == "error"
     assert _uids(world) == uids
@@ -1647,12 +1632,12 @@ def test_unlink_reports_exactly_what_it_removed(monkeypatch: pytest.MonkeyPatch,
     """The library, its linked datablocks and the override objects Blender freed with them."""
     server, _bpy, world = _server(monkeypatch)
     library, collection = _linked(server, world, _canon(tmp_path, world))
-    _run(server, "create_override", collection_uid=collection.session_uid)
+    run_command(server, "create_override", collection_uid=collection.session_uid)
     before = _uids(world)
 
-    result = _run(server, "unlink_libraries", library_uids=[library.session_uid, library.session_uid], confirm=True)[
-        "result"
-    ]
+    result = run_command(
+        server, "unlink_libraries", library_uids=[library.session_uid, library.session_uid], confirm=True
+    )["result"]
 
     removed = before - _uids(world)
     assert result["removed_libraries"][0]["session_uid"] == library.session_uid
@@ -1682,7 +1667,7 @@ def test_unlinking_a_large_library_counts_what_went_and_names_only_a_sample(
     for index in range(MANY * 4):
         world.data["meshes"].append(StubID(world, f"M{index}", "MESH", library=library))
 
-    result = _run(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True)["result"]
+    result = run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True)["result"]
 
     assert result["removed_count"] == MANY * 4 + len(("canon.blend", "CanonHero", "HeroBody"))
     assert result["removed_by_type"] == {"collections": 1, "libraries": 1, "meshes": MANY * 4, "objects": 1}
@@ -1700,7 +1685,7 @@ def test_unlink_refuses_an_indirect_library(monkeypatch: pytest.MonkeyPatch, tmp
     for datablock in library.users_id:
         datablock.is_library_indirect = True
 
-    response = _run(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True)
+    response = run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True)
 
     assert response["status"] == "error"
     assert "indirect" in response["message"]
@@ -1719,7 +1704,7 @@ def test_unlink_purges_only_when_asked_and_only_what_it_orphaned(
         scratch = world.data["materials"].new(f"UserScratch{purge}")
         scratch.users = 0
 
-        result = _run(
+        result = run_command(
             server, "unlink_libraries", library_uids=[library.session_uid], confirm=True, purge_orphans=purge
         )["result"]
 
@@ -1753,7 +1738,9 @@ def test_unlink_never_removes_a_datablock_an_earlier_removal_freed(
 
     world.data["libraries"].remove = cascading_remove  # type: ignore[method-assign]
 
-    response = _run(server, "unlink_libraries", library_uids=[first.session_uid, second.session_uid], confirm=True)
+    response = run_command(
+        server, "unlink_libraries", library_uids=[first.session_uid, second.session_uid], confirm=True
+    )
 
     assert response["status"] == "success", response
     assert [lib["session_uid"] for lib in response["result"]["removed_libraries"]] == [first.session_uid]
@@ -1768,7 +1755,7 @@ def test_an_unlink_failure_reaches_the_client_sanitized(monkeypatch: pytest.Monk
     library, _collection = _linked(server, world, canonical)
     world.remove_error = RuntimeError(f"Error: cannot free library '{canonical}'")
 
-    response = _run(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True)
+    response = run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True)
 
     assert response["status"] == "error"
     _assert_no_path(response["message"], tmp_path.name)
@@ -1871,11 +1858,11 @@ def test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_doe
     library, collection = _linked(server, world, _canon(tmp_path, world))
     target = _canon(tmp_path, world, "canon_v2.blend")
     responses = [
-        _run(server, "create_override", collection_uid=collection.session_uid),
-        _run(server, "list_libraries"),
-        _run(server, "reload_library", library_uid=library.session_uid),
-        _run(server, "relocate_library", library_uid=library.session_uid, filepath=target),
-        _run(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True),
+        run_command(server, "create_override", collection_uid=collection.session_uid),
+        run_command(server, "list_libraries"),
+        run_command(server, "reload_library", library_uid=library.session_uid),
+        run_command(server, "relocate_library", library_uid=library.session_uid, filepath=target),
+        run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True),
     ]
 
     assert [r["status"] for r in responses] == ["success"] * 5, responses
@@ -1938,7 +1925,7 @@ def test_link_refuses_while_scripts_auto_execute_is_on(
     canonical = _canon(tmp_path, world)
     _scripts_auto_execute(bpy, value)
 
-    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"])
+    response = run_command(server, "link_canon_library", filepath=canonical, collections=["CanonHero"])
 
     assert response["status"] == "error"
     assert "link_canon_library refuses" in response["message"]
@@ -1952,7 +1939,7 @@ def test_link_proceeds_while_scripts_auto_execute_is_off(monkeypatch: pytest.Mon
     canonical = _canon(tmp_path, world)
     _scripts_auto_execute(bpy, False)
 
-    response = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero"])
+    response = run_command(server, "link_canon_library", filepath=canonical, collections=["CanonHero"])
 
     assert response["status"] == "success", response
     assert len(world.load_calls) == 1
@@ -1969,8 +1956,8 @@ def test_reload_and_relocate_refuse_while_scripts_auto_execute_is_on(
     target = _canon(tmp_path, world, "canon_v2.blend")
     _scripts_auto_execute(bpy, value)
 
-    reload_response = _run(server, "reload_library", library_uid=library.session_uid)
-    relocate_response = _run(server, "relocate_library", library_uid=library.session_uid, filepath=target)
+    reload_response = run_command(server, "reload_library", library_uid=library.session_uid)
+    relocate_response = run_command(server, "relocate_library", library_uid=library.session_uid, filepath=target)
 
     assert reload_response["status"] == "error" and "reload_library refuses" in reload_response["message"]
     assert relocate_response["status"] == "error" and "relocate_library refuses" in relocate_response["message"]
@@ -1987,8 +1974,10 @@ def test_reload_and_relocate_proceed_while_scripts_auto_execute_is_off(
     target = _canon(tmp_path, world, "canon_v2.blend")
     _scripts_auto_execute(bpy, False)
 
-    assert _run(server, "reload_library", library_uid=library.session_uid)["status"] == "success"
-    assert _run(server, "relocate_library", library_uid=library.session_uid, filepath=target)["status"] == "success"
+    assert run_command(server, "reload_library", library_uid=library.session_uid)["status"] == "success"
+    assert (
+        run_command(server, "relocate_library", library_uid=library.session_uid, filepath=target)["status"] == "success"
+    )
     assert len(world.reload_calls) == len(("reload", "relocate"))
 
 
@@ -2022,11 +2011,13 @@ def test_a_refused_multi_collection_override_keeps_the_existing_placement(
     """
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
-    placed = _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero", "CanonProp"])["result"]
-    _run(server, "create_override", collection_uid=placed["collections"][1]["session_uid"])
+    placed = run_command(server, "link_canon_library", filepath=canonical, collections=["CanonHero", "CanonProp"])[
+        "result"
+    ]
+    run_command(server, "create_override", collection_uid=placed["collections"][1]["session_uid"])
     before = _root_uids(world)
 
-    response = _run(
+    response = run_command(
         server, "link_canon_library", filepath=canonical, collections=["CanonHero", "CanonProp"], as_override=True
     )
 
@@ -2041,11 +2032,11 @@ def test_a_later_override_failure_restores_the_instances_earlier_overrides_repla
     """Rollback removes the created overrides but not `children` links, so the handler re-links what it unlinked."""
     server, _bpy, world = _server(monkeypatch)
     canonical = _canon(tmp_path, world)
-    _run(server, "link_canon_library", filepath=canonical, collections=["CanonHero", "CanonProp"])
+    run_command(server, "link_canon_library", filepath=canonical, collections=["CanonHero", "CanonProp"])
     before = _root_uids(world)
     world.override_none_for = {"CanonProp"}
 
-    response = _run(
+    response = run_command(
         server, "link_canon_library", filepath=canonical, collections=["CanonHero", "CanonProp"], as_override=True
     )
 
@@ -2066,7 +2057,7 @@ def test_datablocks_the_file_no_longer_holds_are_reported_missing_with_a_warning
     world.files[target if command == "relocate_library" else canonical] = {"collections": {}, "objects": []}
     extra = {"filepath": target} if command == "relocate_library" else {}
 
-    result = _run(server, command, library_uid=library.session_uid, detail=True, **extra)["result"]
+    result = run_command(server, command, library_uid=library.session_uid, detail=True, **extra)["result"]
 
     assert result["library"]["is_missing"] is False
     assert [entry["is_missing"] for entry in result["datablocks"]["records"]] == [True, True]
@@ -2080,7 +2071,7 @@ def test_a_reload_that_finds_everything_carries_no_warning(monkeypatch: pytest.M
     server, _bpy, world = _server(monkeypatch)
     library, _collection = _linked(server, world, _canon(tmp_path, world))
 
-    result = _run(server, "reload_library", library_uid=library.session_uid, detail=True)["result"]
+    result = run_command(server, "reload_library", library_uid=library.session_uid, detail=True)["result"]
 
     assert "warnings" not in result
     assert {entry["is_missing"] for entry in result["datablocks"]["records"]} == {False}
@@ -2094,7 +2085,7 @@ def test_relocate_refuses_an_indirect_library(monkeypatch: pytest.MonkeyPatch, t
         datablock.is_library_indirect = True
     previous = library.filepath
 
-    response = _run(
+    response = run_command(
         server, "relocate_library", library_uid=library.session_uid, filepath=_canon(tmp_path, world, "v2.blend")
     )
 
@@ -2113,7 +2104,7 @@ def test_create_override_refuses_while_scripts_auto_execute_is_on(
     _library, collection = _linked(server, world, _canon(tmp_path, world))
     _scripts_auto_execute(bpy, value)
 
-    response = _run(server, "create_override", collection_uid=collection.session_uid)
+    response = run_command(server, "create_override", collection_uid=collection.session_uid)
 
     assert response["status"] == "error"
     assert "create_override refuses" in response["message"]
@@ -2128,7 +2119,7 @@ def test_create_override_proceeds_while_scripts_auto_execute_is_off(
     _library, collection = _linked(server, world, _canon(tmp_path, world))
     _scripts_auto_execute(bpy, False)
 
-    assert _run(server, "create_override", collection_uid=collection.session_uid)["status"] == "success"
+    assert run_command(server, "create_override", collection_uid=collection.session_uid)["status"] == "success"
     assert len(world.override_calls) == 1
 
 
@@ -2147,12 +2138,14 @@ def test_a_nested_request_is_refused_before_it_overrides_a_collection_twice(
     monkeypatch.setattr(_linking_module(server), "_refuse_nested_requests", lambda _collections: None)
     canonical = _canon(tmp_path, world, "nest.blend")
     world.files[canonical] = {"collections": {"Parent": [], "Child": ["ChildBody"]}, "objects": ["ChildBody"]}
-    _run(server, "link_canon_library", filepath=canonical, collections=["Parent", "Child"])
+    run_command(server, "link_canon_library", filepath=canonical, collections=["Parent", "Child"])
     linked = {c.name: c for c in world.data["collections"] if c.library is not None}
     linked["Parent"].children.link(linked["Child"])
     before_root, before_uids = sorted(_root_uids(world)), _uids(world)
 
-    response = _run(server, "link_canon_library", filepath=canonical, collections=["Parent", "Child"], as_override=True)
+    response = run_command(
+        server, "link_canon_library", filepath=canonical, collections=["Parent", "Child"], as_override=True
+    )
 
     assert response["status"] == "error", response
     assert "already overridden" in response["message"]
@@ -2170,7 +2163,7 @@ def test_an_absolute_library_name_is_a_known_path_so_no_relative_tail_survives(
     library.filepath = f"{_RELOAD_WORK}/gone.blend"
     library.reload_error = RuntimeError(RELOAD_ABSOLUTE.replace("LIcanon.blend", f"LI{library.name}"))
 
-    response = _run(server, "reload_library", library_uid=library.session_uid)
+    response = run_command(server, "reload_library", library_uid=library.session_uid)
 
     assert response["status"] == "error"
     assert "invalid path" in response["message"]
@@ -2220,17 +2213,21 @@ def test_overriding_a_parent_whose_inner_collection_is_already_overridden_is_ref
     """
     server, _bpy, world = _server(monkeypatch)
     canonical = _nest(tmp_path, world)
-    child_uid = _run(server, "link_canon_library", filepath=canonical, collections=["Child"])["result"]["collections"][
-        0
-    ]["session_uid"]
-    child_override = _run(server, "create_override", collection_uid=child_uid)["result"]["override"]["session_uid"]
+    child_uid = run_command(server, "link_canon_library", filepath=canonical, collections=["Child"])["result"][
+        "collections"
+    ][0]["session_uid"]
+    child_override = run_command(server, "create_override", collection_uid=child_uid)["result"]["override"][
+        "session_uid"
+    ]
     if route == "create_override":
-        linked = _run(server, "link_canon_library", filepath=canonical, collections=["Parent"])["result"]
+        linked = run_command(server, "link_canon_library", filepath=canonical, collections=["Parent"])["result"]
         before = _uids(world)
-        response = _run(server, "create_override", collection_uid=linked["collections"][0]["session_uid"])
+        response = run_command(server, "create_override", collection_uid=linked["collections"][0]["session_uid"])
     else:
         before = _uids(world)
-        response = _run(server, "link_canon_library", filepath=canonical, collections=["Parent"], as_override=True)
+        response = run_command(
+            server, "link_canon_library", filepath=canonical, collections=["Parent"], as_override=True
+        )
 
     assert response["status"] == "error", response
     assert str(child_override) in response["message"] and "override only" in response["message"]
@@ -2245,7 +2242,9 @@ def test_a_request_naming_a_collection_and_one_inside_it_is_refused_up_front(
     canonical = _nest(tmp_path, world)
     before = _uids(world)
 
-    response = _run(server, "link_canon_library", filepath=canonical, collections=["Child", "Parent"], as_override=True)
+    response = run_command(
+        server, "link_canon_library", filepath=canonical, collections=["Child", "Parent"], as_override=True
+    )
 
     assert response["status"] == "error"
     assert "'Child'" in response["message"] and "is inside 'Parent'" in response["message"]
@@ -2272,11 +2271,11 @@ def test_library_names_are_reduced_without_touching_the_filesystem(
         return real_isdir(path)  # type: ignore[arg-type]
 
     monkeypatch.setattr(os.path, "isdir", refuse_the_name)
-    listed = _run(server, "list_libraries")
-    relocated = _run(server, "relocate_library", library_uid=library.session_uid, filepath=target)
+    listed = run_command(server, "list_libraries")
+    relocated = run_command(server, "relocate_library", library_uid=library.session_uid, filepath=target)
     for datablock in library.users_id:
         datablock.is_library_indirect = True
-    refused = _run(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True)
+    refused = run_command(server, "unlink_libraries", library_uids=[library.session_uid], confirm=True)
 
     assert listed["status"] == "success", listed
     assert listed["result"]["libraries"][0]["name"] == "canon.blend"

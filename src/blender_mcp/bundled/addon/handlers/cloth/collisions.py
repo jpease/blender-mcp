@@ -7,6 +7,7 @@ import contextlib
 import bpy
 
 from ...helpers import preserve_mode_and_selection, set_active, sync_from_editmode
+from ..rna_patch import get_object, patch_rna, restore_rna
 from ._ownership import _tag_owned_component, _tag_owned_membership
 from .inspection_and_setup import (
     _CLOTH_COLLISION_FIELDS,
@@ -20,12 +21,9 @@ from .inspection_and_setup import (
     _evaluated_counts,
     _get_cloth,
     _get_modifier,
-    _get_object,
     _max_keyed_location_delta,
     _object_scenes,
-    _patch_rna,
     _reject_baked,
-    _restore_rna,
     _tag_update,
 )
 
@@ -105,7 +103,7 @@ class ClothCollisionHandlers:
             if field in patch and patch[field] <= 0:
                 raise ValueError(f"{field} must be positive")
         old_collection = modifier.collision_settings.collection
-        changes = _patch_rna(modifier.collision_settings, patch, _CLOTH_COLLISION_FIELDS)
+        changes = patch_rna(modifier.collision_settings, patch, _CLOTH_COLLISION_FIELDS)
         try:
             if collection_name or clear_collection:
                 modifier.collision_settings.collection = collection if collection_name else None
@@ -114,7 +112,7 @@ class ClothCollisionHandlers:
                     "new": collection.name if collection else None,
                 }
         except Exception:
-            _restore_rna(modifier.collision_settings, changes)
+            restore_rna(modifier.collision_settings, changes)
             modifier.collision_settings.collection = old_collection
             raise
         return changes
@@ -129,7 +127,7 @@ class ClothCollisionHandlers:
         try:
             _tag_update(obj)
         except Exception:
-            _restore_rna(modifier.collision_settings, changes)
+            restore_rna(modifier.collision_settings, changes)
             modifier.collision_settings.collection = old_collection
             raise
         edges = _edge_lengths(obj)
@@ -187,7 +185,7 @@ class ClothCollisionHandlers:
         settings=None,
         registrations=None,
     ):
-        obj = _get_object(object_name, {"MESH", "CURVE"})
+        obj = get_object(object_name, {"MESH", "CURVE"})
         if obj.type == "MESH":
             sync_from_editmode(obj)
         evaluated_geometry = _evaluated_counts(obj)
@@ -247,7 +245,7 @@ class ClothCollisionHandlers:
         try:
             if obj.collision is None:
                 raise RuntimeError("Blender did not initialize Object.collision")
-            changes = _patch_rna(obj.collision, settings, _COLLIDER_FIELDS)
+            changes = patch_rna(obj.collision, settings, _COLLIDER_FIELDS)
             for cloth_obj, cloth_mod, collection in resolved:
                 prior_collections[cloth_obj.name, cloth_mod.name] = cloth_mod.collision_settings.collection
                 if obj.name not in collection.objects:
@@ -275,7 +273,7 @@ class ClothCollisionHandlers:
                 with contextlib.suppress(Exception):
                     obj.modifiers.remove(modifier)
             elif obj.collision is not None:
-                _restore_rna(obj.collision, changes)
+                restore_rna(obj.collision, changes)
             raise
         return {
             "changed_objects": [obj.name, *sorted({cloth_obj.name for cloth_obj, _mod, _col in resolved})],
@@ -302,7 +300,7 @@ class ClothCollisionHandlers:
         }
 
     def configure_cloth_collider(self, object_name, modifier_name, patch):
-        obj = _get_object(object_name, {"MESH", "CURVE"})
+        obj = get_object(object_name, {"MESH", "CURVE"})
         modifier = _get_modifier(obj, modifier_name, "COLLISION")
         affected = _affected_cloths(obj)
         _reject_baked(affected)
@@ -311,11 +309,11 @@ class ClothCollisionHandlers:
         for field in ("thickness_outer", "cloth_friction", "damping"):
             if field in patch and patch[field] < 0:
                 raise ValueError(f"{field} must be nonnegative")
-        changes = _patch_rna(obj.collision, patch, _COLLIDER_FIELDS)
+        changes = patch_rna(obj.collision, patch, _COLLIDER_FIELDS)
         try:
             _tag_update(obj)
         except Exception:
-            _restore_rna(obj.collision, changes)
+            restore_rna(obj.collision, changes)
             raise
         warnings = [*self._scale_warnings(obj), *_collider_order_warnings(obj, modifier)]
         if (obj.collision.use_culling or obj.collision.use_normal) and obj.type == "MESH":

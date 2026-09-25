@@ -11,7 +11,7 @@ import types
 
 import pytest
 
-from test_mutation_transaction import _load_addon
+from conftest import load_addon
 
 
 def _device(name, device_type, *, use, device_id=None):
@@ -36,7 +36,7 @@ class _CyclesPreferences:
 
 
 def _devices_module(monkeypatch, preferences):
-    addon, fake_bpy = _load_addon(monkeypatch, data={})
+    addon, fake_bpy = load_addon(monkeypatch, data={})
     addons = {} if preferences is None else {"cycles": types.SimpleNamespace(preferences=preferences)}
     fake_bpy.context.preferences = types.SimpleNamespace(addons=addons)
     return importlib.import_module(f"{addon.__name__}.render_devices")
@@ -142,7 +142,7 @@ def test_the_report_lists_each_device_once_and_stays_bounded(monkeypatch) -> Non
 
 
 def _lighting_quality_handler(monkeypatch, preferences, *, device):
-    addon, fake_bpy = _load_addon(monkeypatch, data={"scenes": {}})
+    addon, fake_bpy = load_addon(monkeypatch, data={"scenes": {}})
     fake_bpy.context.preferences = types.SimpleNamespace(
         addons={"cycles": types.SimpleNamespace(preferences=preferences)}
     )

@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from test_mutation_transaction import _load_addon
+from conftest import load_addon
 
 from blender_mcp.server.tools import _dispatch, mesh
 from blender_mcp.server.tools.envelope import STALE_INDEX_WARNING
@@ -320,7 +320,7 @@ def test_surface_deform_idempotent_unbind_reports_no_change(monkeypatch) -> None
 
 
 def test_addon_dispatch_advertises_all_phase_two_commands(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     commands = server._build_command_handlers()

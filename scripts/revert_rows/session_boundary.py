@@ -260,12 +260,11 @@ ROWS: list[Revert] = [
         (f"{AMT}::test_both_sides_of_the_socket_hold_the_same_control_character_block",),
     ),
     Revert(
-        "get_addon_status: get_addon_status carries the latch under a name its docstring never mentions",
+        "get_addon_status: get_addon_status carries the latch under a key no client reads",
         SERVER_CORE_TOOL,
         '        "session_indeterminate": result.session_indeterminate,',
         '        "session_indeterminate_x": result.session_indeterminate,',
         (
-            f"{CORET}::test_get_addon_status_documents_every_key_it_returns",
             f"{CORET}::test_get_addon_status_reports_an_indeterminate_session",
             f"{CORET}::test_get_addon_status_reports_a_healthy_session_as_determinate",
         ),

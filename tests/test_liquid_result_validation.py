@@ -5,12 +5,7 @@ import types
 
 import pytest
 
-from test_mutation_transaction import _load_addon
-
-
-def _load_liquid_handler(monkeypatch):
-    addon, _bpy = _load_addon(monkeypatch, data={})
-    return addon, sys.modules[f"{addon.__name__}.handlers.liquid"]
+from conftest import load_liquid_handler
 
 
 def _edge(a, b):
@@ -43,21 +38,21 @@ def _fake_scene_for(object_name, *, frame_start=1, frame_end=250):
 
 
 def test_volume_of_bounds_computes_product_of_extents(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     bounds = {"minimum": [0.0, 1.0, -1.0], "maximum": [2.0, 4.0, 1.0]}
 
     assert handler.result_validation._volume_of_bounds(bounds) == pytest.approx(12.0)
 
 
 def test_volume_of_bounds_clamps_inverted_extents_to_zero(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     bounds = {"minimum": [5.0, 0.0, 0.0], "maximum": [1.0, 1.0, 1.0]}
 
     assert handler.result_validation._volume_of_bounds(bounds) == pytest.approx(0.0)
 
 
 def test_union_bounds_takes_componentwise_min_and_max(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     bounds_list = [
         {"minimum": [0.0, 0.0, 0.0], "maximum": [1.0, 1.0, 1.0]},
         {"minimum": [-1.0, 2.0, 0.5], "maximum": [0.5, 3.0, 2.0]},
@@ -70,7 +65,7 @@ def test_union_bounds_takes_componentwise_min_and_max(monkeypatch) -> None:
 
 
 def test_point_in_bounds_is_inclusive_of_boundaries(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     bounds = {"minimum": [0.0, 0.0, 0.0], "maximum": [1.0, 1.0, 1.0]}
 
     assert handler.result_validation._point_in_bounds(bounds, (0.0, 1.0, 0.5)) is True
@@ -78,7 +73,7 @@ def test_point_in_bounds_is_inclusive_of_boundaries(monkeypatch) -> None:
 
 
 def test_grid_points_returns_resolution_cubed_cell_centers(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     bounds = {"minimum": [0.0, 0.0, 0.0], "maximum": [2.0, 2.0, 2.0]}
 
     points = list(handler.result_validation._grid_points(bounds, resolution=2))
@@ -112,7 +107,7 @@ def test_mesh_volume_of_unit_right_tetrahedron_via_divergence_theorem(monkeypatc
     # P0=(0,0,0), P1=(1,0,0), P2=(0,1,0), P3=(0,0,1): three of the four faces include the
     # origin as v0, contributing 0 to the divergence sum; only face (1,2,3) is non-trivial,
     # hand-verified to sum to 1.0, giving an expected enclosed volume of |1.0| / 6.0.
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     vertices = [
         types.SimpleNamespace(co=_Vec3(0.0, 0.0, 0.0)),
         types.SimpleNamespace(co=_Vec3(1.0, 0.0, 0.0)),
@@ -133,7 +128,7 @@ def test_mesh_volume_of_unit_right_tetrahedron_via_divergence_theorem(monkeypatc
 
 
 def test_connected_components_counts_disjoint_pieces_and_isolated_vertices(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     # Vertices 0-2 form one connected piece via two edges; 3 and 4 are isolated vertices.
     mesh = types.SimpleNamespace(
         vertices=[object(), object(), object(), object(), object()],
@@ -177,7 +172,7 @@ class _FixedHitBVH:
 
 
 def test_point_inside_mesh_returns_true_for_odd_crossing_count(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     bvh = _FixedHitBVH(hit_count=3)
 
     result = handler.result_validation._point_inside_mesh(bvh, _FakeRayVector(0.0), _FakeRayVector(1.0), 1e-6)
@@ -186,7 +181,7 @@ def test_point_inside_mesh_returns_true_for_odd_crossing_count(monkeypatch) -> N
 
 
 def test_point_inside_mesh_returns_false_for_even_crossing_count(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     bvh = _FixedHitBVH(hit_count=2)
 
     result = handler.result_validation._point_inside_mesh(bvh, _FakeRayVector(0.0), _FakeRayVector(1.0), 1e-6)
@@ -195,7 +190,7 @@ def test_point_inside_mesh_returns_false_for_even_crossing_count(monkeypatch) ->
 
 
 def test_point_inside_mesh_returns_false_for_zero_crossings(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     bvh = _FixedHitBVH(hit_count=0)
 
     result = handler.result_validation._point_inside_mesh(bvh, _FakeRayVector(0.0), _FakeRayVector(1.0), 1e-6)
@@ -204,7 +199,7 @@ def test_point_inside_mesh_returns_false_for_zero_crossings(monkeypatch) -> None
 
 
 def test_point_inside_mesh_caps_ray_casts_at_64_even_with_unbounded_hits(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     bvh = _FixedHitBVH(hit_count=10_000)
 
     result = handler.result_validation._point_inside_mesh(bvh, _FakeRayVector(0.0), _FakeRayVector(1.0), 1e-6)
@@ -245,7 +240,7 @@ class _WorldMatrixStub:
 
 
 def test_measure_container_classifies_samples_by_bounds_precedence(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     monkeypatch.setattr(handler.result_validation.mathutils, "Vector", _FakeVec, raising=False)
     monkeypatch.setattr(handler.result_validation, "_point_inside_mesh", lambda *_a, **_k: True)
 
@@ -275,7 +270,7 @@ def test_measure_container_classifies_samples_by_bounds_precedence(monkeypatch) 
 
 
 def test_measure_container_reports_none_fill_fraction_for_degenerate_interior(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     monkeypatch.setattr(handler.result_validation.mathutils, "Vector", _FakeVec, raising=False)
     monkeypatch.setattr(handler.result_validation, "_point_inside_mesh", lambda *_a, **_k: False)
     spec = {
@@ -318,12 +313,12 @@ def _tagged_volume(handler, name, role, container_name):
 
 
 def test_resolve_container_specs_explicit_names_group_by_container(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     interior = _tagged_volume(handler, "Glass Interior Volume", "CONTAINER_VOLUME", "Glass")
     spill = _tagged_volume(handler, "Glass Spill Volume", "SPILL_VOLUME", "Glass")
     glass = _FakeVolumeObject("Glass")
     registry = {"Glass Interior Volume": interior, "Glass Spill Volume": spill, "Glass": glass}
-    monkeypatch.setattr(handler.result_validation, "_get_object", lambda name, _types=None: registry[name])
+    monkeypatch.setattr(handler.result_validation, "get_object", lambda name, _types=None: registry[name])
     monkeypatch.setattr(
         handler.result_validation,
         "_world_bounds",
@@ -344,9 +339,9 @@ def test_resolve_container_specs_explicit_names_group_by_container(monkeypatch) 
 
 
 def test_resolve_container_specs_rejects_explicit_volume_without_container_property(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     untagged = _FakeVolumeObject("Untagged")
-    monkeypatch.setattr(handler.result_validation, "_get_object", lambda name, _types=None: untagged)
+    monkeypatch.setattr(handler.result_validation, "get_object", lambda name, _types=None: untagged)
     domain_obj = _FakeVolumeObject("Domain")
 
     with pytest.raises(ValueError, match=handler.shot.VOLUME_CONTAINER_PROPERTY):
@@ -354,9 +349,9 @@ def test_resolve_container_specs_rejects_explicit_volume_without_container_prope
 
 
 def test_resolve_container_specs_rejects_volume_with_unrecognized_role(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     weird = _tagged_volume(handler, "Weird", "EFFECTOR", "Glass")
-    monkeypatch.setattr(handler.result_validation, "_get_object", lambda name, _types=None: weird)
+    monkeypatch.setattr(handler.result_validation, "get_object", lambda name, _types=None: weird)
     domain_obj = _FakeVolumeObject("Domain")
 
     with pytest.raises(ValueError, match="not tagged as a CONTAINER_VOLUME or SPILL_VOLUME"):
@@ -364,9 +359,9 @@ def test_resolve_container_specs_rejects_volume_with_unrecognized_role(monkeypat
 
 
 def test_resolve_container_specs_rejects_spill_volume_without_matching_container_volume(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     spill = _tagged_volume(handler, "Glass Spill Volume", "SPILL_VOLUME", "Glass")
-    monkeypatch.setattr(handler.result_validation, "_get_object", lambda name, _types=None: spill)
+    monkeypatch.setattr(handler.result_validation, "get_object", lambda name, _types=None: spill)
     monkeypatch.setattr(handler.result_validation, "_world_bounds", lambda obj, evaluated=False: {})
     domain_obj = _FakeVolumeObject("Domain")
 
@@ -375,14 +370,14 @@ def test_resolve_container_specs_rejects_spill_volume_without_matching_container
 
 
 def test_resolve_container_specs_auto_discovery_returns_empty_without_shot_id(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     domain_obj = _FakeVolumeObject("Domain")
 
     assert handler.result_validation._resolve_container_specs(domain_obj, None) == []
 
 
 def test_resolve_container_specs_auto_discovers_by_shared_shot_id(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     domain_obj = _FakeVolumeObject("Domain")
     domain_obj[handler.shot.SHOT_ID_PROPERTY] = "shot-1"
 
@@ -396,7 +391,7 @@ def test_resolve_container_specs_auto_discovers_by_shared_shot_id(monkeypatch) -
     bpy = sys.modules["bpy"]
     monkeypatch.setattr(bpy.data, "objects", [matching, other_shot, non_volume], raising=False)
     glass = _FakeVolumeObject("Glass")
-    monkeypatch.setattr(handler.result_validation, "_get_object", lambda name, _types=None: glass)
+    monkeypatch.setattr(handler.result_validation, "get_object", lambda name, _types=None: glass)
     monkeypatch.setattr(
         handler.result_validation,
         "_world_bounds",
@@ -423,7 +418,7 @@ def _frame_report(frame, *, non_manifold=0, components=1, containers=()):
 
 
 def test_evaluate_targets_flags_non_manifold_mesh_as_info(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
 
     findings = handler.result_validation._evaluate_targets([_frame_report(5, non_manifold=3)], None, None, "ALLOW")
 
@@ -433,7 +428,7 @@ def test_evaluate_targets_flags_non_manifold_mesh_as_info(monkeypatch) -> None:
 
 
 def test_evaluate_targets_flags_multiple_bodies_as_info(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
 
     findings = handler.result_validation._evaluate_targets([_frame_report(5, components=2)], None, None, "ALLOW")
 
@@ -441,7 +436,7 @@ def test_evaluate_targets_flags_multiple_bodies_as_info(monkeypatch) -> None:
 
 
 def test_evaluate_targets_forbids_spill_only_under_forbid_policy(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     container = {"container": "Glass", "spill_volume": 1.0, "escaped_volume_near_container": 0.0, "fill_fraction": 1.0}
     report = _frame_report(5, containers=[container])
 
@@ -453,7 +448,7 @@ def test_evaluate_targets_forbids_spill_only_under_forbid_policy(monkeypatch) ->
 
 
 def test_evaluate_targets_flags_fill_target_missed_at_and_after_deadline_not_before(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     container = {"container": "Glass", "spill_volume": 0.0, "escaped_volume_near_container": 0.0, "fill_fraction": 0.5}
 
     early_findings = handler.result_validation._evaluate_targets(
@@ -479,7 +474,7 @@ def _domain_settings(**overrides):
 
 
 def test_validate_liquid_result_rejects_empty_frames(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     monkeypatch.setattr(handler.result_validation, "_get_domain", lambda *_args: (obj, modifier, _domain_settings()))
@@ -489,7 +484,7 @@ def test_validate_liquid_result_rejects_empty_frames(monkeypatch) -> None:
 
 
 def test_validate_liquid_result_rejects_duplicate_frames(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     monkeypatch.setattr(handler.result_validation, "_get_domain", lambda *_args: (obj, modifier, _domain_settings()))
@@ -499,7 +494,7 @@ def test_validate_liquid_result_rejects_duplicate_frames(monkeypatch) -> None:
 
 
 def test_validate_liquid_result_rejects_too_many_frames(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     monkeypatch.setattr(handler.result_validation, "_get_domain", lambda *_args: (obj, modifier, _domain_settings()))
@@ -509,7 +504,7 @@ def test_validate_liquid_result_rejects_too_many_frames(monkeypatch) -> None:
 
 
 def test_validate_liquid_result_rejects_invalid_overflow_policy(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     monkeypatch.setattr(handler.result_validation, "_get_domain", lambda *_args: (obj, modifier, _domain_settings()))
@@ -519,7 +514,7 @@ def test_validate_liquid_result_rejects_invalid_overflow_policy(monkeypatch) -> 
 
 
 def test_validate_liquid_result_rejects_out_of_range_sample_resolution(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     monkeypatch.setattr(handler.result_validation, "_get_domain", lambda *_args: (obj, modifier, _domain_settings()))
@@ -529,7 +524,7 @@ def test_validate_liquid_result_rejects_out_of_range_sample_resolution(monkeypat
 
 
 def test_validate_liquid_result_rejects_out_of_range_target_fill_fraction(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     monkeypatch.setattr(handler.result_validation, "_get_domain", lambda *_args: (obj, modifier, _domain_settings()))
@@ -539,7 +534,7 @@ def test_validate_liquid_result_rejects_out_of_range_target_fill_fraction(monkey
 
 
 def test_validate_liquid_result_rejects_unbaked_non_replay_domain(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     settings = _domain_settings(cache_type="MODULAR", has_cache_baked_any=False)
@@ -550,7 +545,7 @@ def test_validate_liquid_result_rejects_unbaked_non_replay_domain(monkeypatch) -
 
 
 def test_validate_liquid_result_rejects_when_no_container_specs_found(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     monkeypatch.setattr(handler.result_validation, "_get_domain", lambda *_args: (obj, modifier, _domain_settings()))
@@ -561,7 +556,7 @@ def test_validate_liquid_result_rejects_when_no_container_specs_found(monkeypatc
 
 
 def test_validate_liquid_result_rejects_when_sample_budget_exceeded(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     monkeypatch.setattr(handler.result_validation, "_get_domain", lambda *_args: (obj, modifier, _domain_settings()))
@@ -579,7 +574,7 @@ def test_validate_liquid_result_rejects_when_sample_budget_exceeded(monkeypatch)
 
 
 def test_validate_liquid_result_rejects_frames_outside_scene_range(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     monkeypatch.setattr(handler.result_validation, "_get_domain", lambda *_args: (obj, modifier, _domain_settings()))
@@ -593,7 +588,7 @@ def test_validate_liquid_result_rejects_frames_outside_scene_range(monkeypatch) 
 
 
 def test_validate_liquid_result_rejects_replay_frame_before_cache_start(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     settings = _domain_settings(cache_type="REPLAY", cache_frame_start=10)
@@ -608,7 +603,7 @@ def test_validate_liquid_result_rejects_replay_frame_before_cache_start(monkeypa
 
 
 def test_validate_liquid_result_rejects_replay_preroll_over_budget(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     settings = _domain_settings(cache_type="REPLAY", cache_frame_start=1)
@@ -623,7 +618,7 @@ def test_validate_liquid_result_rejects_replay_preroll_over_budget(monkeypatch) 
 
 
 def test_validate_liquid_result_rejects_modular_frame_outside_baked_range(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     settings = _domain_settings(
@@ -648,7 +643,7 @@ def test_validate_liquid_result_rejects_modular_frame_outside_baked_range(monkey
 
 
 def test_validate_liquid_result_modular_happy_path_returns_shape_and_passes(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     settings = _domain_settings(
@@ -705,7 +700,7 @@ def test_validate_liquid_result_modular_happy_path_returns_shape_and_passes(monk
 
 
 def test_validate_liquid_result_replay_steps_sequentially_and_only_measures_requested_frames(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     settings = _domain_settings(cache_type="REPLAY", has_cache_baked_any=False, cache_frame_start=5)

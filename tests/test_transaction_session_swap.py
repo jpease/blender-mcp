@@ -17,19 +17,18 @@ from types import ModuleType
 
 import pytest
 
-from test_mutation_transaction import (
-    _LINKED_FROM_CANON,
-    _TRACKED_COLLECTIONS,
+from conftest import load_addon, load_session
+from datablock_doubles import (
+    LINKED_FROM_CANON,
+    TRACKED_COLLECTIONS,
     FakeCollection,
     FakeDatablock,
     FakeLinkedDatablock,
     FakeMesh,
     FakeMutableObject,
-    _load_addon,
-    _reload_library_contents,
-    _replace_whole_database,
+    reload_library_contents,
+    replace_whole_database,
 )
-from test_session_state import _load_session
 
 _LIBRARY_COMMANDS = ("reload_library", "relocate_library", "unlink_libraries")
 
@@ -101,7 +100,7 @@ def _data_with_libraries() -> dict[str, FakeCollection]:
         dict[str, FakeCollection]: Collection name mapped to its stub.
 
     """
-    data: dict[str, FakeCollection] = {name: RecordingCollection() for name in _TRACKED_COLLECTIONS}
+    data: dict[str, FakeCollection] = {name: RecordingCollection() for name in TRACKED_COLLECTIONS}
     data["libraries"] = FakeLibraries(data)
     return data
 
@@ -111,7 +110,7 @@ def _modules(addon: ModuleType) -> tuple[object, ModuleType, ModuleType, ModuleT
     Resolve the server and the three addon modules a test drives.
 
     Args:
-        addon: The addon package `_load_addon` returned.
+        addon: The addon package `load_addon` returned.
 
     Returns:
         tuple: A fresh server, and the addon's `server_core`, `session` and `transaction` modules.
@@ -192,7 +191,7 @@ def test_the_datablock_replacing_set_is_the_three_library_commands_and_nothing_r
     misdescribe commands that replace and free datablocks.
     """
     data = _data_with_libraries()
-    addon, _bpy = _load_addon(monkeypatch, data=data)
+    addon, _bpy = load_addon(monkeypatch, data=data)
     _server, server_core, _session, _txn = _modules(addon)
 
     replacing = {name for name, spec in server_core.COMMANDS.items() if spec.datablock_replacing}
@@ -210,7 +209,7 @@ def test_a_library_replacing_command_never_reaches_mutation_transaction(monkeypa
     a rollback away from its freed datablocks.
     """
     data = _data_with_libraries()
-    addon, _bpy = _load_addon(monkeypatch, data=data)
+    addon, _bpy = load_addon(monkeypatch, data=data)
     server, server_core, _session, _txn = _modules(addon)
     entered: list[str] = []
 
@@ -240,7 +239,7 @@ def test_a_library_replacing_command_never_reaches_mutation_transaction(monkeypa
 def test_link_canon_library_still_enters_mutation_transaction(monkeypatch: pytest.MonkeyPatch) -> None:
     """The other direction: its new datablocks are this request's, so its failure must roll back."""
     data = _data_with_libraries()
-    addon, _bpy = _load_addon(monkeypatch, data=data)
+    addon, _bpy = load_addon(monkeypatch, data=data)
     server, server_core, _session, _txn = _modules(addon)
     real_transaction = server_core.mutation_transaction
     entered: list[str] = []
@@ -277,17 +276,17 @@ def test_a_reload_that_fails_after_churning_its_library_removes_nothing(monkeypa
     reloaded contents alive is the command bypassing the transaction.
     """
     data = _data_with_libraries()
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    addon, bpy = load_addon(monkeypatch, data=data)
     server, _core, _session, _txn = _modules(addon)
     library = FakeDatablock("canon.blend")
     data["libraries"]["canon.blend"] = library
-    for coll_name, name in _LINKED_FROM_CANON:
+    for coll_name, name in LINKED_FROM_CANON:
         data[coll_name][name] = FakeLinkedDatablock(name, library)
     local = bpy.data.materials.new("LocalPaint")
     present = _uids(data)
 
     def reload_library() -> None:
-        _reload_library_contents(data, library)
+        reload_library_contents(data, library)
         for collection in data.values():
             collection.removed.clear()
         raise RuntimeError("failed after replacing the contents")
@@ -315,13 +314,13 @@ def test_a_swap_inside_an_open_transaction_is_not_rolled_back_and_says_so(monkey
     new file whole, and the client must be told its partial work was not undone.
     """
     data = _data_with_libraries()
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    addon, bpy = load_addon(monkeypatch, data=data)
     server, _core, session, transaction = _modules(addon)
     session.register_handlers()
     bpy.data.objects["Hero"] = FakeDatablock("Hero")
 
     def loads_then_fails() -> dict[str, str]:
-        _replace_whole_database({name: data[name] for name in _TRACKED_COLLECTIONS})
+        replace_whole_database({name: data[name] for name in TRACKED_COLLECTIONS})
         for collection in data.values():
             collection.removed.clear()
         _fire(bpy, "load_post", "/shots/sq010.blend")
@@ -335,14 +334,14 @@ def test_a_swap_inside_an_open_transaction_is_not_rolled_back_and_says_so(monkey
     assert response["message"].startswith("boom")
     assert transaction.ROLLBACK_SKIPPED_WARNING in response["message"]
     assert "not rolled back" in response["message"]
-    assert len(_uids(data)) == len(_TRACKED_COLLECTIONS)
+    assert len(_uids(data)) == len(TRACKED_COLLECTIONS)
     assert all(not collection.removed for collection in data.values())
 
 
 def test_an_invalidated_geometry_backup_is_dropped_without_remove(monkeypatch: pytest.MonkeyPatch) -> None:
     """After a load the backup mesh is freed; `remove()` on it would be a use-after-free `suppress` hides."""
     data = _data_with_libraries()
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    addon, bpy = load_addon(monkeypatch, data=data)
     server, _core, session, _txn = _modules(addon)
     session.register_handlers()
     mesh = FakeMesh("WidgetMesh", data["meshes"])
@@ -350,7 +349,7 @@ def test_an_invalidated_geometry_backup_is_dropped_without_remove(monkeypatch: p
     data["objects"]["Widget"] = FakeMutableObject("Widget", mesh=mesh)
 
     def bevel_that_loads_then_raises(**_params: object) -> None:
-        _replace_whole_database({name: data[name] for name in _TRACKED_COLLECTIONS})
+        replace_whole_database({name: data[name] for name in TRACKED_COLLECTIONS})
         for collection in data.values():
             collection.removed.clear()
         _fire(bpy, "load_post", "/shots/sq020.blend")
@@ -370,7 +369,7 @@ def test_object_state_invalidate_releases_every_live_reference_without_touching_
 ) -> None:
     """Every RNA reference goes, the backup is never removed, and a later discard is a no-op too."""
     data = _data_with_libraries()
-    addon, _bpy = _load_addon(monkeypatch, data=data)
+    addon, _bpy = load_addon(monkeypatch, data=data)
     object_state = sys.modules[f"{addon.__name__}.object_state"]
     mesh = FakeMesh("WidgetMesh", data["meshes"])
     widget = FakeMutableObject("Widget", mesh=mesh)
@@ -397,18 +396,18 @@ def test_blend_import_post_during_a_flagged_reload_invalidates_the_open_transact
 ) -> None:
     """Defence in depth for a future handler that reloads a library from inside a transaction."""
     data = _data_with_libraries()
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    addon, bpy = load_addon(monkeypatch, data=data)
     server, _core, session, transaction = _modules(addon)
     session.register_handlers()
     library = FakeDatablock("canon.blend")
     data["libraries"]["canon.blend"] = library
-    linked = [FakeLinkedDatablock(name, library) for _coll_name, name in _LINKED_FROM_CANON]
-    for (coll_name, name), datablock in zip(_LINKED_FROM_CANON, linked, strict=True):
+    linked = [FakeLinkedDatablock(name, library) for _coll_name, name in LINKED_FROM_CANON]
+    for (coll_name, name), datablock in zip(LINKED_FROM_CANON, linked, strict=True):
         data[coll_name][name] = datablock
 
     def mutates_with_a_reload_inside() -> None:
         with transaction.replacing_library_contents():
-            _reload_library_contents(data, library)
+            reload_library_contents(data, library)
             for collection in data.values():
                 collection.removed.clear()
             _fire(bpy, "blend_import_post", object())
@@ -427,7 +426,7 @@ def test_blend_import_post_during_a_flagged_reload_invalidates_the_open_transact
 def test_blend_import_post_without_the_flag_leaves_the_transaction_armed(monkeypatch: pytest.MonkeyPatch) -> None:
     """An import that is not a replace (an append, a link) must not disarm the rollback."""
     data = _data_with_libraries()
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    addon, bpy = load_addon(monkeypatch, data=data)
     server, _core, session, transaction = _modules(addon)
     session.register_handlers()
 
@@ -454,7 +453,7 @@ def test_the_replace_flag_is_cleared_when_the_reload_raises(monkeypatch: pytest.
 
     """
     data = _data_with_libraries()
-    addon, _bpy = _load_addon(monkeypatch, data=data)
+    addon, _bpy = load_addon(monkeypatch, data=data)
     _server, _core, _session, transaction = _modules(addon)
 
     with pytest.raises(RuntimeError), transaction.replacing_library_contents():
@@ -471,7 +470,7 @@ def test_the_replace_flag_is_cleared_when_the_reload_raises(monkeypatch: pytest.
 
 def test_libraries_are_tracked(monkeypatch: pytest.MonkeyPatch) -> None:
     """Without it a failed link leaks the `Library` datablock it created."""
-    addon, _bpy = _load_addon(monkeypatch, data=_data_with_libraries())
+    addon, _bpy = load_addon(monkeypatch, data=_data_with_libraries())
     _server, _core, _session, transaction = _modules(addon)
 
     assert "libraries" in transaction._TRACKED_COLLECTIONS
@@ -487,7 +486,7 @@ def test_a_failed_link_rolls_back_its_library_with_the_file_handlers_registered(
     invalidated on every import would leave this library behind.
     """
     data = _data_with_libraries()
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    addon, bpy = load_addon(monkeypatch, data=data)
     server, _core, session, _txn = _modules(addon)
     session.register_handlers()
     local = bpy.data.materials.new("LocalPaint")
@@ -511,7 +510,7 @@ def test_a_failed_link_never_removes_a_datablock_its_library_removal_already_fre
 ) -> None:
     """Linked datablocks are removed before their library, so no `remove()` reaches a freed one."""
     data = _data_with_libraries()
-    addon, _bpy = _load_addon(monkeypatch, data=data)
+    addon, _bpy = load_addon(monkeypatch, data=data)
     server, _core, _session, _txn = _modules(addon)
 
     created: list[FakeDatablock] = []
@@ -541,7 +540,7 @@ def test_the_active_transaction_never_outlives_its_command(
 ) -> None:
     """A reference left behind would let a later `load_post` reach a finished command's state."""
     data = _data_with_libraries()
-    addon, _bpy = _load_addon(monkeypatch, data=data)
+    addon, _bpy = load_addon(monkeypatch, data=data)
     _server, _core, _session, transaction = _modules(addon)
 
     with contextlib.suppress(BaseException), transaction.mutation_transaction("do_mutate") as txn:
@@ -554,7 +553,7 @@ def test_the_active_transaction_never_outlives_its_command(
 
 def test_blend_import_post_is_registered_once_across_disable_enable_cycles(monkeypatch: pytest.MonkeyPatch) -> None:
     """A second handler is a second chance to stack duplicates; named literally, not read from the bindings."""
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
 
     for _cycle in range(3):
         session.register_handlers()

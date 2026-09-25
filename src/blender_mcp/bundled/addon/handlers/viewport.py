@@ -169,7 +169,7 @@ def _render_offscreen(space, region, view_matrix, window_matrix, max_size, filep
     ruff statement budget. gpu/numpy stay imported here rather than at module level: gpu does
     not exist outside real Blender at all (only an empty type-checking stub satisfies `import
     gpu` there), so a module-level import would break every test that loads this addon package
-    outside Blender (test_mutation_transaction._load_addon and everything built on it).
+    outside Blender (tests/conftest.py's load_addon and everything built on it).
 
     Returns:
         tuple: (width, height) of the saved image.

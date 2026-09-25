@@ -47,11 +47,4 @@ ROWS: list[Revert] = [
         '        "file_roots_enforced": False,',
         (f"{CORET}::test_get_addon_status_reports_the_file_path_policy",),
     ),
-    Revert(
-        "get_addon_status: the file-policy keys go undocumented",
-        SERVER_CORE_TOOL,
-        '"file_roots"/"file_roots_enforced"',
-        "file roots and whether enforced",
-        (f"{CORET}::test_get_addon_status_documents_every_key_it_returns",),
-    ),
 ]

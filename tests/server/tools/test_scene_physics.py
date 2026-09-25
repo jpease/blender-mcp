@@ -5,8 +5,8 @@ import asyncio
 
 import pytest
 
+from conftest import load_addon
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _dispatch, scene_physics
 
@@ -26,7 +26,7 @@ class _Connection:
 
 
 def test_scene_physics_tools_are_registered_and_dispatched(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     assert SCENE_PHYSICS_COMMANDS <= set(scene_physics.mcp._tool_manager._tools)

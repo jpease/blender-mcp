@@ -13,7 +13,6 @@ a different mechanism: an assigned action has a real user, a driver lives on the
 animation data, and a strip holds its own action reference.
 """
 
-import importlib.util
 import sys
 import tempfile
 
@@ -21,17 +20,10 @@ from pathlib import Path
 
 import bpy
 
-addon_path = Path(__file__).resolve().parents[1] / "src" / "blender_mcp" / "bundled" / "addon" / "__init__.py"
-package_name = "blender_mcp_animation_roundtrip_smoke"
-spec = importlib.util.spec_from_file_location(
-    package_name,
-    addon_path,
-    submodule_search_locations=[str(addon_path.parent)],
-)
-assert spec is not None
-addon = importlib.util.module_from_spec(spec)
-sys.modules[package_name] = addon
-spec.loader.exec_module(addon)
+sys.path.append(str(Path(__file__).resolve().parent))
+from smoke_addon import load_addon
+
+addon = load_addon("blender_mcp_animation_roundtrip_smoke")
 
 from blender_mcp_animation_roundtrip_smoke.server_core import BlenderMCPServer
 

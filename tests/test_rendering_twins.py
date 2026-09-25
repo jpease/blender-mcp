@@ -13,7 +13,7 @@ import importlib
 
 import pytest
 
-from test_mutation_transaction import _load_addon
+from conftest import load_addon
 
 from blender_mcp.server.tools import rendering as server_rendering
 
@@ -21,7 +21,7 @@ from blender_mcp.server.tools import rendering as server_rendering
 @pytest.fixture(name="addon_rendering")
 def _addon_rendering(monkeypatch):
     """Load the add-on's `handlers/rendering.py` against a stub `bpy`."""
-    addon, _bpy = _load_addon(monkeypatch)
+    addon, _bpy = load_addon(monkeypatch)
     return importlib.import_module(f"{addon.__name__}.handlers.rendering")
 
 

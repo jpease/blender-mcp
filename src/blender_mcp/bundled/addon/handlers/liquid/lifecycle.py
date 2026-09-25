@@ -3,7 +3,7 @@
 
 import bpy
 
-from .inspection_and_setup import _get_object
+from ..rna_patch import get_object
 from .simulation import _active_cache_flags, _cache_directory_evidence, _cache_state
 
 
@@ -19,7 +19,7 @@ class LiquidLifecycleHandlers:
         resolved = []
         helper_names = set()
         for record in targets:
-            obj = _get_object(record["object_name"])
+            obj = get_object(record["object_name"])
             modifier = obj.modifiers.get(record["modifier_name"])
             if modifier is None or modifier.type != "FLUID" or modifier.fluid_type == "NONE":
                 raise ValueError(f"Active fluid modifier not found: {obj.name}:{record['modifier_name']}")

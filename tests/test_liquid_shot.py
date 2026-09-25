@@ -6,19 +6,14 @@ import types
 
 import pytest
 
+from conftest import load_liquid_handler
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _dispatch, liquid
 
 
 def _run(function, **kwargs):
     return asyncio.run(function(ctx=None, **kwargs))
-
-
-def _load_liquid_handler(monkeypatch):
-    addon, _bpy = _load_addon(monkeypatch, data={})
-    return addon, sys.modules[f"{addon.__name__}.handlers.liquid"]
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +39,7 @@ class _FakeIDObject:
 
 
 class _AutoObjectRegistry:
-    """Fake ``_get_object`` that hands back the same fake object for a repeated name."""
+    """Fake ``get_object`` that hands back the same fake object for a repeated name."""
 
     def __init__(self):
         self._objects = {}
@@ -126,7 +121,7 @@ def _standard_result_stubs(calls):
 
 def _wire_handlers(monkeypatch, handler, handlers, scene, registry, *, build_volumes=None):
     monkeypatch.setattr(handler.shot, "_get_scene", lambda name: scene)
-    monkeypatch.setattr(handler.shot, "_get_object", registry)
+    monkeypatch.setattr(handler.shot, "get_object", registry)
     domain_settings = types.SimpleNamespace(cache_directory=None)
     monkeypatch.setattr(
         handler.shot,
@@ -150,18 +145,18 @@ def _wire_handlers(monkeypatch, handler, handlers, scene, registry, *, build_vol
 
 
 def test_resolve_enabled_window_returns_none_when_not_requested(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     assert handler.shot._resolve_enabled_window(None, "INFLOW", 24.0, 1, 0) is None
 
 
 def test_resolve_enabled_window_rejects_geometry_behavior(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     with pytest.raises(ValueError, match="GEOMETRY flow"):
         handler.shot._resolve_enabled_window((1.0, 2.0), "GEOMETRY", 24.0, 1, 0)
 
 
 def test_resolve_enabled_window_rejects_non_increasing_pair(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     with pytest.raises(ValueError, match="increasing"):
         handler.shot._resolve_enabled_window((2.0, 2.0), "INFLOW", 24.0, 1, 0)
     with pytest.raises(ValueError, match="pair"):
@@ -169,18 +164,18 @@ def test_resolve_enabled_window_rejects_non_increasing_pair(monkeypatch) -> None
 
 
 def test_resolve_enabled_window_converts_seconds_to_frames(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     assert handler.shot._resolve_enabled_window((1.0, 3.0), "OUTFLOW", 24.0, 1, 0) == (25, 73)
 
 
 def test_resolve_enabled_window_rejects_window_collapsing_to_one_frame(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     with pytest.raises(ValueError, match="single frame"):
         handler.shot._resolve_enabled_window((0.0, 0.01), "INFLOW", 1.0, 1, 0)
 
 
 def test_interior_box_shrinks_by_wall_and_bottom_thickness(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     bounds = {"minimum": (0.0, 0.0, 0.0), "maximum": (2.0, 2.0, 2.0), "dimensions": (2.0, 2.0, 2.0)}
     center, dimensions = handler.shot._interior_box(bounds, "Z", 0.1, 0.2)
     assert dimensions == pytest.approx([1.8, 1.8, 1.8])
@@ -188,14 +183,14 @@ def test_interior_box_shrinks_by_wall_and_bottom_thickness(monkeypatch) -> None:
 
 
 def test_interior_box_rejects_thickness_that_collapses_interior(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     bounds = {"minimum": (0.0, 0.0, 0.0), "maximum": (1.0, 1.0, 1.0), "dimensions": (1.0, 1.0, 1.0)}
     with pytest.raises(ValueError, match="collapses"):
         handler.shot._interior_box(bounds, "Z", 0.6, 0.1)
 
 
 def test_spill_box_extends_below_rim_with_margin(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     bounds = {"minimum": (0.0, 0.0, 0.0), "maximum": (2.0, 2.0, 2.0), "dimensions": (2.0, 2.0, 2.0)}
     center, dimensions = handler.shot._spill_box(bounds, "Z", 0.5, 0.25)
     assert dimensions == pytest.approx([2.5, 2.5, 2.5])
@@ -203,20 +198,20 @@ def test_spill_box_extends_below_rim_with_margin(monkeypatch) -> None:
 
 
 def test_spill_margin_defaults_to_widest_lateral_extent(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     bounds = {"dimensions": (1.0, 3.0, 2.0)}
     assert handler.shot._spill_margin(bounds, "Z") == pytest.approx(3.0)
     assert handler.shot._spill_margin(bounds, "X") == pytest.approx(3.0)
 
 
 def test_spill_margin_floors_at_a_tiny_value_for_degenerate_bounds(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     bounds = {"dimensions": (0.0, 0.0, 1.0)}
     assert handler.shot._spill_margin(bounds, "Z") == pytest.approx(1e-4)
 
 
 def test_box_object_builds_centered_hidden_wireframe_box(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
 
     class _FakeMesh:
         def __init__(self, name):
@@ -271,14 +266,14 @@ def test_box_object_builds_centered_hidden_wireframe_box(monkeypatch) -> None:
 
 
 def test_reject_role_conflicts_flags_duplicate_container(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     containers = [{"object": types.SimpleNamespace(name="Glass")}, {"object": types.SimpleNamespace(name="Glass")}]
     with pytest.raises(ValueError, match="containers.*more than once"):
         handler.LiquidHandlersMixin._reject_role_conflicts(containers, [], None)
 
 
 def test_reject_role_conflicts_flags_container_source_overlap(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     containers = [{"object": types.SimpleNamespace(name="Glass")}]
     sources = [{"object": types.SimpleNamespace(name="Glass")}]
     with pytest.raises(ValueError, match="cannot be both container and source"):
@@ -286,7 +281,7 @@ def test_reject_role_conflicts_flags_container_source_overlap(monkeypatch) -> No
 
 
 def test_reject_role_conflicts_flags_domain_object_reuse(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     containers = [{"object": types.SimpleNamespace(name="Glass")}]
     with pytest.raises(ValueError, match="domain object cannot also be"):
         handler.LiquidHandlersMixin._reject_role_conflicts(containers, [], "Glass")
@@ -298,40 +293,40 @@ def test_reject_role_conflicts_flags_domain_object_reuse(monkeypatch) -> None:
 
 
 def test_resolve_containers_rejects_object_not_linked_to_scene(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
-    monkeypatch.setattr(handler.shot, "_get_object", _AutoObjectRegistry())
+    _addon, handler = load_liquid_handler(monkeypatch)
+    monkeypatch.setattr(handler.shot, "get_object", _AutoObjectRegistry())
     scene = _fake_scene([])
     with pytest.raises(ValueError, match="not linked to scene"):
         handler.shot._resolve_containers(scene, [{"object_name": "Glass"}])
 
 
 def test_resolve_containers_rejects_unknown_collision_proxy(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
-    monkeypatch.setattr(handler.shot, "_get_object", _AutoObjectRegistry())
+    _addon, handler = load_liquid_handler(monkeypatch)
+    monkeypatch.setattr(handler.shot, "get_object", _AutoObjectRegistry())
     scene = _fake_scene(["Glass"])
     with pytest.raises(ValueError, match="collision_proxy"):
         handler.shot._resolve_containers(scene, [{"object_name": "Glass", "collision_proxy": "BOWL"}])
 
 
 def test_resolve_containers_rejects_unknown_rim_axis(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
-    monkeypatch.setattr(handler.shot, "_get_object", _AutoObjectRegistry())
+    _addon, handler = load_liquid_handler(monkeypatch)
+    monkeypatch.setattr(handler.shot, "get_object", _AutoObjectRegistry())
     scene = _fake_scene(["Glass"])
     with pytest.raises(ValueError, match="rim_axis"):
         handler.shot._resolve_containers(scene, [{"object_name": "Glass", "rim_axis": "UP"}])
 
 
 def test_resolve_containers_rejects_non_positive_wall_thickness(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
-    monkeypatch.setattr(handler.shot, "_get_object", _AutoObjectRegistry())
+    _addon, handler = load_liquid_handler(monkeypatch)
+    monkeypatch.setattr(handler.shot, "get_object", _AutoObjectRegistry())
     scene = _fake_scene(["Glass"])
     with pytest.raises(ValueError, match="wall_thickness"):
         handler.shot._resolve_containers(scene, [{"object_name": "Glass", "wall_thickness": 0.0}])
 
 
 def test_resolve_containers_rejects_empty_or_oversized_lists(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
-    monkeypatch.setattr(handler.shot, "_get_object", _AutoObjectRegistry())
+    _addon, handler = load_liquid_handler(monkeypatch)
+    monkeypatch.setattr(handler.shot, "get_object", _AutoObjectRegistry())
     scene = _fake_scene(["Glass"])
     with pytest.raises(ValueError, match="1-16"):
         handler.shot._resolve_containers(scene, [])
@@ -340,32 +335,32 @@ def test_resolve_containers_rejects_empty_or_oversized_lists(monkeypatch) -> Non
 
 
 def test_resolve_containers_defaults_proxy_name_from_object(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
-    monkeypatch.setattr(handler.shot, "_get_object", _AutoObjectRegistry())
+    _addon, handler = load_liquid_handler(monkeypatch)
+    monkeypatch.setattr(handler.shot, "get_object", _AutoObjectRegistry())
     scene = _fake_scene(["Glass"])
     resolved = handler.shot._resolve_containers(scene, [{"object_name": "Glass"}])
     assert resolved[0]["proxy_object_name"] == "Glass Collision Proxy"
 
 
 def test_resolve_sources_rejects_object_not_linked_to_scene(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
-    monkeypatch.setattr(handler.shot, "_get_object", _AutoObjectRegistry())
+    _addon, handler = load_liquid_handler(monkeypatch)
+    monkeypatch.setattr(handler.shot, "get_object", _AutoObjectRegistry())
     scene = _fake_scene([])
     with pytest.raises(ValueError, match="not linked to scene"):
         handler.shot._resolve_sources(scene, [{"object_name": "Pour"}], 24.0, 1)
 
 
 def test_resolve_sources_rejects_unknown_behavior(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
-    monkeypatch.setattr(handler.shot, "_get_object", _AutoObjectRegistry())
+    _addon, handler = load_liquid_handler(monkeypatch)
+    monkeypatch.setattr(handler.shot, "get_object", _AutoObjectRegistry())
     scene = _fake_scene(["Pour"])
     with pytest.raises(ValueError, match="behavior"):
         handler.shot._resolve_sources(scene, [{"object_name": "Pour", "behavior": "SPLASH"}], 24.0, 1)
 
 
 def test_resolve_sources_rejects_empty_or_oversized_lists(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
-    monkeypatch.setattr(handler.shot, "_get_object", _AutoObjectRegistry())
+    _addon, handler = load_liquid_handler(monkeypatch)
+    monkeypatch.setattr(handler.shot, "get_object", _AutoObjectRegistry())
     scene = _fake_scene(["Pour"])
     with pytest.raises(ValueError, match="1-16"):
         handler.shot._resolve_sources(scene, [], 24.0, 1)
@@ -377,7 +372,7 @@ def test_resolve_sources_rejects_empty_or_oversized_lists(monkeypatch) -> None:
 
 
 def test_execute_shot_uses_proxy_rig_for_hollow_container_and_skips_direct_effector(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     scene = _fake_scene(["Glass", "Pour"])
     registry = _AutoObjectRegistry()
     handlers = handler.LiquidHandlersMixin()
@@ -400,7 +395,7 @@ def test_execute_shot_uses_proxy_rig_for_hollow_container_and_skips_direct_effec
 
 
 def test_execute_shot_uses_direct_effector_when_no_proxy_requested(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     scene = _fake_scene(["Glass", "Pour"])
     registry = _AutoObjectRegistry()
     handlers = handler.LiquidHandlersMixin()
@@ -422,7 +417,7 @@ def test_execute_shot_uses_direct_effector_when_no_proxy_requested(monkeypatch) 
 
 
 def test_execute_shot_animates_flow_only_when_enabled_seconds_given(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     scene = _fake_scene(["Glass", "Pour"], fps=24.0, frame_start=1)
     registry = _AutoObjectRegistry()
     handlers = handler.LiquidHandlersMixin()
@@ -442,7 +437,7 @@ def test_execute_shot_animates_flow_only_when_enabled_seconds_given(monkeypatch)
 
 
 def test_execute_shot_skips_animation_when_no_enabled_seconds(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     scene = _fake_scene(["Glass", "Pour"])
     registry = _AutoObjectRegistry()
     handlers = handler.LiquidHandlersMixin()
@@ -462,7 +457,7 @@ def test_execute_shot_skips_animation_when_no_enabled_seconds(monkeypatch) -> No
 
 
 def test_setup_liquid_shot_rejects_geometry_behavior_with_enabled_seconds_before_any_mutation(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     scene = _fake_scene(["Glass", "Pour"])
     registry = _AutoObjectRegistry()
     handlers = handler.LiquidHandlersMixin()
@@ -481,7 +476,7 @@ def test_setup_liquid_shot_rejects_geometry_behavior_with_enabled_seconds_before
 
 
 def test_setup_liquid_shot_rejects_duplicate_container_and_source_object(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     scene = _fake_scene(["Glass"])
     registry = _AutoObjectRegistry()
     handlers = handler.LiquidHandlersMixin()
@@ -500,7 +495,7 @@ def test_setup_liquid_shot_rejects_duplicate_container_and_source_object(monkeyp
 
 
 def test_setup_liquid_shot_rejects_domain_object_reused_as_container(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     scene = _fake_scene(["Glass", "Pour"])
     registry = _AutoObjectRegistry()
     handlers = handler.LiquidHandlersMixin()
@@ -520,7 +515,7 @@ def test_setup_liquid_shot_rejects_domain_object_reused_as_container(monkeypatch
 
 
 def test_setup_liquid_shot_requires_a_resolved_quality_patch_unless_dry_run(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     scene = _fake_scene(["Glass", "Pour"])
     registry = _AutoObjectRegistry()
     handlers = handler.LiquidHandlersMixin()
@@ -537,7 +532,7 @@ def test_setup_liquid_shot_requires_a_resolved_quality_patch_unless_dry_run(monk
 
 
 def test_dry_run_reports_plan_without_mutating_or_needing_a_quality_patch(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     scene = _fake_scene(["Glass", "Pour"])
     registry = _AutoObjectRegistry()
     handlers = handler.LiquidHandlersMixin()
@@ -566,7 +561,7 @@ def test_dry_run_reports_plan_without_mutating_or_needing_a_quality_patch(monkey
 
 
 def test_dry_run_runs_preflight_validation_only_when_named_domain_already_exists(monkeypatch) -> None:
-    addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     scene = _fake_scene(["Glass", "Pour"])
     registry = _AutoObjectRegistry()
     handlers = handler.LiquidHandlersMixin()

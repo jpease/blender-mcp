@@ -7,19 +7,16 @@ import math
 
 import bpy
 
+from ..rna_patch import get_object, rna_property, serialize, validate_rna_value
 from .collisions import _affected_cloths
 from .dynamics import _FIELD_WEIGHT_FIELDS
 from .inspection_and_setup import (
     _action_fcurves,
     _cache_info,
     _get_modifier,
-    _get_object,
     _object_scenes,
     _reject_baked,
-    _rna_property,
-    _serialize,
     _tag_update,
-    _validate_rna_value,
 )
 
 _ANIMATABLE_FIELDS = {
@@ -95,14 +92,14 @@ def _resolve_animation_owner(obj, cloth_modifier_name, record):
     property_name = record["property_name"]
     if property_name not in allowlist:
         raise ValueError(f"Property '{property_name}' is not allowed for {owner_kind}")
-    prop = _rna_property(owner, property_name)
+    prop = rna_property(owner, property_name)
     if not prop.is_animatable:
         raise ValueError(f"{owner_kind}.{property_name} is not animatable in Blender {bpy.app.version_string}")
     value = record["value"]
     array_index = record.get("array_index", -1)
     if prop.is_array:
         if array_index == -1:
-            _validate_rna_value(owner, property_name, value)
+            validate_rna_value(owner, property_name, value)
         elif not isinstance(value, (int, float)):
             raise ValueError(f"Indexed animation of {property_name} requires one numeric value")
         elif not 0 <= array_index < prop.array_length:
@@ -110,7 +107,7 @@ def _resolve_animation_owner(obj, cloth_modifier_name, record):
     else:
         if array_index != -1:
             raise ValueError(f"array_index is not valid for scalar property {property_name}")
-        _validate_rna_value(owner, property_name, value)
+        validate_rna_value(owner, property_name, value)
     path = owner.path_from_id(property_name)
     return owner, property_name, path, cloth_modifier
 
@@ -197,7 +194,7 @@ class ClothAnimationHandlers:
         cloth_modifier_name=None,
         policy="INSERT_ONLY",
     ):
-        obj = _get_object(object_name)
+        obj = get_object(object_name)
         if policy not in {"INSERT_ONLY", "REPLACE_EXISTING"}:
             raise ValueError("policy must be INSERT_ONLY or REPLACE_EXISTING")
         if not keyframes or len(keyframes) > 500:
@@ -238,7 +235,7 @@ class ClothAnimationHandlers:
                     "data_path": data_path,
                     "array_index": array_index,
                     "frame": frame,
-                    "old_value": _serialize(getattr(owner, property_name)),
+                    "old_value": serialize(getattr(owner, property_name)),
                     "existing": [(curve, point, _snapshot_keyframe_point(point)) for curve, point in existing],
                 }
             )
@@ -310,7 +307,7 @@ class ClothAnimationHandlers:
                     "data_path": entry["data_path"],
                     "array_index": entry["array_index"],
                     "frame": entry["frame"],
-                    "value": _serialize(getattr(entry["owner"], entry["property_name"])),
+                    "value": serialize(getattr(entry["owner"], entry["property_name"])),
                     "interpolation": record["interpolation"],
                     "action": action.name if action else None,
                     "action_slot": getattr(getattr(animation, "action_slot", None), "identifier", None),

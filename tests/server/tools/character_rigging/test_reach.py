@@ -6,9 +6,9 @@ import types
 
 import pytest
 
+from conftest import load_addon
 from pydantic import ValidationError
 from pydantic_core import to_json
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _dispatch, character_rigging
 from blender_mcp.server.tools.envelope import REPLY_BYTE_BUDGET, envelope_for
@@ -33,7 +33,7 @@ def _reach_bone(name, parent=None):
 
 
 def _load_reach(monkeypatch):
-    addon, _bpy = _load_addon(monkeypatch, data={"objects": {}})
+    addon, _bpy = load_addon(monkeypatch, data={"objects": {}})
     return sys.modules[f"{addon.__name__}.handlers.character_rigging.reach"]
 
 
@@ -186,7 +186,7 @@ def test_synthesize_pole_converts_through_the_armatures_world_matrix(monkeypatch
 
 
 def _reach_chain_module(monkeypatch, rest_bones):
-    addon, _bpy = _load_addon(monkeypatch, data={"objects": {}})
+    addon, _bpy = load_addon(monkeypatch, data={"objects": {}})
     reach = sys.modules[f"{addon.__name__}.handlers.character_rigging.reach"]
     armature = types.SimpleNamespace(data=types.SimpleNamespace(bones=rest_bones))
     return reach, armature
@@ -232,7 +232,7 @@ def test_resolve_reach_chain_refuses_a_bone_already_claimed_by_an_earlier_reach(
 
 
 def test_resolved_reach_target_refuses_an_unknown_object_name(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={"objects": {}})
+    addon, _bpy = load_addon(monkeypatch, data={"objects": {}})
     reach = sys.modules[f"{addon.__name__}.handlers.character_rigging.reach"]
 
     with pytest.raises(ValueError, match="target_point object not found: SH030_cam"):
@@ -251,7 +251,7 @@ class _FakeObjects(dict):
 
 
 def _reach_geometry_module(monkeypatch, objects):
-    addon, bpy = _load_addon(monkeypatch, data={"objects": objects})
+    addon, bpy = load_addon(monkeypatch, data={"objects": objects})
     bpy.context.collection = types.SimpleNamespace(objects=types.SimpleNamespace(link=lambda _obj: None))
     return sys.modules[f"{addon.__name__}.handlers.character_rigging.reach"]
 

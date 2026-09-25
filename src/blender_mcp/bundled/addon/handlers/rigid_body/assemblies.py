@@ -11,6 +11,7 @@ from itertools import combinations
 import bpy
 import mathutils
 
+from ..rna_patch import get_object
 from .inspection_and_setup import (
     _BODY_FIELDS,
     _aabb_overlap,
@@ -25,7 +26,6 @@ from .inspection_and_setup import (
     _evaluated_mesh_payload,
     _mesh_volume,
     _native_transform,
-    _object,
     _prepare_cache_mutation,
     _remove_rigid_body,
     _restore_fields,
@@ -116,7 +116,7 @@ class RigidBodyAssemblyHandlers:
         root, *children = _validate_object_batch(scene, names)
         if any(obj.type != "MESH" for obj in [root, *children]):
             raise ValueError("Compound roots and children must be mesh objects")
-        render = _object(render_object_name) if render_object_name else None
+        render = get_object(render_object_name) if render_object_name else None
         if render is not None and (render.name not in scene.objects or render in [root, *children]):
             raise ValueError("render_object_name must identify a separate object in the scene")
         if any(child.parent is not None and child.parent != root for child in children):
@@ -416,7 +416,7 @@ class RigidBodyAssemblyHandlers:
         ordered_names = [*body_names]
         for anchor in (start_anchor_name, end_anchor_name):
             if anchor:
-                obj = _object(anchor)
+                obj = get_object(anchor)
                 if obj.name not in scene.objects or obj.rigid_body is None or obj.rigid_body.type != "PASSIVE":
                     raise ValueError(f"Anchor '{anchor}' must be a passive rigid body in scene '{scene.name}'")
         nodes = [

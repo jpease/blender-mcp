@@ -7,8 +7,8 @@ import types
 
 import pytest
 
+from conftest import load_liquid_handler
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _dispatch, liquid
 
@@ -118,11 +118,6 @@ def test_all_twelve_phase_zero_commands_are_registered() -> None:
     assert set(liquid.mcp._tool_manager._tools) >= names
 
 
-def _load_liquid_handler(monkeypatch):
-    addon, _bpy = _load_addon(monkeypatch, data={})
-    return addon, sys.modules[f"{addon.__name__}.handlers.liquid"]
-
-
 class _FakeRnaProperty:
     def __init__(self, *, prop_type="FLOAT", minimum=0.0, maximum=10.0, readonly=False) -> None:
         self.type = prop_type
@@ -139,28 +134,8 @@ class _FakeRnaProperties(dict):
         return iter(self.values())
 
 
-def test_liquid_handler_preflights_entire_patch_before_mutation(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
-    owner = types.SimpleNamespace(
-        first=1.0,
-        second=2.0,
-        bl_rna=types.SimpleNamespace(
-            properties=_FakeRnaProperties(
-                first=_FakeRnaProperty(),
-                second=_FakeRnaProperty(),
-            )
-        ),
-    )
-
-    with pytest.raises(ValueError, match="outside Blender's RNA range"):
-        handler._patch_rna(owner, {"first": 5.0, "second": 99.0}, {"first", "second"})
-
-    assert owner.first == pytest.approx(1.0)
-    assert owner.second == pytest.approx(2.0)
-
-
 def test_liquid_commands_dispatch_and_read_only_classification(monkeypatch) -> None:
-    addon, _handler = _load_liquid_handler(monkeypatch)
+    addon, _handler = load_liquid_handler(monkeypatch)
     server = addon.BlenderMCPServer()
     commands = server._build_command_handlers()
 
@@ -173,7 +148,7 @@ def test_liquid_commands_dispatch_and_read_only_classification(monkeypatch) -> N
 
 
 def test_resource_estimate_formula_is_explicit_and_conservative(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     settings = types.SimpleNamespace(
         resolution_max=100,
         cache_frame_start=1,
@@ -221,7 +196,7 @@ def _fake_flow_object(name: str) -> types.SimpleNamespace:
 
 
 def test_configure_flow_settings_accepts_use_inflow_for_outflow_behavior(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     flow = _fake_flow(flow_behavior="OUTFLOW")
 
     changes = handler.inspection_and_setup.LiquidInspectionAndSetupHandlers._configure_flow_settings(
@@ -233,7 +208,7 @@ def test_configure_flow_settings_accepts_use_inflow_for_outflow_behavior(monkeyp
 
 
 def test_configure_flow_settings_accepts_use_inflow_for_inflow_behavior(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     flow = _fake_flow(flow_behavior="INFLOW")
 
     changes = handler.inspection_and_setup.LiquidInspectionAndSetupHandlers._configure_flow_settings(
@@ -244,7 +219,7 @@ def test_configure_flow_settings_accepts_use_inflow_for_inflow_behavior(monkeypa
 
 
 def test_configure_flow_settings_rejects_use_inflow_for_geometry_behavior(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     flow = _fake_flow(flow_behavior="GEOMETRY")
 
     with pytest.raises(ValueError, match="GEOMETRY"):
@@ -254,7 +229,7 @@ def test_configure_flow_settings_rejects_use_inflow_for_geometry_behavior(monkey
 
 
 def test_domain_bounds_reports_evaluated_bounds_only_once_baked(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     seen_evaluated = []
 
     def fake_world_bounds(_obj, evaluated=True):
@@ -278,7 +253,7 @@ def test_domain_bounds_reports_evaluated_bounds_only_once_baked(monkeypatch) -> 
 
 
 def test_baked_frame_ceiling_falls_back_to_cache_frame_end_when_never_paused(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     settings = types.SimpleNamespace(
         use_mesh=True,
         cache_frame_end=250,
@@ -292,7 +267,7 @@ def test_baked_frame_ceiling_falls_back_to_cache_frame_end_when_never_paused(mon
 
 
 def test_baked_frame_ceiling_uses_earliest_pause_frame(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     settings = types.SimpleNamespace(
         use_mesh=True,
         cache_frame_end=250,
@@ -318,7 +293,7 @@ def _fake_scene_for(object_name, *, frame_start=1, frame_end=250):
 
 
 def test_sample_liquid_simulation_rejects_frame_before_replay_cache_start(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     settings = types.SimpleNamespace(cache_type="REPLAY", cache_frame_start=10, has_cache_baked_any=False)
@@ -330,7 +305,7 @@ def test_sample_liquid_simulation_rejects_frame_before_replay_cache_start(monkey
 
 
 def test_sample_liquid_simulation_rejects_preroll_over_budget(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     settings = types.SimpleNamespace(cache_type="REPLAY", cache_frame_start=1, has_cache_baked_any=False)
@@ -344,7 +319,7 @@ def test_sample_liquid_simulation_rejects_preroll_over_budget(monkeypatch) -> No
 
 
 def test_sample_liquid_simulation_rejects_frame_outside_modular_baked_range(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     settings = types.SimpleNamespace(
@@ -375,7 +350,7 @@ def _edge(a, b):
 
 def test_topology_from_mesh_reports_closed_manifold_as_clean(monkeypatch) -> None:
     # A tetrahedron: every edge is shared by exactly two of its four triangular faces.
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     mesh = types.SimpleNamespace(
         polygons=[_polygon(0, 1, 2), _polygon(0, 1, 3), _polygon(0, 2, 3), _polygon(1, 2, 3)],
         edges=[_edge(0, 1), _edge(0, 2), _edge(0, 3), _edge(1, 2), _edge(1, 3), _edge(2, 3)],
@@ -389,7 +364,7 @@ def test_topology_from_mesh_reports_closed_manifold_as_clean(monkeypatch) -> Non
 
 def test_topology_from_mesh_reports_open_surface_edges_as_boundary_and_nonmanifold(monkeypatch) -> None:
     # A single triangle: all three edges belong to only one face.
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     mesh = types.SimpleNamespace(
         polygons=[_polygon(0, 1, 2)],
         edges=[_edge(0, 1), _edge(0, 2), _edge(1, 2)],
@@ -402,7 +377,7 @@ def test_topology_from_mesh_reports_open_surface_edges_as_boundary_and_nonmanifo
 
 
 def test_evaluated_mesh_topology_reflects_modifier_stack_not_base_mesh(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].context.evaluated_depsgraph_get = lambda: "depsgraph"
     manifold_base_mesh = types.SimpleNamespace(
         polygons=[_polygon(0, 1, 2), _polygon(0, 1, 3), _polygon(0, 2, 3), _polygon(1, 2, 3)],
@@ -555,7 +530,7 @@ def _fake_evaluated(mesh, matrix_world):
 
 
 def test_flow_normal_orientation_flags_majority_inward_normals(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     monkeypatch.setattr(handler.inspection_and_setup.mathutils, "Vector", _FakeVector3, raising=False)
     sys.modules["bpy"].context.evaluated_depsgraph_get = lambda: "depsgraph"
     identity = _FakeUniformMatrix4(1.0)
@@ -582,7 +557,7 @@ def test_wall_thickness_samples_maps_local_space_bvh_hit_into_world_units(monkey
     # Regression for the verified-from-source fact that BVHTree.FromObject builds its tree in the
     # object's local space (no matrix_world multiplication) - rays must be cast in local space and
     # hits mapped back through matrix_world to report a correct world-space thickness.
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     monkeypatch.setattr(handler.inspection_and_setup.mathutils, "Vector", _FakeVector3, raising=False)
     sys.modules["bpy"].context.evaluated_depsgraph_get = lambda: "depsgraph"
     world_matrix = _FakeUniformMatrix4(2.0, (10.0, 0.0, 0.0))
@@ -618,7 +593,7 @@ class _FakeIdObject:
 
 
 def test_ensure_liquid_uuid_is_idempotent(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = _FakeIdObject("Domain")
 
     first = handler.inspection_and_setup._ensure_liquid_uuid(obj)
@@ -629,7 +604,7 @@ def test_ensure_liquid_uuid_is_idempotent(monkeypatch) -> None:
 
 
 def test_manifest_round_trip_records_stage_and_domain_uuid(tmp_path, monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     directory = str(tmp_path)
 
     assert handler.simulation._read_manifest(directory) is None
@@ -691,7 +666,7 @@ def _stub_fluid_operators():
 
 
 def test_manage_liquid_cache_status_reports_manifest_ownership(tmp_path, monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
     obj = _FakeIdObject("Domain")
     obj["blendermcp_liquid_uuid"] = "known-uuid"
@@ -708,7 +683,7 @@ def test_manage_liquid_cache_status_reports_manifest_ownership(tmp_path, monkeyp
 
 
 def test_manage_liquid_cache_status_reports_foreign_directory_as_unowned(tmp_path, monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
     obj = _FakeIdObject("Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
@@ -722,10 +697,43 @@ def test_manage_liquid_cache_status_reports_foreign_directory_as_unowned(tmp_pat
     assert result["directory_is_manifest_owned"] is False
 
 
+class _EndClampingDomainSettings(types.SimpleNamespace):
+    """Domain settings whose `cache_frame_end` Blender clamps to 100, silently, as RNA does."""
+
+    def __setattr__(self, name, value) -> None:
+        if name == "cache_frame_end":
+            value = min(value, 100)
+        super().__setattr__(name, value)
+
+
+def test_manage_liquid_cache_refuses_and_undoes_a_frame_range_blender_did_not_keep(tmp_path, monkeypatch) -> None:
+    _addon, handler = load_liquid_handler(monkeypatch)
+    sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
+    monkeypatch.setattr(
+        sys.modules["bpy"].context, "view_layer", types.SimpleNamespace(update=lambda: None), raising=False
+    )
+    obj = _FakeIdObject("Domain")
+    obj.update_tag = lambda **_kwargs: None
+    modifier = types.SimpleNamespace(name="Liquid Domain")
+    frame = _FakeRnaProperty(prop_type="INT", minimum=-1_048_574, maximum=1_048_574)
+    settings = _EndClampingDomainSettings(
+        **vars(_fake_domain_settings(cache_directory=str(tmp_path))),
+        bl_rna=types.SimpleNamespace(properties=_FakeRnaProperties(cache_frame_start=frame, cache_frame_end=frame)),
+    )
+    monkeypatch.setattr(handler.simulation, "_get_domain", lambda *_args: (obj, modifier, settings))
+
+    with pytest.raises(ValueError, match=r"\[1, 400\]"):
+        handler.simulation.LiquidSimulationHandlers().manage_liquid_cache(
+            "Domain", "Liquid Domain", action="CONFIGURE", patch={"cache_frame_start": 1, "cache_frame_end": 400}
+        )
+
+    assert (settings.cache_frame_start, settings.cache_frame_end) == (1, 10)
+
+
 def test_manage_liquid_cache_bake_bypasses_overwrite_confirm_for_manifest_owned_directory(
     tmp_path, monkeypatch
 ) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
     sys.modules["bpy"].ops.fluid = _stub_fluid_operators()
     obj = _FakeIdObject("Domain")
@@ -752,7 +760,7 @@ def test_manage_liquid_cache_bake_bypasses_overwrite_confirm_for_manifest_owned_
 
 
 def test_manage_liquid_cache_bake_requires_overwrite_confirm_for_foreign_directory(tmp_path, monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
     sys.modules["bpy"].ops.fluid = _stub_fluid_operators()
     obj = _FakeIdObject("Domain")
@@ -773,13 +781,13 @@ def test_manage_liquid_cache_bake_requires_overwrite_confirm_for_foreign_directo
 
 
 def test_has_gui_window_is_false_without_a_window_manager(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
 
     assert handler.simulation._has_gui_window() is False
 
 
 def test_has_gui_window_is_false_in_background_mode(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].app.background = True
     sys.modules["bpy"].context.window_manager = types.SimpleNamespace(windows=[object()])
 
@@ -787,7 +795,7 @@ def test_has_gui_window_is_false_in_background_mode(monkeypatch) -> None:
 
 
 def test_start_fluid_bake_job_falls_back_to_synchronous_without_gui_window(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     calls = []
     monkeypatch.setattr(handler.simulation, "_has_gui_window", lambda: False)
     monkeypatch.setattr(
@@ -803,7 +811,7 @@ def test_start_fluid_bake_job_falls_back_to_synchronous_without_gui_window(monke
 
 
 def test_job_id_is_stable_and_scoped_to_stage_and_directory(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
 
     first = handler.simulation._job_id("uuid-1", "DATA", "/cache/one")
     second = handler.simulation._job_id("uuid-1", "DATA", "/cache/one")
@@ -817,7 +825,7 @@ def test_job_id_is_stable_and_scoped_to_stage_and_directory(monkeypatch) -> None
 
 
 def test_reconcile_pending_bake_manifest_writes_once_baked_flag_flips_true(tmp_path, monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = _FakeIdObject("Domain")
     obj[handler.simulation._PENDING_BAKE_KEY] = {
         "domain_uuid": "known-uuid",
@@ -841,7 +849,7 @@ def test_reconcile_pending_bake_manifest_writes_once_baked_flag_flips_true(tmp_p
 
 
 def test_reconcile_pending_bake_manifest_is_noop_without_a_pending_marker(tmp_path, monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = _FakeIdObject("Domain")
     settings = _fake_domain_settings(has_cache_baked_data=True)
 
@@ -851,7 +859,7 @@ def test_reconcile_pending_bake_manifest_is_noop_without_a_pending_marker(tmp_pa
 
 
 def test_manage_liquid_cache_pause_rejects_without_modular_resumable(tmp_path, monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
     sys.modules["bpy"].ops.fluid = _stub_fluid_operators()
     obj = _FakeIdObject("Domain")
@@ -866,7 +874,7 @@ def test_manage_liquid_cache_pause_rejects_without_modular_resumable(tmp_path, m
 
 
 def test_manage_liquid_cache_pause_accepts_modular_resumable_while_baking(tmp_path, monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
     sys.modules["bpy"].ops.fluid = _stub_fluid_operators()
     obj = _FakeIdObject("Domain")
@@ -898,7 +906,7 @@ def _resumable_paused_settings(tmp_path, **overrides):
 
 
 def test_manage_liquid_cache_resume_rejects_when_not_modular_resumable(tmp_path, monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
     obj = _FakeIdObject("Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
@@ -912,7 +920,7 @@ def test_manage_liquid_cache_resume_rejects_when_not_modular_resumable(tmp_path,
 
 
 def test_manage_liquid_cache_resume_rejects_when_already_baking(tmp_path, monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
     obj = _FakeIdObject("Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
@@ -929,7 +937,7 @@ def test_manage_liquid_cache_resume_rejects_when_already_fully_baked(tmp_path, m
     # Blender leaves cache_frame_pause_data set to the final frame after a normal completed
     # bake too, not just an interrupted pause, so a nonzero pause frame alone can't distinguish
     # "paused" from "finished".
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
     obj = _FakeIdObject("Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
@@ -943,7 +951,7 @@ def test_manage_liquid_cache_resume_rejects_when_already_fully_baked(tmp_path, m
 
 
 def test_manage_liquid_cache_resume_rejects_when_no_paused_state(tmp_path, monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
     obj = _FakeIdObject("Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
@@ -957,7 +965,7 @@ def test_manage_liquid_cache_resume_rejects_when_no_paused_state(tmp_path, monke
 
 
 def test_manage_liquid_cache_resume_dispatches_when_paused_state_exists(tmp_path, monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
     sys.modules["bpy"].ops.fluid = _stub_fluid_operators()
     obj = _FakeIdObject("Domain")
@@ -984,7 +992,7 @@ def test_manage_liquid_cache_resume_dispatches_when_paused_state_exists(tmp_path
 
 
 def test_manage_liquid_cache_cancel_raises_while_stage_actively_baking(tmp_path, monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
     obj = _FakeIdObject("Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
@@ -998,7 +1006,7 @@ def test_manage_liquid_cache_cancel_raises_while_stage_actively_baking(tmp_path,
 
 
 def test_manage_liquid_cache_cancel_degrades_to_free_when_not_baking(tmp_path, monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
     sys.modules["bpy"].ops.fluid = _stub_fluid_operators()
     obj = _FakeIdObject("Domain")
@@ -1026,7 +1034,7 @@ def test_manage_liquid_cache_cancel_degrades_to_free_when_not_baking(tmp_path, m
 def test_manage_liquid_cache_start_bake_running_modal_stores_pending_marker_and_reconciles_later(
     tmp_path, monkeypatch
 ) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
     sys.modules["bpy"].ops.fluid = _stub_fluid_operators()
     obj = _FakeIdObject("Domain")
@@ -1061,7 +1069,7 @@ def test_manage_liquid_cache_start_bake_running_modal_stores_pending_marker_and_
 
 
 def test_manage_liquid_cache_resume_pending_marker_counts_as_directory_ownership(tmp_path, monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     sys.modules["bpy"].path = types.SimpleNamespace(abspath=lambda p: p)
     sys.modules["bpy"].ops.fluid = _stub_fluid_operators()
     obj = _FakeIdObject("Domain")

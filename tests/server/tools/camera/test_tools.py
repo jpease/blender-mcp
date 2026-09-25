@@ -7,9 +7,9 @@ import types
 
 import pytest
 
+from conftest import load_addon
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _dispatch, camera
 
@@ -272,7 +272,7 @@ def test_path_tool_preflights_path_and_frame_intent(monkeypatch) -> None:
 
 
 def test_dispatch_advertises_all_camera_commands_and_only_inspection_is_read_only(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     commands = server._build_command_handlers()
@@ -283,7 +283,7 @@ def test_dispatch_advertises_all_camera_commands_and_only_inspection_is_read_onl
 
 
 def test_dispatch_advertises_extended_commands_and_validation_is_read_only(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     commands = server._build_command_handlers()
@@ -381,7 +381,7 @@ def test_extended_strict_models_validate_ranges_and_constraint_intent() -> None:
 
 
 def test_marker_list_dispatch_is_read_only(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
     monkeypatch.setattr(
         server,
@@ -422,7 +422,7 @@ def _marker_handler(monkeypatch):
     scene = types.SimpleNamespace(
         name="Scene", frame_start=1, camera=cameras["WideCam"], objects=cameras, timeline_markers=Markers()
     )
-    addon, _bpy = _load_addon(monkeypatch, data={"scenes": {"Scene": scene}, "objects": cameras})
+    addon, _bpy = load_addon(monkeypatch, data={"scenes": {"Scene": scene}, "objects": cameras})
     return sys.modules[f"{addon.__name__}.handlers.camera"].CameraHandlersMixin(), scene
 
 
@@ -456,8 +456,18 @@ def test_setting_the_scene_camera_reports_the_retroactive_binding_in_the_same_wo
     assert assigned["warnings"] != []
 
 
+def test_setting_the_scene_camera_refuses_a_whole_float_marker_frame_before_binding_anything(monkeypatch) -> None:
+    """An integer argument takes an int: a float, even a whole one, is refused like a bool, and nothing moves."""
+    handler, scene = _marker_handler(monkeypatch)
+
+    with pytest.raises(ValueError, match="marker_frame"):
+        handler.set_scene_camera("Scene", "TightCam", marker_name="sh010", marker_frame=10.0)
+
+    assert (scene.camera.name, list(scene.timeline_markers)) == ("WideCam", [])
+
+
 def test_handler_camera_patch_rolls_back_assignments(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     handler = sys.modules[f"{addon.__name__}.handlers.camera._shared"]
 
     class Owner:
@@ -478,7 +488,7 @@ def test_handler_camera_patch_rolls_back_assignments(monkeypatch) -> None:
 
 
 def test_handler_binary_solver_finds_smallest_fitting_value(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     handler = sys.modules[f"{addon.__name__}.handlers.camera.targeting"]
 
     solved = handler._binary_smallest_fit(lambda value: value >= 7.5, 0.0, 1.0)
@@ -510,7 +520,7 @@ def test_handler_point_camera_at_rejects_a_placement_on_the_aim_point(monkeypatc
 
     subject = Camera()
     scene = types.SimpleNamespace(name="Scene", objects={"Hero": subject})
-    addon, _bpy = _load_addon(monkeypatch, data={"scenes": {"Scene": scene}, "objects": {"Hero": subject}})
+    addon, _bpy = load_addon(monkeypatch, data={"scenes": {"Scene": scene}, "objects": {"Hero": subject}})
     monkeypatch.setattr(sys.modules["mathutils"], "Vector", Vector, raising=False)
     handler = sys.modules[f"{addon.__name__}.handlers.camera.targeting"]._TargetingMixin()
 
@@ -640,7 +650,7 @@ def _creation_handler(monkeypatch):
         objects=objects,
         collection=types.SimpleNamespace(children=Children()),
     )
-    addon, bpy_stub = _load_addon(
+    addon, bpy_stub = load_addon(
         monkeypatch,
         data={"scenes": {"Scene": scene}, "objects": objects, "cameras": cameras, "collections": collections},
     )
@@ -859,7 +869,7 @@ def _framing_handler(monkeypatch):
         },
     )
     scene = types.SimpleNamespace(name="Scene", objects=objects, view_layers=[view_layer])
-    addon, bpy_stub = _load_addon(monkeypatch, data={"scenes": {"Scene": scene}, "objects": objects})
+    addon, bpy_stub = load_addon(monkeypatch, data={"scenes": {"Scene": scene}, "objects": objects})
     bpy_stub.context.scene = scene
     bpy_stub.context.view_layer = view_layer
     bpy_stub.context.evaluated_depsgraph_get = lambda: None
@@ -1021,7 +1031,7 @@ def test_limiting_axis_names_the_objects_at_both_ends_of_the_tight_axis(monkeypa
 
 
 def test_render_exclusion_reason_names_the_first_flag_that_keeps_an_object_out_of_the_render(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch)
+    addon, _bpy = load_addon(monkeypatch)
     reason = sys.modules[f"{addon.__name__}.helpers"].render_exclusion_reason
 
     def collection(name, *, hide_render=False):

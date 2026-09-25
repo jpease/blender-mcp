@@ -6,6 +6,7 @@ import contextlib
 import statistics
 
 from ...helpers import sync_from_editmode
+from ..rna_patch import get_object, validate_rna_value
 from ._deform_binding import (
     _attachment_target_matrix,
     _bind_deform_modifier,
@@ -18,12 +19,10 @@ from ._ownership import _tag_owned_component
 from .inspection_and_setup import (
     _cache_info,
     _get_cloth,
-    _get_object,
     _modifier_info,
     _reject_baked,
     _scene_context_for_object,
     _tag_update,
-    _validate_rna_value,
     _vertex_group_stats,
 )
 
@@ -62,7 +61,7 @@ class ClothAttachmentHandlers:
                 f"Cloth pin group is '{cloth_modifier.settings.vertex_group_mass}', not '{pin_group_name}'; "
                 "configure pinning explicitly before creating the attachment"
             )
-        target = _get_object(target_object_name)
+        target = get_object(target_object_name)
         if target == cloth:
             raise ValueError("Attachment target must differ from the cloth object")
         if abs(float(cloth.matrix_world.determinant())) <= 1e-12:
@@ -88,7 +87,7 @@ class ClothAttachmentHandlers:
                     raise ValueError(f"Attachment target '{target.name}' must evaluate to a nonempty surface")
             finally:
                 evaluated_target.to_mesh_clear()
-        _validate_rna_value(scene, "frame_current", rest_frame)
+        validate_rna_value(scene, "frame_current", rest_frame)
 
         existing = cloth.modifiers.get(attachment_modifier_name)
         created = False

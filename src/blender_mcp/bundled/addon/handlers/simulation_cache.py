@@ -52,20 +52,32 @@ def point_cache_identity(cache):
     )
 
 
-def set_cache_frame_range(cache, frame_start, frame_end):
-    """Set a validated frame range without transiently assigning an inverted range."""
+def set_cache_frame_range(cache, frame_start, frame_end, *, start_name="frame_start", end_name="frame_end"):
+    """
+    Set a cache's frame range without transiently inverting it, and refuse one Blender did not keep.
+
+    A PointCache (cloth, rigid bodies) names its bounds `frame_start`/`frame_end`; a Mantaflow
+    domain names them `cache_frame_start`/`cache_frame_end`, hence `start_name`/`end_name`.
+    The bound that would otherwise cross the current one is written first, and both are read
+    back, because Blender clamps an assignment silently instead of raising.
+
+    Raises:
+        ValueError: The range is inverted, or Blender holds a different range after the writes.
+
+    """
     if frame_start > frame_end:
-        raise ValueError("cache frame_start must be <= frame_end")
-    if frame_start > cache.frame_end:
-        cache.frame_end = frame_end
-        cache.frame_start = frame_start
+        raise ValueError(f"{start_name} must be <= {end_name}")
+    if frame_start > getattr(cache, end_name):
+        setattr(cache, end_name, frame_end)
+        setattr(cache, start_name, frame_start)
     else:
-        cache.frame_start = frame_start
-        cache.frame_end = frame_end
-    if cache.frame_start != frame_start or cache.frame_end != frame_end:
+        setattr(cache, start_name, frame_start)
+        setattr(cache, end_name, frame_end)
+    kept = (getattr(cache, start_name), getattr(cache, end_name))
+    if kept != (frame_start, frame_end):
         raise ValueError(
             "Blender did not retain the requested cache frame range "
-            f"[{frame_start}, {frame_end}] (got [{cache.frame_start}, {cache.frame_end}])"
+            f"[{frame_start}, {frame_end}] (got [{kept[0]}, {kept[1]}])"
         )
 
 

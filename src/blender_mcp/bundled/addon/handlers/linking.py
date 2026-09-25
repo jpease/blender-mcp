@@ -35,6 +35,7 @@ from ..candidates import describe_candidates as _candidates
 from ..candidates import display_name as _display_name
 from ..candidates import session_uid_of as _uid_of
 from ..file_paths import canonical_path
+from ..helpers import bounded_int, page_records, paginate
 from ..text_hygiene import client_safe_name_leaf, client_safe_text
 from ..transaction import replacing_library_contents
 from .blend_files import (
@@ -118,34 +119,6 @@ def _require_uid(name: str, value: object) -> int:
     """
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{name} must be an integer session_uid, as list_libraries reports it")
-    return value
-
-
-def _bounded_int(name: str, value: object, minimum: int, maximum: int | None) -> int:
-    """
-    Validate a pagination bound.
-
-    Args:
-        name: The parameter name.
-        value: What the client sent.
-        minimum: The smallest accepted value.
-        maximum: The largest accepted value, or None for no upper bound.
-
-    Returns:
-        int: The value.
-
-    Raises:
-        ValueError: If it is not an `int` in range.
-
-    """
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or value < minimum
-        or (maximum is not None and value > maximum)
-    ):
-        upper = f" and at most {maximum}" if maximum is not None else ""
-        raise ValueError(f"{name} must be an integer of at least {minimum}{upper}")
     return value
 
 
@@ -279,11 +252,12 @@ def _record_page(key: str, items: Sequence[object], describe: object, limit: int
         dict[str, object]: `limit`, `returned_count`, `truncated`, and `<key>`.
 
     """
-    shown = items[:limit]
+    _start, end, truncated, _next_offset = paginate(len(items), 0, limit, limit)
+    shown = items[:end]
     return {
         "limit": limit,
         "returned_count": len(shown),
-        "truncated": len(items) > len(shown),
+        "truncated": truncated,
         key: [describe(item) for item in shown],  # type: ignore[operator]
     }
 
@@ -1267,21 +1241,14 @@ class LinkingHandlersMixin:
             `returned_count`, `truncated`, `next_offset`.
 
         """
-        limit = _bounded_int("limit", limit, 1, MAX_PAGE_SIZE)
-        offset = _bounded_int("offset", offset, 0, None)
+        limit = bounded_int("limit", limit, 1, MAX_PAGE_SIZE)
+        offset = bounded_int("offset", offset, 0)
         detail = require_bool("detail", detail)
-        libraries = list(bpy.data.libraries)
-        page = libraries[offset : offset + limit]
-        remaining = offset + len(page) < len(libraries)
-        return {
-            "libraries": [{**_library_details(lib), **_linked_datablocks(lib, detail=detail)} for lib in page],
-            "total": len(libraries),
-            "offset": offset,
-            "limit": limit,
-            "returned_count": len(page),
-            "truncated": remaining,
-            "next_offset": offset + len(page) if remaining else None,
-        }
+        page = page_records(list(bpy.data.libraries), offset, limit, MAX_PAGE_SIZE, key="libraries")
+        page["libraries"] = [
+            {**_library_details(lib), **_linked_datablocks(lib, detail=detail)} for lib in page["libraries"]
+        ]
+        return page
 
     @staticmethod
     def reload_library(library_uid: object, *, detail: object = False) -> dict[str, object]:

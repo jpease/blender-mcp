@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
+from conftest import load_addon
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _dispatch, lighting
 
@@ -66,27 +66,37 @@ def test_all_lighting_commands_are_public_and_grouped() -> None:
     )
 
 
-def test_implementation_identifiers_do_not_use_phase_names() -> None:
-    source = "\n".join(
-        path.read_text(encoding="utf-8")
-        for root in (
-            Path("src/blender_mcp/server/tools/lighting"),
-            Path("src/blender_mcp/bundled/addon/handlers/lighting"),
-        )
-        for path in root.glob("*.py")
-    )
-    assert "PhaseZero" not in source
-    assert "PhaseOne" not in source
-    assert "phase_0" not in source
-    assert "phase_1" not in source
+def test_a_polyhaven_hdri_lights_the_scene_through_the_managed_environment(monkeypatch, tmp_path) -> None:
+    """
+    A Poly Haven HDRI reaches the world through `configure_hdri_environment`, like a user's own HDRI.
 
+    That handler replaces only the graph it manages, so an import cannot overwrite a world the user
+    authored. The fake `bpy.data` has no `worlds`, so an import that reached for one directly fails.
+    """
+    addon, bpy = load_addon(monkeypatch, data={})
+    polyhaven = sys.modules[f"{addon.__name__}.handlers.polyhaven"]
+    files = {"hdri": {"1k": {"hdr": {"url": "https://dl.polyhaven.org/x/sky_1k.hdr"}}}}
+    monkeypatch.setattr(polyhaven, "get_json", lambda *_args, **_kwargs: files)
+    monkeypatch.setattr(polyhaven, "download_file", lambda _url, path, **_kwargs: Path(path).write_bytes(b"hdr"))
+    bpy.utils = types.SimpleNamespace(user_resource=lambda *_args, **_kwargs: str(tmp_path))
+    bpy.context.scene = types.SimpleNamespace(name="Shot", world=types.SimpleNamespace(name="Authored"))
+    server = addon.BlenderMCPServer()
+    calls = []
 
-def test_polyhaven_hdri_uses_the_managed_environment_handler() -> None:
-    source = Path("src/blender_mcp/bundled/addon/handlers/polyhaven.py").read_text(encoding="utf-8")
+    def configure_hdri_environment(**kwargs):
+        calls.append(kwargs)
+        return {"image": "sky_1k.hdr", "image_path": kwargs["image_path"], "world": "Authored"}
 
-    assert "self.configure_hdri_environment(" in source
-    assert "bpy.data.worlds[0]" not in source
-    assert "tempfile._cleanup" not in source
+    monkeypatch.setattr(server, "configure_hdri_environment", configure_hdri_environment)
+
+    result = server.import_polyhaven_asset("sky", "hdris")
+
+    assert result.get("success") is True, result
+    [call] = calls
+    assert (call["scene_name"], call["replacement_policy"], call["create_world"]) == ("Shot", "REPLACE_MANAGED", False)
+    assert result["image_path"] == call["image_path"]
+    assert Path(call["image_path"]).read_bytes() == b"hdr", "the world must point at the downloaded image"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["sky_1k.hdr"], "the partial download was left behind"
 
 
 def test_light_models_reject_unknown_fields_and_invalid_ranges() -> None:
@@ -239,7 +249,7 @@ def test_hdri_requires_an_absolute_hdr_or_exr_path_before_dispatch(monkeypatch) 
 
 
 def test_dispatch_advertises_lighting_and_marks_only_inspection_read_only(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     commands = server._build_command_handlers()
@@ -303,7 +313,7 @@ def fake_light(name="Key Light", *, energy=1000.0, light_type="AREA"):
 
 def load_lighting_handlers(monkeypatch):
     """Import the bundled lighting handler modules against the stub bpy module."""
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     package = f"{addon.__name__}.handlers.lighting"
     return sys.modules[f"{package}._shared"], sys.modules[f"{package}.inspection"], sys.modules[f"{package}.rendering"]
 
@@ -375,6 +385,19 @@ def test_light_inventories_trim_by_default_and_restore_full_records_with_detail(
     assert detailed["lights"][0]["transform"]["world"]["matrix"][0] == [_ROUNDED, -1.234568, 5.0, 1.0]
     assert trimmed["total"] == len(lights)
     assert trimmed["returned_count"] == len(lights)
+
+
+@pytest.mark.parametrize("bound", ["limit", "offset"])
+def test_a_light_listing_refuses_a_whole_float_page_bound(monkeypatch, bound) -> None:
+    """A page bound takes an int: a float, even a whole one, is refused like a bool."""
+    _shared_module, inspection, _rendering = load_lighting_handlers(monkeypatch)
+    scene = types.SimpleNamespace(name="Scene", unit_settings=types.SimpleNamespace(scale_length=1.0))
+    monkeypatch.setattr(inspection, "scene_by_name", lambda _name: scene)
+    monkeypatch.setattr(inspection, "_scene_lights", lambda *_args, **_kwargs: [fake_light()])
+    handler = inspection.LightingInspectionHandlers()
+
+    with pytest.raises(ValueError, match=bound):
+        handler.list_lights("Scene", **{bound: 1.0})
 
 
 def test_preview_matched_state_names_its_lights_instead_of_embedding_them(monkeypatch) -> None:

@@ -6,9 +6,9 @@ import types
 
 import pytest
 
+from conftest import load_addon
 from pydantic import ValidationError
 from pydantic_core import to_json
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _dispatch, character_rigging
 from blender_mcp.server.tools.envelope import REPLY_BYTE_BUDGET, ok
@@ -213,7 +213,7 @@ def test_shape_key_control_modes_are_typed_and_serialized(monkeypatch) -> None:
 
 
 def test_dispatch_exposes_complete_character_surface(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
     handlers = server._build_command_handlers()
     new_commands = {
@@ -243,7 +243,7 @@ def _fake_armature(monkeypatch, bones, *, name="HeroRig", obj_type="ARMATURE", p
         pose=types.SimpleNamespace(bones=dict(pose_bones or {})),
         update_from_editmode=lambda: flushes.append(name),
     )
-    addon, _bpy = _load_addon(monkeypatch, data={"objects": {name: armature}})
+    addon, _bpy = load_addon(monkeypatch, data={"objects": {name: armature}})
     return addon.BlenderMCPServer(), flushes
 
 
@@ -301,7 +301,7 @@ def test_bone_listing_is_registered_read_only_and_paginates(monkeypatch) -> None
     _run(character_rigging.list_character_bones, armature_object_name="HeroRig", bone_names=["CHAR1_head_jnt"])
     assert calls[0][1]["bone_names"] == ["CHAR1_head_jnt"]
 
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
     assert "list_character_bones" in server._build_command_handlers()
     assert server.command_spec("list_character_bones").read_only
@@ -589,7 +589,7 @@ def _posing_server(monkeypatch, pose_bones):
         convert_space=_pose_space_matrix,
         animation_data_create=lambda: types.SimpleNamespace(action=None, action_slot=None, action_suitable_slots=()),
     )
-    addon, bpy = _load_addon(monkeypatch, data={"objects": {"HeroRig": armature}, "actions": _FakeActions()})
+    addon, bpy = load_addon(monkeypatch, data={"objects": {"HeroRig": armature}, "actions": _FakeActions()})
     bpy.context.view_layer = types.SimpleNamespace(update=lambda: None)
     bpy.context.scene.frame_current = 1
     bpy.context.scene.frame_set = lambda *_args, **_kwargs: None

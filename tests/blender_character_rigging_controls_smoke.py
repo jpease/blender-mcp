@@ -11,19 +11,17 @@ Run with::
 import importlib
 import json
 import sys
-import types
 
 from collections.abc import Iterable
 from pathlib import Path
 
 import bpy
 
-addon_path = Path(__file__).resolve().parents[1] / "src" / "blender_mcp" / "bundled" / "addon"
+sys.path.append(str(Path(__file__).resolve().parent))
+from smoke_addon import load_addon
+
 package_name = "blender_mcp_character_rigging_smoke"
-addon = types.ModuleType(package_name)
-addon.__path__ = [str(addon_path)]
-addon.ADDON_ID = package_name
-sys.modules[package_name] = addon
+load_addon(package_name)
 character_handlers = importlib.import_module(f"{package_name}.handlers.character_rigging")
 CharacterRiggingHandlersMixin = character_handlers.CharacterRiggingHandlersMixin
 

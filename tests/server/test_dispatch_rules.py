@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from server.test_threading import BlenderMCPServer
+from conftest import load_addon
 
 # One row per params-dependent command: the type, params that make the call a
 # read, and params that make it a write. Wherever `{}` appears it is deliberate
@@ -50,16 +50,17 @@ _PARAMS_DECIDE = [
 
 
 @pytest.fixture(name="server")
-def _server() -> object:
+def _server(monkeypatch: pytest.MonkeyPatch) -> object:
     """
     Build a server, for the decision tables its class carries.
 
     Returns:
         object: A `BlenderMCPServer`, not started and never given a socket.
-            Untyped because the class is built by exec, not imported.
+            Untyped because the class is loaded from source, not imported.
 
     """
-    return BlenderMCPServer(port=0)
+    addon, _bpy = load_addon(monkeypatch)
+    return addon.BlenderMCPServer(port=0)
 
 
 @pytest.mark.parametrize(("cmd_type", "reading", "writing"), _PARAMS_DECIDE)

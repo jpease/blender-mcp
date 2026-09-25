@@ -15,7 +15,6 @@ Run with::
     blender --background --factory-startup --python tests/blender_action_slots_smoke.py
 """
 
-import importlib.util
 import math
 import sys
 
@@ -23,17 +22,11 @@ from pathlib import Path
 
 import bpy
 
-addon_path = Path(__file__).resolve().parents[1] / "src" / "blender_mcp" / "bundled" / "addon" / "__init__.py"
+sys.path.append(str(Path(__file__).resolve().parent))
+from smoke_addon import load_addon
+
 package_name = "blender_mcp_action_slots_smoke"
-spec = importlib.util.spec_from_file_location(
-    package_name,
-    addon_path,
-    submodule_search_locations=[str(addon_path.parent)],
-)
-assert spec is not None
-addon = importlib.util.module_from_spec(spec)
-sys.modules[package_name] = addon
-spec.loader.exec_module(addon)
+load_addon(package_name)
 
 from blender_mcp_action_slots_smoke.handlers.character_rigging import CharacterRiggingHandlersMixin
 from blender_mcp_action_slots_smoke.handlers.object_animation import ObjectAnimationHandlersMixin

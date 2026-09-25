@@ -14,9 +14,9 @@ from typing import get_type_hints
 
 import pytest
 
+from conftest import load_addon
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import TypeAdapter, ValidationError
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.connection import BlenderOperationError
 from blender_mcp.server.tools import _dispatch, _documentation, file_lifecycle
@@ -56,7 +56,7 @@ class _FailingConnection:
 
 
 def test_file_lifecycle_tools_are_registered_and_dispatched(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     assert FILE_LIFECYCLE_COMMANDS <= set(file_lifecycle.mcp._tool_manager._tools)

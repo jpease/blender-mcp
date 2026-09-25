@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 
 from ...helpers import sync_from_editmode
+from ..rna_patch import patch_rna
 from ._deform_binding import _bind_corrective_smooth, _move_modifier_immediately_after, _unbind_corrective_smooth
 from ._geometry_sampling import _evaluated_geometry_evidence
 from ._ownership import _tag_owned_component
@@ -12,7 +13,6 @@ from .inspection_and_setup import (
     _edge_lengths,
     _get_cloth,
     _modifier_info,
-    _patch_rna,
     _scene_context_for_object,
     _tag_update,
 )
@@ -137,7 +137,7 @@ class ClothRenderSurfaceHandlers:
                     modifier = obj.modifiers.new(name=modifier_name, type=modifier_type)
                     created.append(modifier)
                     ownership.append(_tag_owned_component(obj, modifier, "render_finish"))
-                changes = _patch_rna(modifier, patch, allowed)
+                changes = patch_rna(modifier, patch, allowed)
                 _move_modifier_immediately_after(obj, modifier, preceding)
                 if modifier_type == "CORRECTIVE_SMOOTH" and modifier.rest_source == "BIND":
                     scene.frame_set(rest_frame)

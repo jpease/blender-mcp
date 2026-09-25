@@ -12,7 +12,8 @@ from itertools import pairwise
 import bpy
 
 from ...helpers import paginate, sync_from_editmode
-from ..simulation_cache import point_cache_info
+from ..rna_patch import get_object, patch_rna, read_fields, restore_rna, serialize, validate_rna_value
+from ..simulation_cache import point_cache_info, set_cache_frame_range
 
 _MCP_SCHEMA_VERSION = 1
 _OWNERSHIP_PREFIX = "blendermcp_cloth"
@@ -146,85 +147,6 @@ _WEIGHT_ROLES = {
 }
 
 
-def _finite(value, label):
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)) and not math.isfinite(value):
-        raise ValueError(f"{label} must be finite")
-    if isinstance(value, (list, tuple)) and not all(isinstance(v, (int, float)) and math.isfinite(v) for v in value):
-        raise ValueError(f"{label} must contain only finite numbers")
-    return value
-
-
-def _rna_property(owner, name):
-    prop = owner.bl_rna.properties.get(name)
-    if prop is None or prop.is_readonly:
-        raise ValueError(f"Blender {bpy.app.version_string} does not expose writable {type(owner).__name__}.{name}")
-    return prop
-
-
-def _validate_rna_value(owner, name, value):
-    prop = _rna_property(owner, name)
-    _finite(value, name)
-    is_array = getattr(prop, "is_array", False)
-    if prop.type in {"FLOAT", "INT"} and not is_array and (value < prop.hard_min or value > prop.hard_max):
-        raise ValueError(f"{name}={value} is outside Blender's RNA range [{prop.hard_min}, {prop.hard_max}]")
-    if prop.type == "ENUM" and value not in {item.identifier for item in prop.enum_items}:
-        raise ValueError(f"Invalid {name}: {value}")
-    if is_array and len(value) != prop.array_length:
-        raise ValueError(f"{name} must contain {prop.array_length} values")
-    return value
-
-
-def _patch_rna(owner, patch, allowed):
-    patch = patch or {}
-    unknown = set(patch) - allowed
-    if unknown:
-        raise ValueError(f"Unsupported properties: {sorted(unknown)}")
-    validated = {name: _validate_rna_value(owner, name, value) for name, value in patch.items()}
-    old = {name: _serialize(getattr(owner, name)) for name in validated}
-    try:
-        for name, value in validated.items():
-            setattr(owner, name, value)
-    except Exception:
-        for name, value in old.items():
-            with contextlib.suppress(Exception):
-                setattr(owner, name, value)
-        raise
-    return {name: {"old": old[name], "new": _serialize(getattr(owner, name))} for name in validated}
-
-
-def _restore_rna(owner, changes):
-    for name, values in changes.items():
-        if name != "collection":
-            with contextlib.suppress(Exception):
-                setattr(owner, name, values["old"])
-
-
-def _serialize(value):
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if hasattr(value, "name"):
-        return value.name
-    try:
-        return [_serialize(item) for item in value]
-    except TypeError:
-        return str(value)
-
-
-def _read_fields(owner, fields):
-    return {name: _serialize(getattr(owner, name)) for name in sorted(fields) if hasattr(owner, name)}
-
-
-def _get_object(name, types=None):
-    obj = bpy.data.objects.get(name)
-    if obj is None:
-        raise ValueError(f"Object not found: {name}")
-    if types and obj.type not in types:
-        raise ValueError(f"Object '{name}' must be one of {sorted(types)} (type={obj.type})")
-    return obj
-
-
 def _get_modifier(obj, name, modifier_type):
     modifier = obj.modifiers.get(name)
     if modifier is None:
@@ -235,7 +157,7 @@ def _get_modifier(obj, name, modifier_type):
 
 
 def _get_cloth(object_name, modifier_name):
-    obj = _get_object(object_name, {"MESH"})
+    obj = get_object(object_name, {"MESH"})
     return obj, _get_modifier(obj, modifier_name, "CLOTH")
 
 
@@ -463,7 +385,7 @@ def _field_relationships(settings, scene):
         if prop.identifier not in {"rna_type", "collection"} and prop.type in {"FLOAT", "INT", "BOOLEAN"}
     }
     return {
-        "weights": _read_fields(weights, scalar_fields),
+        "weights": read_fields(weights, scalar_fields),
         "collection": collection.name if collection else None,
         "effectors": effectors[:100],
         "truncated": len(effectors) > 100,
@@ -476,13 +398,13 @@ def _cloth_info(obj, modifier, scene):
     solver_result = modifier.solver_result
     serialized_solver_result = None
     if solver_result is not None:
-        serialized_solver_result = _read_fields(
+        serialized_solver_result = read_fields(
             solver_result,
             {prop.identifier for prop in solver_result.bl_rna.properties if prop.identifier != "rna_type"},
         )
     return {
         **_modifier_info(obj, modifier),
-        "settings": _read_fields(
+        "settings": read_fields(
             settings,
             _MATERIAL_FIELDS
             | _SOLVER_FIELDS
@@ -517,7 +439,7 @@ def _cloth_info(obj, modifier, scene):
             },
         ),
         "collision_settings": {
-            **_read_fields(collisions, _CLOTH_COLLISION_FIELDS),
+            **read_fields(collisions, _CLOTH_COLLISION_FIELDS),
             "collection": collisions.collection.name if collisions.collection else None,
         },
         "field_relationships": _field_relationships(settings, scene),
@@ -539,7 +461,7 @@ def _collider_info(obj, modifier):
     }
     return {
         **_modifier_info(obj, modifier),
-        "settings": _read_fields(settings, all_fields),
+        "settings": read_fields(settings, all_fields),
         "non_cloth_field_applicability": {
             "thickness_inner": "soft_body_only",
             "damping_factor": "particle_only",
@@ -680,7 +602,7 @@ class ClothInspectionAndSetupHandlers:
                                     "missing": not exists,
                                 }
                             )
-                rest_shape_key = _serialize(getattr(settings, "rest_shape_key", ""))
+                rest_shape_key = serialize(getattr(settings, "rest_shape_key", ""))
                 if rest_shape_key:
                     shape_keys = getattr(getattr(obj.data, "shape_keys", None), "key_blocks", None)
                     dependencies.append(
@@ -734,7 +656,7 @@ class ClothInspectionAndSetupHandlers:
         }
 
     def get_cloth_object_info(self, object_name, vertex_group_limit=50, vertex_group_offset=0):
-        obj = _get_object(object_name)
+        obj = get_object(object_name)
         if obj.type == "MESH":
             sync_from_editmode(obj)
         relevant = [modifier for modifier in obj.modifiers if modifier.type in {"CLOTH", "COLLISION"}]
@@ -790,10 +712,9 @@ class ClothInspectionAndSetupHandlers:
         solver=None,
         collisions=None,
     ):
-        from ._cache_helpers import _set_cache_frame_range
         from ._ownership import _tag_owned_component
 
-        obj = _get_object(object_name, {"MESH"})
+        obj = get_object(object_name, {"MESH"})
         sync_from_editmode(obj)
         if not obj.data.vertices or not obj.data.edges:
             raise ValueError(f"Mesh '{object_name}' must have nonempty vertices and edges")
@@ -845,15 +766,15 @@ class ClothInspectionAndSetupHandlers:
                     raise ValueError(f"modifier_index must be in [0, {len(obj.modifiers) - 1}]")
                 obj.modifiers.move(list(obj.modifiers).index(modifier), modifier_index)
             material_changes = self._configure_material(obj, modifier, material, preset)
-            solver_changes = _patch_rna(modifier.settings, solver or {}, _SOLVER_FIELDS)
+            solver_changes = patch_rna(modifier.settings, solver or {}, _SOLVER_FIELDS)
             collision_patch = dict(collisions or {})
             if collision_collection_name:
                 collision_patch["collection_name"] = collision_collection_name
             collision_changes = self._configure_collisions(obj, modifier, collision_patch)
             cache = modifier.point_cache
             for name, value in (("frame_start", cache_frame_start), ("frame_end", cache_frame_end)):
-                _validate_rna_value(cache, name, value)
-            _set_cache_frame_range(cache, cache_frame_start, cache_frame_end)
+                validate_rna_value(cache, name, value)
+            set_cache_frame_range(cache, cache_frame_start, cache_frame_end)
             if collection is not None:
                 modifier.collision_settings.collection = collection
             if created:
@@ -867,11 +788,11 @@ class ClothInspectionAndSetupHandlers:
                 with contextlib.suppress(Exception):
                     obj.modifiers.remove(modifier)
             elif not created:
-                _restore_rna(modifier.settings, material_changes)
-                _restore_rna(modifier.settings, solver_changes)
-                _restore_rna(modifier.collision_settings, collision_changes)
+                restore_rna(modifier.settings, material_changes)
+                restore_rna(modifier.settings, solver_changes)
+                restore_rna(modifier.collision_settings, collision_changes)
                 modifier.collision_settings.collection = old_collision_collection
-                modifier.point_cache.frame_start, modifier.point_cache.frame_end = old_cache_range
+                set_cache_frame_range(modifier.point_cache, *old_cache_range)
                 with contextlib.suppress(Exception):
                     obj.modifiers.move(list(obj.modifiers).index(modifier), original_index)
             raise

@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from test_mutation_transaction import _load_addon
+from conftest import load_addon
 
 
 def _server(monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -34,7 +34,7 @@ def _server(monkeypatch: pytest.MonkeyPatch) -> Any:
     # `bpy.data.objects` is a name-keyed collection, and the handler reaches it
     # only through `.get`.
     objects = types.SimpleNamespace(get={"LowPoly": low_poly}.get)
-    addon, _bpy = _load_addon(monkeypatch, data={"objects": objects})
+    addon, _bpy = load_addon(monkeypatch, data={"objects": objects})
     server_core = sys.modules[f"{addon.__name__}.server_core"]
     return server_core.BlenderMCPServer()
 

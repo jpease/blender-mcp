@@ -8,7 +8,8 @@ import math
 import bpy
 
 from ...helpers import sync_from_editmode
-from ._cache_helpers import _set_cache_frame_range
+from ..rna_patch import finite, get_object, patch_rna, restore_rna, validate_rna_value
+from ..simulation_cache import set_cache_frame_range
 from ._deform_binding import (
     _move_modifier_immediately_after,
     _move_modifier_immediately_before,
@@ -23,14 +24,9 @@ from .inspection_and_setup import (
     _animation_info,
     _cache_info,
     _collection_in_scene,
-    _finite,
-    _get_object,
     _modifier_info,
-    _patch_rna,
-    _restore_rna,
     _scene_context_for_object,
     _tag_update,
-    _validate_rna_value,
     _vertex_group_stats,
 )
 
@@ -63,16 +59,16 @@ class ClothCharacterSetupHandlers:
         cache_frame_start=1,
         cache_frame_end=250,
     ):
-        garment = _get_object(garment_object_name, {"MESH"})
+        garment = get_object(garment_object_name, {"MESH"})
         sync_from_editmode(garment)
-        armature = _get_object(armature_object_name, {"ARMATURE"})
+        armature = get_object(armature_object_name, {"ARMATURE"})
         if not body_collider_object_names:
             raise ValueError("At least one explicit body collider is required")
         if len(body_collider_object_names) > 64 or len(set(body_collider_object_names)) != len(
             body_collider_object_names
         ):
             raise ValueError("body_collider_object_names must contain 1-64 unique names")
-        colliders = [_get_object(name, {"MESH", "CURVE"}) for name in body_collider_object_names]
+        colliders = [get_object(name, {"MESH", "CURVE"}) for name in body_collider_object_names]
         if garment in colliders or armature in colliders:
             raise ValueError("Garment, armature, and collider objects must be distinct")
         if existing_policy not in {"ERROR", "REUSE"}:
@@ -83,7 +79,7 @@ class ClothCharacterSetupHandlers:
             raise ValueError("rest_frame must be inside the explicit cache frame range")
         if not 0 <= subdivision_levels <= 6:
             raise ValueError("subdivision_levels must be in [0, 6]")
-        _finite(solidify_thickness, "solidify_thickness")
+        finite(solidify_thickness, "solidify_thickness")
         if solidify_thickness <= 0:
             raise ValueError("solidify_thickness must be positive")
         pin_group = garment.vertex_groups.get(pin_group_name)
@@ -185,14 +181,14 @@ class ClothCharacterSetupHandlers:
             _move_modifier_immediately_before(garment, armature_modifier, cloth_modifier)
             cloth_modifier.settings.vertex_group_mass = pin_group_name
             cloth_changes["material"] = self._configure_material(garment, cloth_modifier, material, None)
-            cloth_changes["solver"] = _patch_rna(cloth_modifier.settings, solver or {}, _SOLVER_FIELDS)
+            cloth_changes["solver"] = patch_rna(cloth_modifier.settings, solver or {}, _SOLVER_FIELDS)
             cloth_changes["collisions"] = self._configure_collisions(garment, cloth_modifier, collision_patch)
             for field, value in (
                 ("frame_start", cache_frame_start),
                 ("frame_end", cache_frame_end),
             ):
-                _validate_rna_value(cloth_modifier.point_cache, field, value)
-            _set_cache_frame_range(cloth_modifier.point_cache, cache_frame_start, cache_frame_end)
+                validate_rna_value(cloth_modifier.point_cache, field, value)
+            set_cache_frame_range(cloth_modifier.point_cache, cache_frame_start, cache_frame_end)
 
             collider_records = []
             for collider in colliders:
@@ -204,7 +200,7 @@ class ClothCharacterSetupHandlers:
                     existing_modifier_snapshots.append(
                         (collider, collision_modifier, list(collider.modifiers).index(collision_modifier), None)
                     )
-                changes = _patch_rna(collider.collision, collider_patch, _COLLIDER_FIELDS)
+                changes = patch_rna(collider.collision, collider_patch, _COLLIDER_FIELDS)
                 collider_changes.append((collider, changes))
                 membership = None
                 if collider.name not in collection.objects:
@@ -290,14 +286,14 @@ class ClothCharacterSetupHandlers:
                 with contextlib.suppress(Exception):
                     linked_collection.objects.unlink(linked_object)
             for collider, changes in reversed(collider_changes):
-                _restore_rna(collider.collision, changes)
+                restore_rna(collider.collision, changes)
             if "cloth_modifier" in locals() and not cloth_created:
-                _restore_rna(cloth_modifier.settings, cloth_changes["material"])
-                _restore_rna(cloth_modifier.settings, cloth_changes["solver"])
-                _restore_rna(cloth_modifier.collision_settings, cloth_changes["collisions"])
+                restore_rna(cloth_modifier.settings, cloth_changes["material"])
+                restore_rna(cloth_modifier.settings, cloth_changes["solver"])
+                restore_rna(cloth_modifier.collision_settings, cloth_changes["collisions"])
                 cloth_modifier.settings.vertex_group_mass = old_pin_group
                 cloth_modifier.collision_settings.collection = old_collision_collection
-                _set_cache_frame_range(cloth_modifier.point_cache, *old_cache_range)
+                set_cache_frame_range(cloth_modifier.point_cache, *old_cache_range)
             for obj, modifier, original_index, snapshot in reversed(existing_modifier_snapshots):
                 if snapshot:
                     if modifier.type in {"HOOK", "ARMATURE", "MESH_DEFORM", "SURFACE_DEFORM"}:

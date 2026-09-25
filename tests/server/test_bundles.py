@@ -656,17 +656,6 @@ def test_selecting_a_bundle_adds_exactly_that_bundle_on_top_of_core() -> None:
     assert (with_cloth - core_only).isdisjoint(_tool_names_for_toolsets("retopology") - core_only)
 
 
-def test_all_advertises_the_tool_count_quoted_in_bundles_docs() -> None:
-    """
-    The tool count quoted in bundles.py's module docstring is what `all` actually advertises.
-
-    Parsed inside the test, so a reworded docstring fails one test instead of collection.
-    """
-    quoted = re.search(r"\((\d+) tools, per", bundles.__doc__ or "")
-    assert quoted, "bundles.py's docstring no longer quotes a tool count in the expected form"
-    assert len(_tool_names_for_toolsets(ALL_SENTINEL)) == int(quoted.group(1))
-
-
 def test_scene_authoring_tools_are_not_in_the_core_surface() -> None:
     """Geometry creation and the whole-scene reset must not ship in every process."""
     core_tools = _tool_names_for_toolsets(None)

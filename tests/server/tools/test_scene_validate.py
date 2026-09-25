@@ -7,9 +7,9 @@ from typing import get_type_hints
 
 import pytest
 
-from conftest import StubFactory
+from conftest import StubFactory, load_addon
+from datablock_doubles import FakeCollection
 from pydantic import TypeAdapter, ValidationError
-from test_mutation_transaction import FakeCollection, _load_addon
 
 from blender_mcp.server.tools import scene
 
@@ -53,7 +53,7 @@ def _fake_scene(
 
 
 def test_validate_scene_is_registered_and_read_only(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     assert "validate_scene" in scene.mcp._tool_manager._tools
@@ -109,7 +109,7 @@ def test_validate_scene_offset_schema_rejects_out_of_range() -> None:
 
 
 def _server_with_scene(monkeypatch, fake_scene):
-    addon, bpy = _load_addon(monkeypatch, data={"scenes": FakeCollection()})
+    addon, bpy = load_addon(monkeypatch, data={"scenes": FakeCollection()})
     bpy.data.scenes[fake_scene.name] = fake_scene
     server = addon.BlenderMCPServer()
     for method in (
@@ -410,7 +410,7 @@ def test_validate_scene_bounds_one_findings_evidence_without_starving_the_others
 
 
 def test_scene_level_findings_flags_invalid_frame_range(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     valid_camera = types.SimpleNamespace(name="Camera", type="CAMERA")
     findings = addon.handlers.scene._scene_level_findings(
         _fake_scene(frame_start=10, frame_end=1, camera=valid_camera, objects=[_fake_object("Light1", type="LIGHT")]),
@@ -422,7 +422,7 @@ def test_scene_level_findings_flags_invalid_frame_range(monkeypatch) -> None:
 
 
 def test_scene_level_findings_flags_invalid_scene_camera_type(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     not_a_camera = types.SimpleNamespace(name="NotACamera", type="MESH")
     findings = addon.handlers.scene._scene_level_findings(
         _fake_scene(camera=not_a_camera, objects=[_fake_object("Light1", type="LIGHT")]),
@@ -434,7 +434,7 @@ def test_scene_level_findings_flags_invalid_scene_camera_type(monkeypatch) -> No
 
 
 def test_scene_level_findings_flags_dirty_cloth_and_rigidbody_caches(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     dirty_modifier = types.SimpleNamespace(
         type="CLOTH", name="Cloth", point_cache=types.SimpleNamespace(is_outdated=True)
     )
@@ -452,7 +452,7 @@ def test_scene_level_findings_flags_dirty_cloth_and_rigidbody_caches(monkeypatch
 
 
 def test_normalized_domain_finding_prefers_message_and_falls_back_to_evidence_string(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     normalize = addon.handlers.scene._normalized_domain_finding
 
     with_message = normalize(
@@ -486,7 +486,7 @@ def _fake_id(name, *, users=1, use_fake_user=False, library=None):
 
 
 def test_persistence_findings_flag_unreferenced_and_fake_user_only_datablocks(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch, data={"materials": FakeCollection(), "actions": FakeCollection()})
+    addon, bpy = load_addon(monkeypatch, data={"materials": FakeCollection(), "actions": FakeCollection()})
     bpy.data.materials["Orphan"] = _fake_id("Orphan", users=0)
     bpy.data.materials["Used"] = _fake_id("Used", users=2)
     bpy.data.actions["Parked"] = _fake_id("Parked", users=1, use_fake_user=True)
@@ -505,14 +505,14 @@ def test_persistence_findings_flag_unreferenced_and_fake_user_only_datablocks(mo
 
 
 def test_persistence_findings_ignore_linked_datablocks(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch, data={"meshes": FakeCollection()})
+    addon, bpy = load_addon(monkeypatch, data={"meshes": FakeCollection()})
     bpy.data.meshes["CanonMesh"] = _fake_id("CanonMesh", users=0, library=object())
 
     assert addon.handlers.scene._persistence_findings(300) == ([], False)
 
 
 def test_persistence_findings_report_truncation_past_max_findings(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch, data={"materials": FakeCollection()})
+    addon, bpy = load_addon(monkeypatch, data={"materials": FakeCollection()})
     for index in range(3):
         bpy.data.materials[f"Orphan{index}"] = _fake_id(f"Orphan{index}", users=0)
 
@@ -523,7 +523,7 @@ def test_persistence_findings_report_truncation_past_max_findings(monkeypatch) -
 
 
 def test_validate_scene_runs_the_persistence_domain_on_request(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch, data={"scenes": FakeCollection(), "materials": FakeCollection()})
+    addon, bpy = load_addon(monkeypatch, data={"scenes": FakeCollection(), "materials": FakeCollection()})
     bpy.data.scenes["Scene"] = _fake_scene()
     bpy.data.materials["Orphan"] = _fake_id("Orphan", users=0)
     server = addon.BlenderMCPServer()
@@ -571,7 +571,7 @@ def _lighting_shared(addon):
 
 
 def test_engine_probe_reports_engines_registered_only_as_render_engine_subclasses(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch, data={})
+    addon, bpy = load_addon(monkeypatch, data={})
     keep: list[type] = []
     # A base class with no bl_idname sits between RenderEngine and the real engine, exactly as
     # HydraRenderEngine does; it must be walked through and never reported as an engine.
@@ -586,7 +586,7 @@ def test_engine_probe_reports_engines_registered_only_as_render_engine_subclasse
 
 
 def test_engine_probe_keeps_the_rna_label_when_both_sources_report_one_identifier(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch, data={})
+    addon, bpy = load_addon(monkeypatch, data={})
     keep: list[type] = []
     _install_engine_sources(
         bpy,
@@ -599,7 +599,7 @@ def test_engine_probe_keeps_the_rna_label_when_both_sources_report_one_identifie
 
 
 def test_engine_probe_always_includes_the_engine_a_scene_is_already_assigned(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch, data={})
+    addon, bpy = load_addon(monkeypatch, data={})
     keep: list[type] = []
     _install_engine_sources(bpy, enum_items=[("BLENDER_EEVEE", "EEVEE")], registered=[], keep=keep)
     scene = types.SimpleNamespace(name="Scene", render=types.SimpleNamespace(engine="SOME_ADDON_ENGINE"))
@@ -610,7 +610,7 @@ def test_engine_probe_always_includes_the_engine_a_scene_is_already_assigned(mon
 
 
 def test_resolve_engine_finds_cycles_registered_only_as_a_subclass(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch, data={})
+    addon, bpy = load_addon(monkeypatch, data={})
     keep: list[type] = []
     _install_engine_sources(bpy, enum_items=[("BLENDER_EEVEE", "EEVEE")], registered=[("CYCLES", "Cycles")], keep=keep)
 
@@ -618,7 +618,7 @@ def test_resolve_engine_finds_cycles_registered_only_as_a_subclass(monkeypatch) 
 
 
 def test_resolve_engine_still_refuses_cycles_when_nothing_registers_it(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch, data={})
+    addon, bpy = load_addon(monkeypatch, data={})
     keep: list[type] = []
     _install_engine_sources(bpy, enum_items=[("BLENDER_EEVEE", "EEVEE")], registered=[], keep=keep)
 
@@ -627,7 +627,7 @@ def test_resolve_engine_still_refuses_cycles_when_nothing_registers_it(monkeypat
 
 
 def test_resolve_engine_resolves_exactly_one_eevee_despite_a_rival_addon_engine(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch, data={})
+    addon, bpy = load_addon(monkeypatch, data={})
     keep: list[type] = []
     _install_engine_sources(
         bpy,
@@ -640,7 +640,7 @@ def test_resolve_engine_resolves_exactly_one_eevee_despite_a_rival_addon_engine(
 
 
 def test_resolve_engine_refuses_an_ambiguous_eevee_in_the_rna_enum(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch, data={})
+    addon, bpy = load_addon(monkeypatch, data={})
     keep: list[type] = []
     _install_engine_sources(
         bpy,
@@ -686,16 +686,16 @@ def _mesh_with_zero_area_uvs(monkeypatch, addon, *, library):
 
 
 def test_zero_area_uvs_on_a_local_mesh_stays_an_error(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
 
     finding = _mesh_with_zero_area_uvs(monkeypatch, addon, library=None)
 
     assert finding["severity"] == "ERROR"
-    assert finding["remediation"] == "Unwrap the listed faces before texturing or baking."
+    assert finding["evidence"] == [3, 4]
 
 
 def test_zero_area_uvs_on_a_linked_mesh_warns_and_names_the_library(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     library = types.SimpleNamespace(name="props.blend", filepath="//libs/props.blend")
 
     finding = _mesh_with_zero_area_uvs(monkeypatch, addon, library=library)

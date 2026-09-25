@@ -1,66 +1,10 @@
 """Regression coverage for Sketchfab availability reporting."""
 
-import sys
 import types
 
 from typing import Never
 
-from conftest import load_addon_package
-
-
-def _load_addon(monkeypatch, scene):
-    bpy = types.ModuleType("bpy")
-    bpy.context = types.SimpleNamespace(scene=scene)
-    bpy.types = types.SimpleNamespace(
-        AddonPreferences=object,
-        Operator=object,
-        Panel=object,
-        Scene=type("Scene", (), {}),
-    )
-
-    props = types.ModuleType("bpy.props")
-    for name in (
-        "BoolProperty",
-        "EnumProperty",
-        "FloatProperty",
-        "IntProperty",
-        "StringProperty",
-    ):
-        setattr(props, name, lambda **_kwargs: None)
-    bpy.props = props
-
-    handlers = types.ModuleType("bpy.app.handlers")
-    handlers.persistent = lambda fn: fn
-    handlers.undo_post = []
-    handlers.redo_post = []
-    handlers.depsgraph_update_post = []
-
-    app = types.ModuleType("bpy.app")
-    app.version = (4, 2, 0)
-    app.version_string = "4.2.0"
-    app.background = False
-    app.handlers = handlers
-    app.timers = types.SimpleNamespace(
-        is_registered=lambda *_a, **_k: False,
-        register=lambda *_a, **_k: None,
-        unregister=lambda *_a, **_k: None,
-    )
-    bpy.app = app
-
-    monkeypatch.setitem(sys.modules, "bpy", bpy)
-    monkeypatch.setitem(sys.modules, "bpy.props", props)
-    monkeypatch.setitem(sys.modules, "bpy.app", app)
-    monkeypatch.setitem(sys.modules, "bpy.app.handlers", handlers)
-    monkeypatch.setitem(sys.modules, "mathutils", types.ModuleType("mathutils"))
-    monkeypatch.setitem(sys.modules, "bmesh", types.ModuleType("bmesh"))
-
-    requests = types.ModuleType("requests")
-    requests.utils = types.SimpleNamespace(default_headers=dict)
-    requests.exceptions = types.SimpleNamespace(Timeout=TimeoutError)
-    monkeypatch.setitem(sys.modules, "requests", requests)
-
-    addon = load_addon_package(monkeypatch, "blender_mcp_addon_sketchfab_test")
-    return addon
+from conftest import load_addon
 
 
 def _scene(sketchfab_enabled):
@@ -72,7 +16,7 @@ def _scene(sketchfab_enabled):
 
 
 def test_disabled_sketchfab_does_not_report_a_saved_key_as_ready(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(sketchfab_enabled=False))
+    addon, _bpy = load_addon(monkeypatch, scene=_scene(sketchfab_enabled=False))
     server = addon.BlenderMCPServer()
     monkeypatch.setattr(server, "get_sketchfab_api_key", lambda: "saved-key")
 
@@ -98,7 +42,7 @@ def test_disabled_sketchfab_does_not_report_a_saved_key_as_ready(monkeypatch) ->
 
 
 def test_enabled_sketchfab_reports_a_valid_key_as_ready(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(sketchfab_enabled=True))
+    addon, _bpy = load_addon(monkeypatch, scene=_scene(sketchfab_enabled=True))
     server = addon.BlenderMCPServer()
     monkeypatch.setattr(server, "get_sketchfab_api_key", lambda: "saved-key")
 

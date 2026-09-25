@@ -62,7 +62,7 @@ ROWS: list[Revert] = [
         "",
         (f"{RIGT}::test_teardown_tolerates_a_reader_that_never_started",),
     ),
-    # --- the container's teardown, its readiness probe, and the bind note ---
+    # --- the container's teardown and its readiness probe ---
     Revert(
         "entrypoint: teardown has no SIGKILL escalation, so a wedged child blocks it for ever",
         ENTRYPOINT,
@@ -83,12 +83,5 @@ ROWS: list[Revert] = [
         "    blender_readiness_probe &",
         "    blender_readiness_probe",
         (f"{DOCKT}::test_a_stop_signal_during_the_readiness_wait_is_handled_at_once",),
-    ),
-    Revert(
-        "entrypoint: the note explaining why a 0.0.0.0 bind is contained is deleted",
-        ENTRYPOINT,
-        "# different file. docker-compose.yml maps `127.0.0.1:8000:8000`; run this image",
-        "# different file, and this note used to name the mapping it depends on.",
-        (f"{DOCKT}::test_binding_all_interfaces_records_the_publish_that_makes_it_safe",),
     ),
 ]

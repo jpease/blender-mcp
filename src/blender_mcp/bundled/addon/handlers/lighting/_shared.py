@@ -7,7 +7,7 @@ import os
 import bpy
 import mathutils
 
-from ...helpers import paginate, rotation_as_native_list
+from ...helpers import bounded_int, paginate, rotation_as_native_list
 
 COMMON_LIGHT_FIELDS = {
     "energy",
@@ -62,11 +62,9 @@ def required_name(value, label):
 
 def bounded_page(total, offset, limit):
     """Validate and calculate a standard lighting page."""
-    if isinstance(offset, bool) or int(offset) != offset or not 0 <= int(offset) <= 9_999:
-        raise ValueError("offset must be an integer in [0, 9999]")
-    if isinstance(limit, bool) or int(limit) != limit or not 1 <= int(limit) <= 200:
-        raise ValueError("limit must be an integer in [1, 200]")
-    return paginate(total, int(offset), int(limit), 200)
+    offset = bounded_int("offset", offset, 0, 9_999)
+    limit = bounded_int("limit", limit, 1, 200)
+    return paginate(total, offset, limit, 200)
 
 
 def scene_by_name(name):

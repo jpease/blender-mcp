@@ -9,7 +9,7 @@ import uuid
 import bpy
 
 from ...helpers import preserve_mode_and_selection, set_active
-from ..simulation_cache import point_cache_identity, set_cache_frame_range
+from ..simulation_cache import point_cache_identity
 from .inspection_and_setup import _cache_info, _collection_in_scene, _object_scenes, _scene_context_for_object
 
 
@@ -25,11 +25,6 @@ def _external_cache_path_status(cache):
         "resolved": resolved,
         "valid_directory": bool(resolved and os.path.isdir(resolved)),
     }
-
-
-def _set_cache_frame_range(cache, frame_start, frame_end):
-    """Set an already-validated cache range without transiently inverting it."""
-    set_cache_frame_range(cache, frame_start, frame_end)
 
 
 def _external_directory_evidence(filepath):

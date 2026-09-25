@@ -2,7 +2,7 @@
 Regression coverage for get_viewport_screenshot's optional ad hoc view and shading override.
 
 ViewSpec's own validation is pure Pydantic - no bpy needed. The addon-side dispatch tests
-below load the real bundled addon package (test_mutation_transaction's _load_addon) so
+below load the real bundled addon package (conftest's load_addon) so
 handlers.viewport's relative imports (camera._shared, helpers) resolve, but replace
 _look_quaternion with a recording stub: its own geometry is already proven against real
 Blender (see the task brief) and mathutils has no real runtime implementation in this test
@@ -17,8 +17,8 @@ import types
 
 import pytest
 
+from conftest import load_addon
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools.viewport import ViewSpec
 
@@ -139,7 +139,7 @@ def _viewport_module(monkeypatch: pytest.MonkeyPatch, *, objects=None, cameras=N
         if cameras is not None
         else _RecordingCollection(lambda name: types.SimpleNamespace(name=name, lens=None))
     )
-    addon, bpy = _load_addon(monkeypatch, data={"objects": objects, "cameras": cameras})
+    addon, bpy = load_addon(monkeypatch, data={"objects": objects, "cameras": cameras})
     bpy.context.view_layer = types.SimpleNamespace(update=lambda: None)
     bpy.context.evaluated_depsgraph_get = lambda: "DEPSGRAPH"
     bpy.context.scene.render = types.SimpleNamespace(resolution_x=640, resolution_y=480)
@@ -284,7 +284,7 @@ class _RecordingImages(_RecordingCollection):
 
 def _images_module(monkeypatch: pytest.MonkeyPatch, *, failing: bool):
     images = _RecordingImages(lambda name, *_args, **_kwargs: _FakeImage(name, failing=failing))
-    addon, bpy = _load_addon(monkeypatch, data={"images": images})
+    addon, bpy = load_addon(monkeypatch, data={"images": images})
     bpy.context.view_layer = types.SimpleNamespace(update=lambda: None)
     return sys.modules[f"{addon.__name__}.handlers.viewport"], bpy, images
 

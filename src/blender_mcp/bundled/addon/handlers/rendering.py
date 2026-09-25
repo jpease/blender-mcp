@@ -11,7 +11,7 @@ from contextlib import contextmanager, suppress
 import bpy
 
 from ..file_paths import create_save_directory, enforce_roots
-from ..helpers import color_management_snapshot
+from ..helpers import color_management_snapshot, page_records
 from ..image_reply import finalize_image_reply, image_destination
 from ..output_roots import configured_file_roots
 from ..render_devices import effective_cycles_device
@@ -41,6 +41,8 @@ _VIEW_LAYER_PROPERTIES = {
 }
 
 _MAX_ANIMATION_FRAMES = 10_000
+# The largest page one compositor graph list (nodes, links, dependencies) carries.
+_MAX_GRAPH_PAGE = 1000
 # Extensions Blender writes for the image formats this tool's patch model can select, measured on
 # 5.2 (PNG .png, JPEG .jpg, OPEN_EXR .exr, TIFF .tif, WEBP .webp) plus the alternate spellings a
 # caller types by hand. Deliberately not texture/_shared's SUPPORTED_IMAGE_EXTENSIONS: that set
@@ -259,22 +261,6 @@ def _eevee_info(eevee):
     return info
 
 
-def _page(records, offset, limit):
-    total = len(records)
-    start = min(max(0, int(offset)), total)
-    size = max(1, min(int(limit), 1000))
-    end = min(start + size, total)
-    return {
-        "total": total,
-        "offset": start,
-        "limit": size,
-        "returned_count": end - start,
-        "truncated": end < total,
-        "next_offset": end if end < total else None,
-        "records": records[start:end],
-    }
-
-
 def _compositor_info(scene, graph_sections, offset, limit):
     tree = getattr(scene, "compositing_node_group", None) or getattr(scene, "node_tree", None)
     sections = set(graph_sections or ("NODES", "LINKS", "DEPENDENCIES"))
@@ -298,7 +284,7 @@ def _compositor_info(scene, graph_sections, offset, limit):
             }
             for node in tree.nodes
         ]
-        result["nodes"] = _page(nodes, offset, limit)
+        result["nodes"] = page_records(nodes, offset, limit, _MAX_GRAPH_PAGE)
     if "LINKS" in sections:
         links = [
             {
@@ -309,7 +295,7 @@ def _compositor_info(scene, graph_sections, offset, limit):
             }
             for link in tree.links
         ]
-        result["links"] = _page(links, offset, limit)
+        result["links"] = page_records(links, offset, limit, _MAX_GRAPH_PAGE)
     if "DEPENDENCIES" in sections:
         dependencies = []
         for node in tree.nodes:
@@ -333,7 +319,7 @@ def _compositor_info(scene, graph_sections, offset, limit):
                         "slots": [slot.path for slot in node.file_slots],
                     }
                 )
-        result["dependencies"] = _page(dependencies, offset, limit)
+        result["dependencies"] = page_records(dependencies, offset, limit, _MAX_GRAPH_PAGE)
     return result
 
 

@@ -5,7 +5,7 @@ import types
 
 import pytest
 
-from conftest import load_addon_package
+from conftest import load_addon
 
 
 class FakeVector:
@@ -131,7 +131,7 @@ class FakeObjectsCollection(dict):
         return obj
 
 
-def _load_addon(monkeypatch):
+def _load_inspection_addon(monkeypatch):
     objects = FakeObjectsCollection()
     materials = []
 
@@ -143,66 +143,13 @@ def _load_addon(monkeypatch):
         unit_settings=types.SimpleNamespace(system="NONE", scale_length=1.0, length_unit="METERS"),
     )
 
-    bpy = types.ModuleType("bpy")
-    bpy.data = types.SimpleNamespace(objects=objects, materials=materials)
-    bpy.context = types.SimpleNamespace(scene=scene, selected_objects=[], mode="OBJECT", view_layer=None)
-    bpy.types = types.SimpleNamespace(
-        AddonPreferences=object,
-        Operator=object,
-        Panel=object,
-        Scene=type("Scene", (), {}),
-    )
-    bpy.ops = types.SimpleNamespace(
-        mesh=types.SimpleNamespace(),
-        object=types.SimpleNamespace(),
-        curve=types.SimpleNamespace(),
-    )
-
-    props = types.ModuleType("bpy.props")
-    for name in (
-        "BoolProperty",
-        "EnumProperty",
-        "FloatProperty",
-        "IntProperty",
-        "StringProperty",
-    ):
-        setattr(props, name, lambda **_kwargs: None)
-    bpy.props = props
-
-    handlers = types.ModuleType("bpy.app.handlers")
-    handlers.persistent = lambda fn: fn
-    handlers.undo_post = []
-    handlers.redo_post = []
-    handlers.depsgraph_update_post = []
-
-    app = types.ModuleType("bpy.app")
-    app.version = (4, 2, 0)
-    app.version_string = "4.2.0"
-    app.background = False
-    app.handlers = handlers
-    app.timers = types.SimpleNamespace(
-        is_registered=lambda *_a, **_k: False,
-        register=lambda *_a, **_k: None,
-        unregister=lambda *_a, **_k: None,
-    )
-    bpy.app = app
-
-    bmesh = types.ModuleType("bmesh")
-    mathutils = types.ModuleType("mathutils")
-
-    monkeypatch.setitem(sys.modules, "bpy", bpy)
-    monkeypatch.setitem(sys.modules, "bpy.props", props)
-    monkeypatch.setitem(sys.modules, "bpy.app", app)
-    monkeypatch.setitem(sys.modules, "bpy.app.handlers", handlers)
-    monkeypatch.setitem(sys.modules, "mathutils", mathutils)
-    monkeypatch.setitem(sys.modules, "bmesh", bmesh)
-
-    requests = types.ModuleType("requests")
-    requests.utils = types.SimpleNamespace(default_headers=dict)
-    requests.exceptions = types.SimpleNamespace(Timeout=TimeoutError)
-    monkeypatch.setitem(sys.modules, "requests", requests)
-
-    addon = load_addon_package(monkeypatch, "blender_mcp_addon_inspection_test")
+    addon, bpy = load_addon(monkeypatch, scene=scene, data={"objects": objects, "materials": materials})
+    bpy.context.selected_objects = []
+    bpy.context.mode = "OBJECT"
+    bpy.context.view_layer = None
+    bpy.ops.mesh = types.SimpleNamespace()
+    bpy.ops.object = types.SimpleNamespace()
+    bpy.ops.curve = types.SimpleNamespace()
     return addon, bpy, objects, scene
 
 
@@ -217,7 +164,7 @@ def _new_empty_object(bpy, name):
 
 # region list_scene_objects pagination
 def test_list_scene_objects_default_returns_everything_under_the_default_limit(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     for i in range(5):
         _new_mesh_object(bpy, f"obj{i}")
@@ -232,7 +179,7 @@ def test_list_scene_objects_default_returns_everything_under_the_default_limit(m
 
 
 def test_list_scene_objects_paginates_and_reports_truncation(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     for i in range(7):
         _new_mesh_object(bpy, f"obj{i}")
@@ -258,7 +205,7 @@ def test_list_scene_objects_paginates_and_reports_truncation(monkeypatch) -> Non
 
 
 def test_list_scene_objects_offset_past_end_returns_empty_page(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "only_obj")
 
@@ -271,7 +218,7 @@ def test_list_scene_objects_offset_past_end_returns_empty_page(monkeypatch) -> N
 
 def test_list_scene_objects_search_pages_over_the_matches_only(monkeypatch) -> None:
     """A name filter narrows what is paged, so offsets count matches, not the whole scene."""
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     for name in ("CHAR1_Body_geo", "Wall_geo", "char1_rig", "Door_grp", "CHAR1_Eye_geo"):
         _new_mesh_object(bpy, name)
@@ -292,7 +239,7 @@ def test_list_scene_objects_search_pages_over_the_matches_only(monkeypatch) -> N
 
 # region get_mesh_data
 def test_get_mesh_data_rejects_missing_object(monkeypatch) -> None:
-    addon, _bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, _bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
 
     with pytest.raises(ValueError, match="Object not found"):
@@ -300,7 +247,7 @@ def test_get_mesh_data_rejects_missing_object(monkeypatch) -> None:
 
 
 def test_get_mesh_data_rejects_non_mesh_object(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_empty_object(bpy, "empty_obj")
 
@@ -309,7 +256,7 @@ def test_get_mesh_data_rejects_non_mesh_object(monkeypatch) -> None:
 
 
 def test_get_mesh_data_rejects_invalid_element_type(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "obj")
 
@@ -318,7 +265,7 @@ def test_get_mesh_data_rejects_invalid_element_type(monkeypatch) -> None:
 
 
 def test_get_mesh_data_vertices_default_page(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "obj", n_verts=8)
 
@@ -337,7 +284,7 @@ def test_get_mesh_data_vertices_default_page(monkeypatch) -> None:
 
 
 def test_get_mesh_data_paginates_and_reports_truncation(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "obj", n_verts=10)
 
@@ -358,7 +305,7 @@ def test_get_mesh_data_paginates_and_reports_truncation(monkeypatch) -> None:
 
 
 def test_get_mesh_data_edges_shape(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "obj", n_edges=3)
 
@@ -369,7 +316,7 @@ def test_get_mesh_data_edges_shape(monkeypatch) -> None:
 
 
 def test_get_mesh_data_faces_shape(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "obj", n_polys=2)
 
@@ -384,7 +331,7 @@ def test_get_mesh_data_faces_shape(monkeypatch) -> None:
 
 
 def test_get_mesh_data_loops_shape_and_face_index_mapping(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "obj", n_polys=2)
 
@@ -399,7 +346,7 @@ def test_get_mesh_data_loops_shape_and_face_index_mapping(monkeypatch) -> None:
 
 
 def test_get_mesh_data_loops_rejects_selected_only(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "obj")
 
@@ -408,7 +355,7 @@ def test_get_mesh_data_loops_rejects_selected_only(monkeypatch) -> None:
 
 
 def test_get_mesh_data_selected_only_filters_before_paging(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     obj = _new_mesh_object(bpy, "obj", n_verts=6)
     for i in (1, 3, 5):
@@ -423,7 +370,7 @@ def test_get_mesh_data_selected_only_filters_before_paging(monkeypatch) -> None:
 
 
 def test_get_mesh_data_limit_is_clamped_to_max(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "obj", n_verts=5)
 
@@ -436,7 +383,7 @@ def test_get_mesh_data_limit_is_clamped_to_max(monkeypatch) -> None:
 
 
 def test_get_mesh_data_syncs_from_editmode_before_reading(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     obj = _new_mesh_object(bpy, "obj")
 
@@ -450,7 +397,7 @@ def test_get_mesh_data_syncs_from_editmode_before_reading(monkeypatch) -> None:
 
 # region get_object_info
 def test_get_object_info_syncs_from_editmode_before_reading(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     obj = _new_empty_object(bpy, "empty_obj")
 
@@ -463,7 +410,7 @@ def test_get_object_info_says_whether_it_resolved_an_override_or_a_linked_object
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """After a library override a name has two objects; the result says which one was read."""
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_empty_object(bpy, "local_obj")
     override = _new_empty_object(bpy, "override_obj")
@@ -495,7 +442,7 @@ def test_object_name_lookups_resolve_to_the_override_even_when_the_linked_origin
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`get_object_info` and every scene tool's `_object` pick the override, not whichever Blender listed first."""
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     linked = _new_empty_object(bpy, "linked_key")
     linked.name = "HeroCam"
@@ -506,7 +453,7 @@ def test_object_name_lookups_resolve_to_the_override_even_when_the_linked_origin
     bpy.data.objects = _OverriddenShotObjects(bpy.data.objects)
 
     assert server.get_object_info("HeroCam")["is_override"] is True
-    assert sys.modules["blender_mcp_addon_inspection_test.handlers.scene"]._object("HeroCam") is override
+    assert sys.modules[f"{addon.__name__}.handlers.scene"]._object("HeroCam") is override
 
 
 def test_the_transaction_snapshots_the_same_object_the_handler_mutates_after_an_override(
@@ -518,7 +465,7 @@ def test_the_transaction_snapshots_the_same_object_the_handler_mutates_after_an_
     Resolving targets by Blender's list order while the handler resolves by `find_object` would
     restore state onto the linked original and leave the override holding a partial edit.
     """
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     linked = _new_empty_object(bpy, "linked_key")
     linked.name = "HeroCam"
@@ -531,14 +478,14 @@ def test_the_transaction_snapshots_the_same_object_the_handler_mutates_after_an_
     targets = server._resolve_targets({"object_name": "HeroCam"})
 
     assert targets == [override]
-    assert targets[0] is sys.modules["blender_mcp_addon_inspection_test.handlers.scene"]._object("HeroCam")
+    assert targets[0] is sys.modules[f"{addon.__name__}.handlers.scene"]._object("HeroCam")
 
 
 def test_an_ambiguous_target_name_is_skipped_rather_than_raising_out_of_the_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A name linked from two libraries is skipped here; the handler's own call raises the refusal."""
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     for index in range(2):
         obj = _new_empty_object(bpy, f"prop_key{index}")
@@ -550,7 +497,7 @@ def test_an_ambiguous_target_name_is_skipped_rather_than_raising_out_of_the_snap
 
 
 def test_get_object_info_reports_default_euler_rotation(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_empty_object(bpy, "empty_obj")
 
@@ -561,7 +508,7 @@ def test_get_object_info_reports_default_euler_rotation(monkeypatch) -> None:
 
 
 def test_get_object_info_reports_quaternion_rotation(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     obj = _new_empty_object(bpy, "empty_obj")
     obj.rotation_mode = "QUATERNION"
@@ -574,7 +521,7 @@ def test_get_object_info_reports_quaternion_rotation(monkeypatch) -> None:
 
 
 def test_get_object_info_reports_axis_angle_rotation(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     obj = _new_empty_object(bpy, "empty_obj")
     obj.rotation_mode = "AXIS_ANGLE"
@@ -587,7 +534,7 @@ def test_get_object_info_reports_axis_angle_rotation(monkeypatch) -> None:
 
 
 def test_get_object_info_reports_modifiers(monkeypatch) -> None:
-    addon, bpy, _objects, _scene = _load_addon(monkeypatch)
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     obj = _new_empty_object(bpy, "empty_obj")
     obj.modifiers = [
@@ -601,6 +548,44 @@ def test_get_object_info_reports_modifiers(monkeypatch) -> None:
         {"name": "Bevel", "type": "BEVEL", "show_viewport": True, "show_render": False},
         {"name": "Subsurf", "type": "SUBSURF", "show_viewport": True, "show_render": True},
     ]
+
+
+def _emitter(bpy, system_count):
+    """Make an Empty with `system_count` particle systems, the one `type_data` page every object type has."""
+    obj = _new_empty_object(bpy, "emitter")
+    obj.particle_systems = [
+        types.SimpleNamespace(name=f"system_{index}", settings=None, particles=[], seed=index)
+        for index in range(system_count)
+    ]
+    return obj
+
+
+def test_get_object_info_resumes_its_type_data_pages_from_the_offset_it_was_given(monkeypatch) -> None:
+    """A page's `next_offset` leads to the records after it, not back to the first page."""
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
+    server = addon.BlenderMCPServer()
+    _emitter(bpy, 5)
+
+    first = server.get_object_info("emitter", sections=["PARTICLES"], limit=2)["type_data"]["particle_systems"]
+    second = server.get_object_info("emitter", sections=["PARTICLES"], limit=2, offset=first["next_offset"])
+
+    page = second["type_data"]["particle_systems"]
+    assert [record["name"] for record in first["records"]] == ["system_0", "system_1"]
+    assert [record["name"] for record in page["records"]] == ["system_2", "system_3"]
+    assert (page["offset"], page["truncated"], page["next_offset"]) == (2, True, 4)
+
+
+def test_get_object_info_reports_the_page_size_it_applied_not_the_one_asked_for(monkeypatch) -> None:
+    """A limit past the ceiling is cut to it, and the page names the size it was cut to."""
+    addon, bpy, _objects, _scene = _load_inspection_addon(monkeypatch)
+    server = addon.BlenderMCPServer()
+    _emitter(bpy, 3)
+    ceiling = server._OBJECT_INFO_MAX_LIMIT
+
+    info = server.get_object_info("emitter", sections=["PARTICLES"], limit=ceiling + 1)
+
+    page = info["type_data"]["particle_systems"]
+    assert (page["limit"], page["returned_count"]) == (ceiling, 3)
 
 
 # endregion

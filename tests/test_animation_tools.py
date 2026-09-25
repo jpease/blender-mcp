@@ -6,9 +6,10 @@ import types
 
 import pytest
 
+from conftest import load_addon
+from datablock_doubles import FakeCollection
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
-from test_mutation_transaction import FakeCollection, _load_addon
 
 from blender_mcp.server.tools import _dispatch, animation
 
@@ -32,7 +33,7 @@ class _Connection:
 
 
 def test_animation_tools_are_registered_and_dispatched(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     assert ANIMATION_COMMANDS <= set(animation.mcp._tool_manager._tools)
@@ -150,7 +151,7 @@ def test_a_driver_expression_may_name_frame_and_its_declared_variables(monkeypat
     `ast.walk` yields each `Name`'s `ctx` node as well as the `Name`, so an allowlist without
     `ast.Load` rejects every expression that is not a bare arithmetic constant.
     """
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     handlers = addon.handlers.animation
 
     assert handlers._safe_expression("frame * 0.5", set()) == "frame * 0.5"
@@ -159,7 +160,7 @@ def test_a_driver_expression_may_name_frame_and_its_declared_variables(monkeypat
 
 def test_a_driver_expression_still_refuses_undeclared_names_and_calls(monkeypatch) -> None:
     """The allowlist must keep refusing what it existed to refuse: calls, attributes, other names."""
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     handlers = addon.handlers.animation
 
     with pytest.raises(ValueError, match="undeclared variable: speed"):
@@ -242,7 +243,7 @@ class _FakeStruct:
 
 def _rig(monkeypatch):
     """Load the handlers against a rig whose bone name contains a dot, as rig bones do."""
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     bone = _FakeStruct(
         properties={"location": _FakeRnaProperty(array_length=3)},
         values={"location": (0.0, 0.0, 0.0)},
@@ -413,7 +414,7 @@ def _cycle_handler(monkeypatch, curves):
     strip = types.SimpleNamespace(channelbags=[bag])
     action = types.SimpleNamespace(name="Walk", slots=[slot], layers=[types.SimpleNamespace(strips=[strip])])
     rig = types.SimpleNamespace(name="Rig", id_type="OBJECT", animation_data=None)
-    addon, _bpy = _load_addon(
+    addon, _bpy = load_addon(
         monkeypatch,
         data={
             "objects": types.SimpleNamespace(get=lambda name: rig if name == "Rig" else None),
@@ -718,7 +719,7 @@ def _armature_target_handler(monkeypatch):
     action = types.SimpleNamespace(
         name="Walk", slots=[slot], layers=[types.SimpleNamespace(strips=[strip])], id_root="OBJECT"
     )
-    addon, _bpy = _load_addon(
+    addon, _bpy = load_addon(
         monkeypatch,
         data={
             "objects": objects,
@@ -1041,7 +1042,7 @@ def _edit_handler(monkeypatch, curves):
     )
     rig.animation_data = types.SimpleNamespace(action=action, action_slot=slot)
     rig.animation_data_create = lambda: rig.animation_data
-    addon, _bpy = _load_addon(
+    addon, _bpy = load_addon(
         monkeypatch,
         data={"objects": types.SimpleNamespace(get=lambda name: rig if name == "Rig" else None)},
     )

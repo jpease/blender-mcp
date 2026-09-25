@@ -11,6 +11,7 @@ import os
 import bpy
 
 from ...helpers import preserve_mode_and_selection, set_active
+from ..rna_patch import patch_rna, restore_rna
 from ..simulation_cache import mantaflow_cache_info, require_cache_confirmation
 from ._frame_evaluation import _evaluate_frames, _plan_frame_evaluation
 from .inspection_and_setup import (
@@ -18,10 +19,8 @@ from .inspection_and_setup import (
     _CACHE_FLAGS,
     _ensure_liquid_uuid,
     _get_domain,
-    _patch_rna,
     _resolved_cache_path,
-    _restore_rna,
-    _validate_rna_value,
+    _set_cache_range,
     _world_bounds,
 )
 from .manifest import read_manifest as _read_manifest
@@ -84,7 +83,7 @@ _CACHE_CONFIG_FIELDS = {
 # OpenVDB compression and precision only apply to OpenVDB-formatted cache stages. Verified against
 # Blender 5.2.1: `openvdb_data_depth` is a dynamic enum whose static RNA enum_items reports only
 # ['NONE'] while the accepted identifiers are the strings ('32', '16', '8'), so the generic
-# _validate_rna_value enum check cannot be used for it; the tool-side Literal pins the valid values.
+# validate_rna_value enum check cannot be used for it; the tool-side Literal pins the valid values.
 _OPENVDB_FIELDS = {"openvdb_cache_compress_type", "openvdb_data_depth"}
 _OPENVDB_DATA_DEPTHS = ("8", "16", "32")
 _OPENVDB_FORMAT_FIELDS = ("cache_data_format", "cache_mesh_format", "cache_particle_format")
@@ -121,7 +120,7 @@ def _update_or_restore(obj, owner, changes):
         obj.update_tag(refresh={"DATA"})
         bpy.context.view_layer.update()
     except Exception:
-        _restore_rna(owner, changes)
+        restore_rna(owner, changes)
         raise
 
 
@@ -253,19 +252,6 @@ def _reconcile_pending_bake_manifest(obj, settings, resolved_directory):
             pending["frame_range"],
         )
     obj[_PENDING_BAKE_KEY] = ""
-
-
-def _set_cache_range(settings, start, end):
-    if start > end:
-        raise ValueError("cache_frame_start must be <= cache_frame_end")
-    _validate_rna_value(settings, "cache_frame_start", start)
-    _validate_rna_value(settings, "cache_frame_end", end)
-    if start > settings.cache_frame_end:
-        settings.cache_frame_end = end
-        settings.cache_frame_start = start
-    else:
-        settings.cache_frame_start = start
-        settings.cache_frame_end = end
 
 
 def _reject_unused_openvdb_fields(settings, patch):
@@ -553,7 +539,7 @@ class LiquidSimulationHandlers:
                 for name, value in patch.items()
                 if name not in {"cache_frame_start", "cache_frame_end", "openvdb_data_depth"}
             }
-            changes = _patch_rna(settings, scalar_patch, _CACHE_CONFIG_FIELDS)
+            changes = patch_rna(settings, scalar_patch, _CACHE_CONFIG_FIELDS)
             try:
                 if "openvdb_data_depth" in patch:
                     changes["openvdb_data_depth"] = _set_openvdb_data_depth(settings, patch["openvdb_data_depth"])
@@ -563,7 +549,7 @@ class LiquidSimulationHandlers:
                     changes["cache_frame_end"] = {"old": old_range[1], "new": settings.cache_frame_end}
                 _update_or_restore(obj, settings, changes)
             except Exception:
-                _restore_rna(settings, changes)
+                restore_rna(settings, changes)
                 with contextlib.suppress(Exception):
                     _set_cache_range(settings, *old_range)
                 raise

@@ -15,10 +15,10 @@ from pathlib import Path
 
 import pytest
 
+from conftest import load_addon
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
-from test_rendering_tools import _fake_scene
+from render_doubles import fake_scene
 
 from blender_mcp.server.tools import render_jobs as render_job_tools
 
@@ -55,11 +55,11 @@ class _FakeChild:
 @pytest.fixture(name="jobs")
 def _jobs(monkeypatch, tmp_path):
     """Build an add-on with one scene, output roots under tmp_path, and every child scripted."""
-    addon, fake_bpy = _load_addon(monkeypatch, data={"scenes": {}, "images": []})
+    addon, fake_bpy = load_addon(monkeypatch, data={"scenes": {}, "images": []})
     rendering = importlib.import_module(f"{addon.__name__}.handlers.rendering")
     module = importlib.import_module(f"{addon.__name__}.handlers.render_jobs")
     fake_bpy.path = types.SimpleNamespace(abspath=lambda path: path)
-    scene = _fake_scene(rendering)
+    scene = fake_scene(rendering)
     scene.frame_current = 7
     scene.render.frame_path = lambda frame: f"{scene.render.filepath}{frame:04d}.png"
     fake_bpy.data.scenes["Scene"] = scene
@@ -542,6 +542,17 @@ def test_read_with_detail_pages_the_written_files(jobs) -> None:
 
     assert [entry["frame"] for entry in page["files"]] == [2, 3]
     assert (page["total"], page["truncated"], page["next_offset"]) == (3, False, None)
+
+
+def test_a_list_offset_past_the_last_job_reports_the_empty_page_where_the_jobs_end(jobs) -> None:
+    """An over-run is the empty final page, and it starts at the total, not at the offset asked for."""
+    for job_id in ("00000000000a", "00000000000b"):
+        _unowned_job(jobs, job_id, state="DONE")
+
+    page = jobs.handler.manage_render_job("LIST", limit=2, offset=5)
+
+    assert page["jobs"] == []
+    assert (page["total"], page["offset"], page["truncated"], page["next_offset"]) == (2, 2, False, None)
 
 
 def _tool_arguments(**arguments):

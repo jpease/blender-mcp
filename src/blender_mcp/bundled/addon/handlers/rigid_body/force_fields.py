@@ -9,16 +9,15 @@ import bpy
 import mathutils
 
 from ...helpers import preserve_mode_and_selection
+from ..rna_patch import read_fields, serialize
 from .inspection_and_setup import (
     _EFFECTOR_FIELDS,
     _apply_patch,
     _ensure_collection,
     _ensure_world,
     _prepare_cache_mutation,
-    _read_fields,
     _restore_fields,
     _scene,
-    _serialize,
     _validate_rna_properties,
     _view_layer_for,
 )
@@ -53,7 +52,7 @@ def _field_info(obj):
         "object": obj.name,
         "location_world": list(obj.matrix_world.translation),
         "rotation_mode": obj.rotation_mode,
-        "settings": _read_fields(obj.field, _FIELD_FIELDS),
+        "settings": read_fields(obj.field, _FIELD_FIELDS),
         "collections": sorted(collection.name for collection in obj.users_collection),
         "animation": bool(obj.animation_data and (obj.animation_data.action or obj.animation_data.drivers)),
     }
@@ -191,6 +190,6 @@ class RigidBodyForceFieldHandlers:
             "created": [obj.name for obj in created],
             "fields": [_field_info(obj) for obj in field_objects],
             "effector_weight_changes": weight_changes,
-            "effector_collection": _serialize(world.effector_weights.collection),
+            "effector_collection": serialize(world.effector_weights.collection),
             "cache_freed": cache_freed,
         }

@@ -1,7 +1,6 @@
 # ruff: file-ignore[module-import-not-at-top-of-file]
 """Run with Blender 5.1+ to smoke-test generic layered Action handlers."""
 
-import importlib.util
 import math
 import sys
 
@@ -9,17 +8,10 @@ from pathlib import Path
 
 import bpy
 
-addon_path = Path(__file__).resolve().parents[1] / "src" / "blender_mcp" / "bundled" / "addon" / "__init__.py"
-package_name = "blender_mcp_animation_smoke"
-spec = importlib.util.spec_from_file_location(
-    package_name,
-    addon_path,
-    submodule_search_locations=[str(addon_path.parent)],
-)
-assert spec is not None
-addon = importlib.util.module_from_spec(spec)
-sys.modules[package_name] = addon
-spec.loader.exec_module(addon)
+sys.path.append(str(Path(__file__).resolve().parent))
+from smoke_addon import load_addon
+
+load_addon("blender_mcp_animation_smoke")
 
 from blender_mcp_animation_smoke.handlers.animation import AnimationHandlersMixin
 

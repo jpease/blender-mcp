@@ -7,13 +7,11 @@ import uuid
 import bpy
 import mathutils
 
+from ...helpers import MAX_FRAME, MIN_FRAME, bounded_int
 from ._shared import (
     _CAMERA_OPTICS,
-    _MAX_FRAME,
-    _MIN_FRAME,
     _RIG_SCHEMA_VERSION,
     _add_constraint,
-    _bounded_int,
     _camera,
     _constraint_info,
     _ensure_collection,
@@ -247,8 +245,8 @@ class _RigsMixin:
         animation_start = animation_end = None
         if start_frame is not None:
             assert end_frame is not None
-            animation_start = _bounded_int(start_frame, "start_frame", _MIN_FRAME, _MAX_FRAME)
-            animation_end = _bounded_int(end_frame, "end_frame", _MIN_FRAME, _MAX_FRAME)
+            animation_start = bounded_int("start_frame", start_frame, MIN_FRAME, MAX_FRAME)
+            animation_end = bounded_int("end_frame", end_frame, MIN_FRAME, MAX_FRAME)
             if animation_start >= animation_end:
                 raise ValueError("start_frame must be less than end_frame")
         target = _object(target_object_name, scene=scene) if target_object_name else None

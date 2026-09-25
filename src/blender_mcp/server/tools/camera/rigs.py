@@ -8,7 +8,7 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from .._inputs import StrictModel, dump_input
+from .._inputs import MAX_FRAME, MIN_FRAME, StrictModel, dump_input
 from ._shared import FollowForwardAxis, UpAxis, _tool_params
 
 SplineType = Literal["BEZIER", "NURBS"]
@@ -111,8 +111,8 @@ async def create_camera_path_rig(
     forward_axis: FollowForwardAxis = "TRACK_NEGATIVE_Z",
     up_axis: UpAxis = "UP_Y",
     use_curve_follow: bool = True,
-    start_frame: Annotated[int | None, Field(ge=-1_048_574, le=1_048_574)] = None,
-    end_frame: Annotated[int | None, Field(ge=-1_048_574, le=1_048_574)] = None,
+    start_frame: Annotated[int | None, Field(ge=MIN_FRAME, le=MAX_FRAME)] = None,
+    end_frame: Annotated[int | None, Field(ge=MIN_FRAME, le=MAX_FRAME)] = None,
     target_object_name: str | None = None,
 ) -> dict:
     """

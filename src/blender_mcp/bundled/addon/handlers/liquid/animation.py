@@ -6,13 +6,12 @@ import math
 
 import bpy
 
+from ..rna_patch import serialize, validate_rna_value
 from .inspection_and_setup import (
     _get_domain,
     _get_role,
     _object_in_collection,
     _reject_baked,
-    _serialize,
-    _validate_rna_value,
 )
 
 _FLOW_ANIMATION_FIELDS = {
@@ -94,7 +93,7 @@ class LiquidAnimationHandlers:
         if domain.fluid_group is not None and not _object_in_collection(obj, domain.fluid_group):
             raise ValueError(f"Flow '{obj.name}' is outside domain collection '{domain.fluid_group.name}'")
         if subframes is not None:
-            _validate_rna_value(flow, "subframes", subframes)
+            validate_rna_value(flow, "subframes", subframes)
         resolved = []
         identities = set()
         for index, record in enumerate(keyframes):
@@ -111,7 +110,7 @@ class LiquidAnimationHandlers:
                 raise ValueError(
                     f"FluidFlowSettings.{property_name} is not keyable in Blender {bpy.app.version_string}"
                 )
-            _validate_rna_value(flow, property_name, value)
+            validate_rna_value(flow, property_name, value)
             identity = (property_name, frame)
             if identity in identities:
                 raise ValueError(f"Duplicate keyframe for {property_name} at {frame:g}")
@@ -127,7 +126,7 @@ class LiquidAnimationHandlers:
                     "frame": frame,
                     "path": path,
                     "interpolation": record.get("interpolation", "CONSTANT"),
-                    "old_value": _serialize(getattr(flow, property_name)),
+                    "old_value": serialize(getattr(flow, property_name), typed_ids=True),
                     "existing": [(curve, point, _snapshot_point(point)) for curve, point in existing],
                 }
             )

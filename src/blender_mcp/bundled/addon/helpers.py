@@ -6,6 +6,13 @@ import mathutils
 
 from . import ADDON_ID
 
+# Blender's MAXFRAME: the range `Scene.frame_current`, timeline markers and keyframes accept.
+# Outside it `frame_set` clamps silently, so a reply would name a frame the caller never asked
+# for. The server bounds the same parameters with `server/tools/_inputs.py`'s pair, which it
+# cannot import from here: the two pairs must agree.
+MIN_FRAME = -1_048_574
+MAX_FRAME = 1_048_574
+
 
 def runtime_enum_item_name(owner, property_name, identifier):
     """
@@ -423,6 +430,43 @@ def edit_mesh(obj, vert_indices=None, edge_indices=None, face_indices=None):
             exit_edit_mode()
 
 
+def bounded_int(name: str, value: object, minimum: int, maximum: int | None = None) -> int:
+    """
+    Accept an integer inside its documented range, or refuse it.
+
+    A bool is refused although Python counts it an int, since `True` would pass as 1, and so
+    is a float however integral: every tool schema declares these fields `int`, so a float
+    here comes from a caller that skipped the schema.
+
+    Args:
+        name: The parameter name, for the message.
+        value: What the client sent.
+        minimum: The smallest accepted value.
+        maximum: The largest accepted value, or None for no upper bound.
+
+    Returns:
+        int: The value.
+
+    Raises:
+        ValueError: When it is not an `int` in range, naming the parameter and the range.
+
+    """
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < minimum
+        or (maximum is not None and value > maximum)
+    ):
+        bound = f"in [{minimum}, {maximum}]" if maximum is not None else f"of at least {minimum}"
+        raise ValueError(f"{name} must be an integer {bound}")
+    return value
+
+
+def _page_size(limit, max_limit):
+    """Clamp a requested page size to [1, max_limit]."""
+    return max(1, min(int(limit), max_limit))
+
+
 def paginate(total, offset, limit, max_limit):
     """
     Clamp offset/limit against total and return (start, end, truncated, next_offset).
@@ -438,11 +482,41 @@ def paginate(total, offset, limit, max_limit):
 
     """
     offset = max(0, int(offset))
-    limit = max(1, min(int(limit), max_limit))
+    limit = _page_size(limit, max_limit)
     start = min(offset, total)
     end = min(start + limit, total)
     truncated = end < total
     return start, end, truncated, (end if truncated else None)
+
+
+def page_records(records, offset, limit, max_limit, *, key="records"):
+    """
+    Cut one page out of a list, with the pagination keys every paged reply carries.
+
+    Args:
+        records: Every record, in order.
+        offset: Zero-based index of the first record wanted; an offset past the end yields
+            the empty final page, which starts at the total.
+        limit: How many records at most, clamped to [1, max_limit].
+        max_limit: The largest page this reply may carry.
+        key: The reply key the page's records go under.
+
+    Returns:
+        dict: "total", "offset" (where the page starts), "limit" (the page size applied),
+        "returned_count", "truncated", "next_offset" (None on the last page), and `key`.
+
+    """
+    total = len(records)
+    start, end, truncated, next_offset = paginate(total, offset, limit, max_limit)
+    return {
+        "total": total,
+        "offset": start,
+        "limit": _page_size(limit, max_limit),
+        "returned_count": end - start,
+        "truncated": truncated,
+        "next_offset": next_offset,
+        key: records[start:end],
+    }
 
 
 def mesh_counts(obj):

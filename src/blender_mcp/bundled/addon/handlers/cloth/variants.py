@@ -9,10 +9,11 @@ import uuid
 import bpy
 
 from ...helpers import sync_from_editmode
+from ..rna_patch import get_object
 from ._cache_helpers import _configure_independent_cache, _shared_cache_identity
 from ._deform_binding import _bind_deform_modifier, _unbind_deform_modifier
 from ._ownership import _tag_owned_component, _tag_owned_object
-from .inspection_and_setup import _OWNERSHIP_PREFIX, _cache_info, _get_object, _scene_context_for_object
+from .inspection_and_setup import _OWNERSHIP_PREFIX, _cache_info, _scene_context_for_object
 from .proxy_rigs import (
     _modifier_dependency_target,
     _remove_created_object,
@@ -102,7 +103,7 @@ class ClothVariantHandlers:
         render_surface_policy,
         cache_directory=None,
     ):
-        source = _get_object(source_object_name, {"MESH"})
+        source = get_object(source_object_name, {"MESH"})
         sync_from_editmode(source)
         _validate_id_name(variant_object_name, "variant_object_name")
         _validate_id_name(variant_collection_name, "variant_collection_name")

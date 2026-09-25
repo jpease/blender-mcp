@@ -6,10 +6,10 @@ import types
 
 import pytest
 
-from conftest import StubFactory
+from conftest import StubFactory, load_addon
+from datablock_doubles import FakeCollection
 from pydantic import ValidationError
 from pydantic_core import to_json
-from test_mutation_transaction import FakeCollection, _load_addon
 
 # These imports register tools on the process-global FastMCP app for the whole session, and
 # `scene_authoring` loads after `finalize_tool_documentation`, so its tools lack annotations.
@@ -33,7 +33,7 @@ SCENE_COMMANDS = {
 
 def test_scene_tools_are_registered_and_dispatched(monkeypatch: pytest.MonkeyPatch) -> None:
     """All ten scene commands stay reachable and mutating once both modules are imported."""
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
 
     # Importing both modules is what a `scene-authoring` process does.
     assert set(scene.mcp._tool_manager._tools) >= SCENE_COMMANDS
@@ -367,7 +367,7 @@ def test_set_object_transform_reports_the_world_transform_the_scene_now_holds(
     objects = FakeCollection()
     objects["Pivot"] = pivot
     objects["Child"] = child
-    addon, bpy = _load_addon(monkeypatch, data={"objects": objects})
+    addon, bpy = load_addon(monkeypatch, data={"objects": objects})
 
     def evaluate_scene() -> None:
         for obj in objects:

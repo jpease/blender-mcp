@@ -10,7 +10,7 @@ import base64
 import sys
 import types
 
-from test_mutation_transaction import _load_addon
+from conftest import load_addon
 
 
 class _FakeImage:
@@ -45,7 +45,7 @@ class _FakeImages:
 
 
 def _rendering_handler(monkeypatch, image):
-    addon, bpy = _load_addon(monkeypatch, data={"images": _FakeImages(image)})
+    addon, bpy = load_addon(monkeypatch, data={"images": _FakeImages(image)})
     # main's _resolved_path runs every output_path through bpy.path.abspath; tmp_path is
     # absolute already, so the identity keeps this test about the transport.
     bpy.path = types.SimpleNamespace(abspath=lambda path: path)
@@ -89,7 +89,7 @@ def _viewport_handler(monkeypatch, image):
     raises and the handler falls back to the window grab - which is the path
     these tests drive.
     """
-    addon, bpy = _load_addon(monkeypatch, data={"images": _FakeImages(image)})
+    addon, bpy = load_addon(monkeypatch, data={"images": _FakeImages(image)})
 
     region = types.SimpleNamespace(type="WINDOW", width=400, height=200)
     space = types.SimpleNamespace(

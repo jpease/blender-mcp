@@ -13,14 +13,7 @@ ROWS: list[Revert] = [
         DOCKERFILE,
         "ENV BLENDER_MAJOR_MINOR=${BLENDER_MAJOR_MINOR}\n",
         "",
-        (f"{DOCKT}::test_build_args_the_entrypoint_reads_are_exported_as_env",),
-    ),
-    Revert(
-        "docker: the entrypoint carries its own Blender version default again",
-        ENTRYPOINT,
-        'ADDONS_DIR="$HOME/.config/blender/${BLENDER_MAJOR_MINOR}/scripts/addons"',
-        'ADDONS_DIR="$HOME/.config/blender/${BLENDER_MAJOR_MINOR:-5.2}/scripts/addons"',
-        (f"{DOCKT}::test_entrypoint_does_not_hardcode_its_own_blender_version",),
+        (f"{DOCKT}::test_the_entrypoint_installs_the_addon_for_the_blender_the_image_downloads",),
     ),
     Revert(
         "docker: an unset Blender version no longer aborts the container",
@@ -88,10 +81,12 @@ ROWS: list[Revert] = [
         (f"{DOCKT}::test_entrypoint_waits_for_blender_before_starting_the_mcp_server",),
     ),
     Revert(
+        # A reply, not the command it answers, is the readiness signal: a connect that the kernel
+        # accepts into the backlog before the addon serves must not count.
         "entrypoint: the readiness gate stops round-tripping Blender's socket",
         ENTRYPOINT,
-        '"type": "ping"',
-        '"type": "get_addon_info"',
+        "            if sock.recv(256):\n",
+        "            if True:\n",
         (f"{DOCKT}::test_entrypoint_waits_for_blender_before_starting_the_mcp_server",),
     ),
     Revert(
@@ -106,8 +101,8 @@ ROWS: list[Revert] = [
     Revert(
         "docker: Blender's socket bound to all interfaces",
         DOCKER_START,
-        None,
-        '\n# BlenderMCPServer(host="0.0.0.0") is exactly what must never ship.\n',
+        "BlenderMCPServer(port=port)",
+        'BlenderMCPServer(host="0.0.0.0", port=port)',
         (f"{DOCKT}::test_blender_keeps_its_socket_on_loopback",),
     ),
     Revert(
@@ -127,8 +122,8 @@ ROWS: list[Revert] = [
     Revert(
         "docker: the healthcheck stops round-tripping Blender's socket",
         HEALTHCHECK,
-        '"type": "ping"',
-        '"type": "get_addon_info"',
+        "        return bool(sock.recv(256))\n",
+        "        return True\n",
         (f"{DOCKT}::test_compose_healthcheck_round_trips_both_blender_and_the_mcp_server",),
     ),
     Revert(

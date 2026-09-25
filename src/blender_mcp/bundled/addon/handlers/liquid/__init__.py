@@ -7,7 +7,6 @@ from .delivery import _validate_axes as _validate_axes
 from .force_fields import LiquidForceFieldHandlers
 from .guides import LiquidGuideHandlers
 from .inspection_and_setup import LiquidInspectionAndSetupHandlers
-from .inspection_and_setup import _patch_rna as _patch_rna
 from .lifecycle import LiquidLifecycleHandlers
 from .mesh_and_materials import LiquidMeshAndMaterialHandlers
 from .mesh_and_materials import _expand_viscosity_config as _expand_viscosity_config

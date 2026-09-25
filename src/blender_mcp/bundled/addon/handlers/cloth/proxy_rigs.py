@@ -10,6 +10,7 @@ import uuid
 import bpy
 
 from ...helpers import preserve_mode_and_selection, set_active, sync_from_editmode
+from ..rna_patch import finite, get_object, validate_rna_value
 from ._cache_helpers import _configure_independent_cache
 from ._deform_binding import (
     _bind_deform_modifier,
@@ -22,16 +23,12 @@ from ._ownership import _remove_custom_property, _tag_owned_component, _tag_owne
 from .inspection_and_setup import (
     _MCP_SCHEMA_VERSION,
     _OWNERSHIP_PREFIX,
-    _finite,
-    _get_object,
     _modifier_info,
     _reject_baked,
     _scene_context_for_object,
     _tag_update,
     _topology_summary,
-    _validate_rna_value,
 )
-
 
 # Blender stores RNA floats as C floats. A request carrying a double such as 4.1
 # reads back as 4.099999904632568, so comparing a stored setting to the value
@@ -136,7 +133,7 @@ class ClothProxyRigHandlers:
         rest_frame=1,
         validation_frames=None,
     ):
-        render_obj = _get_object(render_object_name, {"MESH"})
+        render_obj = get_object(render_object_name, {"MESH"})
         sync_from_editmode(render_obj)
         _validate_id_name(proxy_object_name, "proxy_object_name")
         _validate_id_name(cloth_modifier_name, "cloth_modifier_name")
@@ -149,7 +146,7 @@ class ClothProxyRigHandlers:
             raise ValueError("existing_policy must be ERROR or REUSE")
         if render_object_name == proxy_object_name:
             raise ValueError("Render and proxy objects must be distinct")
-        _finite(decimate_ratio, "decimate_ratio")
+        finite(decimate_ratio, "decimate_ratio")
         if not 0.01 <= decimate_ratio <= 1.0:
             raise ValueError("decimate_ratio must be in [0.01, 1.0]")
         if proxy_source_policy == "DECIMATE_RENDER" and not allow_topology_change:
@@ -178,7 +175,7 @@ class ClothProxyRigHandlers:
         try:
             existing_proxy = bpy.data.objects.get(proxy_object_name)
             if proxy_source_policy == "EXISTING":
-                proxy_obj = _get_object(proxy_object_name, {"MESH"})
+                proxy_obj = get_object(proxy_object_name, {"MESH"})
                 sync_from_editmode(proxy_obj)
                 if proxy_obj.name not in scene.objects:
                     raise ValueError(f"Proxy '{proxy_obj.name}' is not linked to render scene '{scene.name}'")
@@ -270,10 +267,10 @@ class ClothProxyRigHandlers:
                 if hasattr(bind_modifier, "vertex_group"):
                     bind_modifier.vertex_group = vertex_group_name or ""
                 if bind_type == "SURFACE_DEFORM":
-                    _validate_rna_value(bind_modifier, "falloff", surface_deform_falloff)
+                    validate_rna_value(bind_modifier, "falloff", surface_deform_falloff)
                     bind_modifier.falloff = surface_deform_falloff
                 else:
-                    _validate_rna_value(bind_modifier, "precision", mesh_deform_precision)
+                    validate_rna_value(bind_modifier, "precision", mesh_deform_precision)
                     bind_modifier.precision = mesh_deform_precision
                 scene.frame_set(rest_frame)
                 view_layer.update()

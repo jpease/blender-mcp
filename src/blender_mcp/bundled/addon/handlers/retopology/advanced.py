@@ -9,7 +9,14 @@ import bmesh
 import bpy
 import mathutils
 
-from ...helpers import apply_modifier, get_mesh_object, mesh_counts, preserve_mode_and_selection, set_active
+from ...helpers import (
+    apply_modifier,
+    bounded_int,
+    get_mesh_object,
+    mesh_counts,
+    preserve_mode_and_selection,
+    set_active,
+)
 from ._shared import (
     _TRANSFER_TYPES,
     _editable_bmesh,
@@ -43,15 +50,6 @@ _LOD_LEVEL_KEYS = {
     "preserve_attributes",
     "smooth_normals",
 }
-
-
-def _integer(value, label, minimum, maximum=None):
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{label} must be an integer")
-    if value < minimum or (maximum is not None and value > maximum):
-        suffix = f" between {minimum} and {maximum}" if maximum is not None else f" at least {minimum}"
-        raise ValueError(f"{label} must be{suffix}")
-    return value
 
 
 def _validate_profile(value):
@@ -135,10 +133,10 @@ def _quadriflow_settings(
     mode = str(mode).upper()
     if mode not in _QUADRIFLOW_MODES:
         raise ValueError(f"mode must be one of {sorted(_QUADRIFLOW_MODES)}")
-    faces = _integer(target_faces, "target_faces", 1)
+    faces = bounded_int("target_faces", target_faces, 1)
     ratio = _positive(target_ratio, "target_ratio")
     edge_length = _positive(target_edge_length, "target_edge_length")
-    seed = _integer(seed, "seed", 0)
+    seed = bounded_int("seed", seed, 0)
     return {
         "mode": mode,
         "target_faces": faces,
@@ -551,7 +549,7 @@ def _prepare_lod_levels(levels, master, base_faces):
                     raw.get("vertex_group_factor", 1.0), f"levels[{index}].vertex_group_factor", allow_zero=True
                 ),
                 "invert_vertex_group": bool(raw.get("invert_vertex_group", False)),
-                "seed": _integer(raw.get("seed", 0), f"levels[{index}].seed", 0),
+                "seed": bounded_int(f"levels[{index}].seed", raw.get("seed", 0), 0),
                 "preserve_sharp": bool(raw.get("preserve_sharp", False)),
                 "preserve_boundary": bool(raw.get("preserve_boundary", False)),
                 "preserve_attributes": bool(raw.get("preserve_attributes", True)),
@@ -717,8 +715,8 @@ class _AdvancedMixin:
         indices = _ensure_indices(source.data.vertices, source_vertex_indices, "source_vertex_indices", required=True)
         if len(indices) < minimum_samples:
             raise ValueError(f"{primitive} fitting requires at least {minimum_samples} unique sample vertices")
-        u_segments = _integer(u_segments, "u_segments", 2 if primitive in {"PLANE", "SPHERE"} else 3, 256)
-        v_segments = _integer(v_segments, "v_segments", 1, 256)
+        u_segments = bounded_int("u_segments", u_segments, 2 if primitive in {"PLANE", "SPHERE"} else 3, 256)
+        v_segments = bounded_int("v_segments", v_segments, 1, 256)
         offset = _finite(projection_offset, "projection_offset")
         residual_limit = _positive(max_fit_residual, "max_fit_residual") if max_fit_residual is not None else None
         axis_hint = None

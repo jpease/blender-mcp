@@ -7,11 +7,11 @@ import math
 import bpy
 import mathutils
 
+from ..rna_patch import get_object
 from .inspection_and_setup import (
     _animation_info,
     _clear_action_fcurves,
     _ensure_world,
-    _object,
     _prepare_cache_mutation,
     _scene,
 )
@@ -84,7 +84,7 @@ class RigidBodyAnimationHandlers:
         confirm_delete_baked_cache=False,
     ):
         scene = _scene(scene_name)
-        obj = _object(object_name)
+        obj = get_object(object_name)
         if obj.name not in scene.objects or obj.rigid_body is None:
             raise ValueError(f"Object '{object_name}' must be a rigid body in scene '{scene.name}'")
         if transition not in {"RELEASE", "CAPTURE"}:

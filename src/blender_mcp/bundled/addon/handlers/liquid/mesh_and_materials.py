@@ -6,13 +6,11 @@ import math
 
 import bpy
 
+from ..rna_patch import finite, get_object, patch_rna
 from ..texture.materials import _MATERIAL_PRESETS as _PBR_MATERIAL_PRESETS
 from .inspection_and_setup import (
     _ensure_collection,
-    _finite,
     _get_domain,
-    _get_object,
-    _patch_rna,
     _reject_baked,
     _world_bounds,
 )
@@ -254,7 +252,7 @@ class LiquidMeshAndMaterialHandlers:
         concave_upper = patch.get("mesh_concave_upper", settings.mesh_concave_upper)
         if concave_lower > concave_upper:
             raise ValueError("mesh_concave_lower must be <= mesh_concave_upper")
-        changes = _patch_rna(settings, patch, _MESH_FIELDS)
+        changes = patch_rna(settings, patch, _MESH_FIELDS)
         _update_or_restore(obj, settings, changes)
         return {
             "changed_objects": [obj.name],
@@ -284,7 +282,7 @@ class LiquidMeshAndMaterialHandlers:
         for minimum, maximum in pairs:
             if prospective[minimum] > prospective[maximum]:
                 raise ValueError(f"{minimum} must be <= {maximum}")
-        changes = _patch_rna(settings, patch, _SECONDARY_FIELDS)
+        changes = patch_rna(settings, patch, _SECONDARY_FIELDS)
         _update_or_restore(obj, settings, changes)
         # Enabling a toggle is when Mantaflow materializes the matching system, so this is the first
         # and most reliable moment to record its role for later name-independent lookups.
@@ -318,7 +316,7 @@ class LiquidMeshAndMaterialHandlers:
         patch, source, conversion = _expand_viscosity_config(config)
         if not patch:
             raise ValueError("Diffusion config does not contain a setting")
-        changes = _patch_rna(settings, patch, _DIFFUSION_FIELDS)
+        changes = patch_rna(settings, patch, _DIFFUSION_FIELDS)
         _update_or_restore(obj, settings, changes)
         kinematic = float(settings.viscosity_base) * (10.0 ** (-int(settings.viscosity_exponent)))
         warnings = []
@@ -371,7 +369,7 @@ class LiquidMeshAndMaterialHandlers:
         values = {**_PBR_MATERIAL_PRESETS[preset], **overrides}
         for color_name in ("base_color", "volume_absorption_color"):
             color = values[color_name]
-            _finite(color, color_name)
+            finite(color, color_name)
             if len(color) != 4 or any(not 0.0 <= component <= 1.0 for component in color):
                 raise ValueError(f"{color_name} must contain four values in [0, 1]")
 
@@ -455,7 +453,7 @@ class LiquidMeshAndMaterialHandlers:
         created_helper = False
         helper_collection_linked = False
         if instance_object_name:
-            instance = _get_object(instance_object_name, {"MESH"})
+            instance = get_object(instance_object_name, {"MESH"})
         else:
             if bpy.data.objects.get(helper_object_name) is not None:
                 raise ValueError(f"Helper object already exists: {helper_object_name}")

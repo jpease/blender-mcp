@@ -3,12 +3,11 @@
 
 import bpy
 
-from ...helpers import paginate
+from ...helpers import bounded_int, paginate
 from ._shared import (
     _MAX_RIG_DESCENDANTS,
     _TARGETED_CONSTRAINTS,
     _action_records,
-    _bounded_int,
     _camera_settings,
     _constraint_info,
     _descendants,
@@ -141,11 +140,11 @@ class _InspectionMixin:
     ):
         scene = _scene(scene_name)
         root = _object(object_name, scene=scene)
-        descendant_depth = _bounded_int(descendant_depth, "descendant_depth", 0, 12)
-        child_limit = _bounded_int(child_limit, "child_limit", 1, 200)
-        child_offset = _bounded_int(child_offset, "child_offset", 0, _MAX_RIG_DESCENDANTS - 1)
-        animation_limit = _bounded_int(animation_limit, "animation_limit", 1, 500)
-        animation_offset = _bounded_int(animation_offset, "animation_offset", 0, _MAX_ANIMATION_RECORDS - 1)
+        descendant_depth = bounded_int("descendant_depth", descendant_depth, 0, 12)
+        child_limit = bounded_int("child_limit", child_limit, 1, 200)
+        child_offset = bounded_int("child_offset", child_offset, 0, _MAX_RIG_DESCENDANTS - 1)
+        animation_limit = bounded_int("animation_limit", animation_limit, 1, 500)
+        animation_offset = bounded_int("animation_offset", animation_offset, 0, _MAX_ANIMATION_RECORDS - 1)
         descendants, descendants_capped = _descendants(root, descendant_depth)
         animation = _rig_animation(root, descendants)
         result = {

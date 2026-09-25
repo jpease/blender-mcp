@@ -17,7 +17,7 @@ from types import ModuleType
 
 import pytest
 
-from test_mutation_transaction import _load_addon
+from conftest import load_addon
 
 
 def _as_stored(value: float) -> float:
@@ -46,7 +46,7 @@ def proxy_rigs(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
         ModuleType: The `handlers.cloth.proxy_rigs` module.
 
     """
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     return sys.modules[f"{addon.__name__}.handlers.cloth.proxy_rigs"]
 
 

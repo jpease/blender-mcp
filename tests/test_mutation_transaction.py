@@ -1,124 +1,24 @@
 """Regression coverage for the mutation_transaction rollback/checkpoint contract."""
 
-import itertools
 import sys
 import types
 
 import pytest
 
-from conftest import install_file_lifecycle_handler_lists, load_addon_package
-
-_UID = itertools.count(1)
-
-
-def _next_uid():
-    return next(_UID)
-
-
-class FakeMatrix:
-    """Stand-in for a mathutils.Matrix: only .copy()/.inverted() are exercised."""
-
-    def __init__(self, value=(0.0, 0.0, 0.0)) -> None:
-        self.value = value
-
-    def copy(self):
-        return FakeMatrix(self.value)
-
-    def inverted(self):
-        return FakeMatrix(self.value)
-
-
-class FakeDatablock:
-    """
-    Stand-in for a bpy ID.
-
-    `users`, `use_fake_user` and `library` exist on every real ID, so they exist
-    here: production reads them with a `getattr` default, and a fake missing them
-    would pass the persistence checks for the wrong reason.
-    """
-
-    def __init__(self, name) -> None:
-        self.name = name
-        self.session_uid = _next_uid()
-        self.users = 1
-        self.use_fake_user = False
-        self.library = None
-
-
-class FakeMesh:
-    """Mesh datablock whose .copy() registers a fresh backup in its collection."""
-
-    def __init__(self, name, meshes) -> None:
-        self.name = name
-        self.session_uid = _next_uid()
-        self._meshes = meshes
-
-    def copy(self):
-        clone = FakeMesh(f"{self.name}.backup", self._meshes)
-        self._meshes[clone.name] = clone
-        return clone
-
-
-class FakeCollection:
-    """
-    Stand-in for a bpy.data.* collection.
-
-    Real Blender collections are identity-based: renaming a datablock and then
-    allocating a new one under the freed name leaves *both* present. A
-    name-keyed dict would clobber the renamed entry, hiding exactly the bug the
-    identity-tracking fix guards against - so this holds items in a list and
-    resolves lookups by each datablock's current .name.
-    """
-
-    def __init__(self) -> None:
-        self._items = []
-
-    def __setitem__(self, _name, db) -> None:
-        # Setup convenience (tests seed collections with objects[name] = obj);
-        # mirrors Blender allocating a datablock, so it just appends.
-        self._items.append(db)
-
-    def __getitem__(self, name):
-        for db in self._items:
-            if db.name == name:
-                return db
-        raise KeyError(name)
-
-    def get(self, name, default=None):
-        for db in self._items:
-            if db.name == name:
-                return db
-        return default
-
-    def new(self, name, *_args, **_kwargs):
-        db = FakeDatablock(name)
-        self._items.append(db)
-        return db
-
-    def remove(self, db, do_unlink=True) -> None:
-        for index, existing in enumerate(self._items):
-            if existing is db:
-                del self._items[index]
-                return
-
-    def __contains__(self, name) -> bool:
-        return any(db.name == name for db in self._items)
-
-    def __iter__(self):
-        return iter(list(self._items))
-
-    def values(self) -> list:
-        """
-        List the datablocks, as `bpy_prop_collection.values` does.
-
-        Returns:
-            list: Every datablock, in allocation order.
-
-        """
-        return list(self._items)
-
-    def __len__(self) -> int:
-        return len(self._items)
+from conftest import load_addon
+from datablock_doubles import (
+    LINKED_FROM_CANON,
+    TRACKED_COLLECTIONS,
+    FakeCollection,
+    FakeDatablock,
+    FakeLinkedDatablock,
+    FakeMatrix,
+    FakeMesh,
+    FakeModifierStack,
+    FakeMutableObject,
+    reload_library_contents,
+    replace_whole_database,
+)
 
 
 class FakeSlot:
@@ -131,123 +31,9 @@ class FakeModifier:
         self.name = name
 
 
-class FakeModifierStack(list):
-    def remove(self, mod) -> None:
-        try:
-            list.remove(self, mod)
-        except ValueError:
-            pass
-
-
-class FakeMutableObject:
-    """Object rich enough for object_state.ObjectState to capture and restore."""
-
-    def __init__(self, name, *, mesh=None) -> None:
-        self.name = name
-        self.session_uid = _next_uid()
-        self.data = mesh
-        self.matrix_basis = FakeMatrix()
-        self.parent = None
-        self.matrix_parent_inverse = FakeMatrix()
-        self.material_slots = []
-        self.modifiers = FakeModifierStack()
-
-
-# Every collection name transaction._TRACKED_COLLECTIONS iterates - a
-# mutating-path test must stock all of these or _snapshot_ids() raises
-# AttributeError, which is exactly how the read-only tests below prove the
-# wrapper was skipped: their bpy.data has none of these attributes at all.
-_TRACKED_COLLECTIONS = (
-    "objects",
-    "meshes",
-    "curves",
-    "materials",
-    "textures",
-    "images",
-    "node_groups",
-    "worlds",
-    "actions",
-    "armatures",
-    "cameras",
-    "lights",
-    "collections",
-)
-
-
-def _load_addon(monkeypatch, *, data=None, use_global_undo=None):
-    bpy = types.ModuleType("bpy")
-    context = types.SimpleNamespace(
-        scene=types.SimpleNamespace(
-            blendermcp_use_polyhaven=False,
-            blendermcp_use_sketchfab=False,
-            blendermcp_use_nd=False,
-        ),
-    )
-    if use_global_undo is not None:
-        context.preferences = types.SimpleNamespace(edit=types.SimpleNamespace(use_global_undo=use_global_undo))
-    bpy.context = context
-    bpy.data = types.SimpleNamespace(**(data or {}))
-    bpy.types = types.SimpleNamespace(
-        AddonPreferences=object,
-        Operator=object,
-        Panel=object,
-        Scene=type("Scene", (), {}),
-    )
-    bpy.ops = types.SimpleNamespace(ed=types.SimpleNamespace(undo_push=lambda **_kw: None))
-
-    props = types.ModuleType("bpy.props")
-    for name in ("BoolProperty", "EnumProperty", "FloatProperty", "IntProperty", "StringProperty"):
-        setattr(props, name, lambda **_kwargs: None)
-    bpy.props = props
-
-    handlers = types.ModuleType("bpy.app.handlers")
-    handlers.persistent = lambda fn: fn
-    handlers.undo_post = []
-    handlers.redo_post = []
-    handlers.depsgraph_update_post = []
-    # Shared helper, so these lists cannot drift from the other stubs'.
-    install_file_lifecycle_handler_lists(handlers)
-
-    app = types.ModuleType("bpy.app")
-    app.version = (5, 1, 0)
-    app.version_string = "5.1.0"
-    app.background = False
-    app.handlers = handlers
-    app.timers = types.SimpleNamespace(
-        is_registered=lambda *_a, **_k: False,
-        register=lambda *_a, **_k: None,
-        unregister=lambda *_a, **_k: None,
-    )
-    bpy.app = app
-
-    monkeypatch.setitem(sys.modules, "bpy", bpy)
-    monkeypatch.setitem(sys.modules, "bpy.props", props)
-    monkeypatch.setitem(sys.modules, "bpy.app", app)
-    monkeypatch.setitem(sys.modules, "bpy.app.handlers", handlers)
-    mathutils = types.ModuleType("mathutils")
-    bvhtree = types.ModuleType("mathutils.bvhtree")
-    bvhtree.BVHTree = type("BVHTree", (), {})
-    kdtree = types.ModuleType("mathutils.kdtree")
-    kdtree.KDTree = type("KDTree", (), {})
-    mathutils.bvhtree = bvhtree
-    mathutils.kdtree = kdtree
-    monkeypatch.setitem(sys.modules, "mathutils", mathutils)
-    monkeypatch.setitem(sys.modules, "mathutils.bvhtree", bvhtree)
-    monkeypatch.setitem(sys.modules, "mathutils.kdtree", kdtree)
-    monkeypatch.setitem(sys.modules, "bmesh", types.ModuleType("bmesh"))
-
-    requests = types.ModuleType("requests")
-    requests.utils = types.SimpleNamespace(default_headers=dict)
-    requests.exceptions = types.SimpleNamespace(Timeout=TimeoutError)
-    monkeypatch.setitem(sys.modules, "requests", requests)
-
-    addon = load_addon_package(monkeypatch, "blender_mcp_addon_transaction_test")
-    return addon, bpy
-
-
 def test_failed_mutating_handler_rolls_back_created_datablocks(monkeypatch) -> None:
-    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    data = {name: FakeCollection() for name in TRACKED_COLLECTIONS}
+    addon, bpy = load_addon(monkeypatch, data=data)
     server = addon.BlenderMCPServer()
 
     def fake_handler():
@@ -274,7 +60,7 @@ def test_a_refused_request_is_logged_without_a_traceback(monkeypatch, caplog) ->
     where an actual fault also appears. An operator who learns to skim those skims the one
     that matters. The client is told exactly the same thing either way.
     """
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     def refuses():
@@ -301,8 +87,8 @@ def test_a_refused_request_is_logged_without_a_traceback(monkeypatch, caplog) ->
 
 
 def test_successful_mutating_handler_pushes_one_undo_checkpoint(monkeypatch) -> None:
-    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    data = {name: FakeCollection() for name in TRACKED_COLLECTIONS}
+    addon, bpy = load_addon(monkeypatch, data=data)
     server = addon.BlenderMCPServer()
 
     def fake_handler():
@@ -325,7 +111,7 @@ def test_read_only_command_never_snapshots_or_checkpoints(monkeypatch) -> None:
     # Deliberately no bpy.data.* collections at all - if the read-only path
     # ever touched mutation_transaction, _snapshot_ids() would raise
     # AttributeError and this test would error out instead of passing.
-    addon, bpy = _load_addon(monkeypatch, data={})
+    addon, bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     def fake_readonly_handler():
@@ -347,8 +133,8 @@ def test_renamed_preexisting_datablock_survives_failed_mutation(monkeypatch) -> 
     # mesh reusing the freed name, then fails. A name-based diff would do the
     # opposite of what's correct - delete the renamed survivor and keep the new
     # orphan. Identity tracking gets both right.
-    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    data = {name: FakeCollection() for name in TRACKED_COLLECTIONS}
+    addon, bpy = load_addon(monkeypatch, data=data)
     original = bpy.data.meshes.new(name="Mesh")
     original_uid = original.session_uid
     server = addon.BlenderMCPServer()
@@ -372,8 +158,8 @@ def test_renamed_preexisting_datablock_survives_failed_mutation(monkeypatch) -> 
 
 
 def test_handler_returning_error_shape_rolls_back_and_reports_error(monkeypatch) -> None:
-    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    data = {name: FakeCollection() for name in TRACKED_COLLECTIONS}
+    addon, bpy = load_addon(monkeypatch, data=data)
     server = addon.BlenderMCPServer()
 
     def fake_handler():
@@ -394,8 +180,8 @@ def test_handler_returning_error_shape_rolls_back_and_reports_error(monkeypatch)
 def test_cancelled_result_does_not_create_undo_checkpoint(monkeypatch) -> None:
     # {"cancelled": True} is a legitimate ok:false outcome (an ND operator the
     # user pressed Esc on), not a failure - it must not create a misleading undo checkpoint.
-    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    data = {name: FakeCollection() for name in TRACKED_COLLECTIONS}
+    addon, bpy = load_addon(monkeypatch, data=data)
     server = addon.BlenderMCPServer()
 
     def fake_handler():
@@ -414,8 +200,8 @@ def test_cancelled_result_does_not_create_undo_checkpoint(monkeypatch) -> None:
 
 
 def test_captured_object_state_restored_on_failure(monkeypatch) -> None:
-    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    data = {name: FakeCollection() for name in TRACKED_COLLECTIONS}
+    addon, bpy = load_addon(monkeypatch, data=data)
     target = FakeMutableObject("Widget")
     original_material = FakeDatablock("Steel")
     target.material_slots = [FakeSlot(original_material)]
@@ -445,8 +231,8 @@ def test_captured_object_state_restored_on_failure(monkeypatch) -> None:
 
 
 def test_geometry_backup_swapped_back_on_failed_geometry_edit(monkeypatch) -> None:
-    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    data = {name: FakeCollection() for name in TRACKED_COLLECTIONS}
+    addon, bpy = load_addon(monkeypatch, data=data)
     original_mesh = FakeMesh("WidgetMesh", bpy.data.meshes)
     original_mesh_uid = original_mesh.session_uid
     bpy.data.meshes["WidgetMesh"] = original_mesh
@@ -475,8 +261,8 @@ def test_geometry_backup_swapped_back_on_failed_geometry_edit(monkeypatch) -> No
 
 
 def test_checkpoint_unavailable_is_reported_not_suppressed(monkeypatch) -> None:
-    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
-    addon, bpy = _load_addon(monkeypatch, data=data, use_global_undo=False)
+    data = {name: FakeCollection() for name in TRACKED_COLLECTIONS}
+    addon, bpy = load_addon(monkeypatch, data=data, use_global_undo=False)
     server = addon.BlenderMCPServer()
 
     def fake_handler():
@@ -507,7 +293,7 @@ def test_rollback_removes_objects_first_and_libraries_last_each_in_reverse(monke
     removals that happen to succeed; `removal_order` is pure, so it is visible
     directly.
     """
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     transaction = sys.modules[f"{addon.__name__}.transaction"]
 
     ordered = transaction.removal_order(
@@ -550,7 +336,7 @@ def _objects_collection(*names):
 
 
 def test_sync_data_name_validates_all_names_before_mutating_any(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch, data={"objects": _objects_collection("Existing")})
+    addon, bpy = load_addon(monkeypatch, data={"objects": _objects_collection("Existing")})
     server = addon.BlenderMCPServer()
     existing = bpy.data.objects["Existing"]
     existing.data.name = "OldData"  # object name and data name now differ, as if freshly duplicated
@@ -562,7 +348,7 @@ def test_sync_data_name_validates_all_names_before_mutating_any(monkeypatch) -> 
 
 
 def test_clear_materials_validates_all_names_before_mutating_any(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch, data={"objects": _objects_collection("Existing")})
+    addon, bpy = load_addon(monkeypatch, data={"objects": _objects_collection("Existing")})
     server = addon.BlenderMCPServer()
     existing = bpy.data.objects["Existing"]
     existing.data.materials.append(FakeDatablock("Paint"))
@@ -590,7 +376,7 @@ def test_nd_mark_as_util_validates_all_names_before_mutating_any(monkeypatch) ->
     objects = FakeCollection()
     existing = FakeUtilObject("Existing")
     objects["Existing"] = existing
-    addon, _bpy = _load_addon(monkeypatch, data={"objects": objects})
+    addon, _bpy = load_addon(monkeypatch, data={"objects": objects})
     server = addon.BlenderMCPServer()
 
     with pytest.raises(ValueError, match="Object not found: Missing"):
@@ -603,73 +389,6 @@ def test_nd_mark_as_util_validates_all_names_before_mutating_any(monkeypatch) ->
 # ---------------------------------------------------------------------------
 # A rollback that outlives the database it snapshotted
 # ---------------------------------------------------------------------------
-
-
-# The datablocks each reproduction links from its stub library.
-_LINKED_FROM_CANON = (("objects", "HeroBody"), ("meshes", "HeroMesh"), ("collections", "CanonHero"))
-
-
-class FakeLinkedDatablock(FakeDatablock):
-    """A datablock linked from a library: `library` names the `Library` it came from."""
-
-    def __init__(self, name: str, library: FakeDatablock) -> None:
-        """
-        Allocate the datablock with a fresh session_uid.
-
-        Args:
-            name: The datablock's name.
-            library: The stub `Library` it is linked from.
-
-        """
-        super().__init__(name)
-        self.library = library
-
-
-def _replace_whole_database(data: dict[str, FakeCollection]) -> dict[str, list[int]]:
-    """
-    Model a file load: every tracked datablock is freed and the new file's take their place.
-
-    A load gives every datablock a fresh `session_uid`, even one whose name is
-    unchanged.
-
-    Args:
-        data: The stub `bpy.data` collections, keyed by collection name.
-
-    Returns:
-        dict[str, list[int]]: The new file's session_uids, per collection.
-
-    """
-    loaded = {}
-    for coll_name, collection in data.items():
-        names = [db.name for db in collection] or [f"{coll_name}.from_new_file"]
-        for db in list(collection):
-            collection.remove(db)
-        loaded[coll_name] = [collection.new(name).session_uid for name in names]
-    return loaded
-
-
-def _reload_library_contents(data: dict[str, FakeCollection], library: FakeDatablock) -> list[int]:
-    """
-    Model `lib.reload()`: every datablock linked from `library` comes back with a fresh `session_uid`.
-
-    Local datablocks and the `Library` itself keep theirs.
-
-    Args:
-        data: The stub `bpy.data` collections, keyed by collection name.
-        library: The stub library being reloaded.
-
-    Returns:
-        list[int]: The reloaded datablocks' new session_uids.
-
-    """
-    reloaded = []
-    for collection in data.values():
-        for db in [db for db in collection if getattr(db, "library", None) is library]:
-            collection.remove(db)
-            fresh = FakeLinkedDatablock(db.name, library)
-            collection[db.name] = fresh
-            reloaded.append(fresh.session_uid)
-    return reloaded
 
 
 def test_regression_guard_a_transaction_unaware_of_a_file_swap_removes_the_whole_new_file(
@@ -687,15 +406,15 @@ def test_regression_guard_a_transaction_unaware_of_a_file_swap_removes_the_whole
         RuntimeError: Inside the transaction, to trigger the rollback.
 
     """
-    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    data = {name: FakeCollection() for name in TRACKED_COLLECTIONS}
+    addon, bpy = load_addon(monkeypatch, data=data)
     transaction = sys.modules[f"{addon.__name__}.transaction"]
     bpy.data.objects["Hero"] = FakeDatablock("Hero")
     bpy.data.meshes["HeroMesh"] = FakeDatablock("HeroMesh")
 
     with pytest.raises(RuntimeError, match="after the load"), transaction.mutation_transaction("do_mutate"):
-        loaded = _replace_whole_database(data)
-        assert sum(len(uids) for uids in loaded.values()) == len(_TRACKED_COLLECTIONS)
+        loaded = replace_whole_database(data)
+        assert sum(len(uids) for uids in loaded.values()) == len(TRACKED_COLLECTIONS)
         raise RuntimeError("after the load")
 
     assert {name: len(collection) for name, collection in data.items()} == dict.fromkeys(data, 0)
@@ -716,17 +435,17 @@ def test_regression_guard_a_transaction_unaware_of_a_library_reload_removes_the_
         RuntimeError: Inside the transaction, to trigger the rollback.
 
     """
-    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    data = {name: FakeCollection() for name in TRACKED_COLLECTIONS}
+    addon, bpy = load_addon(monkeypatch, data=data)
     transaction = sys.modules[f"{addon.__name__}.transaction"]
     library = FakeDatablock("canon.blend")
-    for coll_name, name in _LINKED_FROM_CANON:
+    for coll_name, name in LINKED_FROM_CANON:
         data[coll_name][name] = FakeLinkedDatablock(name, library)
     local = bpy.data.meshes.new("LocalMesh")
 
     with pytest.raises(RuntimeError, match="after the reload"), transaction.mutation_transaction("do_mutate"):
-        reloaded = _reload_library_contents(data, library)
-        assert len(reloaded) == len(_LINKED_FROM_CANON)
+        reloaded = reload_library_contents(data, library)
+        assert len(reloaded) == len(LINKED_FROM_CANON)
         raise RuntimeError("after the reload")
 
     survivors = {db.session_uid for collection in data.values() for db in collection}
@@ -751,8 +470,8 @@ def _mutating_reply(monkeypatch: pytest.MonkeyPatch, prepare) -> dict:
         dict: The command response.
 
     """
-    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    data = {name: FakeCollection() for name in TRACKED_COLLECTIONS}
+    addon, bpy = load_addon(monkeypatch, data=data)
     server = addon.BlenderMCPServer()
 
     def fake_handler():

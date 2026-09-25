@@ -27,7 +27,7 @@ import sys
 
 from typing import TypedDict
 
-from test_mutation_transaction import _load_addon
+from conftest import load_addon
 
 from blender_mcp.addon_manager import (
     ADDON_SURFACE_PATH,
@@ -82,7 +82,7 @@ def build_addon_surface(monkeypatch) -> AddonSurface:
         dispatchable command with the keywords it accepts.
 
     """
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server_core = sys.modules[f"{addon.__name__}.server_core"]
     introspection = sys.modules[f"{addon.__name__}.capability_introspection"]
     handlers = server_core.BlenderMCPServer()._build_command_handlers()

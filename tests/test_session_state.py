@@ -1,8 +1,8 @@
 """
 Session-lifecycle state for the bundled addon (no Blender required).
 
-`_load_session` executes `session.py` alone, so every test starts from a fresh
-epoch counter. `get_session_info` needs `_load_addon` instead, because its mixin
+`load_session` executes `session.py` alone, so every test starts from a fresh
+epoch counter. `get_session_info` needs `load_addon` instead, because its mixin
 imports `..session` relatively.
 
 The stubs encode Blender's behaviour: handler lists are plain `list`s that accept
@@ -28,10 +28,7 @@ from types import ModuleType
 
 import pytest
 
-from conftest import ROOT_ADDON, install_file_lifecycle_handler_lists, load_addon_source_module
-from test_mutation_transaction import _load_addon
-
-_SESSION_ALIAS = "blender_mcp_addon_session_test"
+from conftest import load_addon, load_addon_source_module, load_session
 
 # The one shape a recorded failure may take. A positive shape, because an absence
 # check such as `not token.startswith("/")` passes every hostile input below.
@@ -138,37 +135,6 @@ def _assert_client_safe_note(note: object, *forbidden: str) -> str:
     return match.group("name")
 
 
-def _load_session(monkeypatch: pytest.MonkeyPatch) -> tuple[ModuleType, ModuleType]:
-    """
-    Execute `session.py` alone against a minimal `bpy`.
-
-    Args:
-        monkeypatch: Fixture used to install the stub in `sys.modules` for the
-            duration of one test.
-
-    Returns:
-        tuple: The freshly executed session module and the `bpy` stub its
-        handlers will read and mutate.
-
-    """
-    handlers = types.ModuleType("bpy.app.handlers")
-    handlers.persistent = lambda fn: fn
-    install_file_lifecycle_handler_lists(handlers)
-
-    app = types.ModuleType("bpy.app")
-    app.handlers = handlers
-
-    bpy = types.ModuleType("bpy")
-    bpy.app = app
-    bpy.data = types.SimpleNamespace(filepath="", is_dirty=False, libraries=[])
-
-    monkeypatch.setitem(sys.modules, "bpy", bpy)
-    monkeypatch.setitem(sys.modules, "bpy.app", app)
-    monkeypatch.setitem(sys.modules, "bpy.app.handlers", handlers)
-
-    return load_addon_source_module("session.py", _SESSION_ALIAS), bpy
-
-
 def _handler_counts(bpy: ModuleType) -> dict[str, int]:
     """
     Count the callbacks sitting in each of the four handler lists.
@@ -213,7 +179,7 @@ def _fire(bpy: ModuleType, list_name: str, file_path: str) -> None:
 
 def test_a_completed_load_moves_the_session_epoch_exactly_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """One swap, one increment: a client polls this to know its capabilities are stale."""
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
     before = session.session_snapshot()["session_epoch"]
 
@@ -231,7 +197,7 @@ def test_a_failed_load_does_not_move_the_session_epoch(monkeypatch: pytest.Monke
     Moving the epoch here would make every connected process re-handshake for
     nothing.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
     _fire(bpy, "load_post", "/shots/sq010.blend")
     loaded = session.session_snapshot()
@@ -250,7 +216,7 @@ def test_a_successful_save_does_not_move_the_session_epoch(monkeypatch: pytest.M
 
     The filepath *does* move, which is the observable a client needs from a save.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
     _fire(bpy, "load_post", "/shots/sq010.blend")
     before = session.session_snapshot()
@@ -274,7 +240,7 @@ def test_a_save_copy_does_not_make_the_state_name_a_file_nobody_has_open(
     File > Save Copy passes the copy's path, so the handler must read
     `bpy.data.filepath` or clients are told the wrong file is open.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
     bpy.data.filepath = "/shots/real.blend"
     _fire(bpy, "load_post", "/shots/real.blend")
@@ -295,7 +261,7 @@ def test_a_save_copy_does_not_clear_a_failure_belonging_to_a_different_file(
     Clearing `last_save_error` because another path was written would tell the
     client the problem went away when it did not.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
     bpy.data.filepath = "/shots/real.blend"
     _fire(bpy, "save_post_fail", "/shots/real.blend")
@@ -312,7 +278,7 @@ def test_a_save_copy_does_not_clear_a_failure_belonging_to_a_different_file(
 
 def test_a_failed_save_records_the_error_without_moving_the_epoch(monkeypatch: pytest.MonkeyPatch) -> None:
     """A save that never landed leaves both the epoch and the open file where they were."""
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
     _fire(bpy, "load_post", "/shots/sq010.blend")
     before = session.session_snapshot()
@@ -327,7 +293,7 @@ def test_a_failed_save_records_the_error_without_moving_the_epoch(monkeypatch: p
 
 def test_a_later_success_clears_the_recorded_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """A stale error would have a client chasing a failure it already recovered from."""
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
 
     _fire(bpy, "load_post_fail", "/shots/nope.blend")
@@ -352,7 +318,7 @@ def test_an_unsaved_session_reports_no_filepath_rather_than_an_empty_string(
 
     `wm.read_homefile` fires `load_post` with an empty path.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
 
     _fire(bpy, "load_post", "")
@@ -368,7 +334,7 @@ def test_resetting_the_session_moves_the_epoch_through_load_post_alone(
 
     Both `wm.read_homefile()` and `wm.read_factory_settings()` fire `load_post`.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
     before = session.session_snapshot()["session_epoch"]
 
@@ -394,7 +360,7 @@ def test_the_epoch_moves_in_exactly_the_transitions_that_may_have_replaced_the_d
     The handler tests above prove this one event at a time; the transitions are
     the only writers, so this is the one place the table can be read whole.
     """
-    session, _bpy = _load_session(monkeypatch)
+    session, _bpy = load_session(monkeypatch)
     start = session._SessionState()
 
     applied = {
@@ -425,7 +391,7 @@ def test_every_transition_that_accounts_for_a_load_clears_the_in_flight_flag(
     `server_core._run_session_swap` reads the flag after an abort, and three
     different outcomes account for the load `load_pre` announced.
     """
-    session, _bpy = _load_session(monkeypatch)
+    session, _bpy = load_session(monkeypatch)
     announced = session.applied_load_pre(session._SessionState())
     assert announced.load_in_flight is True, "the announcement itself is the only evidence a load began"
 
@@ -447,7 +413,7 @@ def test_a_completed_load_is_the_only_transition_that_clears_the_indeterminate_l
     A failed load and a save leave the database as they found it, so neither is
     evidence that the session can be named again.
     """
-    session, _bpy = _load_session(monkeypatch)
+    session, _bpy = load_session(monkeypatch)
     latched = session.applied_indeterminate(session._SessionState(current_filepath="/shots/sq010.blend"))
     assert latched.session_indeterminate is True
 
@@ -469,7 +435,7 @@ def test_a_save_copy_leaves_a_recorded_failure_belonging_to_another_file_alone(
     `save_post` reports the file written while `bpy.data.filepath` still names
     the file open, and the two differ only for `save_as_mainfile(copy=True)`.
     """
-    session, _bpy = _load_session(monkeypatch)
+    session, _bpy = load_session(monkeypatch)
     refused = session.applied_save_failure(session._SessionState(), "/shots/sq010.blend")
     assert refused.last_save_error
 
@@ -491,7 +457,7 @@ def test_an_abort_reaches_a_snapshot_whole_or_not_at_all(monkeypatch: pytest.Mon
     writer is scheduled: the new epoch and the latch arrive in one object, and
     the state a reader may still be holding is left as it was.
     """
-    session, _bpy = _load_session(monkeypatch)
+    session, _bpy = load_session(monkeypatch)
     starts = (
         session._SessionState(),
         session._SessionState(session_epoch=7, current_filepath="/shots/sq010.blend", load_in_flight=True),
@@ -556,7 +522,7 @@ def test_a_recorded_failure_names_one_bounded_leaf_and_nothing_else(
     reduce Windows, UNC, control-character and over-long paths as reliably as a
     tidy posix one.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
 
     _fire(bpy, "load_post_fail", hostile)
@@ -582,7 +548,7 @@ def test_a_directory_is_never_named_in_a_recorded_failure(
             filesystem rather than a string heuristic.
 
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
 
     _fire(bpy, "load_post_fail", str(tmp_path))
@@ -602,8 +568,8 @@ def test_the_snapshot_carries_a_process_unique_session_id(monkeypatch: pytest.Mo
     After a restart or Reload Scripts a client can see the same epoch for a
     different database. The id, minted per import, cannot repeat.
     """
-    session_a, _bpy_a = _load_session(monkeypatch)
-    session_b, _bpy_b = _load_session(monkeypatch)
+    session_a, _bpy_a = load_session(monkeypatch)
+    session_b, _bpy_b = load_session(monkeypatch)
 
     first = session_a.session_snapshot()
     assert isinstance(first["session_id"], str) and first["session_id"], "no session id is published"
@@ -615,7 +581,7 @@ def test_the_snapshot_carries_a_process_unique_session_id(monkeypatch: pytest.Mo
 
 def test_a_swap_moves_the_epoch_without_disturbing_the_session_id(monkeypatch: pytest.MonkeyPatch) -> None:
     """The id identifies the process; only the epoch tracks what happens inside it."""
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
     before = session.session_snapshot()
 
@@ -637,7 +603,7 @@ def test_registering_twice_does_not_stack_duplicate_handlers(monkeypatch: pytest
 
     A stacked `load_post` would move the epoch twice per swap.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
 
     session.register_handlers()
     once = _handler_counts(bpy)
@@ -648,7 +614,7 @@ def test_registering_twice_does_not_stack_duplicate_handlers(monkeypatch: pytest
 
 def test_a_disable_enable_cycle_leaves_exactly_one_of_each_handler(monkeypatch: pytest.MonkeyPatch) -> None:
     """Toggling the addon is the path users take; it must not accumulate."""
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
 
     for _cycle in range(3):
         session.register_handlers()
@@ -666,7 +632,7 @@ def test_a_swap_after_a_disable_enable_cycle_still_moves_the_epoch_once(
     A cycle that swapped the live callback for a stale one would keep the count at
     1 and stop maintaining the epoch.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
     session.unregister_handlers()
     session.register_handlers()
@@ -687,7 +653,7 @@ def test_a_swap_while_the_addon_was_disabled_still_moves_the_marker(
     `register_handlers` re-reads `bpy.data.filepath`; updating `current_filepath`
     without moving the epoch would hide that swap from clients.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
     _fire(bpy, "load_post", "/shots/sq010.blend")
     before = session.session_snapshot()
@@ -712,7 +678,7 @@ def test_re_enabling_on_the_same_file_does_not_move_the_marker(
     Bumping on every registration would make every process re-handshake on each
     Blender start, when nothing changed.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
     _fire(bpy, "load_post", "/shots/sq010.blend")
     before = session.session_snapshot()["session_epoch"]
@@ -730,24 +696,29 @@ def test_unregistering_without_registering_is_not_an_error(monkeypatch: pytest.M
     `unregister()` runs where `register()` may have half-failed, and raising there
     leaves the addon unable to unload.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
 
     session.unregister_handlers()
 
     assert _handler_counts(bpy) == dict.fromkeys(_handler_counts(bpy), 0)
 
 
-def test_the_addon_registers_and_unregisters_the_session_handlers() -> None:
+def test_the_addon_registers_and_unregisters_the_session_handlers(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     The handlers only maintain anything if the addon's own lifecycle wires them in.
 
-    Asserted against the addon source rather than by calling `register()`, which
-    also registers operator classes and starts a socket server.
+    With no scene there is no auto-start setting to read, so `register()` starts no server.
     """
-    source = ROOT_ADDON.read_text(encoding="utf-8")
+    addon, bpy = load_addon(monkeypatch, scene=None)
+    bpy.utils = types.SimpleNamespace(register_class=lambda _cls: None, unregister_class=lambda _cls: None)
+    bpy.app.handlers.render_init = []
 
-    assert "session.register_handlers()" in source, "register() never registers the session handlers"
-    assert "session.unregister_handlers()" in source, "unregister() never removes the session handlers"
+    addon.register()
+    registered = _handler_counts(bpy)
+    addon.unregister()
+
+    assert registered == dict.fromkeys(registered, 1), "register() does not attach each session handler once"
+    assert _handler_counts(bpy) == dict.fromkeys(registered, 0), "unregister() leaves session handlers attached"
 
 
 # ---------------------------------------------------------------------------
@@ -779,7 +750,7 @@ def _load_server(monkeypatch: pytest.MonkeyPatch, **data: object) -> tuple[objec
     """
     monkeypatch.delenv("BLENDERMCP_FILE_ROOTS", raising=False)
     monkeypatch.delenv("BLENDERMCP_OUTPUT_ROOTS", raising=False)
-    addon, bpy = _load_addon(monkeypatch, data={"filepath": "", "is_dirty": False, "libraries": [], **data})
+    addon, bpy = load_addon(monkeypatch, data={"filepath": "", "is_dirty": False, "libraries": [], **data})
     server_core = sys.modules[f"{addon.__name__}.server_core"]
     session = sys.modules[f"{addon.__name__}.session"]
     return server_core.BlenderMCPServer(), session, bpy
@@ -868,7 +839,7 @@ def test_the_session_swap_set_holds_the_commands_that_replace_the_database(
     stay safe to run; treating it as a swap would discard a whole batch on every
     save.
     """
-    addon, _bpy = _load_addon(monkeypatch, data={"filepath": "", "is_dirty": False, "libraries": []})
+    addon, _bpy = load_addon(monkeypatch, data={"filepath": "", "is_dirty": False, "libraries": []})
     commands = sys.modules[f"{addon.__name__}.server_core"].COMMANDS
 
     assert {name for name, spec in commands.items() if spec.session_swap} == {"open_shot", "reset_session"}
@@ -883,7 +854,7 @@ def test_a_session_swap_command_never_reaches_mutation_transaction(
     A transaction snapshots the pre-load database, so a rollback after a swap would
     remove the whole new file.
     """
-    addon, _bpy = _load_addon(monkeypatch, data={"filepath": "", "is_dirty": False, "libraries": []})
+    addon, _bpy = load_addon(monkeypatch, data={"filepath": "", "is_dirty": False, "libraries": []})
     server_core = sys.modules[f"{addon.__name__}.server_core"]
     server = server_core.BlenderMCPServer()
 
@@ -1041,7 +1012,7 @@ def _load_blend_files(monkeypatch: pytest.MonkeyPatch, filepath: str = _SHOT) ->
     """
     monkeypatch.delenv("BLENDERMCP_FILE_ROOTS", raising=False)
     monkeypatch.delenv("BLENDERMCP_OUTPUT_ROOTS", raising=False)
-    addon, _bpy = _load_addon(monkeypatch, data={"filepath": filepath, "is_dirty": False, "libraries": []})
+    addon, _bpy = load_addon(monkeypatch, data={"filepath": filepath, "is_dirty": False, "libraries": []})
     return sys.modules[f"{addon.__name__}.handlers.blend_files"]
 
 
@@ -1505,7 +1476,7 @@ def test_a_confusable_leaf_name_is_refused_rather_than_published(monkeypatch: py
     leaf allowlist yet renders as `canon.blend`. It is refused, not rewritten,
     because rewriting would name a different file.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
 
     _fire(bpy, "load_post_fail", "/shots/ca\uff4eon.blend")
@@ -1520,7 +1491,7 @@ def test_a_confusable_check_does_not_refuse_an_ordinary_name(monkeypatch: pytest
     An accented or non-Latin file name is a real name, and it is the note's only
     useful word.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
 
     _fire(bpy, "load_post_fail", "/shots/s\u00e9quence-010.blend")
@@ -1538,7 +1509,7 @@ def test_a_decomposed_accent_is_a_real_name_not_a_disguise(monkeypatch: pytest.M
     because the composed form is different bytes, so a different file wherever the
     filesystem does not normalize.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
 
     _fire(bpy, "load_post_fail", "/shots/cafe\u0301.blend")
@@ -1555,7 +1526,7 @@ def test_the_confusable_check_still_refuses_a_compatibility_disguise_after_nfc(
     NFC leaves U+FF4E alone while NFKC folds it to `n`. This catches a switch to
     NFKC-against-NFKC, which would never find a disguise.
     """
-    session, bpy = _load_session(monkeypatch)
+    session, bpy = load_session(monkeypatch)
     session.register_handlers()
 
     _fire(bpy, "load_post_fail", "/shots/ca\uff4eon.blend")

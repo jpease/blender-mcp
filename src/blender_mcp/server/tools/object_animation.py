@@ -7,10 +7,8 @@ from pydantic import Field, model_validator
 
 from ..app import mcp
 from ._dispatch import call_blender
-from ._inputs import StrictModel, dump_inputs
+from ._inputs import MAX_FRAME, MIN_FRAME, StrictModel, dump_inputs
 from .key_style import HandleType, Interpolation
-
-_MAX_FRAME = 1_048_574
 
 
 class ObjectTransformKeyframe(StrictModel):
@@ -18,7 +16,7 @@ class ObjectTransformKeyframe(StrictModel):
 
     object_name: Annotated[str, Field(min_length=1)]
     scene_name: Annotated[str | None, Field(min_length=1)] = None
-    frame: Annotated[float | None, Field(ge=-_MAX_FRAME, le=_MAX_FRAME)] = None
+    frame: Annotated[float | None, Field(ge=MIN_FRAME, le=MAX_FRAME)] = None
     at_seconds: float | None = None
     space: Literal["LOCAL", "WORLD"] = "WORLD"
     location: tuple[float, float, float] | None = None

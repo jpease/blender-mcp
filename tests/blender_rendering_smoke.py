@@ -2,7 +2,6 @@
 """Run with Blender 5.1+ to smoke-test render and view-layer handlers."""
 
 import base64
-import importlib.util
 import math
 import os
 import sys
@@ -12,17 +11,10 @@ from pathlib import Path
 
 import bpy
 
-addon_path = Path(__file__).resolve().parents[1] / "src" / "blender_mcp" / "bundled" / "addon" / "__init__.py"
-package_name = "blender_mcp_rendering_smoke"
-spec = importlib.util.spec_from_file_location(
-    package_name,
-    addon_path,
-    submodule_search_locations=[str(addon_path.parent)],
-)
-assert spec is not None
-addon = importlib.util.module_from_spec(spec)
-sys.modules[package_name] = addon
-spec.loader.exec_module(addon)
+sys.path.append(str(Path(__file__).resolve().parent))
+from smoke_addon import load_addon
+
+addon = load_addon("blender_mcp_rendering_smoke")
 
 from blender_mcp_rendering_smoke.handlers.lighting.rendering import LightingRenderHandlers
 from blender_mcp_rendering_smoke.handlers.rendering import RenderingHandlersMixin

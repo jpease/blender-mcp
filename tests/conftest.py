@@ -1,5 +1,5 @@
 """
-Shared paths, loader, and Blender-dispatch stub for the test suite.
+Shared paths, the fake Blender and add-on loaders, and the Blender-dispatch stub for the test suite.
 
 These tests load the bundled addon package as source (it cannot be imported
 without bpy), so they need the repo root rather than the tests directory.
@@ -8,48 +8,19 @@ without bpy), so they need the repo root rather than the tests directory.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
+import types
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import ModuleType
+from typing import TypedDict, Unpack
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ROOT_ADDON = REPO_ROOT / "src" / "blender_mcp" / "bundled" / "addon" / "__init__.py"
-
-# The `bpy.app.handlers` lists `addon/session.py` attaches to, shared so every
-# test module's `bpy` stub picks up a newly added event.
-FILE_LIFECYCLE_HANDLER_LISTS = (
-    "load_pre",
-    "load_post",
-    "load_post_fail",
-    "save_post",
-    "save_post_fail",
-    "blend_import_post",
-)
-
-
-def install_file_lifecycle_handler_lists(handlers: ModuleType) -> ModuleType:
-    """
-    Give a stub `bpy.app.handlers` the empty lists `session.py` binds to.
-
-    In Blender each is a plain `list` that accepts duplicate callbacks and whose
-    `remove` raises for an absent one. A stub that differs could let the
-    idempotence guard in `session.register_handlers` pass here and fail in Blender.
-
-    Args:
-        handlers: The stub module standing in for `bpy.app.handlers`.
-
-    Returns:
-        ModuleType: The same module, so a caller can build and populate it in
-        one expression.
-
-    """
-    for list_name in FILE_LIFECYCLE_HANDLER_LISTS:
-        setattr(handlers, list_name, [])
-    return handlers
 
 
 def load_addon_source_module(file_name: str, alias: str) -> ModuleType:
@@ -95,7 +66,7 @@ def load_addon_source_module(file_name: str, alias: str) -> ModuleType:
             del sys.modules[registered]
 
 
-def load_addon_package(monkeypatch, name):
+def _load_addon_package(monkeypatch: pytest.MonkeyPatch, name: str) -> ModuleType:
     """
     Load the bundled addon package under a scratch dotted module name.
 
@@ -121,6 +92,258 @@ def load_addon_package(monkeypatch, name):
     monkeypatch.setitem(sys.modules, name, addon)
     spec.loader.exec_module(addon)
     return addon
+
+
+# The runtime contract is Blender 5.1+, so no fake claims to be anything older.
+_FAKE_BLENDER_VERSION = (5, 1, 0)
+# One name for every load; `_load_addon_package` purges the previous load's submodules.
+_ADDON_PACKAGE = "blender_mcp_addon_test"
+
+
+class FakeBlender(TypedDict, total=False):
+    """
+    What a test gives the fake Blender before the add-on imports it.
+
+    Attributes:
+        data: `bpy.data`'s attributes, such as `objects` or `filepath`.
+        scene: `bpy.context.scene`; one with every provider flag off when omitted.
+        use_global_undo: `bpy.context.preferences.edit.use_global_undo`. Omitted,
+            the context has no `preferences` at all.
+
+    """
+
+    data: Mapping[str, object]
+    scene: object
+    use_global_undo: bool
+
+
+def _install_fake_blender(monkeypatch: pytest.MonkeyPatch, **fake_blender: Unpack[FakeBlender]) -> ModuleType:
+    """
+    Put a fake Blender 5.1 in `sys.modules`: `bpy` and its submodules, `mathutils`, `bmesh` and `requests`.
+
+    The fake holds what the add-on reads while it imports - the `bpy.types` base
+    classes, `bpy.props`, `@persistent` and the handler lists, `requests.utils` - and
+    the data and scene the test passes. The add-on looks everything else up when a
+    handler runs, so a test sets what its handler reads on the returned module.
+
+    Args:
+        monkeypatch: Installs the modules for the duration of one test.
+        **fake_blender: See `FakeBlender`.
+
+    Returns:
+        ModuleType: The fake `bpy`.
+
+    """
+    bpy = types.ModuleType("bpy")
+    if "scene" in fake_blender:
+        scene = fake_blender["scene"]
+    else:
+        scene = types.SimpleNamespace(
+            blendermcp_use_polyhaven=False,
+            blendermcp_use_sketchfab=False,
+            blendermcp_use_nd=False,
+        )
+    bpy.context = types.SimpleNamespace(scene=scene)
+    if "use_global_undo" in fake_blender:
+        bpy.context.preferences = types.SimpleNamespace(
+            edit=types.SimpleNamespace(use_global_undo=fake_blender["use_global_undo"])
+        )
+    bpy.data = types.SimpleNamespace(**fake_blender.get("data", {}))
+    bpy.types = types.SimpleNamespace(
+        AddonPreferences=object,
+        Operator=object,
+        Panel=object,
+        Scene=type("Scene", (), {}),
+    )
+    bpy.ops = types.SimpleNamespace(ed=types.SimpleNamespace(undo_push=lambda **_kw: None))
+
+    props = types.ModuleType("bpy.props")
+    for name in ("BoolProperty", "EnumProperty", "FloatProperty", "IntProperty", "StringProperty"):
+        setattr(props, name, lambda **_kwargs: None)
+    bpy.props = props
+
+    handlers = types.ModuleType("bpy.app.handlers")
+    handlers.persistent = lambda fn: fn
+    # In Blender each handler list is a plain `list` that accepts duplicate callbacks and
+    # whose `remove` raises for an absent one. A stub that differed could let the
+    # idempotence guard in `session.register_handlers` pass here and fail in Blender.
+    for list_name in (
+        "undo_post",
+        "redo_post",
+        "depsgraph_update_post",
+        "load_pre",
+        "load_post",
+        "load_post_fail",
+        "save_post",
+        "save_post_fail",
+        "blend_import_post",
+    ):
+        setattr(handlers, list_name, [])
+
+    app = types.ModuleType("bpy.app")
+    app.version = _FAKE_BLENDER_VERSION
+    app.version_string = ".".join(map(str, _FAKE_BLENDER_VERSION))
+    app.background = False
+    app.handlers = handlers
+    app.timers = types.SimpleNamespace(
+        is_registered=lambda *_a, **_k: False,
+        register=lambda *_a, **_k: None,
+        unregister=lambda *_a, **_k: None,
+    )
+    bpy.app = app
+
+    mathutils = types.ModuleType("mathutils")
+    bvhtree = types.ModuleType("mathutils.bvhtree")
+    bvhtree.BVHTree = type("BVHTree", (), {})
+    kdtree = types.ModuleType("mathutils.kdtree")
+    kdtree.KDTree = type("KDTree", (), {})
+    mathutils.bvhtree = bvhtree
+    mathutils.kdtree = kdtree
+
+    requests = types.ModuleType("requests")
+    requests.utils = types.SimpleNamespace(default_headers=dict)
+    requests.exceptions = types.SimpleNamespace(Timeout=TimeoutError)
+
+    for module in (bpy, props, app, handlers, mathutils, bvhtree, kdtree, requests, types.ModuleType("bmesh")):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+    return bpy
+
+
+def load_addon(monkeypatch: pytest.MonkeyPatch, **fake_blender: Unpack[FakeBlender]) -> tuple[ModuleType, ModuleType]:
+    """
+    Load the bundled add-on package against a fresh fake Blender.
+
+    Args:
+        monkeypatch: Installs the fake modules for the duration of one test.
+        **fake_blender: See `FakeBlender`.
+
+    Returns:
+        tuple: The add-on package and the fake `bpy` it imported.
+
+    """
+    bpy = _install_fake_blender(monkeypatch, **fake_blender)
+    return _load_addon_package(monkeypatch, _ADDON_PACKAGE), bpy
+
+
+def load_addon_for_module(**fake_blender: Unpack[FakeBlender]) -> tuple[ModuleType, ModuleType]:
+    """
+    Load the add-on once, while a test module is imported, and put `sys.modules` back.
+
+    For a suite whose module-level names come from the add-on. The fake modules leave
+    `sys.modules` again at once, so they cannot change what the next module collected
+    imports; the add-on keeps the `bpy` it imported.
+
+    Args:
+        **fake_blender: See `FakeBlender`.
+
+    Returns:
+        tuple: The add-on package and the fake `bpy` it imported.
+
+    """
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        return load_addon(monkeypatch, **fake_blender)
+    finally:
+        monkeypatch.undo()
+
+
+def load_session(monkeypatch: pytest.MonkeyPatch) -> tuple[ModuleType, ModuleType]:
+    """
+    Execute the add-on's `session.py` alone against a fresh fake Blender.
+
+    Alone, so each call starts from a fresh epoch counter without loading the package.
+
+    Args:
+        monkeypatch: Installs the fake modules for the duration of one test.
+
+    Returns:
+        tuple: The freshly executed session module and the fake `bpy` its handlers
+        read and mutate.
+
+    """
+    bpy = _install_fake_blender(monkeypatch, data={"filepath": "", "is_dirty": False, "libraries": []})
+    return load_addon_source_module("session.py", "blender_mcp_addon_session_test"), bpy
+
+
+def load_liquid_handler(monkeypatch: pytest.MonkeyPatch) -> tuple[ModuleType, ModuleType]:
+    """
+    Load the add-on and hand back its liquid handler module.
+
+    Args:
+        monkeypatch: Installs the fake modules for the duration of one test.
+
+    Returns:
+        tuple: The add-on package and its `handlers.liquid` module.
+
+    """
+    addon, _bpy = load_addon(monkeypatch, data={})
+    return addon, sys.modules[f"{addon.__name__}.handlers.liquid"]
+
+
+def _blender_abspath(bpy: ModuleType, path: str) -> str:
+    """
+    Expand a path the way `bpy.path.abspath` does, including when no file is open.
+
+    Args:
+        bpy: The fake module, for `data.filepath`.
+        path: The path to expand.
+
+    Returns:
+        str: `//x` joined to the open file's directory, or the bare `x` when no
+        file is open.
+
+    """
+    if not path.startswith("//"):
+        return path
+    base = bpy.data.filepath
+    return os.path.join(os.path.dirname(base), path[2:]) if base else path[2:]
+
+
+def load_file_command_addon(
+    monkeypatch: pytest.MonkeyPatch, *, data: Mapping[str, object], auto_execute: object = False
+) -> tuple[ModuleType, ModuleType]:
+    """
+    Load the add-on the way the file-lifecycle and linking commands meet Blender.
+
+    No file or output roots are configured, global undo is on, and `bpy.path.abspath`
+    expands `//` against the open file.
+
+    Args:
+        monkeypatch: Installs the fake modules for the duration of one test.
+        data: `bpy.data`'s attributes.
+        auto_execute: The `use_scripts_auto_execute` preference value.
+
+    Returns:
+        tuple: The add-on package and the fake `bpy` it imported.
+
+    """
+    monkeypatch.delenv("BLENDERMCP_FILE_ROOTS", raising=False)
+    monkeypatch.delenv("BLENDERMCP_OUTPUT_ROOTS", raising=False)
+    addon, bpy = load_addon(monkeypatch, data=data)
+    bpy.context.preferences = types.SimpleNamespace(
+        filepaths=types.SimpleNamespace(use_scripts_auto_execute=auto_execute),
+        edit=types.SimpleNamespace(use_global_undo=True),
+    )
+    # `library=` is how the add-on resolves a linked datablock's path; the real
+    # `bpy.path.abspath` takes it as a keyword, so the stub must too.
+    bpy.path = types.SimpleNamespace(abspath=lambda path, library=None: _blender_abspath(bpy, path))
+    return addon, bpy
+
+
+def run_command(server: object, cmd_type: str, **params: object) -> dict:
+    """
+    Dispatch a command through production's own `execute_command`.
+
+    Args:
+        server: The add-on's `BlenderMCPServer`.
+        cmd_type: The command.
+        **params: Its parameters.
+
+    Returns:
+        dict: The response envelope.
+
+    """
+    return server.execute_command({"type": cmd_type, "params": params})
 
 
 # A string target, resolved when the fixture runs. Importing the server here would import it

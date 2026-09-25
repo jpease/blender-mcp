@@ -227,8 +227,10 @@ ROWS: list[Revert] = [
     Revert(
         "delivery: the page bounds are not checked before the scan walks bpy.data",
         ADDON_DELIVERY,
-        "    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:",
-        "    if False:",
+        '        limit = bounded_int("limit", limit, 1, 200)\n'
+        '        offset = bounded_int("offset", offset, 0, 2**31 - 1)\n'
+        '        max_hash_bytes = bounded_int("max_hash_bytes", max_hash_bytes, 1, 8 * 1024**3)\n',
+        "        limit, offset, max_hash_bytes = int(limit), int(offset), int(max_hash_bytes)\n",
         (f"{FLT}::test_inspect_delivery_refuses_an_out_of_range_page",),
     ),
     Revert(

@@ -30,6 +30,7 @@ import os
 
 import bpy
 
+from ..helpers import bounded_int
 from ..library_digest import library_digests, require_digest_roots
 from ..text_hygiene import (
     client_safe_name_leaf,
@@ -560,28 +561,6 @@ def _hash_page_libraries(page: list[dict], owners: dict[int, object], roots: lis
         entry["detail"]["hash_skipped"] = skipped
 
 
-def _bounded_int(name: str, value: object, low: int, high: int) -> int:
-    """
-    Accept an integer inside its documented range, or refuse it.
-
-    Args:
-        name: Parameter name, for the message.
-        value: What the client sent.
-        low: Smallest accepted value.
-        high: Largest accepted value.
-
-    Returns:
-        int: The value.
-
-    Raises:
-        ValueError: When it is not an integer in range.
-
-    """
-    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
-        raise ValueError(f"{name} must be an integer in [{low}, {high}]")
-    return value
-
-
 def _collect_entries(scene) -> tuple[list[dict], dict[int, object], bool]:
     """
     Walk every reference source in one fixed order, bounded by `MAX_DELIVERY_ENTRIES`.
@@ -726,9 +705,9 @@ class DeliveryHandlersMixin:
                 or hashing was requested with no file roots configured.
 
         """
-        limit = _bounded_int("limit", limit, 1, 200)
-        offset = _bounded_int("offset", offset, 0, 2**31 - 1)
-        max_hash_bytes = _bounded_int("max_hash_bytes", max_hash_bytes, 1, 8 * 1024**3)
+        limit = bounded_int("limit", limit, 1, 200)
+        offset = bounded_int("offset", offset, 0, 2**31 - 1)
+        max_hash_bytes = bounded_int("max_hash_bytes", max_hash_bytes, 1, 8 * 1024**3)
         hash_libraries = bool(hash_libraries)
         if not isinstance(scene_name, str) or not scene_name.strip():
             raise ValueError("scene_name must be a non-empty string")

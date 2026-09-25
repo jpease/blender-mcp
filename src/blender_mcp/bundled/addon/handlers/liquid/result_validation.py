@@ -10,6 +10,7 @@ from collections import defaultdict
 import bpy
 import mathutils
 
+from ..rna_patch import get_object
 from ._frame_evaluation import (
     _evaluate_frames,
     _normalize_frames,
@@ -18,7 +19,6 @@ from ._frame_evaluation import (
 )
 from .inspection_and_setup import (
     _get_domain,
-    _get_object,
     _liquid_object_identity,
     _topology_from_mesh,
     _world_bounds,
@@ -178,7 +178,7 @@ def _measure_container(bvh, world_matrix, spec, resolution, epsilon):
 def _resolve_container_specs(domain_obj, volume_object_names):
     """Group validation volumes by the container they measure, resolving their interior/spill/outer bounds."""
     if volume_object_names:
-        volumes = [_get_object(name, {"MESH"}) for name in volume_object_names]
+        volumes = [get_object(name, {"MESH"}) for name in volume_object_names]
         for volume in volumes:
             if not volume.get(VOLUME_CONTAINER_PROPERTY):
                 raise ValueError(
@@ -210,7 +210,7 @@ def _resolve_container_specs(domain_obj, volume_object_names):
     for container_name, entry in grouped.items():
         if "interior_bounds" not in entry:
             raise ValueError(f"Container '{container_name}' has a spill volume but no CONTAINER_VOLUME")
-        container_obj = _get_object(container_name, {"MESH"})
+        container_obj = get_object(container_name, {"MESH"})
         entry["outer_bounds"] = _world_bounds(container_obj, evaluated=True)
         specs.append(entry)
     return specs

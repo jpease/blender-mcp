@@ -327,3 +327,58 @@ def test_scope_spans_covers_nested_and_class_scopes() -> None:
 def test_scope_spans_of_unparseable_source_is_empty() -> None:
     """A file being edited need not parse; raising here would abort the whole gate run."""
     assert lint_changed.scope_spans("def broken(:\n") == {}
+
+
+# A two-branch function under a one-branch limit: `PLR0912 (2 > 1)` at the base.
+_LEGACY = "def legacy(x):\n    if x == 1:\n        old()\n    if x == 2:\n        old()\n    return x\n"
+
+
+def _ratchet_hits(repository: Path, rewritten: str) -> list[dict[str, object]]:
+    """
+    Commit `_LEGACY` under a one-branch limit, rewrite it, and run the gate's attribution.
+
+    Args:
+        repository: The scratch repository from the `repository` fixture.
+        rewritten: The working-tree text of the same module.
+
+    Returns:
+        list[dict[str, object]]: The findings the gate would report.
+
+    """
+    (repository / "pyproject.toml").write_text(
+        '[tool.ruff.lint]\nselect = ["PLR0912"]\n[tool.ruff.lint.pylint]\nmax-branches = 1\n', encoding="utf-8"
+    )
+    (repository / "legacy.py").write_text(_LEGACY, encoding="utf-8")
+    _git(repository, "add", "pyproject.toml", "legacy.py")
+    _git(repository, "commit", "--quiet", "-m", "legacy")
+    (repository / "legacy.py").write_text(rewritten, encoding="utf-8")
+    owned = lint_changed._added_lines("HEAD")
+    findings = lint_changed._findings(sorted(owned))
+    hits = lint_changed.owned_findings(findings, owned, repository, lint_changed._scopes(findings))
+    return lint_changed._without_inherited_metrics(hits, "HEAD")
+
+
+def test_a_legacy_metric_the_branch_only_touched_stays_in_the_backlog(repository: Path) -> None:
+    """Renaming a call inside an oversized function adds nothing to the backlog it already was."""
+    assert _ratchet_hits(repository, _LEGACY.replace("old()", "new()", 1)) == []
+
+
+def test_a_legacy_metric_the_branch_raised_is_owned(repository: Path) -> None:
+    """One more branch in an already oversized function is the branch's own finding."""
+    raised = _LEGACY.replace("    return x\n", "    if x == 3:\n        old()\n    return x\n")
+    hits = _ratchet_hits(repository, raised)
+    assert [(hit["code"], lint_changed.metric_value(hit)) for hit in hits] == [("PLR0912", 3)]
+
+
+def test_a_renamed_function_has_no_base_reading_and_is_owned(repository: Path) -> None:
+    """Metrics are matched by qualified name; a rename is new code as far as the ratchet can tell."""
+    hits = _ratchet_hits(repository, _LEGACY.replace("def legacy", "def renamed"))
+    assert [hit["code"] for hit in hits] == ["PLR0912"]
+
+
+def test_a_metric_is_keyed_on_the_innermost_definition_holding_it() -> None:
+    """A method's metric belongs to the method, not to the class around it."""
+    source = "class Box:\n    def open(self):\n        pass\n\n    def shut(self):\n        pass\n"
+    names = lint_changed.scope_qualnames(source)
+    assert lint_changed.metric_key(_finding("PLR0915", 5), names) == ("PLR0915", "Box.shut")
+    assert lint_changed.metric_key(_finding("E501", 5), names) is None

@@ -14,8 +14,7 @@ from types import ModuleType
 
 import pytest
 
-from conftest import load_addon_source_module
-from test_mutation_transaction import _load_addon
+from conftest import load_addon, load_addon_source_module
 
 
 def _load_output_roots() -> ModuleType:
@@ -161,7 +160,7 @@ def test_get_addon_info_reports_writable_output_roots(monkeypatch: pytest.Monkey
     output_roots = _load_output_roots()
     monkeypatch.setenv(output_roots.OUTPUT_ROOTS_ENV_VAR, str(mounted))
 
-    addon, _bpy = _load_addon(monkeypatch, data={"filepath": ""})
+    addon, _bpy = load_addon(monkeypatch, data={"filepath": ""})
     server_core = sys.modules[f"{addon.__name__}.server_core"]
     server = server_core.BlenderMCPServer()
 
@@ -177,7 +176,7 @@ def test_get_addon_info_reports_roots_without_any_configuration(monkeypatch: pyt
     output_roots = _load_output_roots()
     monkeypatch.delenv(output_roots.OUTPUT_ROOTS_ENV_VAR, raising=False)
 
-    addon, _bpy = _load_addon(monkeypatch, data={"filepath": ""})
+    addon, _bpy = load_addon(monkeypatch, data={"filepath": ""})
     server_core = sys.modules[f"{addon.__name__}.server_core"]
     server = server_core.BlenderMCPServer()
 
@@ -233,7 +232,7 @@ def test_get_addon_info_publishes_enforced_file_roots_in_canonical_form(
     output_roots = _load_output_roots()
     monkeypatch.setenv(output_roots.FILE_ROOTS_ENV_VAR, str(tmp_path / "canon"))
 
-    addon, _bpy = _load_addon(monkeypatch, data={"filepath": ""})
+    addon, _bpy = load_addon(monkeypatch, data={"filepath": ""})
     server_core = sys.modules[f"{addon.__name__}.server_core"]
     info = server_core.BlenderMCPServer().get_addon_info()
 
@@ -249,7 +248,7 @@ def test_get_addon_info_publishes_a_permissive_policy_when_no_roots_are_configur
     monkeypatch.delenv(output_roots.FILE_ROOTS_ENV_VAR, raising=False)
     monkeypatch.delenv(output_roots.OUTPUT_ROOTS_ENV_VAR, raising=False)
 
-    addon, _bpy = _load_addon(monkeypatch, data={"filepath": ""})
+    addon, _bpy = load_addon(monkeypatch, data={"filepath": ""})
     server_core = sys.modules[f"{addon.__name__}.server_core"]
     info = server_core.BlenderMCPServer().get_addon_info()
 

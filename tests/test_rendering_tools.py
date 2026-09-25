@@ -14,10 +14,11 @@ from pathlib import Path
 
 import pytest
 
+from conftest import load_addon
 from mcp.server.fastmcp import Image
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
+from render_doubles import fake_scene
 
 from blender_mcp.server.connection import BlenderOperationError
 from blender_mcp.server.tools import _dispatch, _image_transport, rendering
@@ -41,7 +42,7 @@ class _Connection:
 
 
 def test_render_tools_are_registered_and_dispatched(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     assert RENDER_COMMANDS <= set(rendering.mcp._tool_manager._tools)
@@ -71,7 +72,7 @@ def test_render_settings_patch_accepts_the_blender_5_eevee_engine_name() -> None
 
 
 def test_addon_render_validation_accepts_the_blender_5_eevee_engine_name(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     handlers = importlib.import_module(f"{addon.__name__}.handlers.rendering")
 
     assert handlers._validate_render_patch({"engine": "BLENDER_EEVEE"}) == {"engine": "BLENDER_EEVEE"}
@@ -266,132 +267,13 @@ class _FakeImages(dict):
         """Drop the loaded datablock, as the handler does in its finally block."""
 
 
-class _FakeScene(types.SimpleNamespace):
-    """
-    A scene stub that also holds Blender ID custom properties.
-
-    `configure_render_settings` records an authored frame range as `scene[...]` and
-    `render_scene` reads it back, so a stub without the mapping protocol would make the
-    guard untestable.
-    """
-
-    def __init__(self, **kwargs: object) -> None:
-        super().__init__(**kwargs)
-        self.__dict__["_custom_properties"] = {}
-
-    def get(self, key: str, default: object = None) -> object:
-        return self._custom_properties.get(key, default)
-
-    def __getitem__(self, key: str) -> object:
-        return self._custom_properties[key]
-
-    def __setitem__(self, key: str, value: object) -> None:
-        self._custom_properties[key] = value
-
-    def __contains__(self, key: str) -> bool:
-        return key in self._custom_properties
-
-    def __delitem__(self, key: str) -> None:
-        del self._custom_properties[key]
-
-
-def _fake_view_layer(handlers, name="ViewLayer"):
-    layer = types.SimpleNamespace(
-        name=name,
-        material_override=None,
-        world_override=None,
-        # `_render_pass_info` walks this; an empty list is "no passes reported", which is
-        # exactly what a stub can honestly claim.
-        bl_rna=types.SimpleNamespace(properties=[]),
-    )
-    for prop in handlers._VIEW_LAYER_PROPERTIES:
-        setattr(layer, prop, 8 if prop == "pass_cryptomatte_depth" else True)
-    return layer
-
-
-def _fake_scene(handlers, name="Scene"):
-    image_settings = types.SimpleNamespace(
-        file_format="PNG",
-        color_mode="RGBA",
-        color_depth="8",
-        compression=15,
-        quality=90,
-        exr_codec="ZIP",
-        views_format="INDIVIDUAL",
-        stereo_3d_format=types.SimpleNamespace(display_mode="ANAGLYPH"),
-    )
-    render = types.SimpleNamespace(
-        engine="BLENDER_EEVEE",
-        resolution_x=1920,
-        resolution_y=1080,
-        resolution_percentage=100,
-        pixel_aspect_x=1.0,
-        pixel_aspect_y=1.0,
-        fps=24,
-        fps_base=1.0,
-        film_transparent=False,
-        filepath="/tmp/render/",
-        file_extension=".png",
-        use_file_extension=True,
-        use_overwrite=True,
-        use_placeholder=False,
-        use_motion_blur=False,
-        motion_blur_shutter=0.5,
-        motion_blur_position="CENTER",
-        use_multiview=False,
-        use_stamp=False,
-        stamp_note_text="",
-        image_settings=image_settings,
-        use_persistent_data=False,
-        use_simplify=False,
-        simplify_subdivision_render=6,
-        filter_size=1.5,
-    )
-    return _FakeScene(
-        name=name,
-        camera=None,
-        frame_start=1,
-        frame_end=250,
-        frame_step=1,
-        use_nodes=False,
-        node_tree=None,
-        compositing_node_group=None,
-        render=render,
-        cycles=types.SimpleNamespace(
-            samples=128,
-            use_denoising=True,
-            device="CPU",
-            pixel_filter_type="BLACKMAN_HARRIS",
-            filter_width=1.5,
-            film_transparent_glass=False,
-            film_transparent_roughness=0.1,
-        ),
-        eevee=types.SimpleNamespace(
-            taa_samples=16,
-            taa_render_samples=64,
-            use_shadows=True,
-            use_raytracing=False,
-            ray_tracing_method="SCREEN",
-            ray_tracing_options=types.SimpleNamespace(
-                resolution_scale="2",
-                screen_trace_quality=0.25,
-                screen_trace_thickness=0.1,
-                trace_max_roughness=0.5,
-                use_denoise=True,
-            ),
-        ),
-        view_layers=[_fake_view_layer(handlers)],
-        view_settings=types.SimpleNamespace(view_transform="AgX", look="None", exposure=0.0, gamma=1.0),
-    )
-
-
 def _rendering_handler(monkeypatch):
-    addon, fake_bpy = _load_addon(monkeypatch, data={"scenes": {}, "images": _FakeImages()})
+    addon, fake_bpy = load_addon(monkeypatch, data={"scenes": {}, "images": _FakeImages()})
     handlers = importlib.import_module(f"{addon.__name__}.handlers.rendering")
     # render_scene resolves "//relative" paths through Blender; outside Blender they are absolute
     # already, so the identity keeps the resolver's own normalisation the only thing under test.
     fake_bpy.path = types.SimpleNamespace(abspath=lambda path: path)
-    scene = _fake_scene(handlers)
+    scene = fake_scene(handlers)
     fake_bpy.data.scenes["Scene"] = scene
     return handlers.RenderingHandlersMixin(), scene, handlers
 
@@ -712,12 +594,12 @@ def _renderable(monkeypatch, tmp_path):
         tuple: The handler, the scene, and the stub `bpy`.
 
     """
-    addon, fake_bpy = _load_addon(monkeypatch, data={"scenes": {}, "images": _FakeImages()})
+    addon, fake_bpy = load_addon(monkeypatch, data={"scenes": {}, "images": _FakeImages()})
     handlers = importlib.import_module(f"{addon.__name__}.handlers.rendering")
     fake_bpy.path = types.SimpleNamespace(
         abspath=lambda path: str(tmp_path / path[2:]) if path.startswith("//") else path
     )
-    scene = _fake_scene(handlers)
+    scene = fake_scene(handlers)
     scene.frame_current = 1
     scene.frame_set = lambda frame: setattr(scene, "frame_current", frame)
     scene.render.filepath = ""
@@ -978,7 +860,7 @@ def test_plan_render_animation_and_render_scene_agree_on_every_frame_path(monkey
 
 
 def test_plan_render_animation_is_registered_and_read_only(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     assert "plan_render_animation" in server._build_command_handlers()

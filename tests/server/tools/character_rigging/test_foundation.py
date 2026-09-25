@@ -13,7 +13,7 @@ import types
 
 import pytest
 
-from test_mutation_transaction import _load_addon
+from conftest import load_addon
 
 
 def _rig_with_bones(monkeypatch: pytest.MonkeyPatch, *names: str):
@@ -24,7 +24,7 @@ def _rig_with_bones(monkeypatch: pytest.MonkeyPatch, *names: str):
         type="ARMATURE",
         data=types.SimpleNamespace(name="CHAR1_rigData", bones=bones),
     )
-    addon, _bpy = _load_addon(monkeypatch, data={"objects": {"CHAR1_rig": rig}})
+    addon, _bpy = load_addon(monkeypatch, data={"objects": {"CHAR1_rig": rig}})
     primitives = sys.modules[f"{addon.__name__}.handlers.character_rigging.primitives"]
     return primitives, rig
 

@@ -15,7 +15,7 @@ import math
 import sys
 import types
 
-from test_mutation_transaction import _load_addon
+from conftest import load_addon
 
 
 class _Vector:
@@ -688,7 +688,7 @@ def _posing(monkeypatch, bones, *, matrix_world=None, objects=None):
         pose_bone, matrix, from_space, to_space, rig
     )
     scene_objects = _SceneObjects({"CHAR1_rig": rig, **(objects or {})})
-    addon, bpy = _load_addon(monkeypatch, data={"objects": scene_objects, "actions": _Actions()})
+    addon, bpy = load_addon(monkeypatch, data={"objects": scene_objects, "actions": _Actions()})
     bpy.context.view_layer = types.SimpleNamespace(update=lambda: None)
     bpy.context.scene.frame_current = 1
     bpy.context.scene.frame_set = lambda *_args, **_kwargs: None

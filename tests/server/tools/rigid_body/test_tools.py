@@ -5,8 +5,8 @@ import sys
 
 import pytest
 
+from conftest import load_addon
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _dispatch, rigid_body
 
@@ -176,7 +176,7 @@ def test_empty_configuration_patches_are_rejected() -> None:
 
 
 def test_rigid_body_dispatch_and_read_only_contract(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
     handlers = server._build_command_handlers()
     names = {
@@ -206,7 +206,7 @@ def test_rigid_body_dispatch_and_read_only_contract(monkeypatch) -> None:
 
 
 def test_layer_profile_map_is_stable_and_one_based(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     handler = sys.modules[f"{addon.__name__}.handlers.rigid_body"]
 
     assert {
@@ -218,7 +218,7 @@ def test_layer_profile_map_is_stable_and_one_based(monkeypatch) -> None:
 
 
 def test_constraint_axis_mapping_matches_blender_conventions(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     handler = sys.modules[f"{addon.__name__}.handlers.rigid_body"]
 
     assert handler._constraint_axis_fields("angular_z", {"use_limit": True, "lower": -0.5, "upper": 0.5}, False) == {

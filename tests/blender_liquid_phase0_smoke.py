@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 import sys
 import tempfile
@@ -14,18 +13,11 @@ from pathlib import Path
 
 import bpy
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-ADDON_ROOT = REPO_ROOT / "src" / "blender_mcp" / "bundled" / "addon"
+sys.path.append(str(Path(__file__).resolve().parent))
+from smoke_addon import load_addon
+
 PACKAGE_NAME = "blender_mcp_liquid_smoke"
-spec = importlib.util.spec_from_file_location(
-    PACKAGE_NAME,
-    ADDON_ROOT / "__init__.py",
-    submodule_search_locations=[str(ADDON_ROOT)],
-)
-assert spec is not None and spec.loader is not None
-addon = importlib.util.module_from_spec(spec)
-sys.modules[PACKAGE_NAME] = addon
-spec.loader.exec_module(addon)
+load_addon(PACKAGE_NAME)
 LiquidHandlersMixin = sys.modules[f"{PACKAGE_NAME}.handlers.liquid"].LiquidHandlersMixin
 
 

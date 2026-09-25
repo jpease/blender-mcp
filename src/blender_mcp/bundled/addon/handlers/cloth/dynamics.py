@@ -13,7 +13,8 @@ import bmesh
 import bpy
 
 from ...helpers import preserve_mode_and_selection, set_active, sync_from_editmode
-from ._cache_helpers import _set_cache_frame_range
+from ..rna_patch import finite, patch_rna, restore_rna, validate_rna_value
+from ..simulation_cache import set_cache_frame_range
 from .inspection_and_setup import (
     _DEFORMING_MODIFIERS,
     _TOPOLOGY_MODIFIERS,
@@ -21,15 +22,11 @@ from .inspection_and_setup import (
     _cache_info,
     _collection_in_scene,
     _field_relationships,
-    _finite,
     _get_cloth,
     _modifier_is_animated,
     _object_scenes,
-    _patch_rna,
     _reject_baked,
-    _restore_rna,
     _tag_update,
-    _validate_rna_value,
 )
 
 _PRESSURE_FIELDS = {
@@ -266,10 +263,10 @@ class ClothDynamicsHandlers:
         obj, modifier = _get_cloth(object_name, modifier_name)
         sync_from_editmode(obj)
         if max_pair_distance is not None:
-            _finite(max_pair_distance, "max_pair_distance")
+            finite(max_pair_distance, "max_pair_distance")
             if max_pair_distance <= 0:
                 raise ValueError("max_pair_distance must be positive")
-        _validate_rna_value(modifier.settings, "sewing_force_max", sewing_force_max)
+        validate_rna_value(modifier.settings, "sewing_force_max", sewing_force_max)
         plan = _sewing_plan(obj, seam_pairs, max_pair_distance)
         if plan["non_boundary_endpoints"]:
             raise ValueError(
@@ -356,11 +353,11 @@ class ClothDynamicsHandlers:
                 raise ValueError("Pressure requires outward orientation and positive nonzero signed volume")
             if volume_control and target_volume <= 0:
                 raise ValueError("Pressure volume control requires a positive target_volume")
-        changes = _patch_rna(modifier.settings, patch, _PRESSURE_FIELDS)
+        changes = patch_rna(modifier.settings, patch, _PRESSURE_FIELDS)
         try:
             _tag_update(obj)
         except Exception:
-            _restore_rna(modifier.settings, changes)
+            restore_rna(modifier.settings, changes)
             raise
         return {
             "changed_objects": [obj.name],
@@ -401,7 +398,7 @@ class ClothDynamicsHandlers:
         vertex_count = len(obj.data.vertices)
         all_pairs = vertex_count * max(vertex_count - 1, 0) // 2
         max_length = patch.get("internal_spring_max_length", modifier.settings.internal_spring_max_length)
-        _finite(max_length, "internal_spring_max_length")
+        finite(max_length, "internal_spring_max_length")
         coordinates = [vertex.co for vertex in obj.data.vertices]
         extents = [max(axis) - min(axis) for axis in zip(*coordinates, strict=False)] if coordinates else [0.0] * 3
         bounds_volume = math.prod(max(float(extent), 1e-12) for extent in extents)
@@ -419,11 +416,11 @@ class ClothDynamicsHandlers:
                     f"Estimated internal-spring candidates {estimated_pairs} exceed "
                     f"max_estimated_springs {max_estimated_springs}; reduce density or maximum length"
                 )
-        changes = _patch_rna(modifier.settings, patch, _INTERNAL_SPRING_FIELDS)
+        changes = patch_rna(modifier.settings, patch, _INTERNAL_SPRING_FIELDS)
         try:
             _tag_update(obj)
         except Exception:
-            _restore_rna(modifier.settings, changes)
+            restore_rna(modifier.settings, changes)
             raise
         return {
             "changed_objects": [obj.name],
@@ -468,21 +465,21 @@ class ClothDynamicsHandlers:
         if cache_frame_start > cache_frame_end:
             raise ValueError("cache_frame_start must be <= cache_frame_end")
         cache = modifier.point_cache
-        _validate_rna_value(cache, "frame_start", cache_frame_start)
-        _validate_rna_value(cache, "frame_end", cache_frame_end)
-        _validate_rna_value(modifier.settings, "use_dynamic_mesh", use_dynamic_mesh)
+        validate_rna_value(cache, "frame_start", cache_frame_start)
+        validate_rna_value(cache, "frame_end", cache_frame_end)
+        validate_rna_value(modifier.settings, "use_dynamic_mesh", use_dynamic_mesh)
         old_shape = modifier.settings.rest_shape_key
         old_dynamic = modifier.settings.use_dynamic_mesh
         old_range = (cache.frame_start, cache.frame_end)
         try:
             modifier.settings.rest_shape_key = shape_key
             modifier.settings.use_dynamic_mesh = use_dynamic_mesh
-            _set_cache_frame_range(cache, cache_frame_start, cache_frame_end)
+            set_cache_frame_range(cache, cache_frame_start, cache_frame_end)
             _tag_update(obj)
         except Exception:
             modifier.settings.rest_shape_key = old_shape
             modifier.settings.use_dynamic_mesh = old_dynamic
-            _set_cache_frame_range(cache, *old_range)
+            set_cache_frame_range(cache, *old_range)
             raise
         cloth_index = list(obj.modifiers).index(modifier)
         upstream = list(obj.modifiers)[:cloth_index]
@@ -542,7 +539,7 @@ class ClothDynamicsHandlers:
                 raise ValueError(f"Effector collection '{collection_name}' is not linked to scene '{scene.name}'")
         weights = modifier.settings.effector_weights
         old_collection = weights.collection
-        changes = _patch_rna(weights, patch, _FIELD_WEIGHT_FIELDS)
+        changes = patch_rna(weights, patch, _FIELD_WEIGHT_FIELDS)
         try:
             if collection_name or clear_collection:
                 weights.collection = collection if collection_name else None
@@ -552,7 +549,7 @@ class ClothDynamicsHandlers:
                 }
             _tag_update(obj)
         except Exception:
-            _restore_rna(weights, changes)
+            restore_rna(weights, changes)
             weights.collection = old_collection
             raise
         relationships = _field_relationships(modifier.settings, scene)

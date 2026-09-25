@@ -16,7 +16,6 @@ object, a parented object whose parent carries its own transform, and the `radiu
 pivot.
 """
 
-import importlib.util
 import math
 import sys
 
@@ -25,17 +24,10 @@ from pathlib import Path
 import bpy
 import mathutils
 
-addon_path = Path(__file__).resolve().parents[1] / "src" / "blender_mcp" / "bundled" / "addon" / "__init__.py"
-package_name = "blender_mcp_radial_array_smoke"
-spec = importlib.util.spec_from_file_location(
-    package_name,
-    addon_path,
-    submodule_search_locations=[str(addon_path.parent)],
-)
-assert spec is not None and spec.loader is not None
-addon = importlib.util.module_from_spec(spec)
-sys.modules[package_name] = addon
-spec.loader.exec_module(addon)
+sys.path.append(str(Path(__file__).resolve().parent))
+from smoke_addon import load_addon
+
+load_addon("blender_mcp_radial_array_smoke")
 
 from blender_mcp_radial_array_smoke import server_core  # ruff: ignore[module-import-not-at-top-of-file]
 

@@ -8,12 +8,39 @@ generator must leave it out. These tests pin that rule on the generator itself; 
 pins it on the payload a real server process advertises.
 """
 
+import copy
+
 from typing import Any
 
 from blender_mcp.server.tools import _documentation
 
-# Prose forms of constraints the JSON Schema already carries as keywords.
-_CONSTRAINT_PROSE = ("Default:", "Allowed:", "Range:", "Must be", "Must not be empty", "Requires", "Allows at most")
+# Each parameter twice: with the constraint keywords a tool schema carries, and without them.
+_CONSTRAINED_AND_BARE: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
+    "mode": ({"type": "string", "enum": ["FAST", "EXACT"], "default": "FAST"}, {"type": "string"}),
+    "samples": (
+        {"anyOf": [{"type": "integer", "minimum": 1, "maximum": 64}, {"type": "null"}], "default": None},
+        {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+    ),
+    "bevel_width": ({"type": "number", "exclusiveMinimum": 0.0}, {"type": "number"}),
+    "object_names": (
+        {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8},
+        {"type": "array", "items": {"type": "string"}},
+    ),
+}
+
+# Parameters whose meaning the schema cannot carry, grouped by the concept the description must state:
+# the unit of an angle or a distance, the timeline a frame counts on, a datablock that must already
+# exist, a refusal, and a location nothing defaults.
+_CONCEPTS: dict[str, dict[str, dict[str, Any]]] = {
+    "angle": {"tilt_angle": {"type": "number"}, "yaw": {"type": "number"}},
+    "distance": {"bevel_width": {"type": "number"}, "radius": {"type": "number"}},
+    "frame": {"start_frame": {"type": "integer"}, "end_frame": {"type": "integer"}},
+    "euler rotation": {"rotation": {"type": "array", "items": {"type": "number"}}},
+    "scale factors": {"scale": {"type": "array", "items": {"type": "number"}}},
+    "existing object": {"cutter_object_name": {"type": "string"}, "mirror_object_name": {"type": "string"}},
+    "refusal": {"confirm_reset": {"type": "boolean"}, "confirm_delete": {"type": "boolean"}},
+    "explicit location": {"bake_output_path": {"type": "string"}, "scratch_directory": {"type": "string"}},
+}
 
 
 def _described(properties: dict[str, Any], explicit: dict[str, str] | None = None) -> dict[str, Any]:
@@ -21,31 +48,30 @@ def _described(properties: dict[str, Any], explicit: dict[str, str] | None = Non
     Run the description pass over one object schema.
 
     Args:
-        properties: The schema's `properties` mapping.
+        properties: The schema's `properties` mapping, copied so the caller's stays as written.
         explicit: Google-style `Args` descriptions parsed from a docstring, if any.
 
     Returns:
         The described `properties` mapping.
 
     """
-    schema: dict[str, Any] = {"type": "object", "properties": properties}
+    schema: dict[str, Any] = {"type": "object", "properties": copy.deepcopy(properties)}
     _documentation._describe_schema(schema, explicit=explicit)
     return schema["properties"]
 
 
 def test_schema_constraints_are_not_restated_as_prose() -> None:
-    """Enum, default, range and item-count keywords are on the wire already; prose would double them."""
-    described = _described(
-        {
-            "mode": {"type": "string", "enum": ["FAST", "EXACT"], "default": "FAST"},
-            "samples": {"anyOf": [{"type": "integer", "minimum": 1, "maximum": 64}, {"type": "null"}], "default": None},
-            "bevel_width": {"type": "number", "exclusiveMinimum": 0.0},
-            "object_names": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8},
-        }
-    )
-    for name, schema in described.items():
-        description = schema.get("description", "")
-        assert not any(token in description for token in _CONSTRAINT_PROSE), f"{name}: {description}"
+    """
+    Enum, default, range and item-count keywords are on the wire already; prose would double them.
+
+    So adding the keywords to a schema must not change its description at all.
+    """
+    constrained = _described({name: pair[0] for name, pair in _CONSTRAINED_AND_BARE.items()})
+    bare = _described({name: pair[1] for name, pair in _CONSTRAINED_AND_BARE.items()})
+
+    assert {name: schema.get("description") for name, schema in constrained.items()} == {
+        name: schema.get("description") for name, schema in bare.items()
+    }
 
 
 def test_a_parameter_the_schema_already_describes_carries_no_description() -> None:
@@ -64,25 +90,21 @@ def test_a_parameter_the_schema_already_describes_carries_no_description() -> No
 
 
 def test_units_and_datablock_semantics_survive() -> None:
-    """What the schema cannot state - the unit, the frame space, that the name must already exist - stays."""
-    described = _described(
-        {
-            "tilt_angle": {"type": "number"},
-            "bevel_width": {"type": "number"},
-            "start_frame": {"type": "integer"},
-            "rotation": {"type": "array", "items": {"type": "number"}},
-            "cutter_object_name": {"type": "string"},
-            "confirm_reset": {"type": "boolean"},
-            "bake_output_path": {"type": "string"},
-        }
-    )
-    assert "radians" in described["tilt_angle"]["description"]
-    assert "Blender scene units" in described["bevel_width"]["description"]
-    assert "timeline frame" in described["start_frame"]["description"]
-    assert "radians" in described["rotation"]["description"]
-    assert "existing Blender object" in described["cutter_object_name"]["description"]
-    assert "refuses" in described["confirm_reset"]["description"]
-    assert "no default location" in described["bake_output_path"]["description"]
+    """
+    What the schema cannot state - the unit, the frame space, that the name must already exist - stays.
+
+    Asserted on the generator's decisions rather than its sentences: every such parameter is
+    described, one concept reads the same wherever it appears, and no two concepts read alike, so an
+    angle is never described as a distance.
+    """
+    described = _described({name: schema for members in _CONCEPTS.values() for name, schema in members.items()})
+    by_concept = {
+        concept: {described[name].get("description") for name in members} for concept, members in _CONCEPTS.items()
+    }
+
+    assert all(None not in descriptions for descriptions in by_concept.values()), by_concept
+    assert all(len(descriptions) == 1 for descriptions in by_concept.values()), by_concept
+    assert len(set().union(*by_concept.values())) == len(_CONCEPTS), by_concept
 
 
 def test_a_non_numeric_parameter_is_never_labelled_with_scene_units() -> None:
@@ -100,10 +122,17 @@ def test_an_explicit_docstring_description_is_advertised_verbatim() -> None:
     assert described["samples"]["description"] == "Cycles samples per pixel."
 
 
-def test_the_pagination_offset_keeps_its_page_meaning() -> None:
-    """`offset` beside `limit` is a record index, not a geometric offset, and no keyword says so."""
-    described = _described({"limit": {"type": "integer"}, "offset": {"type": "integer"}})
-    assert described["offset"]["description"] == "Zero-based index of the first record in this result page."
+def test_only_an_offset_beside_a_limit_is_described_as_the_start_of_a_page() -> None:
+    """
+    `offset` beside `limit` is a record index, not a geometric offset, and no keyword says so.
+
+    Alone it is neither, so it gets no page description; and a tool's own docstring still wins.
+    """
+    paged = {"limit": {"type": "integer"}, "offset": {"type": "integer"}}
+
+    assert _described(paged)["offset"].get("description")
+    assert "description" not in _described({"offset": {"type": "integer"}})["offset"]
+    assert _described(paged, explicit={"offset": "Frames to shift."})["offset"]["description"] == "Frames to shift."
 
 
 def test_a_nested_model_title_is_not_spliced_into_its_parameters() -> None:

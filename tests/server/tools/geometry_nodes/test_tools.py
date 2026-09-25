@@ -5,8 +5,8 @@ import sys
 
 import pytest
 
+from conftest import load_addon
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _dispatch, geometry_nodes
 
@@ -60,7 +60,7 @@ def test_all_planned_geometry_nodes_commands_are_registered() -> None:
 
 
 def test_geometry_nodes_dispatch_and_read_only_contract(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
     names = FOUNDATION_COMMANDS | WORKFLOW_COMMANDS | ADVANCED_COMMANDS
     read_only = {
@@ -78,7 +78,7 @@ def test_geometry_nodes_dispatch_and_read_only_contract(monkeypatch) -> None:
 
 
 def test_bake_inspection_uses_read_only_dispatch(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     result = server._run_handler(

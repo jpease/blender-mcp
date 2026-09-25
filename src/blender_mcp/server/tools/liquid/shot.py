@@ -9,7 +9,7 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from .._inputs import StrictModel, dump_input
+from .._inputs import MAX_FRAME, StrictModel, dump_input
 from .delivery import ProxyEffectorSettings
 from .inspection_and_setup import (
     CacheType,
@@ -82,8 +82,8 @@ async def setup_liquid_shot(
     collection_name: str | None = None,
     quality: QualityProfile = "BALANCED",
     cache_type: CacheType = "REPLAY",
-    cache_frame_start: Annotated[int, Field(ge=0, le=1_048_574)] = 1,
-    cache_frame_end: Annotated[int, Field(ge=1, le=1_048_574)] = 250,
+    cache_frame_start: Annotated[int, Field(ge=0, le=MAX_FRAME)] = 1,
+    cache_frame_end: Annotated[int, Field(ge=1, le=MAX_FRAME)] = 250,
     padding: tuple[float, float, float] = (0.25, 0.25, 0.25),
     expected_travel: tuple[float, float, float] = (0.0, 0.0, 0.0),
     splash_height: Annotated[float, Field(ge=0.0, le=1000.0)] = 0.0,

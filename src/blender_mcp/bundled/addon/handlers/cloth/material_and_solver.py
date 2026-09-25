@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bpy
 
+from ..rna_patch import patch_rna, restore_rna
 from .inspection_and_setup import (
     _MATERIAL_FIELDS,
     _MATERIAL_PRESETS,
@@ -13,9 +14,7 @@ from .inspection_and_setup import (
     _get_cloth,
     _max_keyed_location_delta,
     _mesh_scale_context,
-    _patch_rna,
     _reject_baked,
-    _restore_rna,
     _tag_update,
 )
 
@@ -45,7 +44,7 @@ class ClothMaterialAndSolverHandlers:
         values.update(patch or {})
         if not values:
             return {}
-        changes = _patch_rna(modifier.settings, values, _MATERIAL_FIELDS)
+        changes = patch_rna(modifier.settings, values, _MATERIAL_FIELDS)
         return changes
 
     def configure_cloth_material(self, object_name, modifier_name, patch=None, preset=None):
@@ -60,7 +59,7 @@ class ClothMaterialAndSolverHandlers:
         try:
             _tag_update(obj)
         except Exception:
-            _restore_rna(modifier.settings, changes)
+            restore_rna(modifier.settings, changes)
             raise
         warnings = self._scale_warnings(obj)
         if scale_context["base_surface_area_object_local_squared"] <= 0:
@@ -96,11 +95,11 @@ class ClothMaterialAndSolverHandlers:
         if "voxel_cell_size" in patch and patch["voxel_cell_size"] <= 0:
             raise ValueError("voxel_cell_size must be positive")
         old_quality = modifier.settings.quality
-        changes = _patch_rna(modifier.settings, patch, _SOLVER_FIELDS)
+        changes = patch_rna(modifier.settings, patch, _SOLVER_FIELDS)
         try:
             _tag_update(obj)
         except Exception:
-            _restore_rna(modifier.settings, changes)
+            restore_rna(modifier.settings, changes)
             raise
         edge = _edge_lengths(obj)
         frame_count = modifier.point_cache.frame_end - modifier.point_cache.frame_start + 1

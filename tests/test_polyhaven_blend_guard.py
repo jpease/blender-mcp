@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from test_mutation_transaction import _load_addon
+from conftest import load_addon
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "blend"
 _URL = "https://dl.polyhaven.org/file/ph-assets/Models/blend/1k/chair/chair_1k.blend"
@@ -87,7 +87,7 @@ def _server(
     """
     objects: list = []
     loads = _Loads(objects, error=error)
-    addon, bpy = _load_addon(monkeypatch, data={"filepath": "", "objects": objects})
+    addon, bpy = load_addon(monkeypatch, data={"filepath": "", "objects": objects})
     bpy.data.libraries = types.SimpleNamespace(load=loads.load)
     bpy.context.collection = types.SimpleNamespace(objects=types.SimpleNamespace(link=lambda _obj: None))
     # Blender's factory value. The scripts check refuses when the preference is

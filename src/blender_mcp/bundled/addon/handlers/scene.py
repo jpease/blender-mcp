@@ -8,7 +8,15 @@ from collections import Counter
 import bpy
 import mathutils
 
-from ..helpers import apply_modifier, modifier_result, paginate, rotation_as_native_list
+from ..helpers import (
+    MAX_FRAME,
+    MIN_FRAME,
+    apply_modifier,
+    bounded_int,
+    modifier_result,
+    paginate,
+    rotation_as_native_list,
+)
 from ..object_lookup import find_object
 from ..text_hygiene import client_safe_text
 
@@ -21,10 +29,6 @@ _VALIDATE_SCENE_DOMAINS = ("scene", "camera", "lighting", "pbr", "cloth", "liqui
 # the same reply. Twelve entries still show the pattern; `evidence_omitted` says how many the
 # caller is not seeing, and the per-domain validator still reports the full list on its own.
 _MAX_FINDING_EVIDENCE_ITEMS = 12
-# Blender's own `Scene.frame_current` limits; outside them `frame_set` silently clamps, which
-# would make the reply's frame disagree with the one the caller asked for.
-_MIN_SCENE_FRAME = -1_048_574
-_MAX_SCENE_FRAME = 1_048_574
 
 # Every collection `transaction._TRACKED_COLLECTIONS` rolls back, minus `libraries`, spelled
 # out rather than imported so this domain does not depend on another module's private name.
@@ -1100,10 +1104,7 @@ class SceneHandlersMixin:
         )
         if scene is None:
             raise ValueError(f"Scene not found: {scene_name}")
-        if isinstance(frame, bool) or not isinstance(frame, int):
-            raise ValueError("frame must be an integer")
-        if not _MIN_SCENE_FRAME <= frame <= _MAX_SCENE_FRAME:
-            raise ValueError(f"frame must be between {_MIN_SCENE_FRAME} and {_MAX_SCENE_FRAME}")
+        frame = bounded_int("frame", frame, MIN_FRAME, MAX_FRAME)
         subframe = float(subframe)
         if not 0.0 <= subframe < 1.0:
             raise ValueError("subframe must be in [0.0, 1.0)")

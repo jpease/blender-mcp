@@ -6,12 +6,12 @@ import uuid
 import bpy
 import mathutils
 
+from ..rna_patch import get_object
 from ..scene_physics import _scene_fps
 from ._geometry import _RIM_AXES, _cube_geometry
 from .inspection_and_setup import (
     _ensure_collection,
     _get_domain,
-    _get_object,
     _get_scene,
     _link_object,
     _register_owned_objects,
@@ -55,7 +55,7 @@ def _resolve_containers(scene, containers):
     resolved = []
     for index, record in enumerate(containers):
         _require_mapping(record, f"containers[{index}]")
-        obj = _get_object(record.get("object_name"), {"MESH"})
+        obj = get_object(record.get("object_name"), {"MESH"})
         if obj.name not in scene.objects:
             raise ValueError(f"Container '{obj.name}' is not linked to scene '{scene.name}'")
         proxy = record.get("collision_proxy", "NONE")
@@ -90,7 +90,7 @@ def _resolve_sources(scene, sources, fps, frame_start):
     resolved = []
     for index, record in enumerate(sources):
         _require_mapping(record, f"sources[{index}]")
-        obj = _get_object(record.get("object_name"), {"MESH"})
+        obj = get_object(record.get("object_name"), {"MESH"})
         if obj.name not in scene.objects:
             raise ValueError(f"Source '{obj.name}' is not linked to scene '{scene.name}'")
         behavior = record.get("behavior", "INFLOW")
@@ -541,7 +541,7 @@ class LiquidShotHandlers:
                     rim_axis=entry["rim_axis"],
                     effector_settings=entry["effector_settings"],
                 )
-                proxy_object = _get_object(rig["proxy"], {"MESH"})
+                proxy_object = get_object(rig["proxy"], {"MESH"})
                 proxy_object[SHOT_ID_PROPERTY] = simulation_id
                 results.append(
                     {

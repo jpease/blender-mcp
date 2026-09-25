@@ -37,7 +37,12 @@ import json
 
 import pytest
 
-from server.test_threading import BlenderMCPServer, extract_frames, parse_command_frame
+from conftest import load_addon_for_module
+
+_addon, _bpy = load_addon_for_module()
+BlenderMCPServer = _addon.BlenderMCPServer
+extract_frames = _addon.server_core.extract_frames
+parse_command_frame = _addon.server_core.parse_command_frame
 
 
 class ScriptedSocket:

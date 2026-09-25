@@ -1,24 +1,18 @@
 """Regression coverage for the typed liquid workflow MCP surface (mesh/animation/guides/force fields/simulation/lifecycle/delivery)."""
 
 import asyncio
-import sys
 import types
 
 import pytest
 
+from conftest import load_liquid_handler
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _dispatch, liquid
 
 
 def _run(function, **kwargs):
     return asyncio.run(function(ctx=None, **kwargs))
-
-
-def _load_liquid_handler(monkeypatch):
-    addon, _bpy = _load_addon(monkeypatch, data={})
-    return addon, sys.modules[f"{addon.__name__}.handlers.liquid"]
 
 
 def test_all_sixteen_workflow_commands_are_registered() -> None:
@@ -156,14 +150,14 @@ def test_hollow_container_proxy_tool_defaults(monkeypatch) -> None:
 
 
 def test_hollow_container_validates_rim_axis_and_thickness(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     scene = types.SimpleNamespace(objects={"Source", "Domain"})
     source = types.SimpleNamespace(name="Source")
     domain = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     settings = types.SimpleNamespace(resolution_max=32)
     monkeypatch.setattr(handler.delivery, "_get_scene", lambda _name: scene)
-    monkeypatch.setattr(handler.delivery, "_get_object", lambda *_args, **_kwargs: source)
+    monkeypatch.setattr(handler.delivery, "get_object", lambda *_args, **_kwargs: source)
     monkeypatch.setattr(handler.delivery, "_get_domain", lambda *_args: (domain, modifier, settings))
 
     def make():
@@ -217,7 +211,7 @@ def test_hollow_container_validates_rim_axis_and_thickness(monkeypatch) -> None:
 
 def test_hollow_container_geometry_detects_pour_opening_by_signed_rim_axis(monkeypatch) -> None:
     """The opening must be found at the extreme the rim_axis sign points toward, not always the max."""
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
 
     class FakeVector(list):
         def dot(self, other):
@@ -285,7 +279,7 @@ def test_hollow_container_geometry_detects_pour_opening_by_signed_rim_axis(monke
 
 
 def test_dynamic_viscosity_conversion_is_explicit(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
 
     patch, source, evidence = handler._expand_viscosity_config(
         {"dynamic_viscosity_pa_s": 0.001, "density_kg_m3": 1000.0}
@@ -299,7 +293,7 @@ def test_dynamic_viscosity_conversion_is_explicit(monkeypatch) -> None:
 
 
 def test_particle_role_classification_never_guesses_unknown_systems(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     spray = type("System", (), {"name": "Surface Spray", "settings": type("Settings", (), {"name": "Output"})()})()
     unknown = type("System", (), {"name": "Particles", "settings": type("Settings", (), {"name": "Generic"})()})()
 
@@ -308,7 +302,7 @@ def test_particle_role_classification_never_guesses_unknown_systems(monkeypatch)
 
 
 def test_export_axis_validation_and_cost_helpers_are_explicit(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
 
     with pytest.raises(ValueError, match="different axes"):
         handler._validate_axes("X", "NEGATIVE_X")
@@ -317,7 +311,7 @@ def test_export_axis_validation_and_cost_helpers_are_explicit(monkeypatch) -> No
 
 
 def test_workflow_commands_dispatch_and_nested_targets_are_resolved(monkeypatch) -> None:
-    addon, _handler = _load_liquid_handler(monkeypatch)
+    addon, _handler = load_liquid_handler(monkeypatch)
     domain = type("Object", (), {"name": "Domain"})()
     force = type("Object", (), {"name": "Wind"})()
     addon.bpy.data.objects = {"Domain": domain, "Wind": force}
@@ -338,7 +332,7 @@ def test_workflow_commands_dispatch_and_nested_targets_are_resolved(monkeypatch)
 
 
 def test_liquid_cache_status_dispatch_is_read_only(monkeypatch) -> None:
-    addon, _handler = _load_liquid_handler(monkeypatch)
+    addon, _handler = load_liquid_handler(monkeypatch)
     server = addon.BlenderMCPServer()
 
     result = server._run_handler(
@@ -351,7 +345,7 @@ def test_liquid_cache_status_dispatch_is_read_only(monkeypatch) -> None:
 
 
 def test_dispatch_and_dynamic_read_only_classification(monkeypatch) -> None:
-    addon, _handler = _load_liquid_handler(monkeypatch)
+    addon, _handler = load_liquid_handler(monkeypatch)
     domain = type("Object", (), {"name": "Domain"})()
     source = type("Object", (), {"name": "Source"})()
     addon.bpy.data.objects = {"Domain": domain, "Source": source}
@@ -371,7 +365,7 @@ def test_dispatch_and_dynamic_read_only_classification(monkeypatch) -> None:
 
 
 def test_performance_analysis_rejects_unbounded_dependency_sets(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")
     settings = types.SimpleNamespace()
@@ -387,7 +381,7 @@ def test_performance_analysis_rejects_unbounded_dependency_sets(monkeypatch) -> 
 
 
 def test_alembic_particles_only_export_is_rejected_explicitly(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     scene = types.SimpleNamespace(objects={"Domain"})
     obj = types.SimpleNamespace(name="Domain")
     modifier = types.SimpleNamespace(name="Liquid Domain")

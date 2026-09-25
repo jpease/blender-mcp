@@ -8,6 +8,7 @@ from contextlib import suppress
 import bpy
 import mathutils
 
+from ..helpers import MAX_FRAME, MIN_FRAME
 from .action_assignment import (
     ACTION_POLICIES,
     action_fcurve_collections,
@@ -19,8 +20,6 @@ from .key_style import KeyStyle, style_point
 from .scene import _object, _required_name
 from .scene_physics import _scene, _scene_fps
 
-_MIN_FRAME = -1_048_574
-_MAX_FRAME = 1_048_574
 _MAX_BATCH = 500
 _KEYFRAME_MATCH_TOLERANCE = 1e-5
 # One call may key 500 records, and the envelope lifts warnings whole rather than paging them,
@@ -49,8 +48,8 @@ def _finite_sequence(value, length, label):
 
 def _frame_value(value, label):
     value = _finite_number(value, label)
-    if not _MIN_FRAME <= value <= _MAX_FRAME:
-        raise ValueError(f"{label} must be between {_MIN_FRAME} and {_MAX_FRAME}")
+    if not MIN_FRAME <= value <= MAX_FRAME:
+        raise ValueError(f"{label} must be between {MIN_FRAME} and {MAX_FRAME}")
     return value
 
 

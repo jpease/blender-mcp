@@ -11,6 +11,7 @@ from itertools import combinations
 import bpy
 import mathutils
 
+from ..rna_patch import get_object
 from .inspection_and_setup import (
     _BODY_FIELDS,
     _aabb_overlap,
@@ -24,7 +25,6 @@ from .inspection_and_setup import (
     _ensure_world,
     _evaluated_geometry,
     _mesh_volume,
-    _object,
     _preflight_collection_name,
     _prepare_cache_mutation,
     _primitive_proxy_mesh,
@@ -148,7 +148,7 @@ class RigidBodyRagdollHandlers:
         confirm_delete_baked_cache=False,
     ):
         scene = _scene(scene_name)
-        armature = _object(armature_object_name, {"ARMATURE"})
+        armature = get_object(armature_object_name, {"ARMATURE"})
         if armature.name not in scene.objects:
             raise ValueError(f"Armature '{armature.name}' is not linked to scene '{scene.name}'")
         if not rig_name or not 2 <= len(bodies) <= 64 or not 1 <= len(joints) <= 128:
@@ -192,7 +192,7 @@ class RigidBodyRagdollHandlers:
             if (body.get("shape", "CAPSULE") == "CONVEX_HULL") != bool(source_name):
                 raise ValueError("CONVEX_HULL ragdoll bodies require convex_source_object_name")
             if source_name:
-                source = _object(source_name, {"MESH"})
+                source = get_object(source_name, {"MESH"})
                 if source.name not in scene.objects:
                     raise ValueError(f"Convex source '{source.name}' is not in scene '{scene.name}'")
                 convex_sources[body["bone_name"]] = source
@@ -374,7 +374,7 @@ class RigidBodyRagdollHandlers:
         confirm_overwrite_action=False,
     ):
         scene = _scene(scene_name)
-        armature = _object(armature_object_name, {"ARMATURE"})
+        armature = get_object(armature_object_name, {"ARMATURE"})
         if armature.name not in scene.objects:
             raise ValueError(f"Armature '{armature.name}' is not linked to scene '{scene.name}'")
         if frame_start > frame_end or not 1 <= frame_step <= 120:
@@ -393,7 +393,7 @@ class RigidBodyRagdollHandlers:
         missing = [name for name in bone_names if armature.pose.bones.get(name) is None]
         if missing:
             raise ValueError(f"Armature is missing mapped pose bones: {missing}")
-        proxies = [_object(name, {"MESH"}) for name in proxy_names]
+        proxies = [get_object(name, {"MESH"}) for name in proxy_names]
         if any(proxy.name not in scene.objects or proxy.rigid_body is None for proxy in proxies):
             raise ValueError("Every ragdoll bake proxy must be a rigid-body mesh in the requested scene")
         existing = bpy.data.actions.get(action_name)

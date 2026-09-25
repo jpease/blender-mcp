@@ -17,7 +17,7 @@ from types import ModuleType
 
 import pytest
 
-from test_mutation_transaction import _load_addon
+from conftest import load_addon
 
 
 def _instrumented_server(monkeypatch: pytest.MonkeyPatch) -> tuple[object, list[tuple[str | None, ...]], ModuleType]:
@@ -35,7 +35,7 @@ def _instrumented_server(monkeypatch: pytest.MonkeyPatch) -> tuple[object, list[
         candidates per pass), and the loaded `server_core` module.
 
     """
-    addon, _bpy = _load_addon(monkeypatch, data={"filepath": ""})
+    addon, _bpy = load_addon(monkeypatch, data={"filepath": ""})
     server_core = sys.modules[f"{addon.__name__}.server_core"]
     real_writable_roots = server_core.writable_roots
     probes: list[tuple[str | None, ...]] = []

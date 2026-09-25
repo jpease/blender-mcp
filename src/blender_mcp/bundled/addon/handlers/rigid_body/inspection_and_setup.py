@@ -16,7 +16,8 @@ import bpy
 import mathutils
 
 from ...helpers import paginate, preserve_mode_and_selection, set_active, sync_from_editmode
-from ..simulation_cache import point_cache_info
+from ..rna_patch import get_object, read_fields, serialize
+from ..simulation_cache import point_cache_info, set_cache_frame_range
 
 _BODY_FIELDS = {
     "type",
@@ -85,27 +86,10 @@ _TOPOLOGY_MODIFIERS = {
 }
 
 
-def _serialize(value):
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if hasattr(value, "name"):
-        return value.name
-    if hasattr(value, "to_list"):
-        return value.to_list()
-    if isinstance(value, (list, tuple)) or hasattr(value, "__iter__"):
-        with contextlib.suppress(TypeError):
-            return [_serialize(item) for item in value]
-    return str(value)
-
-
 def _bvh_class():
     from mathutils.bvhtree import BVHTree
 
     return BVHTree
-
-
-def _read_fields(owner, fields):
-    return {name: _serialize(getattr(owner, name)) for name in sorted(fields) if hasattr(owner, name)}
 
 
 def _scene(name):
@@ -113,15 +97,6 @@ def _scene(name):
     if scene is None:
         raise ValueError(f"Scene not found: {name}")
     return scene
-
-
-def _object(name, types=None):
-    obj = bpy.data.objects.get(name)
-    if obj is None:
-        raise ValueError(f"Object not found: {name}")
-    if types and obj.type not in types:
-        raise ValueError(f"Object '{name}' must be one of {sorted(types)} (type={obj.type})")
-    return obj
 
 
 def _collection_in_scene(collection, scene):
@@ -275,11 +250,11 @@ def _apply_patch(owner, patch, allowed):
     prepared = _validate_rna_patch(owner, patch, allowed)
     changes = {}
     for name, value in prepared.items():
-        old = _serialize(getattr(owner, name))
-        if old == _serialize(value):
+        old = serialize(getattr(owner, name))
+        if old == serialize(value):
             continue
         setattr(owner, name, value)
-        changes[name] = {"old": old, "new": _serialize(getattr(owner, name))}
+        changes[name] = {"old": old, "new": serialize(getattr(owner, name))}
     return changes
 
 
@@ -290,22 +265,25 @@ def _restore_fields(owner, snapshot):
 
 
 def _set_cache_range(cache, patch):
+    """
+    Set a PointCache's range and step, each taken from `patch` or else the cache's current value.
+
+    Raises:
+        ValueError: The step is outside [1, 1000], the range is inverted, or Blender did not keep
+            the range or the step.
+
+    """
     start = int(patch.get("frame_start", cache.frame_start))
     end = int(patch.get("frame_end", cache.frame_end))
     step = int(patch.get("frame_step", cache.frame_step))
-    if start > end:
-        raise ValueError("Rigid-body cache frame_start must not exceed frame_end")
     if not 1 <= step <= 1000:
         raise ValueError("Rigid-body cache frame_step must be in [1, 1000]")
-    if start > cache.frame_end:
-        cache.frame_end = end
-        cache.frame_start = start
-    else:
-        cache.frame_start = start
-        cache.frame_end = end
+    set_cache_frame_range(cache, start, end)
     cache.frame_step = step
-    if (cache.frame_start, cache.frame_end, cache.frame_step) != (start, end, step):
-        raise RuntimeError("Blender did not retain the requested rigid-body cache range")
+    if cache.frame_step != step:
+        raise ValueError(
+            f"Blender did not retain the requested rigid-body cache frame_step {step} (got {cache.frame_step})"
+        )
 
 
 def _native_transform(obj):
@@ -411,7 +389,7 @@ def _body_info(obj):
     if body is None:
         return None
     return {
-        **_read_fields(body, _BODY_FIELDS),
+        **read_fields(body, _BODY_FIELDS),
         "collision_collections": [i + 1 for i, flag in enumerate(body.collision_collections) if flag],
     }
 
@@ -496,7 +474,7 @@ def _constraint_flat_info(constraint):
         "use_motor_ang",
     }
     return {
-        **_read_fields(constraint, fields),
+        **read_fields(constraint, fields),
         "object1": constraint.object1.name if constraint.object1 else None,
         "object2": constraint.object2.name if constraint.object2 else None,
     }
@@ -529,7 +507,7 @@ def _validate_object_batch(scene, names, require_body=False):
         raise ValueError("Object names must be unique")
     objects = []
     for name in names:
-        obj = _object(name)
+        obj = get_object(name)
         if obj.name not in scene.objects:
             raise ValueError(f"Object '{name}' is not linked to scene '{scene.name}'")
         if obj.library is not None or not obj.is_editable:
@@ -865,11 +843,11 @@ class RigidBodyInspectionAndSetupHandlers:
             "use_gravity": scene.use_gravity,
             "gravity": list(scene.gravity),
             "world": {
-                **_read_fields(world, _WORLD_FIELDS),
+                **read_fields(world, _WORLD_FIELDS),
                 "body_collection": world.collection.name if world.collection else None,
                 "constraint_collection": world.constraints.name if world.constraints else None,
                 "effector_weights": {
-                    **_read_fields(world.effector_weights, _EFFECTOR_FIELDS),
+                    **read_fields(world.effector_weights, _EFFECTOR_FIELDS),
                     "collection": world.effector_weights.collection.name if world.effector_weights.collection else None,
                 },
                 "point_cache": _cache_info(world.point_cache),
@@ -926,7 +904,7 @@ class RigidBodyInspectionAndSetupHandlers:
             raise ValueError("object_names must contain 1-100 names")
         if len(set(object_names)) != len(object_names):
             raise ValueError("object_names must be unique")
-        return {"objects": [_object_info(_object(name)) for name in object_names]}
+        return {"objects": [_object_info(get_object(name)) for name in object_names]}
 
     def get_rigid_body_constraint_info(self, scene_name, constraint_object_names=None, limit=100, offset=0):
         scene = _scene(scene_name)
@@ -938,7 +916,7 @@ class RigidBodyInspectionAndSetupHandlers:
         else:
             if len(set(constraint_object_names)) != len(constraint_object_names):
                 raise ValueError("constraint_object_names must be unique")
-            candidates = [_object(name) for name in constraint_object_names]
+            candidates = [get_object(name) for name in constraint_object_names]
             missing = [obj.name for obj in candidates if obj.rigid_body_constraint is None]
             if missing:
                 raise ValueError(f"Objects have no rigid-body constraint settings: {missing}")
@@ -1140,10 +1118,10 @@ class RigidBodyInspectionAndSetupHandlers:
             _preflight_collection_name(scene, world_collection_name)
         source_patch = {}
         if source_settings_object_name:
-            source = _object(source_settings_object_name)
+            source = get_object(source_settings_object_name)
             if source.rigid_body is None:
                 raise ValueError(f"Source settings object '{source.name}' has no rigid body")
-            source_patch = _read_fields(source.rigid_body, _BODY_FIELDS - {"type"})
+            source_patch = read_fields(source.rigid_body, _BODY_FIELDS - {"type"})
         explicit = dict(settings or {})
         if explicit.get("type", body_type) != body_type:
             raise ValueError("settings.type must match body_type")
@@ -1581,8 +1559,8 @@ class RigidBodyInspectionAndSetupHandlers:
             raise ValueError(f"Object '{obj.name}' has no rigid-body constraint")
         if set(configuration) == {"type"} and object1_name is None and object2_name is None:
             raise ValueError("Provide at least one constraint setting or endpoint change")
-        first = _object(object1_name) if object1_name else constraint.object1
-        second = _object(object2_name) if object2_name else constraint.object2
+        first = get_object(object1_name) if object1_name else constraint.object1
+        second = get_object(object2_name) if object2_name else constraint.object2
         if first is None or second is None:
             raise ValueError("Both rigid-body constraint endpoints are required")
         if first == second:

@@ -29,14 +29,10 @@ from blender_mcp.text_hygiene import is_unsafe
 
 
 def test_bundled_addon_exists_and_has_protocol() -> None:
+    """The addon this package ships is current by the installer's own reading of it."""
     path = get_bundled_addon_path()
     assert path.is_dir()
-    text = (path / "__init__.py").read_text(encoding="utf-8")
-    assert "ADDON_PROTOCOL_VERSION" in text
-    assert f"ADDON_PROTOCOL_VERSION = {EXPECTED_ADDON_PROTOCOL_VERSION}" in text
-
-    server_core = (path / "server_core.py").read_text(encoding="utf-8")
-    assert "get_addon_info" in server_core
+    assert am.read_addon_protocol_version(path) == EXPECTED_ADDON_PROTOCOL_VERSION
 
 
 def test_install_addon_copies_into_target_dir(tmp_path: Path) -> None:
@@ -51,7 +47,7 @@ def test_install_addon_copies_into_target_dir(tmp_path: Path) -> None:
     assert result.target_path is not None
     installed = Path(result.target_path)
     assert installed.is_dir()
-    assert "ADDON_PROTOCOL_VERSION" in (installed / "__init__.py").read_text(encoding="utf-8")
+    assert am.read_addon_protocol_version(installed) == EXPECTED_ADDON_PROTOCOL_VERSION
     # The legacy single-file install is replaced by the package directory,
     # not left behind alongside it.
     assert not legacy.exists()

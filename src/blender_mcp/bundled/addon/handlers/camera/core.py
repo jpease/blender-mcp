@@ -11,13 +11,11 @@ import uuid
 import bpy
 import mathutils
 
+from ...helpers import MAX_FRAME, MIN_FRAME, bounded_int
 from ._shared import (
     _CAMERA_DISPLAY,
     _CAMERA_OPTICS,
     _DOF_FIELDS,
-    _MAX_FRAME,
-    _MIN_FRAME,
-    _bounded_int,
     _camera,
     _camera_cut_map,
     _camera_settings,
@@ -101,7 +99,7 @@ def _validated_dof_patch(patch):
         if field in patch:
             _positive(patch[field], field)
     if "aperture_blades" in patch:
-        _bounded_int(patch["aperture_blades"], "aperture_blades", 0, 16)
+        bounded_int("aperture_blades", patch["aperture_blades"], 0, 16)
     if "aperture_rotation" in patch:
         _finite_number(patch["aperture_rotation"], "aperture_rotation")
     return patch
@@ -353,7 +351,7 @@ class _CoreMixin:
             assert marker_frame is not None
             if not marker_name.strip():
                 raise ValueError("marker_name must be non-empty")
-            marker_frame = _bounded_int(marker_frame, "marker_frame", _MIN_FRAME, _MAX_FRAME)
+            marker_frame = bounded_int("marker_frame", marker_frame, MIN_FRAME, MAX_FRAME)
             by_name = scene.timeline_markers.get(marker_name)
             at_frame = [item for item in scene.timeline_markers if item.frame == marker_frame]
             marker = by_name or (at_frame[0] if at_frame else None)

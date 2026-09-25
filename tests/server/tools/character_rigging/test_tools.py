@@ -5,11 +5,12 @@ import sys
 
 import pytest
 
+from conftest import load_addon
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _dispatch, character_rigging
-from server.tools.character_rigging.test_posing import _Action, _FCurve, _head_rig
+
+from .rig_doubles import _Action, _FCurve, _head_rig
 
 
 def _run(function, **kwargs):
@@ -137,7 +138,7 @@ def test_destructive_collection_membership_changes_require_confirmation() -> Non
 
 
 def test_character_dispatch_and_read_only_contract(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
     handlers = server._build_command_handlers()
     names = {
@@ -175,7 +176,7 @@ def test_character_dispatch_and_read_only_contract(monkeypatch) -> None:
 
 
 def test_hierarchy_preflight_detects_cycles_and_connected_gaps(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     handler = sys.modules[f"{addon.__name__}.handlers.character_rigging"]
 
     assert handler._hierarchy_cycles({"a": "b", "b": "a"}) == [["a", "b", "a"]]
@@ -196,7 +197,7 @@ def test_hierarchy_preflight_detects_cycles_and_connected_gaps(monkeypatch) -> N
 
 
 def test_patch_preflight_renames_child_parent_and_rejects_orphans(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     handler = sys.modules[f"{addon.__name__}.handlers.character_rigging"]
     specs = [
         {"name": "root", "head": (0, 0, 0), "tail": (0, 0, 1), "parent": None},
@@ -219,7 +220,7 @@ def test_patch_preflight_renames_child_parent_and_rejects_orphans(monkeypatch) -
 
 
 def test_patch_preflight_accepts_child_before_parent_creation(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     handler = sys.modules[f"{addon.__name__}.handlers.character_rigging"]
 
     final, renamed, deleted = handler._apply_patch_to_specs(

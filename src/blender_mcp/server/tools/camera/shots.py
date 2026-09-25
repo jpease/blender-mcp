@@ -8,7 +8,7 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from .._inputs import StrictModel, dump_input, dump_inputs
+from .._inputs import MAX_FRAME, MIN_FRAME, StrictModel, dump_input, dump_inputs
 
 MarkerAction = Literal["LIST", "CREATE", "UPDATE", "REMOVE"]
 
@@ -17,7 +17,7 @@ class MarkerEdit(StrictModel):
     """One exact marker edit; fields are interpreted by the requested action."""
 
     name: str = Field(min_length=1)
-    frame: int | None = Field(default=None, ge=-1_048_574, le=1_048_574)
+    frame: int | None = Field(default=None, ge=MIN_FRAME, le=MAX_FRAME)
     camera_name: str | None = None
 
 

@@ -14,8 +14,7 @@ import sys
 
 import pytest
 
-from conftest import ROOT_ADDON
-from test_mutation_transaction import _load_addon
+from conftest import ROOT_ADDON, load_addon
 
 SERVER_CORE = ROOT_ADDON.parent / "server_core.py"
 
@@ -45,7 +44,7 @@ def server_core(monkeypatch: pytest.MonkeyPatch):
         ModuleType: The loaded `server_core`.
 
     """
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     return sys.modules[f"{addon.__name__}.server_core"]
 
 

@@ -10,7 +10,7 @@ import tempfile
 import bpy
 
 from ...helpers import preserve_mode_and_selection
-from .inspection_and_setup import _get_object
+from ..rna_patch import get_object
 
 _EXPORT_UNIT_METERS = {
     "METERS": 1.0,
@@ -115,7 +115,7 @@ class ClothExportingHandlers:
             raise ValueError("Export frame count must be positive, within max_frames, and max_frames <= 2000")
         if not object_names or len(object_names) > 64 or len(set(object_names)) != len(object_names):
             raise ValueError("object_names must contain 1-64 unique object names")
-        objects = [_get_object(name, {"MESH"}) for name in object_names]
+        objects = [get_object(name, {"MESH"}) for name in object_names]
         if any(obj.name not in scene.objects for obj in objects):
             raise ValueError("Every export object must be linked to the explicit scene")
         view_layer = next(

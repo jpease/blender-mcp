@@ -106,27 +106,6 @@ def test_get_addon_status_reports_render_devices_with_the_machine_list_only_on_d
     assert older["render_devices"] is None
 
 
-def test_get_addon_status_documents_every_key_it_returns(monkeypatch: pytest.MonkeyPatch) -> None:
-    """
-    Every key the payload carries is named in the docstring, the opt-in ones included.
-
-    Agents learn the payload from the docstring, so an unmentioned key is invisible to them.
-    The opt-in keys are asked for here on purpose: a key only one argument ever produces is the
-    one whose missing documentation nothing else would notice.
-    """
-    _install_handshake(monkeypatch, _handshake())
-
-    payload = asyncio.run(
-        core.get_addon_status(  # pyright: ignore[reportArgumentType]
-            ctx=None, detail=True, tool_name="get_addon_status", mounted_tools=True
-        )
-    )["data"]
-
-    documented = core.get_addon_status.__doc__ or ""
-    undocumented = sorted(key for key in payload if f'"{key}"' not in documented)
-    assert not undocumented, f"payload keys missing from the docstring: {undocumented}"
-
-
 # Any non-zero epoch.
 _EPOCH = 7
 

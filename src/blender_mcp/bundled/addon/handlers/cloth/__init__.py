@@ -14,9 +14,6 @@ from ._cache_helpers import (
     _prospective_cache_identity as _prospective_cache_identity,
 )
 from ._cache_helpers import (
-    _set_cache_frame_range as _set_cache_frame_range,
-)
-from ._cache_helpers import (
     _shared_cache_identity as _shared_cache_identity,
 )
 from ._ownership import (
@@ -61,9 +58,6 @@ from .inspection_and_setup import (
 )
 from .inspection_and_setup import (
     _modifier_is_animated as _modifier_is_animated,
-)
-from .inspection_and_setup import (
-    _patch_rna as _patch_rna,
 )
 from .inspection_and_setup import (
     _reject_baked as _reject_baked,

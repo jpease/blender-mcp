@@ -108,7 +108,7 @@ preview = true
 # gpu does not exist at all outside real Blender (no runtime package, only a type-checking
 # stub), and numpy is not installed in this project's own dev/test environment either - a
 # module-level import here would break every test that loads this addon package
-# (test_mutation_transaction._load_addon and everything built on it), so get_viewport_screenshot's
+# (tests/conftest.py's load_addon and everything built on it), so get_viewport_screenshot's
 # GPU capture path must import both lazily, inside the function that actually needs them.
 "src/blender_mcp/bundled/addon/handlers/viewport.py" = ["import-outside-top-level"]
 # FastMCP injects `ctx: Context` by annotation, not by name, so tools declare it

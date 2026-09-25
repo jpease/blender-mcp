@@ -20,11 +20,12 @@ from collections import Counter
 import bpy
 
 from ...helpers import evaluated_world_bounds, paginate, spread_indices, sync_from_editmode
+from ..rna_patch import finite, read_fields, validate_rna_value
+from ..simulation_cache import set_cache_frame_range
 from ._cache_helpers import (
     _configure_independent_cache,
     _external_cache_path_status,
     _run_point_cache_operator,
-    _set_cache_frame_range,
     _shared_cache_identity,
 )
 from ._geometry_sampling import (
@@ -41,16 +42,13 @@ from .inspection_and_setup import (
     _collection_in_scene,
     _edge_lengths,
     _evaluated_counts,
-    _finite,
     _get_cloth,
     _get_modifier,
     _max_keyed_location_delta,
     _modifier_is_animated,
-    _read_fields,
     _scene_context_for_object,
     _scene_scope,
     _topology_summary,
-    _validate_rna_value,
     _vertex_group_stats,
 )
 from .proxy_rigs import _remove_created_object
@@ -676,12 +674,12 @@ class ClothDiagnosticsHandlers:
             raise ValueError("vertex_sample_limit must be in [1, 100000]")
         if not 0 <= collider_sample_limit <= 64:
             raise ValueError("collider_sample_limit must be in [0, 64]")
-        _finite(timeout_seconds, "timeout_seconds")
+        finite(timeout_seconds, "timeout_seconds")
         if not 0 < timeout_seconds <= 300:
             raise ValueError("timeout_seconds must be in (0, 300]")
         scene, view_layer = _scene_context_for_object(obj)
         for frame in normalized_frames:
-            _validate_rna_value(scene, "frame_current", frame)
+            validate_rna_value(scene, "frame_current", frame)
         colliders = _eligible_active_colliders(obj, modifier.collision_settings)
         selected_colliders = colliders[:collider_sample_limit]
         original_frame = scene.frame_current
@@ -791,7 +789,7 @@ class ClothDiagnosticsHandlers:
                         "collider_proximity": proximity,
                         "solver_status": "AVAILABLE" if solver_result is not None else "NOT_INITIALIZED",
                         "solver_result": (
-                            _read_fields(
+                            read_fields(
                                 solver_result,
                                 {
                                     prop.identifier
@@ -917,7 +915,7 @@ class ClothDiagnosticsHandlers:
                     temporary.name,
                     temporary_modifier.name,
                 )
-                _set_cache_frame_range(
+                set_cache_frame_range(
                     temporary_modifier.point_cache,
                     short_bake_start,
                     short_bake_end,
@@ -976,7 +974,7 @@ class ClothDiagnosticsHandlers:
             },
             "short_isolated_bake": short_bake,
             "cost_evidence": cost_evidence,
-            "solver_result": _read_fields(
+            "solver_result": read_fields(
                 cloth_modifier.solver_result,
                 {
                     prop.identifier

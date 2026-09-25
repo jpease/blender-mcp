@@ -5,8 +5,8 @@ import types
 
 import pytest
 
+from conftest import load_liquid_handler
 from pydantic import ValidationError
-from server.tools.liquid.test_tools import _load_liquid_handler
 
 from blender_mcp.server.tools import _dispatch, liquid
 
@@ -69,7 +69,7 @@ def test_solver_tool_forwards_newly_exposed_fields(monkeypatch) -> None:
 
 
 def test_flip_particles_setter_is_idempotent_despite_blender_toggling(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     settings = _TogglingFlipSettings(enabled=False)
 
     first = handler.inspection_and_setup._set_flip_particles(settings, True)
@@ -83,14 +83,14 @@ def test_flip_particles_setter_is_idempotent_despite_blender_toggling(monkeypatc
 
 
 def test_flip_particles_field_is_excluded_from_the_generic_patch_allowlist(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
 
     assert "use_flip_particles" not in handler.inspection_and_setup._DOMAIN_FIELDS
     assert handler.inspection_and_setup._FLIP_PARTICLES_FIELD == "use_flip_particles"
 
 
 def test_solver_handler_reports_flip_particles_only_when_it_changed(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     module = handler.inspection_and_setup
     settings = _TogglingFlipSettings(enabled=True)
     settings.timesteps_min = 1
@@ -101,7 +101,7 @@ def test_solver_handler_reports_flip_particles_only_when_it_changed(monkeypatch)
     modifier = types.SimpleNamespace(name="Liquid Domain")
     monkeypatch.setattr(module, "_get_domain", lambda *_args: (obj, modifier, settings))
     monkeypatch.setattr(module, "_reject_baked", lambda _settings: None)
-    monkeypatch.setattr(module, "_patch_rna", lambda *_args: {})
+    monkeypatch.setattr(module, "patch_rna", lambda *_args: {})
     monkeypatch.setattr(module.bpy.context, "view_layer", types.SimpleNamespace(update=lambda: None), raising=False)
     handlers = handler.LiquidHandlersMixin()
     monkeypatch.setattr(handlers, "estimate_liquid_resources", lambda *_a: {"estimated_grid": {}})
@@ -120,7 +120,7 @@ def test_mesh_patch_rejects_inverted_concave_thresholds() -> None:
 
 
 def test_mesh_handler_rechecks_concave_thresholds_against_current_values(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     module = handler.mesh_and_materials
     settings = types.SimpleNamespace(mesh_concave_lower=0.4, mesh_concave_upper=3.5)
     monkeypatch.setattr(
@@ -151,7 +151,7 @@ def test_cache_patch_pins_openvdb_identifiers_verified_against_blender() -> None
 
 
 def test_openvdb_fields_are_rejected_when_no_stage_uses_openvdb(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     module = handler.simulation
     settings = types.SimpleNamespace(cache_data_format="UNI", cache_mesh_format="BOBJECT", cache_particle_format="UNI")
 
@@ -165,7 +165,7 @@ def test_openvdb_fields_are_rejected_when_no_stage_uses_openvdb(monkeypatch) -> 
 
 
 def test_openvdb_data_depth_setter_checks_the_verified_identifiers(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     module = handler.simulation
     settings = types.SimpleNamespace(openvdb_data_depth=32)
 
@@ -175,7 +175,7 @@ def test_openvdb_data_depth_setter_checks_the_verified_identifiers(monkeypatch) 
 
 
 def test_cache_state_normalizes_the_numeric_openvdb_depth_to_a_writable_identifier(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     module = handler.simulation
     settings = types.SimpleNamespace(openvdb_data_depth=16)
     monkeypatch.setattr(
@@ -199,7 +199,7 @@ def test_flow_patch_rejects_smoke_only_particle_size_fields() -> None:
 
 
 def test_flow_handler_also_rejects_smoke_only_particle_size_fields(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     flow = types.SimpleNamespace(flow_behavior="INFLOW", use_inflow=False)
     obj = types.SimpleNamespace(name="Pour", vertex_groups=types.SimpleNamespace(get=lambda _name: None))
 
@@ -277,7 +277,7 @@ def test_quality_profile_tool_requires_at_least_one_section() -> None:
 
 
 def test_quality_profile_command_is_registered_as_a_mutating_command(monkeypatch) -> None:
-    addon, _handler = _load_liquid_handler(monkeypatch)
+    addon, _handler = load_liquid_handler(monkeypatch)
     server = addon.BlenderMCPServer()
 
     assert "apply_liquid_quality_profile" in server._build_command_handlers()
@@ -285,7 +285,7 @@ def test_quality_profile_command_is_registered_as_a_mutating_command(monkeypatch
 
 
 def test_quality_profile_handler_merges_both_sub_results(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     monkeypatch.setattr(
         handler.quality,
         "_get_domain",
@@ -316,7 +316,7 @@ def test_quality_profile_handler_merges_both_sub_results(monkeypatch) -> None:
 
 
 def test_quality_profile_handler_requires_a_patch(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
 
     with pytest.raises(ValueError, match="at least a solver or a mesh patch"):
         handler.LiquidHandlersMixin().apply_liquid_quality_profile("Domain", "Liquid Domain", "FINAL")
@@ -356,7 +356,7 @@ def _fake_particle_system(name, settings_name, recorded=None):
 
 
 def test_particle_role_is_derived_from_blender_labels_only_until_recorded(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     module = handler.mesh_and_materials
     system = _fake_particle_system("Spray", "SprayParticleSettings")
 
@@ -374,7 +374,7 @@ def test_particle_role_is_derived_from_blender_labels_only_until_recorded(monkey
 
 
 def test_particle_role_is_recorded_on_settings_because_systems_reject_id_properties(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     module = handler.mesh_and_materials
     system = _fake_particle_system("Foam", "FoamParticleSettings")
 
@@ -385,14 +385,14 @@ def test_particle_role_is_recorded_on_settings_because_systems_reject_id_propert
 
 
 def test_flip_particle_system_is_not_classified_as_a_secondary_system(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     module = handler.mesh_and_materials
 
     assert module._particle_role(_fake_particle_system("Liquid", "LiquidParticleSettings")) == "UNKNOWN"
 
 
 def test_combined_particle_labels_report_every_matching_role(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     module = handler.mesh_and_materials
 
     assert module._particle_role(_fake_particle_system("Spray + Foam", "SprayFoamSettings")) == "SPRAY+FOAM"
@@ -402,7 +402,7 @@ def test_combined_particle_labels_report_every_matching_role(monkeypatch) -> Non
 
 
 def test_tagging_assigns_a_uuid_and_role_and_rolls_both_back(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     module = handler.inspection_and_setup
     obj = _FakeIdBlock("Pour")
 
@@ -418,7 +418,7 @@ def test_tagging_assigns_a_uuid_and_role_and_rolls_both_back(monkeypatch) -> Non
 
 
 def test_retagging_keeps_the_existing_uuid_and_restores_the_previous_role(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     module = handler.inspection_and_setup
     obj = _FakeIdBlock("Proxy", {"blendermcp_liquid_uuid": "kept", "blendermcp_liquid_role": "EFFECTOR"})
 
@@ -433,7 +433,7 @@ def test_retagging_keeps_the_existing_uuid_and_restores_the_previous_role(monkey
 
 
 def test_unknown_roles_are_rejected_before_anything_is_written(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     obj = _FakeIdBlock("Mystery")
 
     with pytest.raises(ValueError, match="Unknown liquid object role"):
@@ -443,7 +443,7 @@ def test_unknown_roles_are_rejected_before_anything_is_written(monkeypatch) -> N
 
 
 def test_identity_reporting_never_assigns_an_identity(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     module = handler.inspection_and_setup
     untagged = _FakeIdBlock("Plain")
 
@@ -455,7 +455,7 @@ def test_identity_reporting_never_assigns_an_identity(monkeypatch) -> None:
 
 
 def test_objects_resolve_by_uuid_and_ambiguity_is_an_error(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     module = handler.inspection_and_setup
     first = _FakeIdBlock("Domain", {"blendermcp_liquid_uuid": "abc"})
     second = _FakeIdBlock("Domain Copy", {"blendermcp_liquid_uuid": "abc"})
@@ -474,7 +474,7 @@ def test_objects_resolve_by_uuid_and_ambiguity_is_an_error(monkeypatch) -> None:
 
 
 def test_manifest_registry_is_keyed_by_uuid_so_renames_do_not_orphan_entries(monkeypatch, tmp_path) -> None:
-    manifest = _load_liquid_handler(monkeypatch)[1].manifest
+    manifest = load_liquid_handler(monkeypatch)[1].manifest
     directory = str(tmp_path)
 
     manifest.write_stage_entry(directory, "domain-uuid", "DATA", "REPLAY", (1, 10))
@@ -495,20 +495,20 @@ def test_manifest_registry_is_keyed_by_uuid_so_renames_do_not_orphan_entries(mon
 
 
 def test_manifest_registration_skips_entries_without_a_uuid(monkeypatch, tmp_path) -> None:
-    manifest = _load_liquid_handler(monkeypatch)[1].manifest
+    manifest = load_liquid_handler(monkeypatch)[1].manifest
 
     assert manifest.register_objects(str(tmp_path), "domain-uuid", [(None, "Pour", "FLOW")]) is None
     assert manifest.read_manifest(str(tmp_path)) is None
 
 
 def test_manifest_registration_absorbs_an_unwritable_directory(monkeypatch, tmp_path) -> None:
-    manifest = _load_liquid_handler(monkeypatch)[1].manifest
+    manifest = load_liquid_handler(monkeypatch)[1].manifest
 
     assert manifest.register_objects(str(tmp_path / "absent"), "domain-uuid", [("u", "Pour", "FLOW")]) is None
 
 
 def test_owned_object_registry_is_reported_from_the_cache_manifest(monkeypatch, tmp_path) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     module = handler.inspection_and_setup
     monkeypatch.setattr(module.bpy, "path", types.SimpleNamespace(abspath=lambda path: path), raising=False)
     handler.manifest.register_objects(str(tmp_path), "domain-uuid", [("flow-uuid", "Pour", "FLOW")])
@@ -530,7 +530,7 @@ def test_simulation_info_tool_forwards_a_domain_uuid(monkeypatch) -> None:
 
 
 def test_simulation_info_rejects_a_uuid_that_disagrees_with_the_supplied_name(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
     module = handler.inspection_and_setup
     monkeypatch.setattr(module, "_find_object_by_liquid_uuid", lambda _uuid: types.SimpleNamespace(name="Domain"))
 
@@ -539,7 +539,7 @@ def test_simulation_info_rejects_a_uuid_that_disagrees_with_the_supplied_name(mo
 
 
 def test_simulation_info_requires_at_least_one_selector(monkeypatch) -> None:
-    _addon, handler = _load_liquid_handler(monkeypatch)
+    _addon, handler = load_liquid_handler(monkeypatch)
 
     with pytest.raises(ValueError, match="scene_name, domain_object_name, domain_uuid"):
         handler.LiquidHandlersMixin().get_liquid_simulation_info()

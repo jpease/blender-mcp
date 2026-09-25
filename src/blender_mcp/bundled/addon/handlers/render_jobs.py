@@ -42,6 +42,7 @@ import bpy
 
 from .. import render_job_supervisor as job_file
 from ..file_paths import canonical_path, contains, create_save_directory, enforce_roots
+from ..helpers import bounded_int, page_records
 from ..output_roots import configured_file_roots, configured_roots, writable_roots
 from ..render_devices import effective_cycles_device
 from .blend_files import operator_failure_message, require_bool
@@ -470,60 +471,6 @@ def _log_tail(path):
     return "\n".join(lines[-_LOG_TAIL_LINES:]) or None
 
 
-def _page(records, offset, limit):
-    """
-    Cut one page out of a list of records, with the pagination keys every paged reply carries.
-
-    Args:
-        records: Every record, in order.
-        offset: Zero-based index of the first record wanted.
-        limit: How many records at most.
-
-    Returns:
-        tuple[list, dict]: The page, and its "total", "offset", "limit", "returned_count",
-        "truncated" and "next_offset".
-
-    """
-    page = records[offset : offset + limit]
-    truncated = offset + len(page) < len(records)
-    return page, {
-        "total": len(records),
-        "offset": offset,
-        "limit": limit,
-        "returned_count": len(page),
-        "truncated": truncated,
-        "next_offset": offset + len(page) if truncated else None,
-    }
-
-
-def _bounded_int(name, value, minimum, maximum=None):
-    """
-    Refuse a limit or offset that is not an integer within its bounds.
-
-    Args:
-        name: The parameter name, for the message.
-        value: What the client sent.
-        minimum: The smallest value accepted.
-        maximum: The largest value accepted, or None for no upper bound.
-
-    Returns:
-        int: The value.
-
-    Raises:
-        ValueError: When it is not an integer in range.
-
-    """
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or value < minimum
-        or (maximum is not None and value > maximum)
-    ):
-        bound = f"between {minimum} and {maximum}" if maximum is not None else f"at least {minimum}"
-        raise ValueError(f"{name} must be an integer {bound}")
-    return value
-
-
 def _unsaved_image_warning():
     """
     Name the images whose pixels exist only in memory, which the saved copy cannot carry.
@@ -774,8 +721,8 @@ def _read(job_id, detail, limit, offset):
     if record.get("state") == job_file.FAILED:
         reply["log_tail"] = _log_tail(path)
     if detail:
-        files, page = _page(job_file.read_file_records(os.path.dirname(path)), offset, limit)
-        reply |= {"files": files, **page}
+        records = job_file.read_file_records(os.path.dirname(path))
+        reply |= page_records(records, offset, limit, _MAX_PAGE_SIZE, key="files")
     if warnings:
         reply["warnings"] = warnings
     return reply
@@ -808,13 +755,14 @@ def _list(limit, offset):
         if isinstance(record, dict):
             records.append((name, path, record))
     records.sort(key=lambda entry: float(entry[2].get("created_at") or 0.0), reverse=True)
-    page, keys = _page(records, offset, limit)
+    page = page_records(records, offset, limit, _MAX_PAGE_SIZE, key="jobs")
     now = time.time()
     jobs = []
-    for job_id, path, record in page:
+    for job_id, path, record in page["jobs"]:
         reconciled = _reconcile(job_id, path, record, now)
         jobs.append({field: reconciled.get(field) for field in _SUMMARY_FIELDS})
-    return {"jobs": jobs, **keys}
+    page["jobs"] = jobs
+    return page
 
 
 def _stop_unowned(pid, warnings):
@@ -1048,8 +996,8 @@ class RenderJobHandlersMixin:
                     "create_directories": require_bool("create_directories", create_directories),
                 }
             )
-        limit = _bounded_int("limit", limit, 1, _MAX_PAGE_SIZE)
-        offset = _bounded_int("offset", offset, 0)
+        limit = bounded_int("limit", limit, 1, _MAX_PAGE_SIZE)
+        offset = bounded_int("offset", offset, 0)
         if action == "LIST":
             return _list(limit, offset)
         if job_id is None:

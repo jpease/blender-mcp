@@ -7,13 +7,14 @@ import json
 
 import bpy
 
+from ..rna_patch import get_object, patch_rna, restore_rna, validate_rna_value
+from ..simulation_cache import set_cache_frame_range
 from ._cache_helpers import (
     _all_cloth_caches,
     _cloth_cache_dependency_issues,
     _external_directory_evidence,
     _prospective_cache_identity,
     _run_point_cache_operator,
-    _set_cache_frame_range,
     _shared_cache_identity,
 )
 from ._ownership import _owned_component_records, _owned_membership_record
@@ -21,11 +22,7 @@ from .collisions import _affected_cloths
 from .inspection_and_setup import (
     _cache_info,
     _get_cloth,
-    _get_object,
-    _patch_rna,
-    _restore_rna,
     _tag_update,
-    _validate_rna_value,
 )
 
 _POINT_CACHE_FIELDS = {
@@ -95,7 +92,7 @@ class ClothLifecycleHandlers:
         if prospective["frame_start"] > prospective["frame_end"]:
             raise ValueError("PointCache frame_start must be <= frame_end")
         for name, value in patch.items():
-            _validate_rna_value(cache, name, value)
+            validate_rna_value(cache, name, value)
         if prospective["use_external"] and not prospective["filepath"]:
             raise ValueError("External point caches require an explicit filepath")
         if prospective["use_disk_cache"] and not prospective["use_external"] and not bpy.data.filepath:
@@ -136,9 +133,9 @@ class ClothLifecycleHandlers:
             old_range = (cache.frame_start, cache.frame_end)
             scalar_patch = {name: value for name, value in patch.items() if name not in {"frame_start", "frame_end"}}
             try:
-                changes = _patch_rna(cache, scalar_patch, _POINT_CACHE_FIELDS)
+                changes = patch_rna(cache, scalar_patch, _POINT_CACHE_FIELDS)
                 if "frame_start" in patch or "frame_end" in patch:
-                    _set_cache_frame_range(
+                    set_cache_frame_range(
                         cache,
                         prospective["frame_start"],
                         prospective["frame_end"],
@@ -153,9 +150,9 @@ class ClothLifecycleHandlers:
                     }
                 _tag_update(obj)
             except Exception:
-                _restore_rna(cache, changes)
+                restore_rna(cache, changes)
                 with contextlib.suppress(Exception):
-                    _set_cache_frame_range(cache, *old_range)
+                    set_cache_frame_range(cache, *old_range)
                 raise
             return {
                 "changed_objects": [obj.name],
@@ -232,7 +229,7 @@ class ClothLifecycleHandlers:
         confirm_baked_removal=False,
         confirm_affected_bakes=False,
     ):
-        obj = _get_object(object_name)
+        obj = get_object(object_name)
         allowed = {
             "CLOTH_MODIFIER",
             "COLLISION_MODIFIER",

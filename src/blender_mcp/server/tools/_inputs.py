@@ -1,5 +1,5 @@
 """
-The one base every public tool input model derives from, and the one way to serialize it.
+The one base every public tool input model derives from, the one way to serialize it, and the frame range.
 
 Seven domains each wrote their own `_StrictModel` and their own model-to-dict helper under
 three different names (`_dump`, `dump_input`, `explicit_fields`). Nothing kept the copies in
@@ -18,6 +18,12 @@ import math
 from collections.abc import Sequence
 
 from pydantic import BaseModel, ConfigDict, model_validator
+
+# Blender's MAXFRAME: the range `Scene.frame_current`, timeline markers and keyframes accept.
+# The add-on refuses outside the same range with `bundled/addon/helpers.py`'s pair, which this
+# package cannot import: the two pairs must agree.
+MIN_FRAME = -1_048_574
+MAX_FRAME = 1_048_574
 
 
 class StrictModel(BaseModel):

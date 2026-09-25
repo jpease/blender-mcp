@@ -236,15 +236,15 @@ ROWS: list[Revert] = [
     Revert(
         "linking: list_libraries ignores offset",
         ADDON_LINKING,
-        "        page = libraries[offset : offset + limit]\n",
-        "        page = libraries[:limit]\n",
+        '        page = page_records(list(bpy.data.libraries), offset, limit, MAX_PAGE_SIZE, key="libraries")\n',
+        '        page = page_records(list(bpy.data.libraries), 0, limit, MAX_PAGE_SIZE, key="libraries")\n',
         (f"{LKT}::test_list_libraries_paginates_and_reports_what_a_reload_decision_needs",),
     ),
     Revert(
         "linking: list_libraries page bounds are coerced, not checked",
         ADDON_LINKING,
-        '        limit = _bounded_int("limit", limit, 1, MAX_PAGE_SIZE)\n'
-        '        offset = _bounded_int("offset", offset, 0, None)\n',
+        '        limit = bounded_int("limit", limit, 1, MAX_PAGE_SIZE)\n'
+        '        offset = bounded_int("offset", offset, 0)\n',
         "        limit, offset = int(limit), int(offset)  # type: ignore[arg-type]\n",
         tuple(
             f"{LKT}::test_list_libraries_bounds_its_page[{case}]"
@@ -271,7 +271,7 @@ ROWS: list[Revert] = [
     Revert(
         "linking: the per-library datablock list is uncapped",
         ADDON_LINKING,
-        "    shown = items[:limit]\n",
+        "    shown = items[:end]\n",
         "    shown = list(items)\n",
         (f"{LKT}::test_list_libraries_bounds_the_datablocks_it_lists_per_library",),
     ),

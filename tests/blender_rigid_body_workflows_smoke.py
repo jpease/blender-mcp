@@ -8,7 +8,6 @@ Run with::
 
 # Blender runtime types are dynamic in this executable harness.
 
-import importlib.util
 import json
 import sys
 
@@ -16,17 +15,11 @@ from pathlib import Path
 
 import bpy
 
-addon_path = Path(__file__).resolve().parents[1] / "src" / "blender_mcp" / "bundled" / "addon" / "__init__.py"
+sys.path.append(str(Path(__file__).resolve().parent))
+from smoke_addon import load_addon
+
 package_name = "blender_mcp_rigid_body_workflow_smoke"
-spec = importlib.util.spec_from_file_location(
-    package_name,
-    addon_path,
-    submodule_search_locations=[str(addon_path.parent)],
-)
-assert spec is not None and spec.loader is not None
-addon = importlib.util.module_from_spec(spec)
-sys.modules[package_name] = addon
-spec.loader.exec_module(addon)
+load_addon(package_name)
 
 RigidBodyHandlersMixin = sys.modules[f"{package_name}.handlers.rigid_body"].RigidBodyHandlersMixin
 

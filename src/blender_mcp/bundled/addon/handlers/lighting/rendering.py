@@ -5,7 +5,7 @@ import os
 
 import bpy
 
-from ...helpers import color_management_snapshot
+from ...helpers import MAX_FRAME, MIN_FRAME, color_management_snapshot
 from ...render_devices import effective_cycles_device
 from ...render_properties import LIGHTING_CYCLES_FIELDS, LIGHTING_EEVEE_FIELD_MAP
 from ...render_result_record import restore_render_result_record, snapshot_render_result_record
@@ -33,8 +33,6 @@ QUALITY_PRESETS = {
     },
 }
 MAX_RENDER_RESULT_FLOATS = 16 * 1024 * 1024
-_MIN_FRAME = -1_048_574
-_MAX_FRAME = 1_048_574
 _MIN_PREVIEW_SIZE = 16
 _MAX_PREVIEW_SIZE = 1024
 _MAX_PREVIEW_SAMPLES = 1024
@@ -154,7 +152,7 @@ def _validate_preview_request(camera, camera_name, target_engine, frame, width, 
         raise ValueError(f"Object '{camera_name}' is not a camera")
     if target_engine not in {"CYCLES", "EEVEE", "BOTH"}:
         raise ValueError("target_engine must be CYCLES, EEVEE, or BOTH")
-    if isinstance(frame, bool) or int(frame) != frame or not _MIN_FRAME <= int(frame) <= _MAX_FRAME:
+    if isinstance(frame, bool) or int(frame) != frame or not MIN_FRAME <= int(frame) <= MAX_FRAME:
         raise ValueError("frame must be a valid Blender frame integer")
     for value, label in ((width, "width"), (height, "height")):
         if isinstance(value, bool) or int(value) != value or not _MIN_PREVIEW_SIZE <= int(value) <= _MAX_PREVIEW_SIZE:

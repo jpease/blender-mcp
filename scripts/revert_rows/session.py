@@ -66,13 +66,6 @@ ROWS: list[Revert] = [
         '        "writable_output_roots": result.writable_output_roots or ["/invented"],',
         (f"{CORET}::test_get_addon_status_reports_no_roots_for_an_addon_that_does_not_send_them",),
     ),
-    Revert(
-        "get_addon_status: a payload key goes undocumented",
-        SERVER_CORE_TOOL,
-        '"writable_output_roots" (empty when none)',
-        "writable output roots (empty when none)",
-        (f"{CORET}::test_get_addon_status_documents_every_key_it_returns",),
-    ),
     # --- the session epoch reaching the agent ---
     Revert(
         "get_addon_status: the session epoch is hardcoded instead of read off the handshake",

@@ -10,7 +10,7 @@ from .common import (
     ADDON_FILE_PATHS,
     ADDON_SERVER_CORE,
     FLT,
-    SERVER_CORE_TOOL,
+    SERVER_FILE_LIFECYCLE_TOOL,
     Revert,
 )
 
@@ -40,9 +40,9 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "file lifecycle: a server-side tool schema names use_scripts",
-        SERVER_CORE_TOOL,
-        None,
-        "\n# use_scripts\n",
+        SERVER_FILE_LIFECYCLE_TOOL,
+        "    discard_unsaved: bool = False,\n) -> dict:\n",
+        "    discard_unsaved: bool = False,\n    use_scripts: bool = False,\n) -> dict:\n",
         (f"{FLT}::test_use_scripts_appears_in_no_server_side_schema",),
     ),
     Revert(

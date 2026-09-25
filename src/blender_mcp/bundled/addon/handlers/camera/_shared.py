@@ -6,7 +6,7 @@ import math
 import bpy
 import mathutils
 
-from ...helpers import rotation_as_native_list
+from ...helpers import MAX_FRAME, MIN_FRAME, rotation_as_native_list
 
 _CAMERA_OPTICS = {
     "lens",
@@ -53,8 +53,6 @@ _CONSTRAINT_TYPES = {
 _TARGETED_CONSTRAINTS = _CONSTRAINT_TYPES - {"LIMIT_LOCATION", "LIMIT_ROTATION", "LIMIT_SCALE"}
 _RIG_SCHEMA_VERSION = 1
 _MAX_RIG_DESCENDANTS = 2_000
-_MIN_FRAME = -1_048_574
-_MAX_FRAME = 1_048_574
 
 
 def _finite_number(value, label):
@@ -86,18 +84,9 @@ def _required_name(value, label):
     return value
 
 
-def _bounded_int(value, label, minimum, maximum):
-    if isinstance(value, bool):
-        raise ValueError(f"{label} must be an integer")
-    integer = int(value)
-    if integer != value or not minimum <= integer <= maximum:
-        raise ValueError(f"{label} must be an integer in [{minimum}, {maximum}]")
-    return integer
-
-
 def _frame(value, label):
-    if isinstance(value, bool) or int(value) != value or not _MIN_FRAME <= int(value) <= _MAX_FRAME:
-        raise ValueError(f"{label} must be an integer in [{_MIN_FRAME}, {_MAX_FRAME}]")
+    if isinstance(value, bool) or int(value) != value or not MIN_FRAME <= int(value) <= MAX_FRAME:
+        raise ValueError(f"{label} must be an integer in [{MIN_FRAME}, {MAX_FRAME}]")
     return int(value)
 
 

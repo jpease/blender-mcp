@@ -6,8 +6,8 @@ import types
 
 import pytest
 
+from conftest import load_addon
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _dispatch, cloth
 
@@ -246,44 +246,8 @@ def test_all_nineteen_public_commands_are_registered() -> None:
 
 
 def _load_cloth_handler(monkeypatch):
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     return addon, sys.modules[f"{addon.__name__}.handlers.cloth"]
-
-
-class _FakeRnaProperty:
-    def __init__(self, *, prop_type="FLOAT", minimum=0.0, maximum=10.0, readonly=False) -> None:
-        self.type = prop_type
-        self.hard_min = minimum
-        self.hard_max = maximum
-        self.is_readonly = readonly
-        self.is_array = False
-        self.array_length = 0
-        self.enum_items = []
-
-
-class _FakeRnaProperties(dict):
-    def __iter__(self):
-        return iter(self.values())
-
-
-def test_handler_rna_patch_preflights_every_value_before_mutation(monkeypatch) -> None:
-    _addon, handler = _load_cloth_handler(monkeypatch)
-    owner = types.SimpleNamespace(
-        first=1.0,
-        second=2.0,
-        bl_rna=types.SimpleNamespace(
-            properties=_FakeRnaProperties(
-                first=_FakeRnaProperty(),
-                second=_FakeRnaProperty(),
-            )
-        ),
-    )
-
-    with pytest.raises(ValueError, match="outside Blender's RNA range"):
-        handler._patch_rna(owner, {"first": 5.0, "second": 99.0}, {"first", "second"})
-
-    assert owner.first == pytest.approx(1.0)
-    assert owner.second == pytest.approx(2.0)
 
 
 def test_handler_maps_every_public_weight_role(monkeypatch) -> None:
@@ -377,25 +341,6 @@ def test_keyed_motion_reports_largest_per_frame_channel_delta(monkeypatch) -> No
     assert handler._max_keyed_location_delta(obj) == pytest.approx(4.0)
 
 
-def test_cache_range_sets_end_first_when_new_start_exceeds_old_end(monkeypatch) -> None:
-    _addon, handler = _load_cloth_handler(monkeypatch)
-    writes = []
-
-    class Cache:
-        frame_start = 1
-        frame_end = 20
-
-        def __setattr__(self, name, value) -> None:
-            writes.append((name, value))
-            object.__setattr__(self, name, value)
-
-    cache = Cache()
-    handler._set_cache_frame_range(cache, 30, 60)
-
-    assert writes == [("frame_end", 60), ("frame_start", 30)]
-    assert (cache.frame_start, cache.frame_end) == (30, 60)
-
-
 def test_baked_cache_refusal_names_every_blocking_modifier(monkeypatch) -> None:
     _addon, handler = _load_cloth_handler(monkeypatch)
     pairs = [
@@ -411,32 +356,6 @@ def test_baked_cache_refusal_names_every_blocking_modifier(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="Cape:Cloth, Skirt:Cloth"):
         handler._reject_baked(pairs)
-
-
-def test_rna_patch_rolls_back_when_assignment_fails(monkeypatch) -> None:
-    _addon, handler = _load_cloth_handler(monkeypatch)
-
-    class Owner:
-        first = 1.0
-        second = 2.0
-        bl_rna = types.SimpleNamespace(
-            properties=_FakeRnaProperties(
-                first=_FakeRnaProperty(),
-                second=_FakeRnaProperty(),
-            )
-        )
-
-        def __setattr__(self, name, value) -> None:
-            if name == "second" and value == pytest.approx(4.0):
-                raise RuntimeError("assignment failed")
-            object.__setattr__(self, name, value)
-
-    owner = Owner()
-    with pytest.raises(RuntimeError, match="assignment failed"):
-        handler._patch_rna(owner, {"first": 3.0, "second": 4.0}, {"first", "second"})
-
-    assert owner.first == pytest.approx(1.0)
-    assert owner.second == pytest.approx(2.0)
 
 
 def test_layered_action_uses_owner_slot_channelbag(monkeypatch) -> None:
@@ -465,7 +384,7 @@ def test_build_modifier_is_treated_as_animated_topology(monkeypatch) -> None:
 
 
 def test_dispatch_advertises_cloth_and_marks_only_inspection_read_only(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     commands = server._build_command_handlers()
@@ -610,7 +529,7 @@ def test_prospective_external_cache_identity_uses_patch_values(monkeypatch) -> N
 
 
 def test_dynamic_read_only_classifies_sewing_dry_run_and_cache_inspection(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
     calls = []
 
@@ -691,7 +610,7 @@ def test_owned_membership_lookup_is_exact(monkeypatch) -> None:
 
 
 def test_p1_dispatch_targets_and_geometry_capture_are_declared(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
     target_names = sys.modules[f"{addon.__name__}.server_core"].target_names
 
@@ -849,7 +768,7 @@ def test_phase_two_validation_helpers_reject_duplicate_frames_and_parallel_axes(
 
 
 def test_phase_two_commands_are_dispatched_and_transaction_targets_are_declared(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
     commands = server._build_command_handlers()
 

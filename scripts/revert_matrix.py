@@ -19,9 +19,10 @@ substring, so the prefix is how a group of rows is selected: `session:`, `barrie
 `server tools:`, `server instructions:`, `transport:`, `rig:`, `docker:`,
 `entrypoint:`, `quiet box:`, `reply budget:`, `lighting:`, `pose:`,
 `render settings:`, `strict args:`, `addon surface:`, `action assignment:`,
-`camera:` and `boundary:`. A `... control:` row is the deliberate opposite of its
-neighbour: it proves that over-enforcing the same line is caught too, either by the
-same node or by the sibling node that exists to say the guard can be passed.
+`camera:`, `pagination:`, `simulation:`, `lint gate:` and `boundary:`. A
+`... control:` row is the deliberate opposite of its neighbour: it proves that
+over-enforcing the same line is caught too, either by the same node or by the
+sibling node that exists to say the guard can be passed.
 
 The rows live in `revert_rows/`, one module per stretch of the table, named for the area
 most of its rows guard and listing every prefix it holds; `REVERTS` below joins them in the
@@ -74,9 +75,11 @@ from revert_rows import (
     install,
     keyframing,
     linking,
+    lint_gate,
     load_stamp,
     object_lookup,
     output_roots,
+    pagination,
     pose,
     registry,
     render_coverage,
@@ -85,6 +88,7 @@ from revert_rows import (
     server_tools,
     session,
     session_boundary,
+    simulation,
     status_and_sampling,
     teardown,
     transaction,
@@ -115,6 +119,8 @@ from revert_rows.common import (
     HOSTILE_LIB,
     KEYSTYLET,
     LIGHTT,
+    LINTT,
+    LIQUIDT,
     LIST_SCALAR,
     LISTT,
     LKT,
@@ -124,11 +130,14 @@ from revert_rows.common import (
     PHT,
     POSET,
     QBT,
+    RBWT,
     RCT,
     REACHT,
     REGT,
     RENDT,
     RIGT,
+    RJOBT,
+    RNAPT,
     ROOT,
     ROOTST,
     SCENETOOLT,
@@ -191,6 +200,11 @@ NEW_TEST_FILES = (
 # Nodes in files the matrix does not own. `coverage_gaps()` sees only these and the nodes
 # collected from NEW_TEST_FILES, so a node left off this list is never checked.
 NEW_NODES_IN_EXISTING_FILES = (
+    # --- the lint gate forgives only the metrics a function already carried at the base ---
+    f"{LINTT}::test_a_legacy_metric_the_branch_only_touched_stays_in_the_backlog",
+    f"{LINTT}::test_a_legacy_metric_the_branch_raised_is_owned",
+    f"{LINTT}::test_a_renamed_function_has_no_base_reading_and_is_owned",
+    f"{LINTT}::test_a_metric_is_keyed_on_the_innermost_definition_holding_it",
     # --- an inspection measures the cycled curves and nothing else ---
     f"{ANIMT}::test_inspect_does_not_tell_an_uncycled_curve_it_drifts_from_the_cycled_ones",
     f"{ANIMT}::test_inspect_reports_a_curve_that_carries_no_cycle_where_remove_omits_it",
@@ -568,6 +582,18 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{DRT}::test_the_params_decide_whether_these_commands_read_or_write[set_action_cycle-reading16-writing16]",
     f"{DRT}::test_these_commands_run_outside_the_transaction"
     "[probe_bone_axis-restores its own trial pose, so there is no net mutation to snapshot]",
+    # --- one pagination primitive and one integer bound for every paged reply ---
+    f"{SOIT}::test_get_object_info_resumes_its_type_data_pages_from_the_offset_it_was_given",
+    f"{SOIT}::test_get_object_info_reports_the_page_size_it_applied_not_the_one_asked_for",
+    f"{RJOBT}::test_a_list_offset_past_the_last_job_reports_the_empty_page_where_the_jobs_end",
+    f"{CAMT}::test_setting_the_scene_camera_refuses_a_whole_float_marker_frame_before_binding_anything",
+    f"{LIGHTT}::test_a_light_listing_refuses_a_whole_float_page_bound[limit]",
+    f"{LIGHTT}::test_a_light_listing_refuses_a_whole_float_page_bound[offset]",
+    # --- one RNA patch helper set and one verified cache frame-range write for every simulation ---
+    f"{RNAPT}::test_restore_leaves_a_pointer_to_the_caller_that_holds_its_datablock",
+    f"{RNAPT}::test_a_vector_read_back_is_its_numbers_not_its_repr",
+    f"{LIQUIDT}::test_manage_liquid_cache_refuses_and_undoes_a_frame_range_blender_did_not_keep",
+    f"{RBWT}::test_manage_rigid_body_cache_refuses_and_undoes_a_frame_range_blender_did_not_keep",
 )
 
 # Nodes no single revert can break, each with the reason, so the gap check skips them.
@@ -751,6 +777,9 @@ REVERTS: list[Revert] = [
     *camera.ROWS,
     *animation.ROWS,
     *status_and_sampling.ROWS,
+    *pagination.ROWS,
+    *simulation.ROWS,
+    *lint_gate.ROWS,
 ]
 
 

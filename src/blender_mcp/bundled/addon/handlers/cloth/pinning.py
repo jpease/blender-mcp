@@ -5,14 +5,13 @@ from __future__ import annotations
 import contextlib
 
 from ...helpers import sync_from_editmode
+from ..rna_patch import finite, patch_rna
 from .inspection_and_setup import (
     _DEFORMING_MODIFIERS,
     _PINNING_FIELDS,
     _WEIGHT_ROLES,
     _cache_info,
-    _finite,
     _get_cloth,
-    _patch_rna,
     _reject_baked,
     _tag_update,
     _vertex_group_stats,
@@ -42,7 +41,7 @@ class ClothPinningHandlers:
             index, weight = item["vertex_index"], item["weight"]
             if not 0 <= index < total:
                 raise ValueError(f"Vertex index {index} out of range [0, {total - 1}]")
-            _finite(weight, "weight")
+            finite(weight, "weight")
             if not 0.0 <= weight <= 1.0:
                 raise ValueError(f"Weight for vertex {index} must be in [0, 1]")
         group = obj.vertex_groups.get(group_name)
@@ -112,7 +111,7 @@ class ClothPinningHandlers:
         if not patch:
             raise ValueError("Pinning patch cannot be empty")
         old_group = modifier.settings.vertex_group_mass
-        changes = _patch_rna(modifier.settings, patch, _PINNING_FIELDS)
+        changes = patch_rna(modifier.settings, patch, _PINNING_FIELDS)
         try:
             modifier.settings.vertex_group_mass = group.name
             _tag_update(obj)

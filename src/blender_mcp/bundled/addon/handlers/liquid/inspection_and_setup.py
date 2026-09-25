@@ -16,6 +16,8 @@ import bpy
 import mathutils
 
 from ...helpers import paginate, sync_from_editmode
+from ..rna_patch import finite, get_object, patch_rna, read_fields, restore_rna, serialize, validate_rna_value
+from ..simulation_cache import set_cache_frame_range
 from ._geometry import _cube_geometry
 from .manifest import read_manifest
 from .manifest import register_objects as register_manifest_objects
@@ -44,7 +46,7 @@ _DOMAIN_FIELDS = {
 # `use_flip_particles` is deliberately excluded from _DOMAIN_FIELDS. Verified against Blender 5.2.1:
 # its RNA setter ignores the assigned value and *toggles* the FLIP particle system on every
 # assignment (particle_systems count flips 1<->0 whether you write True or False), so routing it
-# through the generic idempotent _patch_rna path would turn the feature off for a caller who asked
+# through the generic idempotent patch_rna path would turn the feature off for a caller who asked
 # for it to be on. _set_flip_particles below wraps it back into set-to-desired-state semantics.
 _FLIP_PARTICLES_FIELD = "use_flip_particles"
 _GAS_DOMAIN_FIELDS = {
@@ -194,30 +196,6 @@ _TOPOLOGY_MODIFIERS = {
 }
 
 
-def _serialize(value):
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if hasattr(value, "name"):
-        return {"id_type": type(value).__name__, "name": value.name}
-    try:
-        return [_serialize(item) for item in value]
-    except TypeError:
-        return str(value)
-
-
-def _read_fields(owner, fields):
-    return {name: _serialize(getattr(owner, name)) for name in sorted(fields) if hasattr(owner, name)}
-
-
-def _get_object(name, types=None):
-    obj = bpy.data.objects.get(name)
-    if obj is None:
-        raise ValueError(f"Object not found: {name}")
-    if types and obj.type not in types:
-        raise ValueError(f"Object '{name}' must be one of {sorted(types)} (type={obj.type})")
-    return obj
-
-
 def _get_scene(name):
     scene = bpy.data.scenes.get(name)
     if scene is None:
@@ -237,7 +215,7 @@ def _get_fluid_modifier(obj, modifier_name, role=None):
 
 
 def _get_domain(object_name, modifier_name=None, expected_domain_type="LIQUID"):
-    obj = _get_object(object_name, {"MESH"})
+    obj = get_object(object_name, {"MESH"})
     candidates = [
         modifier for modifier in obj.modifiers if modifier.type == "FLUID" and modifier.fluid_type == "DOMAIN"
     ]
@@ -258,7 +236,7 @@ def _get_domain(object_name, modifier_name=None, expected_domain_type="LIQUID"):
 
 
 def _get_role(object_name, modifier_name, role):
-    obj = _get_object(object_name, {"MESH"})
+    obj = get_object(object_name, {"MESH"})
     modifier = _get_fluid_modifier(obj, modifier_name, role)
     settings = modifier.flow_settings if role == "FLOW" else modifier.effector_settings
     if settings is None:
@@ -268,60 +246,18 @@ def _get_role(object_name, modifier_name, role):
     return obj, modifier, settings
 
 
-def _finite(value, label):
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)) and not math.isfinite(value):
-        raise ValueError(f"{label} must be finite")
-    if isinstance(value, (list, tuple)) and not all(
-        isinstance(item, (int, float)) and math.isfinite(item) for item in value
-    ):
-        raise ValueError(f"{label} must contain only finite numbers")
-    return value
+def _set_cache_range(settings, start, end):
+    """
+    Set a domain's `cache_frame_start`/`cache_frame_end` after checking each against its RNA range.
 
+    Raises:
+        ValueError: A bound is outside Blender's range, the range is inverted, or Blender did not
+            keep it.
 
-def _rna_property(owner, name):
-    prop = owner.bl_rna.properties.get(name)
-    if prop is None or prop.is_readonly:
-        raise ValueError(f"Blender {bpy.app.version_string} does not expose writable {type(owner).__name__}.{name}")
-    return prop
-
-
-def _validate_rna_value(owner, name, value):
-    prop = _rna_property(owner, name)
-    _finite(value, name)
-    is_array = getattr(prop, "is_array", False)
-    if prop.type in {"FLOAT", "INT"} and not is_array and not (prop.hard_min <= value <= prop.hard_max):
-        raise ValueError(f"{name}={value} is outside Blender's RNA range [{prop.hard_min}, {prop.hard_max}]")
-    if prop.type == "ENUM" and value not in {item.identifier for item in prop.enum_items}:
-        raise ValueError(f"Invalid {name}: {value}")
-    if is_array and len(value) != prop.array_length:
-        raise ValueError(f"{name} must contain {prop.array_length} values")
-    return value
-
-
-def _patch_rna(owner, patch, allowed):
-    patch = patch or {}
-    unknown = set(patch) - allowed
-    if unknown:
-        raise ValueError(f"Unsupported properties: {sorted(unknown)}")
-    validated = {name: _validate_rna_value(owner, name, value) for name, value in patch.items()}
-    old = {name: _serialize(getattr(owner, name)) for name in validated}
-    try:
-        for name, value in validated.items():
-            setattr(owner, name, value)
-    except Exception:
-        for name, value in old.items():
-            with contextlib.suppress(Exception):
-                setattr(owner, name, value)
-        raise
-    return {name: {"old": old[name], "new": _serialize(getattr(owner, name))} for name in validated}
-
-
-def _restore_rna(owner, changes):
-    for name, values in changes.items():
-        with contextlib.suppress(Exception):
-            setattr(owner, name, values["old"])
+    """
+    validate_rna_value(settings, "cache_frame_start", start)
+    validate_rna_value(settings, "cache_frame_end", end)
+    set_cache_frame_range(settings, start, end, start_name="cache_frame_start", end_name="cache_frame_end")
 
 
 def _set_flip_particles(settings, desired):
@@ -462,13 +398,13 @@ def _domain_info(obj, modifier, settings):
     runtime = {}
     for name in ("cell_size", "domain_resolution"):
         with contextlib.suppress(Exception):
-            runtime[name] = _serialize(getattr(settings, name))
-    fields = _read_fields(settings, _DOMAIN_INSPECTION_FIELDS)
+            runtime[name] = serialize(getattr(settings, name), typed_ids=True)
+    fields = read_fields(settings, _DOMAIN_INSPECTION_FIELDS, typed_ids=True)
     if any(
         getattr(settings, name, False)
         for name in ("use_spray_particles", "use_foam_particles", "use_bubble_particles", "use_tracer_particles")
     ):
-        fields["cache_particle_format"] = _serialize(settings.cache_particle_format)
+        fields["cache_particle_format"] = serialize(settings.cache_particle_format, typed_ids=True)
     identity = _liquid_object_identity(obj)
     return {
         "object": obj.name,
@@ -496,7 +432,7 @@ def _flow_info(obj, modifier, settings):
         "settings": {
             "flow_type": settings.flow_type,
             "flow_source": settings.flow_source,
-            **_read_fields(settings, _FLOW_FIELDS),
+            **read_fields(settings, _FLOW_FIELDS, typed_ids=True),
         },
     }
 
@@ -505,7 +441,7 @@ def _effector_info(obj, modifier, settings):
     return {
         "object": obj.name,
         "modifier": _modifier_info(obj, modifier),
-        "settings": _read_fields(settings, _EFFECTOR_FIELDS),
+        "settings": read_fields(settings, _EFFECTOR_FIELDS, typed_ids=True),
     }
 
 
@@ -600,7 +536,7 @@ def _link_object(collection, obj):
 
 
 def _validate_dimensions(values, label):
-    _finite(values, label)
+    finite(values, label)
     if len(values) != 3 or any(value <= 0 for value in values):
         raise ValueError(f"{label} must contain three positive finite values")
 
@@ -887,7 +823,7 @@ class LiquidInspectionAndSetupHandlers:
                     f"domain_uuid '{domain_uuid}' resolves to '{resolved_by_uuid.name}', not '{domain_object_name}'"
                 )
             domain_object_name = resolved_by_uuid.name
-        domain_filter = resolved_by_uuid or (_get_object(domain_object_name, {"MESH"}) if domain_object_name else None)
+        domain_filter = resolved_by_uuid or (get_object(domain_object_name, {"MESH"}) if domain_object_name else None)
         if scene_name is not None:
             scene = _get_scene(scene_name)
             if domain_filter is not None and domain_filter.name not in scene.objects:
@@ -936,7 +872,7 @@ class LiquidInspectionAndSetupHandlers:
         }
 
     def get_fluid_object_info(self, object_name):
-        obj = _get_object(object_name)
+        obj = get_object(object_name)
         if obj.type == "MESH":
             sync_from_editmode(obj)
         fluid = [modifier for modifier in obj.modifiers if modifier.type == "FLUID" and modifier.fluid_type != "NONE"]
@@ -1002,7 +938,7 @@ class LiquidInspectionAndSetupHandlers:
     ):
         scene = _get_scene(scene_name)
         _validate_dimensions(dimensions, "dimensions")
-        _finite(location, "location")
+        finite(location, "location")
         if len(location) != 3:
             raise ValueError("location must contain three finite values")
         if cache_frame_start > cache_frame_end:
@@ -1031,7 +967,7 @@ class LiquidInspectionAndSetupHandlers:
             target_collection.objects.link(obj)
             obj.location = location
         else:
-            obj = _get_object(object_name, {"MESH"})
+            obj = get_object(object_name, {"MESH"})
             if obj.name not in scene.objects:
                 raise ValueError(f"Object '{object_name}' is not linked to scene '{scene_name}'")
             sync_from_editmode(obj)
@@ -1095,28 +1031,18 @@ class LiquidInspectionAndSetupHandlers:
                 "cfl_condition": cfl_condition,
                 "simulation_method": simulation_method,
             }
-            domain_changes = _patch_rna(settings, initial, _DOMAIN_FIELDS)
-            for name, value in (
-                ("cache_directory", cache_directory),
-                ("cache_type", cache_type),
-                ("cache_frame_start", cache_frame_start),
-                ("cache_frame_end", cache_frame_end),
-            ):
-                _validate_rna_value(settings, name, value)
+            domain_changes = patch_rna(settings, initial, _DOMAIN_FIELDS)
+            for name, value in (("cache_directory", cache_directory), ("cache_type", cache_type)):
+                validate_rna_value(settings, name, value)
+            _set_cache_range(settings, cache_frame_start, cache_frame_end)
             settings.cache_directory = cache_directory
             settings.cache_type = cache_type
-            if cache_frame_start > settings.cache_frame_end:
-                settings.cache_frame_end = cache_frame_end
-                settings.cache_frame_start = cache_frame_start
-            else:
-                settings.cache_frame_start = cache_frame_start
-                settings.cache_frame_end = cache_frame_end
             obj["blendermcp_liquid_domain"] = 1
             domain_uuid = _tag_liquid_object(obj, "DOMAIN")["uuid"]
             bpy.context.view_layer.update()
         except Exception:
             if domain_changes and modifier is not None and modifier.domain_settings is not None:
-                _restore_rna(modifier.domain_settings, domain_changes)
+                restore_rna(modifier.domain_settings, domain_changes)
             if old_scope and modifier is not None and modifier.domain_settings is not None:
                 modifier.domain_settings.fluid_group, modifier.domain_settings.effector_group = old_scope
             if not created_object:
@@ -1192,8 +1118,8 @@ class LiquidInspectionAndSetupHandlers:
         scene = _get_scene(scene_name)
         if not source_object_names:
             raise ValueError("source_object_names cannot be empty")
-        _finite(padding, "padding")
-        _finite(expected_travel, "expected_travel")
+        finite(padding, "padding")
+        finite(expected_travel, "expected_travel")
         if len(padding) != 3 or any(value < 0 for value in padding):
             raise ValueError("padding must contain three non-negative values")
         if len(expected_travel) != 3:
@@ -1202,7 +1128,7 @@ class LiquidInspectionAndSetupHandlers:
             raise ValueError("splash_height must be finite and non-negative")
         objects = []
         for name in [*source_object_names, *(collider_object_names or [])]:
-            obj = _get_object(name, {"MESH"})
+            obj = get_object(name, {"MESH"})
             if obj.name not in scene.objects:
                 raise ValueError(f"Object '{name}' is not linked to scene '{scene_name}'")
             objects.append(obj)
@@ -1317,16 +1243,16 @@ class LiquidInspectionAndSetupHandlers:
             raise ValueError("particle_min must be <= particle_max")
         flip_particles = patch.get(_FLIP_PARTICLES_FIELD)
         rna_patch = {name: value for name, value in patch.items() if name != _FLIP_PARTICLES_FIELD}
-        changes = _patch_rna(settings, rna_patch, _DOMAIN_FIELDS)
+        changes = patch_rna(settings, rna_patch, _DOMAIN_FIELDS)
         flip_change = None
         try:
             if flip_particles is not None:
                 flip_change = _set_flip_particles(settings, flip_particles)
             bpy.context.view_layer.update()
         except Exception:
-            # _restore_rna assigns old values back, which would *toggle* use_flip_particles rather
+            # restore_rna assigns old values back, which would *toggle* use_flip_particles rather
             # than restore it, so that field is rolled back through its own idempotent setter.
-            _restore_rna(settings, changes)
+            restore_rna(settings, changes)
             if flip_change is not None:
                 with contextlib.suppress(Exception):
                     _set_flip_particles(settings, flip_change["old"])
@@ -1361,7 +1287,7 @@ class LiquidInspectionAndSetupHandlers:
         domain_type="LIQUID",
     ):
         """Validate and stage a flow/effector modifier without configuring its RNA settings."""
-        obj = _get_object(object_name, {"MESH"})
+        obj = get_object(object_name, {"MESH"})
         sync_from_editmode(obj)
         if not obj.data.vertices or not obj.data.polygons:
             raise ValueError(f"{role.title()} mesh '{object_name}' must contain vertices and faces")
@@ -1402,7 +1328,7 @@ class LiquidInspectionAndSetupHandlers:
         _untag_liquid_object(identity)
         settings = getattr(modifier, f"{role.lower()}_settings")
         if changes and settings is not None:
-            _restore_rna(settings, changes)
+            restore_rna(settings, changes)
         if linked:
             with contextlib.suppress(Exception):
                 collection.objects.unlink(obj)
@@ -1480,7 +1406,7 @@ class LiquidInspectionAndSetupHandlers:
             raise ValueError(
                 "use_inflow ('Use Flow') has no effect for GEOMETRY flow behavior; it only applies to INFLOW or OUTFLOW"
             )
-        return _patch_rna(flow, patch, _FLOW_FIELDS)
+        return patch_rna(flow, patch, _FLOW_FIELDS)
 
     def configure_liquid_flow(self, object_name, modifier_name, domain_object_name, patch):
         obj, modifier, flow = _get_role(object_name, modifier_name, "FLOW")
@@ -1493,7 +1419,7 @@ class LiquidInspectionAndSetupHandlers:
         try:
             bpy.context.view_layer.update()
         except Exception:
-            _restore_rna(flow, changes)
+            restore_rna(flow, changes)
             raise
         return {
             "changed_objects": [obj.name, domain_obj.name],
@@ -1528,7 +1454,7 @@ class LiquidInspectionAndSetupHandlers:
             effector = self._initialize_fluid_role(modifier, "EFFECTOR", created)
             patch = dict(settings or {})
             patch["effector_type"] = effector_type
-            changes = _patch_rna(effector, patch, _EFFECTOR_FIELDS)
+            changes = patch_rna(effector, patch, _EFFECTOR_FIELDS)
             linked = _link_object(collection, obj)
             identity = _tag_liquid_object(obj, "GUIDE" if effector_type == "GUIDE" else "EFFECTOR")
             bpy.context.view_layer.update()
@@ -1564,11 +1490,11 @@ class LiquidInspectionAndSetupHandlers:
             raise ValueError(f"Effector '{object_name}' is not a member of domain collection '{collection.name}'")
         if not patch:
             raise ValueError("Effector patch cannot be empty")
-        changes = _patch_rna(effector, patch, _EFFECTOR_FIELDS)
+        changes = patch_rna(effector, patch, _EFFECTOR_FIELDS)
         try:
             bpy.context.view_layer.update()
         except Exception:
-            _restore_rna(effector, changes)
+            restore_rna(effector, changes)
             raise
         warnings = _warning_for_effector(obj)
         upstream = [
@@ -1642,12 +1568,12 @@ class LiquidInspectionAndSetupHandlers:
         boundary_changes = {}
         old_collections = {field: getattr(settings, field) for field, _name, _clear in specifications}
         try:
-            boundary_changes = _patch_rna(settings, boundary_patch, set(_BOUNDARY_FIELDS.values()))
+            boundary_changes = patch_rna(settings, boundary_patch, set(_BOUNDARY_FIELDS.values()))
             for field, value in resolved.items():
                 setattr(settings, field, value)
             bpy.context.view_layer.update()
         except Exception:
-            _restore_rna(settings, boundary_changes)
+            restore_rna(settings, boundary_changes)
             for field, value in old_collections.items():
                 with contextlib.suppress(Exception):
                     setattr(settings, field, value)
@@ -1711,7 +1637,7 @@ class LiquidInspectionAndSetupHandlers:
         runtime = {}
         for name in ("cell_size", "domain_resolution"):
             with contextlib.suppress(Exception):
-                runtime[name] = _serialize(getattr(settings, name))
+                runtime[name] = serialize(getattr(settings, name), typed_ids=True)
         preview_resolution = max(16, min(64, settings.resolution_max // 2))
         return {
             "domain": obj.name,
@@ -2211,7 +2137,7 @@ class LiquidInspectionAndSetupHandlers:
             result["domain_type"] = domain_type
             return result
         result = self.create_liquid_domain(**kwargs)
-        obj = _get_object(result["object"], {"MESH"})
+        obj = get_object(result["object"], {"MESH"})
         modifier = _get_fluid_modifier(obj, result["modifier"], "DOMAIN")
         settings = modifier.domain_settings
         settings.domain_type = "GAS"
@@ -2236,11 +2162,11 @@ class LiquidInspectionAndSetupHandlers:
         liquid_only = sorted(set(patch) - _GAS_DOMAIN_FIELDS)
         if liquid_only:
             raise ValueError(f"Unsupported GAS solver properties: {liquid_only}")
-        changes = _patch_rna(settings, patch, _GAS_DOMAIN_FIELDS)
+        changes = patch_rna(settings, patch, _GAS_DOMAIN_FIELDS)
         try:
             bpy.context.view_layer.update()
         except Exception:
-            _restore_rna(settings, changes)
+            restore_rna(settings, changes)
             raise
         return {
             "changed_objects": [obj.name],
@@ -2295,7 +2221,7 @@ class LiquidInspectionAndSetupHandlers:
             flow.flow_type = gas_flow_type
             patch = dict(settings or {})
             patch["flow_behavior"] = behavior
-            changes = _patch_rna(flow, patch, _GAS_FLOW_FIELDS)
+            changes = patch_rna(flow, patch, _GAS_FLOW_FIELDS)
             linked = _link_object(collection, obj)
             bpy.context.view_layer.update()
         except Exception:
@@ -2348,7 +2274,7 @@ class LiquidInspectionAndSetupHandlers:
             effector = self._initialize_fluid_role(modifier, "EFFECTOR", created)
             patch = dict(settings or {})
             patch["effector_type"] = effector_type
-            changes = _patch_rna(effector, patch, _EFFECTOR_FIELDS)
+            changes = patch_rna(effector, patch, _EFFECTOR_FIELDS)
             linked = _link_object(collection, obj)
             bpy.context.view_layer.update()
         except Exception:

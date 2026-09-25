@@ -5,16 +5,15 @@ import contextlib
 
 import bpy
 
+from ..rna_patch import get_object, read_fields, validate_rna_value
 from .inspection_and_setup import (
     _ensure_collection,
     _get_domain,
-    _get_object,
     _link_object,
-    _read_fields,
     _reject_baked,
-    _validate_rna_value,
+    _set_cache_range,
 )
-from .simulation import _scene_context_for_object, _set_cache_range
+from .simulation import _scene_context_for_object
 
 _GUIDE_DOMAIN_FIELDS = {"use_guide", "guide_source", "guide_alpha", "guide_beta", "guide_vel_factor"}
 
@@ -67,7 +66,7 @@ class LiquidGuideHandlers:
         created_collection_link = False
         try:
             if source == "EFFECTOR":
-                guide = _get_object(guide_object_name, {"MESH"})
+                guide = get_object(guide_object_name, {"MESH"})
                 if guide_collection_name:
                     scene, _view_layer = _scene_context_for_object(domain_obj)
                     collection, _created, created_collection_link = _ensure_collection(scene, guide_collection_name)
@@ -88,7 +87,7 @@ class LiquidGuideHandlers:
                 parent_obj, _parent_modifier, _parent = _get_domain(guide_parent_domain_object_name)
                 if parent_obj == domain_obj:
                     raise ValueError("A liquid domain cannot guide itself")
-                guide_object = _get_object(guide_object_name)
+                guide_object = get_object(guide_object_name)
                 if guide_object != parent_obj:
                     raise ValueError("For DOMAIN guides, guide_object_name must identify the parent domain")
                 domain.use_guide = True
@@ -100,7 +99,7 @@ class LiquidGuideHandlers:
                 ("guide_vel_factor", guide_vel_factor),
             ):
                 if value is not None:
-                    _validate_rna_value(domain, name, value)
+                    validate_rna_value(domain, name, value)
                     setattr(domain, name, value)
             _set_cache_range(domain, start, end)
             bpy.context.view_layer.update()
@@ -126,7 +125,7 @@ class LiquidGuideHandlers:
             "source": source,
             "guide_object": guide_object_name,
             "guide_setup": guide_result,
-            "settings": _read_fields(domain, _GUIDE_DOMAIN_FIELDS | {"guide_parent"}),
+            "settings": read_fields(domain, _GUIDE_DOMAIN_FIELDS | {"guide_parent"}, typed_ids=True),
             "frame_range": [domain.cache_frame_start, domain.cache_frame_end],
             "required_bake_order": ["GUIDES", "DATA", "MESH/PARTICLES"],
             "invalidated_cache_stages": ["GUIDES", "DATA", "MESH", "PARTICLES"],

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 RIG = ROOT / "scripts/blender_rig.py"
+LINT_CHANGED = ROOT / "scripts/lint_changed.py"
 ADDON_MANAGER = ROOT / "src/blender_mcp/addon_manager.py"
 ADDON_OUTPUT_ROOTS = ROOT / "src/blender_mcp/bundled/addon/output_roots.py"
 ADDON_FILE_PATHS = ROOT / "src/blender_mcp/bundled/addon/file_paths.py"
@@ -107,10 +108,17 @@ COMPOSE = ROOT / "docker/blender/docker-compose.yml"
 ENTRYPOINT = ROOT / "docker/blender/entrypoint.sh"
 HEALTHCHECK = ROOT / "docker/blender/healthcheck.py"
 DOCKER_START = ROOT / "docker/blender/start_server.py"
+# The RNA patch helpers the simulation handlers share, the cache frame-range write, and the two
+# domain modules that set a cache range through it.
+ADDON_RNA_PATCH = ROOT / "src/blender_mcp/bundled/addon/handlers/rna_patch.py"
+ADDON_SIMULATION_CACHE = ROOT / "src/blender_mcp/bundled/addon/handlers/simulation_cache.py"
+ADDON_LIQUID_INSPECTION = ROOT / "src/blender_mcp/bundled/addon/handlers/liquid/inspection_and_setup.py"
+ADDON_RIGID_BODY_INSPECTION = ROOT / "src/blender_mcp/bundled/addon/handlers/rigid_body/inspection_and_setup.py"
 
 # Short names for the test files rows cite. Node ids carry parameter text
 # verbatim, so the rows would otherwise be unreadably long lines.
 RIGT = "tests/test_blender_rig.py"
+LINTT = "tests/test_lint_changed.py"
 DOCKT = "tests/test_docker_rig.py"
 ROOTST = "tests/test_output_roots.py"
 FPT = "tests/test_file_paths.py"
@@ -150,6 +158,8 @@ SVT = "tests/server/tools/test_scene_validate.py"
 DRT = "tests/server/test_dispatch_rules.py"
 RCT = "tests/test_render_coverage.py"
 SCENETOOLT = "tests/test_scene_tools.py"
+# Render jobs run in their own Blender; this matrix tracks only their paging node.
+RJOBT = "tests/test_render_jobs.py"
 # The camera, character-rigging and object-keyframing tool tests this matrix does not own
 # either; the place-and-aim and action-assignment nodes are listed one by one below.
 CAMT = "tests/server/tools/camera/test_tools.py"
@@ -171,6 +181,9 @@ CONNFAILT = "tests/server/test_connection_failure_detection.py"
 CAPT = "tests/test_capability_introspection.py"
 KEYSTYLET = "tests/test_key_style.py"
 DISPT = "tests/server/tools/test_dispatch.py"
+RNAPT = "tests/test_rna_patch.py"
+LIQUIDT = "tests/server/tools/liquid/test_tools.py"
+RBWT = "tests/server/tools/rigid_body/test_workflows.py"
 HOSTILE_LIB = f"{SESSIONT}::test_a_hostile_library_path_is_reduced_the_same_way_a_failure_note_is"
 # The `name` half of the same table, with short ids so a row can list its nodes; the
 # `filepath` half's ids run to hundreds of characters.

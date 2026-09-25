@@ -10,7 +10,7 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from .._inputs import StrictModel, dump_input
+from .._inputs import MAX_FRAME, MIN_FRAME, StrictModel, dump_input
 
 Projection = Literal["PERSP", "ORTHO", "PANO"]
 SensorFit = Literal["AUTO", "HORIZONTAL", "VERTICAL"]
@@ -155,7 +155,7 @@ async def set_scene_camera(
     scene_name: str,
     camera_name: str,
     marker_name: str | None = None,
-    marker_frame: Annotated[int | None, Field(ge=-1_048_574, le=1_048_574)] = None,
+    marker_frame: Annotated[int | None, Field(ge=MIN_FRAME, le=MAX_FRAME)] = None,
     replace_marker: bool = False,
 ) -> dict:
     """

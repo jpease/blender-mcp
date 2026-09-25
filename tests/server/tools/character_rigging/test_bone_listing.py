@@ -5,7 +5,7 @@ import types
 
 import pytest
 
-from test_mutation_transaction import _load_addon
+from conftest import load_addon
 
 from .rig_doubles import (
     _Matrix,
@@ -26,7 +26,7 @@ def test_rest_axes_are_reported_only_when_asked_for(monkeypatch) -> None:
         data=types.SimpleNamespace(name="CHAR1_rigData", bones=[bone]),
         update_from_editmode=lambda: None,
     )
-    addon, _bpy = _load_addon(monkeypatch, data={"objects": {"CHAR1_rig": rig}})
+    addon, _bpy = load_addon(monkeypatch, data={"objects": {"CHAR1_rig": rig}})
     server = addon.BlenderMCPServer()
 
     plain = server.list_character_bones("CHAR1_rig")
@@ -67,7 +67,7 @@ def _char1_head_rig(monkeypatch, matrix_world):
         data=types.SimpleNamespace(name="CHAR1_rigData", bones=[bone]),
         update_from_editmode=lambda: None,
     )
-    addon, _bpy = _load_addon(monkeypatch, data={"objects": {"CHAR1_rig": rig}})
+    addon, _bpy = load_addon(monkeypatch, data={"objects": {"CHAR1_rig": rig}})
     return addon.BlenderMCPServer()
 
 
@@ -157,7 +157,7 @@ def _rig_with_bones(monkeypatch, *names: str):
         data=types.SimpleNamespace(name="CHAR1_rigData", bones=bones),
         update_from_editmode=lambda: None,
     )
-    addon, _bpy = _load_addon(monkeypatch, data={"objects": {"CHAR1_rig": rig}})
+    addon, _bpy = load_addon(monkeypatch, data={"objects": {"CHAR1_rig": rig}})
     return addon.BlenderMCPServer()
 
 

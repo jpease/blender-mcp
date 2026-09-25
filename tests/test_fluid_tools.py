@@ -2,7 +2,7 @@
 
 import asyncio
 
-from test_mutation_transaction import _load_addon
+from conftest import load_addon
 
 from blender_mcp.server.tools import _dispatch
 from blender_mcp.server.tools import liquid as fluid
@@ -18,7 +18,7 @@ class _Connection:
 
 
 def test_canonical_fluid_tools_are_registered_and_dispatched(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     commands = {
         "inspect_fluid_simulation",
         "create_fluid_domain",

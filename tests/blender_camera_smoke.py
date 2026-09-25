@@ -6,7 +6,6 @@ Run with::
     blender --background --factory-startup --python tests/blender_camera_smoke.py
 """
 
-import importlib.util
 import sys
 
 from pathlib import Path
@@ -14,15 +13,10 @@ from pathlib import Path
 import bpy
 import mathutils
 
-addon_path = Path(__file__).resolve().parents[1] / "src" / "blender_mcp" / "bundled" / "addon" / "__init__.py"
-package_name = "blender_mcp_camera_smoke"
-spec = importlib.util.spec_from_file_location(
-    package_name, addon_path, submodule_search_locations=[str(addon_path.parent)]
-)
-assert spec is not None
-addon = importlib.util.module_from_spec(spec)
-sys.modules[package_name] = addon
-spec.loader.exec_module(addon)
+sys.path.append(str(Path(__file__).resolve().parent))
+from smoke_addon import load_addon
+
+load_addon("blender_mcp_camera_smoke")
 
 from blender_mcp_camera_smoke.handlers.camera import (  # ruff: ignore[module-import-not-at-top-of-file]
     CameraHandlersMixin,

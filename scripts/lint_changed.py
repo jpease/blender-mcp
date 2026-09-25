@@ -24,6 +24,14 @@ body, while a function the branch never entered stays unowned even in a file it
 edited elsewhere. A file `ast` cannot parse yields no spans at all, so its scope
 metrics degrade to the plain start-row reading rather than being guessed at.
 
+A whole-scope metric is a measurement, so it is also ratcheted against the base:
+one the same function already carried there, at the same or a higher value, is
+the inherited backlog rather than something the branch wrote. Renaming a call
+inside a legacy 170-statement function therefore stays out of the gate, while
+adding a branch, a statement or a local to it raises the value and is owned.
+Functions are matched by qualified name, so a moved or renamed function has no
+base reading and is owned whole.
+
 Exit status is 1 when a finding lands on a changed line, 0 otherwise.
 """
 
@@ -32,6 +40,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import re
 import subprocess
 import sys
 
@@ -65,6 +74,14 @@ SCOPE_METRIC_CODES = frozenset(
         "PLR0917",  # too-many-positional-arguments
     }
 )
+
+# Metrics ratcheted against the base: every whole-scope code, plus nesting depth, which
+# ruff anchors on the outermost block of the chain rather than the `def` but measures
+# the same way (`(6 > 5)`) and belongs to the enclosing function just as much.
+RATCHETED_CODES = SCOPE_METRIC_CODES | {"PLR1702"}
+
+# The measured value in a metric's message: `Too many branches (13 > 12)`.
+_METRIC_VALUE = re.compile(r"\((\d+) > \d+\)")
 
 # git's C-style escapes, minus `\nnn` octal which is decoded numerically.
 _PATH_ESCAPES = {
@@ -177,6 +194,124 @@ def scope_spans(source: str) -> dict[int, range]:
             # `end_lineno` is only None on a node built by hand, never by `parse`.
             spans[node.lineno] = range(node.lineno, (node.end_lineno or node.lineno) + 1)
     return spans
+
+
+def scope_qualnames(source: str) -> list[tuple[range, str]]:
+    """
+    List every `def`/`class` in a module with its line span and qualified name.
+
+    Args:
+        source: Python module text.
+
+    Returns:
+        list[tuple[range, str]]: Span and dotted qualified name (`Class.method`)
+        per definition, empty when `source` does not parse.
+
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+
+    named: list[tuple[range, str]] = []
+
+    def visit(node: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                qualname = f"{prefix}{child.name}"
+                named.append((range(child.lineno, (child.end_lineno or child.lineno) + 1), qualname))
+                visit(child, f"{qualname}.")
+            else:
+                visit(child, prefix)
+
+    visit(tree, "")
+    return named
+
+
+def metric_key(finding: Mapping[str, Any], qualnames: Sequence[tuple[range, str]]) -> tuple[str, str] | None:
+    """
+    Identify a ratcheted metric by its code and the innermost definition holding it.
+
+    Args:
+        finding: One ruff JSON finding.
+        qualnames: `scope_qualnames` of the finding's file.
+
+    Returns:
+        tuple[str, str] | None: `(code, qualname)`, or None for a code that is
+        not ratcheted or a finding outside every definition.
+
+    """
+    if finding.get("code") not in RATCHETED_CODES:
+        return None
+    row: int = finding["location"]["row"]
+    holding = [(len(span), name) for span, name in qualnames if row in span]
+    if not holding:
+        return None
+    return str(finding["code"]), min(holding)[1]
+
+
+def metric_value(finding: Mapping[str, Any]) -> int | None:
+    """
+    Read the measured value out of a metric finding's message.
+
+    Args:
+        finding: One ruff JSON finding.
+
+    Returns:
+        int | None: The value left of `>`, or None when the message carries none.
+
+    """
+    matched = _METRIC_VALUE.search(str(finding.get("message", "")))
+    return int(matched.group(1)) if matched else None
+
+
+def base_metrics(
+    findings: Sequence[Mapping[str, Any]], qualnames: Sequence[tuple[range, str]]
+) -> dict[tuple[str, str], int]:
+    """
+    Map each ratcheted metric one file carried at the base to its highest value.
+
+    Args:
+        findings: Ruff JSON findings for the base version of the file.
+        qualnames: `scope_qualnames` of that base version.
+
+    Returns:
+        dict[tuple[str, str], int]: `(code, qualname)` to the largest value measured.
+
+    """
+    measured: dict[tuple[str, str], int] = {}
+    for finding in findings:
+        key = metric_key(finding, qualnames)
+        value = metric_value(finding)
+        if key is not None and value is not None:
+            measured[key] = max(value, measured.get(key, value))
+    return measured
+
+
+def inherited(
+    finding: Mapping[str, Any],
+    qualnames: Sequence[tuple[range, str]],
+    base: Mapping[tuple[str, str], int],
+) -> bool:
+    """
+    Say whether a metric finding only repeats what the same function measured at the base.
+
+    Args:
+        finding: One owned ruff JSON finding in the branch's version of a file.
+        qualnames: `scope_qualnames` of the branch's version of that file.
+        base: `base_metrics` of the base version of that file.
+
+    Returns:
+        bool: True when the base carried the same code on the same function at a
+        value no lower than this one; False for anything the branch made worse,
+        introduced, or that cannot be measured.
+
+    """
+    key = metric_key(finding, qualnames)
+    value = metric_value(finding)
+    if key is None or value is None or key not in base:
+        return False
+    return value <= base[key]
 
 
 def owned_findings(
@@ -351,6 +486,91 @@ def _scopes(findings: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[int, ran
     }
 
 
+def _base_source(base_commit: str, path: str) -> str | None:
+    """
+    Read one file as it stood at the base.
+
+    Args:
+        base_commit: Commit the working tree is compared against.
+        path: Repository-relative path.
+
+    Returns:
+        str | None: The file's text at `base_commit`, or None when it did not exist there.
+
+    """
+    completed = subprocess.run(
+        ["git", "show", f"{base_commit}:{path}"],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed.stdout if completed.returncode == 0 else None
+
+
+def _findings_in_source(path: str, source: str) -> list[dict[str, Any]]:
+    """
+    Run ruff over text that is not on disk, under the path whose config it takes.
+
+    Args:
+        path: Repository-relative path the text belongs to.
+        source: Python module text.
+
+    Returns:
+        list[dict[str, Any]]: Ruff's JSON findings for `source`.
+
+    Raises:
+        SystemExit: When ruff emits unparsable output.
+
+    """
+    completed = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "--output-format", "json", "--stdin-filename", path, "-"],
+        cwd=REPOSITORY_ROOT,
+        input=source,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        return json.loads(completed.stdout or "[]")
+    except json.JSONDecodeError:
+        sys.exit(f"ruff produced no usable output for {path} at the base: {completed.stderr.strip()}")
+
+
+def _without_inherited_metrics(hits: Sequence[Mapping[str, Any]], base_commit: str) -> list[dict[str, Any]]:
+    """
+    Drop the ratcheted metrics a function already carried at the base at the same or a higher value.
+
+    Args:
+        hits: Owned findings, each with an absolute `filename`.
+        base_commit: Commit the working tree is compared against.
+
+    Returns:
+        list[dict[str, Any]]: `hits` minus the inherited metrics, in order.
+
+    """
+    measured = {
+        str(Path(finding["filename"]).relative_to(REPOSITORY_ROOT))
+        for finding in hits
+        if finding.get("code") in RATCHETED_CODES
+    }
+    head_names: dict[str, list[tuple[range, str]]] = {}
+    base: dict[str, dict[tuple[str, str], int]] = {}
+    for path in measured:
+        head_names[path] = scope_qualnames((REPOSITORY_ROOT / path).read_text(encoding="utf-8", errors="replace"))
+        source = _base_source(base_commit, path)
+        if source is not None:
+            base[path] = base_metrics(_findings_in_source(path, source), scope_qualnames(source))
+
+    kept: list[dict[str, Any]] = []
+    for finding in hits:
+        path = str(Path(finding["filename"]).relative_to(REPOSITORY_ROOT))
+        if path in base and inherited(finding, head_names[path], base[path]):
+            continue
+        kept.append(dict(finding))
+    return kept
+
+
 def main() -> int:
     """
     Report ruff findings that fall on lines this branch introduced.
@@ -363,13 +583,14 @@ def main() -> int:
     parser.add_argument("--base", default="origin/main", help="revision this branch is measured against")
     arguments = parser.parse_args()
 
-    owned = _added_lines(_merge_base(arguments.base))
+    base_commit = _merge_base(arguments.base)
+    owned = _added_lines(base_commit)
     if not owned:
         print(f"no Python changes against {arguments.base}")
         return 0
 
     findings = _findings(sorted(owned))
-    hits = owned_findings(findings, owned, REPOSITORY_ROOT, _scopes(findings))
+    hits = _without_inherited_metrics(owned_findings(findings, owned, REPOSITORY_ROOT, _scopes(findings)), base_commit)
 
     scanned = f"{len(owned)} changed file(s), {sum(len(lines) for lines in owned.values())} owned line(s)"
     if not hits:

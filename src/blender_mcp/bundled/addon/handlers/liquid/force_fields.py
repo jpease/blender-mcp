@@ -7,16 +7,12 @@ import bpy
 import mathutils
 
 from ...helpers import preserve_mode_and_selection
+from ..rna_patch import finite, patch_rna, read_fields, restore_rna, validate_rna_value
 from .inspection_and_setup import (
     _ensure_collection,
-    _finite,
     _get_domain,
     _link_object,
-    _patch_rna,
-    _read_fields,
     _reject_baked,
-    _restore_rna,
-    _validate_rna_value,
 )
 
 _WEIGHT_FIELDS = {
@@ -53,7 +49,7 @@ _FIELD_FIELDS = {
 def _field_snapshot(obj):
     return {
         "matrix_basis": obj.matrix_basis.copy(),
-        "settings": _read_fields(obj.field, _FIELD_FIELDS),
+        "settings": read_fields(obj.field, _FIELD_FIELDS, typed_ids=True),
     }
 
 
@@ -133,7 +129,7 @@ class LiquidForceFieldHandlers:
                 )
             for vector_name in ("location", "rotation_euler"):
                 vector = spec[vector_name]
-                _finite(vector, vector_name)
+                finite(vector, vector_name)
                 if len(vector) != 3:
                     raise ValueError(f"{vector_name} must contain three finite values")
             prospective = {
@@ -142,7 +138,7 @@ class LiquidForceFieldHandlers:
             }
             if obj is not None:
                 for name, value in prospective.items():
-                    _validate_rna_value(obj.field, name, value)
+                    validate_rna_value(obj.field, name, value)
             resolved.append((obj, spec, prospective))
         weight_changes = {}
         linked_objects = []
@@ -166,14 +162,14 @@ class LiquidForceFieldHandlers:
                     tuple(world_scale),
                 )
                 field_patch = prospective if resolved_obj is not None else {**prospective, "type": spec["field_type"]}
-                _patch_rna(obj.field, field_patch, _FIELD_FIELDS)
+                patch_rna(obj.field, field_patch, _FIELD_FIELDS)
                 obj["blendermcp_liquid_force"] = domain_obj.name
             domain.force_collection = collection
             if weights:
-                weight_changes = _patch_rna(domain.effector_weights, weights, _WEIGHT_FIELDS)
+                weight_changes = patch_rna(domain.effector_weights, weights, _WEIGHT_FIELDS)
             bpy.context.view_layer.update()
         except Exception:
-            _restore_rna(domain.effector_weights, weight_changes)
+            restore_rna(domain.effector_weights, weight_changes)
             domain.force_collection = old_collection
             for obj, snapshot in reversed(snapshots):
                 with contextlib.suppress(Exception):
@@ -192,7 +188,7 @@ class LiquidForceFieldHandlers:
             {
                 "object": obj.name,
                 "created": obj in created_objects,
-                "field": _read_fields(obj.field, _FIELD_FIELDS),
+                "field": read_fields(obj.field, _FIELD_FIELDS, typed_ids=True),
                 "coordinate_space": "WORLD",
                 "world_location": list(obj.matrix_world.translation),
                 "world_rotation_quaternion": list(obj.matrix_world.to_quaternion()),

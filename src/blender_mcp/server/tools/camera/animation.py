@@ -8,7 +8,7 @@ from pydantic import Field, model_validator
 
 from ...app import mcp
 from .._dispatch import call_blender
-from .._inputs import StrictModel, dump_inputs
+from .._inputs import MAX_FRAME, MIN_FRAME, StrictModel, dump_inputs
 from ..key_style import Easing, HandleType, Interpolation
 from ._shared import _tool_params
 
@@ -27,7 +27,7 @@ class CameraKeyframe(StrictModel):
     constraint_name: str | None = None
     data_path: str = Field(min_length=1)
     value: float | tuple[float, float, float] | tuple[float, float, float, float]
-    frame: int | None = Field(default=None, ge=-1_048_574, le=1_048_574)
+    frame: int | None = Field(default=None, ge=MIN_FRAME, le=MAX_FRAME)
     at_seconds: float | None = None
     array_index: int | None = Field(default=None, ge=0, le=3)
 
@@ -77,8 +77,8 @@ async def set_camera_interpolation(
     object_name: Annotated[str, Field(min_length=1)],
     owner: Literal["OBJECT", "CAMERA_DATA"],
     data_path: Annotated[str, Field(min_length=1)],
-    frame_start: Annotated[int, Field(ge=-1_048_574, le=1_048_574)],
-    frame_end: Annotated[int, Field(ge=-1_048_574, le=1_048_574)],
+    frame_start: Annotated[int, Field(ge=MIN_FRAME, le=MAX_FRAME)],
+    frame_end: Annotated[int, Field(ge=MIN_FRAME, le=MAX_FRAME)],
     array_index: Annotated[int | None, Field(ge=0, le=3)] = None,
     interpolation: Interpolation = "BEZIER",
     handle_left: HandleType = "AUTO_CLAMPED",
@@ -103,8 +103,8 @@ async def create_focus_pull(
     ctx: Context,
     scene_name: str,
     camera_name: str,
-    start_frame: Annotated[int | None, Field(ge=-1_048_574, le=1_048_574)] = None,
-    end_frame: Annotated[int | None, Field(ge=-1_048_574, le=1_048_574)] = None,
+    start_frame: Annotated[int | None, Field(ge=MIN_FRAME, le=MAX_FRAME)] = None,
+    end_frame: Annotated[int | None, Field(ge=MIN_FRAME, le=MAX_FRAME)] = None,
     start_at_seconds: float | None = None,
     end_at_seconds: float | None = None,
     start_subject_name: str | None = None,
@@ -142,8 +142,8 @@ async def create_dolly_zoom(
     scene_name: str,
     camera_name: str,
     movement_object_name: str,
-    start_frame: Annotated[int | None, Field(ge=-1_048_574, le=1_048_574)] = None,
-    end_frame: Annotated[int | None, Field(ge=-1_048_574, le=1_048_574)] = None,
+    start_frame: Annotated[int | None, Field(ge=MIN_FRAME, le=MAX_FRAME)] = None,
+    end_frame: Annotated[int | None, Field(ge=MIN_FRAME, le=MAX_FRAME)] = None,
     start_at_seconds: float | None = None,
     end_at_seconds: float | None = None,
     start_distance: Annotated[float, Field(gt=0)] = 0,
@@ -176,8 +176,8 @@ async def add_camera_shake(
     camera_name: str,
     collection_name: str,
     control_name: str,
-    frame_start: Annotated[int | None, Field(ge=-1_048_574, le=1_048_574)] = None,
-    frame_end: Annotated[int | None, Field(ge=-1_048_574, le=1_048_574)] = None,
+    frame_start: Annotated[int | None, Field(ge=MIN_FRAME, le=MAX_FRAME)] = None,
+    frame_end: Annotated[int | None, Field(ge=MIN_FRAME, le=MAX_FRAME)] = None,
     frame_start_at_seconds: float | None = None,
     frame_end_at_seconds: float | None = None,
     translation_strength: tuple[float, float, float] = (0.02, 0.02, 0.01),

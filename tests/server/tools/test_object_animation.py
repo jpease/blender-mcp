@@ -6,8 +6,9 @@ import types
 
 import pytest
 
+from conftest import load_addon
+from datablock_doubles import TRACKED_COLLECTIONS, FakeCollection, FakeMatrix
 from pydantic import ValidationError
-from test_mutation_transaction import _TRACKED_COLLECTIONS, FakeCollection, FakeMatrix, _load_addon
 
 from blender_mcp.server.tools import _dispatch, object_animation
 
@@ -53,7 +54,7 @@ class _Connection:
 
 
 def test_object_animation_tools_are_registered_and_dispatched(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     assert OBJECT_ANIMATION_COMMANDS <= set(object_animation.mcp._tool_manager._tools)
@@ -122,8 +123,8 @@ def test_keyframe_object_transform_serializes_records(monkeypatch) -> None:
 
 def test_keyframe_object_transform_rolls_back_partial_channel_failure(monkeypatch) -> None:
     """A record's later channel refusing keyframe_insert must undo that record's earlier inserts."""
-    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    data = {name: FakeCollection() for name in TRACKED_COLLECTIONS}
+    addon, bpy = load_addon(monkeypatch, data=data)
     obj = _KeyedObject("Cube", fails_on="scale")
     bpy.data.objects["Cube"] = obj
 
@@ -157,8 +158,8 @@ def test_keyframe_object_transform_rolls_back_partial_channel_failure(monkeypatc
 
 def test_keyframe_object_transform_refuses_one_action_for_several_objects(monkeypatch) -> None:
     """An object holds one action, so a batch naming two would leave one of them keyed elsewhere."""
-    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    data = {name: FakeCollection() for name in TRACKED_COLLECTIONS}
+    addon, bpy = load_addon(monkeypatch, data=data)
     hero = _KeyedObject("Hero")
     prop = _KeyedObject("Prop")
     bpy.data.objects["Hero"] = hero
@@ -215,8 +216,8 @@ def _cycling_rig(monkeypatch, curves):
         tuple: The server and the keyed object.
 
     """
-    data = {name: FakeCollection() for name in _TRACKED_COLLECTIONS}
-    addon, bpy = _load_addon(monkeypatch, data=data)
+    data = {name: FakeCollection() for name in TRACKED_COLLECTIONS}
+    addon, bpy = load_addon(monkeypatch, data=data)
     rig = _KeyedObject("CHAR1_rig")
     action = types.SimpleNamespace(name="CHAR1_sh030_performance", fcurves=list(curves))
     rig.animation_data = types.SimpleNamespace(

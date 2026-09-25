@@ -7,9 +7,9 @@ import types
 
 import pytest
 
+from conftest import load_addon
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _dispatch, character_rigging
 from blender_mcp.server.tools.envelope import envelope_for
@@ -992,7 +992,7 @@ def test_the_two_call_shapes_are_exclusive_and_named_in_the_refusal(monkeypatch)
 
 
 def _load_posing(monkeypatch):
-    addon, _bpy = _load_addon(monkeypatch, data={"objects": {}, "actions": _Actions()})
+    addon, _bpy = load_addon(monkeypatch, data={"objects": {}, "actions": _Actions()})
     return sys.modules[f"{addon.__name__}.handlers.character_rigging.posing"]
 
 

@@ -5,8 +5,8 @@ import sys
 
 import pytest
 
+from conftest import load_addon
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _dispatch, rigid_body
 
@@ -28,7 +28,7 @@ def test_extended_commands_are_registered_and_dispatched(monkeypatch) -> None:
     assert all(callable(getattr(rigid_body, name)) for name in EXTENDED_COMMANDS)
     assert set(rigid_body.mcp._tool_manager._tools) >= EXTENDED_COMMANDS
 
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
     assert set(server._build_command_handlers()) >= EXTENDED_COMMANDS
 
@@ -132,7 +132,7 @@ def test_export_coordinate_contract_is_explicit() -> None:
 
 
 def test_structural_performance_analysis_uses_read_only_dispatch(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
     monkeypatch.setattr(server, "analyze_rigid_body_performance", lambda **_kwargs: {"findings": []})
 
@@ -155,7 +155,7 @@ def test_new_implementation_names_are_purpose_based(monkeypatch) -> None:
         "performance",
     )
     assert all("phase" not in name for name in module_names)
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     handler = sys.modules[f"{addon.__name__}.handlers.rigid_body"]
     added_classes = [name for name in vars(handler) if name.startswith("RigidBody")]
     assert all("phase" not in name.lower() for name in added_classes)

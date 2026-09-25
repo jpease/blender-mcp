@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from conftest import load_addon_package
+from conftest import load_addon
 
 
 # region Minimal vector/quaternion/matrix math for the mathutils fake
@@ -371,7 +371,7 @@ class FakeBMesh:
         pass
 
 
-def _load_addon(monkeypatch):
+def _load_mesh_addon(monkeypatch):
     scene = types.SimpleNamespace(
         blendermcp_use_polyhaven=False,
         blendermcp_use_sketchfab=False,
@@ -380,7 +380,6 @@ def _load_addon(monkeypatch):
 
     selected_objects = []
     objects = FakeObjectsCollection(selected_objects)
-    textures = FakeTexturesCollection()
     primitive_counter = {"n": 0}
 
     def _make_primitive_op(prefix, obj_type="MESH"):
@@ -425,110 +424,56 @@ def _load_addon(monkeypatch):
             for obj in objects.values():
                 obj.select_set(True)
 
-    bpy = types.ModuleType("bpy")
-    bpy.data = types.SimpleNamespace(
-        objects=objects,
-        textures=textures,
+    addon, bpy = load_addon(monkeypatch, scene=scene, data={"objects": objects, "textures": FakeTexturesCollection()})
+    bpy.context.mode = "OBJECT"
+    bpy.context.selected_objects = selected_objects
+    bpy.context.view_layer = types.SimpleNamespace(objects=types.SimpleNamespace(active=None))
+    bpy.context.active_object = None
+    bpy.context.collection = types.SimpleNamespace(objects=types.SimpleNamespace(link=lambda _obj: None))
+    bpy.context.evaluated_depsgraph_get = object
+    bpy.context.tool_settings = types.SimpleNamespace(mesh_select_mode=(True, False, False))
+    bpy.ops.mesh = types.SimpleNamespace(
+        primitive_cube_add=_make_primitive_op("Cube"),
+        primitive_uv_sphere_add=_make_primitive_op("Sphere"),
+        primitive_cylinder_add=_make_primitive_op("Cylinder"),
+        primitive_cone_add=_make_primitive_op("Cone"),
+        primitive_torus_add=_make_primitive_op("Torus"),
+        primitive_plane_add=_make_primitive_op("Plane"),
+        extrude_region_move=_noop,
+        inset_faces=_noop,
+        bevel=_noop,
+        bridge_edge_loops=_noop,
+        subdivide=_noop,
+        symmetrize=_noop,
     )
-    bpy.context = types.SimpleNamespace(
-        scene=scene,
-        mode="OBJECT",
-        selected_objects=selected_objects,
-        view_layer=types.SimpleNamespace(objects=types.SimpleNamespace(active=None)),
-        active_object=None,
-        collection=types.SimpleNamespace(objects=types.SimpleNamespace(link=lambda _obj: None)),
-        evaluated_depsgraph_get=object,
-        tool_settings=types.SimpleNamespace(mesh_select_mode=(True, False, False)),
+    bpy.ops.curve = types.SimpleNamespace(
+        primitive_bezier_curve_add=_make_primitive_op("BezierCurve", obj_type="CURVE"),
     )
-    bpy.types = types.SimpleNamespace(
-        AddonPreferences=object,
-        Operator=object,
-        Panel=object,
-        Scene=type("Scene", (), {}),
+    bpy.ops.object = types.SimpleNamespace(
+        select_all=_select_all,
+        mode_set=_mode_set,
+        modifier_apply=_modifier_apply,
+        shade_smooth=_noop,
+        voxel_remesh=_noop,
     )
-    bpy.ops = types.SimpleNamespace(
-        mesh=types.SimpleNamespace(
-            primitive_cube_add=_make_primitive_op("Cube"),
-            primitive_uv_sphere_add=_make_primitive_op("Sphere"),
-            primitive_cylinder_add=_make_primitive_op("Cylinder"),
-            primitive_cone_add=_make_primitive_op("Cone"),
-            primitive_torus_add=_make_primitive_op("Torus"),
-            primitive_plane_add=_make_primitive_op("Plane"),
-            extrude_region_move=_noop,
-            inset_faces=_noop,
-            bevel=_noop,
-            bridge_edge_loops=_noop,
-            subdivide=_noop,
-            symmetrize=_noop,
+    bpy.ops.nd = types.SimpleNamespace()
+
+    bmesh = sys.modules["bmesh"]
+    monkeypatch.setattr(bmesh, "from_edit_mesh", FakeBMesh, raising=False)
+    monkeypatch.setattr(bmesh, "update_edit_mesh", lambda _mesh_data: None, raising=False)
+    mathutils = sys.modules["mathutils"]
+    monkeypatch.setattr(mathutils, "Vector", lambda seq: FakeVector(*seq), raising=False)
+    monkeypatch.setattr(mathutils, "Quaternion", FakeQuaternion, raising=False)
+    monkeypatch.setattr(
+        mathutils,
+        "Matrix",
+        types.SimpleNamespace(
+            LocRotScale=FakeMatrix.LocRotScale,
+            Translation=FakeMatrix.Translation,
+            Rotation=FakeMatrix.Rotation,
         ),
-        curve=types.SimpleNamespace(
-            primitive_bezier_curve_add=_make_primitive_op("BezierCurve", obj_type="CURVE"),
-        ),
-        object=types.SimpleNamespace(
-            select_all=_select_all,
-            mode_set=_mode_set,
-            modifier_apply=_modifier_apply,
-            shade_smooth=_noop,
-            voxel_remesh=_noop,
-        ),
-        nd=types.SimpleNamespace(),
+        raising=False,
     )
-
-    props = types.ModuleType("bpy.props")
-    for name in (
-        "BoolProperty",
-        "EnumProperty",
-        "FloatProperty",
-        "IntProperty",
-        "StringProperty",
-    ):
-        setattr(props, name, lambda **_kwargs: None)
-    bpy.props = props
-
-    handlers = types.ModuleType("bpy.app.handlers")
-    handlers.persistent = lambda fn: fn
-    handlers.undo_post = []
-    handlers.redo_post = []
-    handlers.depsgraph_update_post = []
-
-    app = types.ModuleType("bpy.app")
-    app.version = (4, 2, 0)
-    app.version_string = "4.2.0"
-    app.background = False
-    app.handlers = handlers
-    app.timers = types.SimpleNamespace(
-        is_registered=lambda *_a, **_k: False,
-        register=lambda *_a, **_k: None,
-        unregister=lambda *_a, **_k: None,
-    )
-    bpy.app = app
-
-    bmesh = types.ModuleType("bmesh")
-    bmesh.from_edit_mesh = FakeBMesh
-    bmesh.update_edit_mesh = lambda _mesh_data: None
-
-    mathutils = types.ModuleType("mathutils")
-    mathutils.Vector = lambda seq: FakeVector(*seq)
-    mathutils.Quaternion = FakeQuaternion
-    mathutils.Matrix = types.SimpleNamespace(
-        LocRotScale=FakeMatrix.LocRotScale,
-        Translation=FakeMatrix.Translation,
-        Rotation=FakeMatrix.Rotation,
-    )
-
-    monkeypatch.setitem(sys.modules, "bpy", bpy)
-    monkeypatch.setitem(sys.modules, "bpy.props", props)
-    monkeypatch.setitem(sys.modules, "bpy.app", app)
-    monkeypatch.setitem(sys.modules, "bpy.app.handlers", handlers)
-    monkeypatch.setitem(sys.modules, "mathutils", mathutils)
-    monkeypatch.setitem(sys.modules, "bmesh", bmesh)
-
-    requests = types.ModuleType("requests")
-    requests.utils = types.SimpleNamespace(default_headers=dict)
-    requests.exceptions = types.SimpleNamespace(Timeout=TimeoutError)
-    monkeypatch.setitem(sys.modules, "requests", requests)
-
-    addon = load_addon_package(monkeypatch, "blender_mcp_addon_mesh_model_test")
     return addon, bpy
 
 
@@ -556,7 +501,7 @@ def _new_empty_object(bpy, name):
     ],
 )
 def test_create_primitive_dispatches_to_the_right_op(monkeypatch, primitive_type, expected_obj_type) -> None:
-    addon, _bpy = _load_addon(monkeypatch)
+    addon, _bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
 
     result = server.create_primitive(primitive_type=primitive_type, name=f"obj_{primitive_type}")
@@ -566,7 +511,7 @@ def test_create_primitive_dispatches_to_the_right_op(monkeypatch, primitive_type
 
 
 def test_create_primitive_rejects_unknown_type(monkeypatch) -> None:
-    addon, _bpy = _load_addon(monkeypatch)
+    addon, _bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
 
     with pytest.raises(ValueError, match="Unknown primitive_type"):
@@ -588,7 +533,7 @@ MESH_HANDLER_CALLS = [
 
 @pytest.mark.parametrize("handler_name,extra_kwargs", MESH_HANDLER_CALLS)
 def test_mesh_handlers_reject_missing_object(monkeypatch, handler_name, extra_kwargs) -> None:
-    addon, _bpy = _load_addon(monkeypatch)
+    addon, _bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
 
     with pytest.raises(ValueError, match="Object not found"):
@@ -597,7 +542,7 @@ def test_mesh_handlers_reject_missing_object(monkeypatch, handler_name, extra_kw
 
 @pytest.mark.parametrize("handler_name,extra_kwargs", MESH_HANDLER_CALLS)
 def test_mesh_handlers_reject_non_mesh_object(monkeypatch, handler_name, extra_kwargs) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_empty_object(bpy, "empty_obj")
 
@@ -608,7 +553,7 @@ def test_mesh_handlers_reject_non_mesh_object(monkeypatch, handler_name, extra_k
 def test_mesh_extrude_rejects_out_of_range_face_index_before_entering_edit_mode(
     monkeypatch,
 ) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "F")
 
@@ -623,7 +568,7 @@ def test_mesh_extrude_rejects_out_of_range_face_index_before_entering_edit_mode(
 
 
 def test_mesh_extrude_restores_object_mode_when_operator_fails(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "F2")
 
@@ -639,7 +584,7 @@ def test_mesh_extrude_restores_object_mode_when_operator_fails(monkeypatch) -> N
 
 
 def test_mesh_extrude_restores_prior_active_selection_and_mode(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     other = _new_mesh_object(bpy, "Other")
     _new_mesh_object(bpy, "F3")
@@ -658,7 +603,7 @@ def test_mesh_extrude_restores_prior_active_selection_and_mode(monkeypatch) -> N
 
 
 def test_create_primitive_normalizes_to_object_mode_first(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     other = _new_mesh_object(bpy, "Other")
     bpy.context.view_layer.objects.active = other
@@ -675,7 +620,7 @@ def test_create_primitive_normalizes_to_object_mode_first(monkeypatch) -> None:
 
 
 def test_mesh_boolean_rejects_invalid_operation(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "target")
     _new_mesh_object(bpy, "cutter")
@@ -685,7 +630,7 @@ def test_mesh_boolean_rejects_invalid_operation(monkeypatch) -> None:
 
 
 def test_mesh_boolean_rejects_same_object(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "self_obj")
 
@@ -696,7 +641,7 @@ def test_mesh_boolean_rejects_same_object(monkeypatch) -> None:
 
 
 def test_mesh_boolean_keeps_cutter_by_default(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "target")
     _new_mesh_object(bpy, "cutter")
@@ -708,7 +653,7 @@ def test_mesh_boolean_keeps_cutter_by_default(monkeypatch) -> None:
 
 
 def test_mesh_boolean_deletes_cutter_when_requested(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "target2")
     _new_mesh_object(bpy, "cutter2")
@@ -719,7 +664,7 @@ def test_mesh_boolean_deletes_cutter_when_requested(monkeypatch) -> None:
 
 
 def test_copy_object_transform_copies_only_flagged_components(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     obj = _new_mesh_object(bpy, "A")
     obj.location = FakeVector(1, 2, 3)
@@ -746,7 +691,7 @@ def test_copy_object_transform_copies_only_flagged_components(monkeypatch) -> No
 
 
 def test_copy_object_transform_rejects_invalid_space(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "A")
     _new_mesh_object(bpy, "B")
@@ -756,7 +701,7 @@ def test_copy_object_transform_rejects_invalid_space(monkeypatch) -> None:
 
 
 def test_copy_object_transform_local_space_copies_quaternion_directly(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     obj = _new_mesh_object(bpy, "A")
     obj.rotation_mode = "QUATERNION"
@@ -783,7 +728,7 @@ def test_copy_object_transform_local_space_copies_quaternion_directly(monkeypatc
 def test_copy_object_transform_world_space_returns_native_rotation_for_quaternion_mode(
     monkeypatch,
 ) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     obj = _new_mesh_object(bpy, "A")
     obj.rotation_mode = "QUATERNION"
@@ -806,7 +751,7 @@ def test_copy_object_transform_world_space_returns_native_rotation_for_quaternio
 
 
 def test_copy_object_transform_returns_native_rotation_for_axis_angle_mode(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     obj = _new_mesh_object(bpy, "A")
     obj.rotation_mode = "AXIS_ANGLE"
@@ -830,7 +775,7 @@ def test_copy_object_transform_returns_native_rotation_for_axis_angle_mode(monke
 def test_copy_object_transform_world_space_differs_from_local_across_parenting(
     monkeypatch,
 ) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
 
     parent_a = _new_mesh_object(bpy, "ParentA")
@@ -866,7 +811,7 @@ def test_copy_object_transform_world_space_differs_from_local_across_parenting(
 
 
 def test_create_primitive_blockout_dimensions_consistent_across_primitive_types(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
 
     cube_result = server.create_primitive(
@@ -888,7 +833,7 @@ def test_create_primitive_blockout_dimensions_consistent_across_primitive_types(
 
 
 def test_add_radial_array_modifier_requires_a_pivot(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "R")
 
@@ -897,7 +842,7 @@ def test_add_radial_array_modifier_requires_a_pivot(monkeypatch) -> None:
 
 
 def test_add_radial_array_modifier_rejects_multiple_pivot_options(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "R")
 
@@ -918,7 +863,7 @@ def _assert_matrices_close(a, b) -> None:
 
 
 def test_add_radial_array_modifier_with_radius_offsets_pivot(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     obj = _new_mesh_object(bpy, "R")
 
@@ -937,7 +882,7 @@ def test_add_radial_array_modifier_with_radius_offsets_pivot(monkeypatch) -> Non
 def test_add_radial_array_modifier_with_radius_uses_world_space_pivot_for_parented_object(
     monkeypatch,
 ) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
 
     parent = _new_mesh_object(bpy, "Parent")
@@ -960,7 +905,7 @@ def test_add_radial_array_modifier_with_radius_uses_world_space_pivot_for_parent
 
 
 def test_add_radial_array_modifier_with_explicit_pivot_location(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     obj = _new_mesh_object(bpy, "R")
 
@@ -975,7 +920,7 @@ def test_add_radial_array_modifier_with_explicit_pivot_location(monkeypatch) -> 
 
 
 def test_add_radial_array_modifier_with_pivot_object(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     obj = _new_mesh_object(bpy, "R")
     pivot_obj = _new_mesh_object(bpy, "Pivot")
@@ -994,7 +939,7 @@ def test_add_radial_array_modifier_with_pivot_object(monkeypatch) -> None:
 def test_add_radial_array_modifier_rotates_a_rotated_scaled_object_about_an_arbitrary_pivot(
     monkeypatch,
 ) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     obj = _new_mesh_object(bpy, "R")
     obj.location = FakeVector(10, 0, 0)
@@ -1012,7 +957,7 @@ def test_add_radial_array_modifier_rotates_a_rotated_scaled_object_about_an_arbi
 
 
 def test_add_radial_array_modifier_rejects_unknown_pivot_object(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "R")
 
@@ -1021,7 +966,7 @@ def test_add_radial_array_modifier_rejects_unknown_pivot_object(monkeypatch) -> 
 
 
 def test_add_radial_array_modifier_cleans_up_helper_empty_when_applied(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "R2")
 
@@ -1031,7 +976,7 @@ def test_add_radial_array_modifier_cleans_up_helper_empty_when_applied(monkeypat
 
 
 def test_nd_single_vertex_reports_the_created_object_by_diff(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
 
     def _single_vertex(**_kwargs):
@@ -1053,7 +998,7 @@ def test_nd_single_vertex_reports_the_created_object_by_diff(monkeypatch) -> Non
 def test_nd_single_vertex_cancelled_with_no_active_object_returns_none_without_raising(
     monkeypatch,
 ) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
 
     monkeypatch.setattr(bpy.ops.nd, "single_vertex", lambda **_kwargs: {"CANCELLED"}, raising=False)
@@ -1065,7 +1010,7 @@ def test_nd_single_vertex_cancelled_with_no_active_object_returns_none_without_r
 
 
 def test_nd_single_vertex_cancelled_does_not_report_stale_active_object(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     prior = _new_mesh_object(bpy, "Prior")
     prior.select_set(True)
@@ -1122,7 +1067,7 @@ def _apply_geometry_nodes_modifier(server, bpy):
     ids=["configure_surface_projection", "transfer_mesh_attributes", "manage_geometry_nodes_modifier"],
 )
 def test_cancelled_modifier_apply_raises_instead_of_reporting_applied(monkeypatch, run) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _cancel_modifier_apply(monkeypatch, bpy)
 
@@ -1138,7 +1083,7 @@ def test_cancelled_modifier_apply_raises_instead_of_reporting_applied(monkeypatc
     ids=["configure_surface_projection", "transfer_mesh_attributes"],
 )
 def test_finished_retopology_modifier_apply_reports_applied(monkeypatch, run) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
 
     result = run(server, bpy)
@@ -1149,7 +1094,7 @@ def test_finished_retopology_modifier_apply_reports_applied(monkeypatch, run) ->
 
 
 def test_cancelled_solidify_apply_raises_instead_of_reporting_applied(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     _new_mesh_object(bpy, "Shell")
     _cancel_modifier_apply(monkeypatch, bpy)
@@ -1159,7 +1104,7 @@ def test_cancelled_solidify_apply_raises_instead_of_reporting_applied(monkeypatc
 
 
 def test_finished_solidify_apply_reports_applied(monkeypatch) -> None:
-    addon, bpy = _load_addon(monkeypatch)
+    addon, bpy = _load_mesh_addon(monkeypatch)
     server = addon.BlenderMCPServer()
     obj = _new_mesh_object(bpy, "Shell")
 

@@ -10,7 +10,6 @@ The parent runs `--factory-startup`; the child deliberately does not (it loads t
 Preferences), so this also proves a job renders whatever this machine's startup state is.
 """
 
-import importlib.util
 import os
 import sys
 import tempfile
@@ -20,17 +19,10 @@ from pathlib import Path
 
 import bpy
 
-addon_path = Path(__file__).resolve().parents[1] / "src" / "blender_mcp" / "bundled" / "addon" / "__init__.py"
-package_name = "blender_mcp_render_job_smoke"
-spec = importlib.util.spec_from_file_location(
-    package_name,
-    addon_path,
-    submodule_search_locations=[str(addon_path.parent)],
-)
-assert spec is not None
-addon = importlib.util.module_from_spec(spec)
-sys.modules[package_name] = addon
-spec.loader.exec_module(addon)
+sys.path.append(str(Path(__file__).resolve().parent))
+from smoke_addon import load_addon
+
+load_addon("blender_mcp_render_job_smoke")
 
 from blender_mcp_render_job_smoke.handlers.render_jobs import RenderJobHandlersMixin
 

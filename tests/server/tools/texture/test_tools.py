@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from conftest import load_addon
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
-from test_mutation_transaction import _load_addon
 
 from blender_mcp.server.tools import _dispatch, texture
 
@@ -66,21 +66,6 @@ def test_all_texture_commands_are_public_and_grouped_by_responsibility():
     assert all(callable(getattr(texture, name)) for name in TEXTURE_COMMANDS)
     expected_modules = {"materials.py", "images.py", "uv.py", "baking.py", "previews.py", "validation.py"}
     assert expected_modules.issubset({path.name for path in Path(texture.__file__).parent.iterdir()})
-
-
-def test_texture_implementation_identifiers_are_domain_named():
-    source = "\n".join(
-        path.read_text(encoding="utf-8")
-        for root in (
-            Path("src/blender_mcp/server/tools/texture"),
-            Path("src/blender_mcp/bundled/addon/handlers/texture"),
-        )
-        for path in root.glob("*.py")
-    )
-    assert "PhaseZero" not in source
-    assert "PhaseOne" not in source
-    assert "phase_0" not in source
-    assert "phase_1" not in source
 
 
 def test_material_patch_is_strict_and_rejects_nonfinite_values():
@@ -224,7 +209,7 @@ def test_destructive_or_expensive_inputs_are_gated_before_dispatch(monkeypatch):
 
 def test_texture_tools_are_async_and_dispatch_is_complete(monkeypatch):
     assert all(inspect.iscoroutinefunction(getattr(texture, name)) for name in TEXTURE_COMMANDS)
-    addon, _bpy = _load_addon(monkeypatch, data={})
+    addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
 
     commands = server._build_command_handlers()

@@ -20,7 +20,7 @@ from pydantic import Field, TypeAdapter, create_model, model_validator
 
 from ..app import mcp
 from ._dispatch import call_blender
-from ._inputs import StrictModel
+from ._inputs import MAX_FRAME, MIN_FRAME, StrictModel
 from .envelope import STALE_INDEX_WARNING
 
 
@@ -323,7 +323,7 @@ async def set_object_transform(
 @mcp.tool()
 async def set_scene_frame(
     ctx: Context,
-    frame: Annotated[int, Field(ge=-1_048_574, le=1_048_574)],
+    frame: Annotated[int, Field(ge=MIN_FRAME, le=MAX_FRAME)],
     subframe: Annotated[float, Field(ge=0.0, lt=1.0)] = 0.0,
     scene_name: Annotated[str, Field(min_length=1)] | None = None,
 ) -> dict:

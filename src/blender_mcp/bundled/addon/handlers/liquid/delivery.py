@@ -15,6 +15,7 @@ import bpy
 import mathutils
 
 from ...helpers import preserve_mode_and_selection
+from ..rna_patch import get_object, read_fields
 from ._geometry import _RIM_AXES
 from .inspection_and_setup import (
     _CACHE_FLAGS,
@@ -23,10 +24,8 @@ from .inspection_and_setup import (
     _ensure_collection,
     _ensure_liquid_uuid,
     _get_domain,
-    _get_object,
     _get_scene,
     _liquid_object_identity,
-    _read_fields,
     _register_owned_objects,
     _resolved_cache_path,
     _tag_liquid_object,
@@ -359,7 +358,7 @@ class LiquidDeliveryHandlers:
         validation_frames=None,
     ):
         scene = _get_scene(scene_name)
-        source = _get_object(source_object_name, {"MESH"})
+        source = get_object(source_object_name, {"MESH"})
         domain, _domain_modifier, domain_settings = _get_domain(domain_object_name, domain_modifier_name)
         if source.name not in scene.objects or domain.name not in scene.objects:
             raise ValueError("Source and domain must be linked to the explicit scene")
@@ -1263,7 +1262,7 @@ class LiquidDeliveryHandlers:
             "domain_volume_utilization": utilization,
             "dependencies": records,
             "dependency_evaluated_triangles": total_triangles,
-            "solver": _read_fields(
+            "solver": read_fields(
                 settings,
                 {
                     "resolution_max",
@@ -1277,6 +1276,7 @@ class LiquidDeliveryHandlers:
                     "use_diffusion",
                     "use_guide",
                 },
+                typed_ids=True,
             ),
             "secondary_particle_types": secondary,
             "cache": {"state": _cache_state(settings), "directory": cache},

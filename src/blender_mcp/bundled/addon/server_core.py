@@ -43,7 +43,7 @@ from .handlers.scene import SceneHandlersMixin
 from .handlers.scene_physics import ScenePhysicsHandlersMixin
 from .handlers.sketchfab import SketchfabHandlersMixin
 from .handlers.viewport import ViewportHandlersMixin
-from .helpers import get_blendermcp_addon_preferences, get_mesh_object, paginate, sync_from_editmode
+from .helpers import get_blendermcp_addon_preferences, get_mesh_object, page_records, paginate, sync_from_editmode
 from .object_lookup import find_object
 from .output_roots import configured_file_roots, configured_roots, writable_roots
 from .render_devices import cycles_device_report
@@ -2384,7 +2384,6 @@ class BlenderMCPServer(
                 "SOFT_BODY",
                 "DYNAMIC_PAINT",
             }
-        start, _end, _truncated, _next = paginate(0, offset, limit, 1000)
         obj = find_object(bpy.data.objects, name)
         if not obj:
             raise ValueError(f"Object not found: {name}")
@@ -2450,25 +2449,14 @@ class BlenderMCPServer(
                 "polygons": len(mesh.polygons),
             }
 
-        type_data = self._object_type_data(obj, sections, limit, start)
+        type_data = self._object_type_data(obj, sections, limit, offset)
         if type_data:
             obj_info["type_data"] = type_data
 
         return obj_info
 
-    @staticmethod
-    def _page_records(records, offset, limit):
-        total = len(records)
-        start, end, truncated, next_offset = paginate(total, offset, limit, 1000)
-        return {
-            "total": total,
-            "offset": start,
-            "limit": limit,
-            "returned_count": end - start,
-            "truncated": truncated,
-            "next_offset": next_offset,
-            "records": records[start:end],
-        }
+    # The largest page one `type_data` list carries.
+    _OBJECT_INFO_MAX_LIMIT = 1000
 
     @staticmethod
     def _attribute_records(data):
@@ -2487,7 +2475,9 @@ class BlenderMCPServer(
         result = {"coordinate_space": "OBJECT_LOCAL", "evaluated": False}
         data = obj.data
         if data is not None and "ATTRIBUTES" in sections and hasattr(data, "attributes"):
-            result["attributes"] = self._page_records(self._attribute_records(data), offset, limit)
+            result["attributes"] = page_records(
+                self._attribute_records(data), offset, limit, self._OBJECT_INFO_MAX_LIMIT
+            )
 
         if obj.type in {"CURVE", "SURFACE"} and "GEOMETRY" in sections:
             splines = []
@@ -2511,7 +2501,7 @@ class BlenderMCPServer(
                 "resolution_u": data.resolution_u,
                 "resolution_v": data.resolution_v,
                 "bevel_depth": data.bevel_depth,
-                "splines": self._page_records(splines, offset, limit),
+                "splines": page_records(splines, offset, limit, self._OBJECT_INFO_MAX_LIMIT),
             }
         elif obj.type == "CURVES" and "GEOMETRY" in sections:
             result["curves"] = {
@@ -2537,7 +2527,7 @@ class BlenderMCPServer(
                 "is_sequence": data.is_sequence,
                 "frame_start": data.frame_start,
                 "frame_duration": data.frame_duration,
-                "grids": self._page_records(grids, offset, limit),
+                "grids": page_records(grids, offset, limit, self._OBJECT_INFO_MAX_LIMIT),
             }
         elif obj.type == "GREASEPENCIL" and "GREASE_PENCIL" in sections:
             layers = []
@@ -2558,7 +2548,7 @@ class BlenderMCPServer(
                         "frames_truncated": len(frames) > limit,
                     }
                 )
-            result["grease_pencil"] = {"layers": self._page_records(layers, offset, limit)}
+            result["grease_pencil"] = {"layers": page_records(layers, offset, limit, self._OBJECT_INFO_MAX_LIMIT)}
 
         if "PARTICLES" in sections:
             systems = [
@@ -2571,7 +2561,7 @@ class BlenderMCPServer(
                 for system in getattr(obj, "particle_systems", ())
             ]
             if systems:
-                result["particle_systems"] = self._page_records(systems, offset, limit)
+                result["particle_systems"] = page_records(systems, offset, limit, self._OBJECT_INFO_MAX_LIMIT)
         if "SOFT_BODY" in sections and getattr(obj, "soft_body", None) is not None:
             soft_body = obj.soft_body
             point_cache = soft_body.point_cache
@@ -2599,7 +2589,7 @@ class BlenderMCPServer(
                     }
                 )
             if states:
-                result["dynamic_paint"] = self._page_records(states, offset, limit)
+                result["dynamic_paint"] = page_records(states, offset, limit, self._OBJECT_INFO_MAX_LIMIT)
         return result if len(result) > 2 else {}
 
     _MESH_DATA_ELEMENT_TYPES = ("vertices", "edges", "faces", "loops")

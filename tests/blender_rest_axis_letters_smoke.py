@@ -26,7 +26,6 @@ import importlib
 import json
 import math
 import sys
-import types
 
 from pathlib import Path
 
@@ -34,12 +33,11 @@ import bpy
 
 from mathutils import Vector
 
-addon_path = Path(__file__).resolve().parents[1] / "src" / "blender_mcp" / "bundled" / "addon"
+sys.path.append(str(Path(__file__).resolve().parent))
+from smoke_addon import load_addon
+
 package_name = "blender_mcp_rest_axis_letters_smoke"
-addon = types.ModuleType(package_name)
-addon.__path__ = [str(addon_path)]
-addon.ADDON_ID = package_name
-sys.modules[package_name] = addon
+load_addon(package_name)
 character_handlers = importlib.import_module(f"{package_name}.handlers.character_rigging")
 
 AXIS_INDEX = {"X": 0, "Y": 1, "Z": 2}

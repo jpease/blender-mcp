@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from conftest import load_addon_package
+from conftest import load_addon
 
 
 class FakeModifier:
@@ -71,33 +71,23 @@ def _temp_override(**_kwargs):
     yield
 
 
-def _load_addon(monkeypatch, scene, nd_installed=False, objects=None):
-    bpy = types.ModuleType("bpy")
-    area = FakeArea()
-    bpy.context = types.SimpleNamespace(
+def _load_nd_addon(monkeypatch, scene, nd_installed=False, objects=None):
+    addon, bpy = load_addon(
+        monkeypatch,
         scene=scene,
-        screen=types.SimpleNamespace(areas=[area]),
-        temp_override=_temp_override,
-        mode="OBJECT",
-        selected_objects=[],
-        view_layer=types.SimpleNamespace(objects=types.SimpleNamespace(active=None)),
+        data={"objects": objects if objects is not None else FakeObjectsCollection()},
     )
-    bpy.types = types.SimpleNamespace(
-        AddonPreferences=object,
-        Operator=object,
-        Panel=object,
-        Scene=type("Scene", (), {}),
-    )
-    bpy.data = types.SimpleNamespace(objects=objects if objects is not None else FakeObjectsCollection())
-
-    ops = types.SimpleNamespace(
-        object=types.SimpleNamespace(
-            select_all=lambda **_kw: None,
-            mode_set=lambda **_kw: None,
-        ),
+    bpy.context.screen = types.SimpleNamespace(areas=[FakeArea()])
+    bpy.context.temp_override = _temp_override
+    bpy.context.mode = "OBJECT"
+    bpy.context.selected_objects = []
+    bpy.context.view_layer = types.SimpleNamespace(objects=types.SimpleNamespace(active=None))
+    bpy.ops.object = types.SimpleNamespace(
+        select_all=lambda **_kw: None,
+        mode_set=lambda **_kw: None,
     )
     if nd_installed:
-        ops.nd = types.SimpleNamespace(
+        bpy.ops.nd = types.SimpleNamespace(
             bool_vanilla=lambda *_a, **_k: {"FINISHED"},
             clean_utils=lambda *_a, **_k: {"FINISHED"},
             capture_utils=lambda *_a, **_k: {"FINISHED"},
@@ -105,50 +95,6 @@ def _load_addon(monkeypatch, scene, nd_installed=False, objects=None):
             toggle_custom_view=lambda *_a, **_k: {"FINISHED"},
             toggle_utils=lambda *_a, **_k: {"FINISHED"},
         )
-    bpy.ops = ops
-
-    props = types.ModuleType("bpy.props")
-    for name in (
-        "BoolProperty",
-        "EnumProperty",
-        "FloatProperty",
-        "IntProperty",
-        "StringProperty",
-    ):
-        setattr(props, name, lambda **_kwargs: None)
-    bpy.props = props
-
-    handlers = types.ModuleType("bpy.app.handlers")
-    handlers.persistent = lambda fn: fn
-    handlers.undo_post = []
-    handlers.redo_post = []
-    handlers.depsgraph_update_post = []
-
-    app = types.ModuleType("bpy.app")
-    app.version = (4, 2, 0)
-    app.version_string = "4.2.0"
-    app.background = False
-    app.handlers = handlers
-    app.timers = types.SimpleNamespace(
-        is_registered=lambda *_a, **_k: False,
-        register=lambda *_a, **_k: None,
-        unregister=lambda *_a, **_k: None,
-    )
-    bpy.app = app
-
-    monkeypatch.setitem(sys.modules, "bpy", bpy)
-    monkeypatch.setitem(sys.modules, "bpy.props", props)
-    monkeypatch.setitem(sys.modules, "bpy.app", app)
-    monkeypatch.setitem(sys.modules, "bpy.app.handlers", handlers)
-    monkeypatch.setitem(sys.modules, "mathutils", types.ModuleType("mathutils"))
-    monkeypatch.setitem(sys.modules, "bmesh", types.ModuleType("bmesh"))
-
-    requests = types.ModuleType("requests")
-    requests.utils = types.SimpleNamespace(default_headers=dict)
-    requests.exceptions = types.SimpleNamespace(Timeout=TimeoutError)
-    monkeypatch.setitem(sys.modules, "requests", requests)
-
-    addon = load_addon_package(monkeypatch, "blender_mcp_addon_nd_test")
     return addon
 
 
@@ -161,7 +107,7 @@ def _scene(nd_enabled):
 
 
 def test_disabled_nd_is_absent_from_dispatch(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=False), nd_installed=True)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=False), nd_installed=True)
     server = addon.BlenderMCPServer()
 
     status = server.get_nd_status()
@@ -176,7 +122,7 @@ def test_disabled_nd_is_absent_from_dispatch(monkeypatch) -> None:
 
 
 def test_enabled_nd_without_addon_installed_is_reported_as_not_ready(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=False)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=False)
     server = addon.BlenderMCPServer()
 
     status = server.get_nd_status()
@@ -186,7 +132,7 @@ def test_enabled_nd_without_addon_installed_is_reported_as_not_ready(monkeypatch
 
 
 def test_enabled_nd_with_addon_installed_is_ready(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
     server = addon.BlenderMCPServer()
 
     status = server.get_nd_status()
@@ -198,7 +144,7 @@ def test_enabled_nd_with_addon_installed_is_ready(monkeypatch) -> None:
 
 
 def test_set_viewport_overlay_cavity_sets_overlay_property_idempotently(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=False), nd_installed=False)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=False), nd_installed=False)
     server = addon.BlenderMCPServer()
     shading = sys.modules["bpy"].context.screen.areas[0].spaces.active.shading
 
@@ -214,7 +160,7 @@ def test_set_viewport_overlay_cavity_sets_overlay_property_idempotently(monkeypa
 
 
 def test_set_viewport_overlay_face_orientation_can_be_turned_off(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=False), nd_installed=False)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=False), nd_installed=False)
     server = addon.BlenderMCPServer()
     overlay = sys.modules["bpy"].context.screen.areas[0].spaces.active.overlay
     overlay.show_face_orientation = True
@@ -226,7 +172,7 @@ def test_set_viewport_overlay_face_orientation_can_be_turned_off(monkeypatch) ->
 
 
 def test_set_viewport_overlay_rejects_unknown_toggle(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=False), nd_installed=False)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=False), nd_installed=False)
     server = addon.BlenderMCPServer()
 
     with pytest.raises(ValueError, match="Invalid toggle"):
@@ -234,7 +180,7 @@ def test_set_viewport_overlay_rejects_unknown_toggle(monkeypatch) -> None:
 
 
 def test_nd_pulse_viewport_toggle_clear_view_routes_through_nd_operator(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
     server = addon.BlenderMCPServer()
     calls = []
     monkeypatch.setattr(
@@ -250,7 +196,7 @@ def test_nd_pulse_viewport_toggle_clear_view_routes_through_nd_operator(monkeypa
 
 
 def test_nd_pulse_viewport_toggle_surfaces_cancelled(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
     server = addon.BlenderMCPServer()
     monkeypatch.setattr(
         sys.modules["bpy"].ops.nd,
@@ -264,7 +210,7 @@ def test_nd_pulse_viewport_toggle_surfaces_cancelled(monkeypatch) -> None:
 
 
 def test_nd_pulse_viewport_toggle_rejects_unknown_toggle(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
     server = addon.BlenderMCPServer()
 
     with pytest.raises(ValueError, match="Invalid toggle"):
@@ -272,7 +218,7 @@ def test_nd_pulse_viewport_toggle_rejects_unknown_toggle(monkeypatch) -> None:
 
 
 def test_nd_call_raises_clear_error_when_operator_not_available(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=False)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=False)
     server = addon.BlenderMCPServer()
 
     with pytest.raises(RuntimeError, match="nd.capture_utils' is not available"):
@@ -280,7 +226,7 @@ def test_nd_call_raises_clear_error_when_operator_not_available(monkeypatch) -> 
 
 
 def test_nd_boolean_rejects_same_object(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
     server = addon.BlenderMCPServer()
 
     with pytest.raises(ValueError, match="must differ from object_name"):
@@ -294,7 +240,7 @@ def test_nd_mark_as_util_parent_to_preserves_world_transform(monkeypatch) -> Non
     objects["Cutter"] = child
     objects["Target"] = parent
 
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True, objects=objects)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True, objects=objects)
     server = addon.BlenderMCPServer()
 
     result = server.nd_mark_as_util(object_names=["Cutter"], parent_to="Target")
@@ -305,7 +251,7 @@ def test_nd_mark_as_util_parent_to_preserves_world_transform(monkeypatch) -> Non
 
 
 def test_nd_mark_as_util_rejects_parent_to_with_unmark(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
     server = addon.BlenderMCPServer()
 
     with pytest.raises(ValueError, match="cannot be combined with unmark"):
@@ -313,7 +259,7 @@ def test_nd_mark_as_util_rejects_parent_to_with_unmark(monkeypatch) -> None:
 
 
 def test_nd_clean_utils_requires_confirm(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
     server = addon.BlenderMCPServer()
 
     with pytest.raises(ValueError, match="Pass confirm=True"):
@@ -332,7 +278,7 @@ def test_nd_clean_utils_reports_removed_objects_and_modifiers(monkeypatch) -> No
         kept.modifiers = []
         return {"FINISHED"}
 
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True, objects=objects)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True, objects=objects)
     monkeypatch.setattr(sys.modules["bpy"].ops.nd, "clean_utils", fake_clean_utils)
     server = addon.BlenderMCPServer()
 
@@ -348,7 +294,7 @@ def test_nd_clean_utils_reports_nothing_removed_when_scene_is_already_clean(monk
     objects = FakeObjectsCollection()
     objects["Solo"] = FakeObject("Solo", modifiers=[FakeModifier("Bevel", "BEVEL")])
 
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True, objects=objects)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True, objects=objects)
     server = addon.BlenderMCPServer()
 
     result = server.nd_clean_utils(confirm=True)
@@ -362,7 +308,7 @@ def test_nd_clean_utils_reports_nothing_removed_when_scene_is_already_clean(monk
 
 
 def test_nd_clean_utils_surfaces_cancelled(monkeypatch) -> None:
-    addon = _load_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
+    addon = _load_nd_addon(monkeypatch, _scene(nd_enabled=True), nd_installed=True)
     monkeypatch.setattr(sys.modules["bpy"].ops.nd, "clean_utils", lambda *_a, **_k: {"CANCELLED"})
     server = addon.BlenderMCPServer()
 

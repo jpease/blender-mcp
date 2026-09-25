@@ -16,6 +16,7 @@ import inspect
 import json
 import os
 import shutil
+import subprocess
 import sys
 import threading
 import types
@@ -25,11 +26,12 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO_ROOT
-from test_mutation_transaction import FakeCollection, _load_addon
+from conftest import REPO_ROOT, load_file_command_addon, run_command
+from datablock_doubles import FakeCollection
+
+from blender_mcp.server.bundles import ALL_SENTINEL, TOOLSETS_ENV_VAR
 
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "blend" / "empty_gzip.blend"
-SERVER_SRC = REPO_ROOT / "src" / "blender_mcp" / "server"
 FILE_COMMANDS = ("open_shot", "save_shot", "reset_session")
 
 
@@ -152,25 +154,6 @@ class _RecordingWm:
         return self._save("save_as_mainfile", str(kwargs.get("filepath", "")), kwargs)
 
 
-def _abspath(bpy: types.ModuleType, path: str) -> str:
-    """
-    Mimic `bpy.path.abspath`, including its behaviour when no file is open.
-
-    Args:
-        bpy: The stub module, for `data.filepath`.
-        path: The path to expand.
-
-    Returns:
-        str: `//x` joined to the open file's directory, or the bare `x` when no
-        file is open.
-
-    """
-    if not path.startswith("//"):
-        return path
-    base = bpy.data.filepath
-    return os.path.join(os.path.dirname(base), path[2:]) if base else path[2:]
-
-
 class _StubScene:
     """
     A scene stub with Blender's ID custom-property protocol and its `library` link.
@@ -249,9 +232,7 @@ def _server(
         tuple: The server, the stub `bpy`, and the recording operators.
 
     """
-    monkeypatch.delenv("BLENDERMCP_FILE_ROOTS", raising=False)
-    monkeypatch.delenv("BLENDERMCP_OUTPUT_ROOTS", raising=False)
-    addon, bpy = _load_addon(
+    addon, bpy = load_file_command_addon(
         monkeypatch,
         data={
             "filepath": filepath,
@@ -260,18 +241,12 @@ def _server(
             "objects": ["a", "b"],
             "scenes": _scene_collection(),
         },
+        auto_execute=auto_execute,
     )
     bpy.context.scene.name = "Scene"
     # The scene holds one of the two object datablocks, which is what a linked hierarchy looks
     # like from here: `bpy.data.objects` counts the whole file, `scene.objects` counts the shot.
     bpy.context.scene.objects = ["a"]
-    bpy.context.preferences = types.SimpleNamespace(
-        filepaths=types.SimpleNamespace(use_scripts_auto_execute=auto_execute),
-        edit=types.SimpleNamespace(use_global_undo=True),
-    )
-    # `library=` is how the add-on resolves a linked datablock's path; the real
-    # `bpy.path.abspath` takes it as a keyword, so the stub must too.
-    bpy.path = types.SimpleNamespace(abspath=lambda path, library=None: _abspath(bpy, path))
     bpy.utils = types.SimpleNamespace(blend_paths=lambda **_flags: [])
     wm = _RecordingWm(bpy)
     bpy.ops.wm = wm
@@ -294,22 +269,6 @@ def _shot(tmp_path: Path, name: str = "shot.blend") -> Path:
     target = tmp_path / name
     shutil.copyfile(FIXTURE, target)
     return target
-
-
-def _run(server: object, cmd_type: str, **params: object) -> dict:
-    """
-    Dispatch a command through production's own `execute_command`.
-
-    Args:
-        server: The server.
-        cmd_type: The command.
-        **params: Its parameters.
-
-    Returns:
-        dict: The response envelope.
-
-    """
-    return server.execute_command({"type": cmd_type, "params": params})  # type: ignore[attr-defined]
 
 
 def _assert_no_absolute_path(text: str, *paths: object) -> None:
@@ -336,7 +295,7 @@ def test_open_shot_passes_use_scripts_false_explicitly(monkeypatch: pytest.Monke
     server, _bpy, wm = _server(monkeypatch)
     shot = _shot(tmp_path)
 
-    response = _run(server, "open_shot", filepath=str(shot))
+    response = run_command(server, "open_shot", filepath=str(shot))
 
     assert response["status"] == "success", response
     assert [name for name, _ in wm.calls] == ["open_mainfile"]
@@ -349,7 +308,7 @@ def test_open_shot_passes_load_ui_false_explicitly_by_default(monkeypatch: pytes
     """`open_mainfile`'s own `load_ui` default is True, so the command's False must be passed."""
     server, _bpy, wm = _server(monkeypatch)
 
-    _run(server, "open_shot", filepath=str(_shot(tmp_path)))
+    run_command(server, "open_shot", filepath=str(_shot(tmp_path)))
 
     kwargs = wm.calls[0][1]
     assert "load_ui" in kwargs, "load_ui was inherited: the operator's own default is True"
@@ -362,17 +321,49 @@ def test_no_file_command_takes_a_use_scripts_parameter(monkeypatch: pytest.Monke
 
     for name in FILE_COMMANDS:
         assert "use_scripts" not in inspect.signature(getattr(server, name)).parameters
-    response = _run(server, "open_shot", filepath=str(_shot(tmp_path)), use_scripts=True)
+    response = run_command(server, "open_shot", filepath=str(_shot(tmp_path)), use_scripts=True)
 
     assert response["status"] == "error"
     assert wm.calls == []
 
 
-def test_use_scripts_appears_in_no_server_side_schema() -> None:
-    """No MCP tool schema under `server/` may carry `use_scripts`, so a client can never enable embedded scripts."""
-    offenders = [str(path) for path in SERVER_SRC.rglob("*.py") if "use_scripts" in path.read_text(encoding="utf-8")]
+def _schema_property_names(node: object) -> set[str]:
+    """
+    Collect every property name a JSON Schema declares, nested models included.
 
-    assert offenders == []
+    Args:
+        node: A schema, or any value inside one.
+
+    Returns:
+        set[str]: The keys of every `properties` mapping found at any depth.
+
+    """
+    if isinstance(node, list):
+        return set().union(*map(_schema_property_names, node))
+    if not isinstance(node, dict):
+        return set()
+    declared = set(node["properties"]) if isinstance(node.get("properties"), dict) else set()
+    return declared.union(*map(_schema_property_names, node.values()))
+
+
+def test_use_scripts_appears_in_no_server_side_schema() -> None:
+    """No tool in the full catalog takes `use_scripts` at any depth, so a client can never enable embedded scripts."""
+    script = (
+        "import asyncio, json\n"
+        "from blender_mcp.server import mcp\n"
+        "print(json.dumps({tool.name: tool.inputSchema for tool in asyncio.run(mcp.list_tools())}))\n"
+    )
+    listed = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, TOOLSETS_ENV_VAR: ALL_SENTINEL},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    schemas = json.loads(listed.stdout)
+
+    assert set(FILE_COMMANDS) <= set(schemas), "the catalog that was scanned does not carry the file tools"
+    assert [name for name, schema in schemas.items() if "use_scripts" in _schema_property_names(schema)] == []
 
 
 def test_open_shot_refuses_a_dirty_session_without_discard_unsaved(
@@ -381,7 +372,7 @@ def test_open_shot_refuses_a_dirty_session_without_discard_unsaved(
     """An open destroys unsaved work without asking, so it needs an explicit discard."""
     server, _bpy, wm = _server(monkeypatch, is_dirty=True)
 
-    response = _run(server, "open_shot", filepath=str(_shot(tmp_path)))
+    response = run_command(server, "open_shot", filepath=str(_shot(tmp_path)))
 
     assert response["status"] == "error"
     assert "discard_unsaved" in response["message"]
@@ -394,7 +385,7 @@ def test_open_shot_opens_a_dirty_session_when_discard_unsaved_is_true(
     """The discard flag is the whole consent, and the result says work was discarded."""
     server, _bpy, wm = _server(monkeypatch, is_dirty=True)
 
-    response = _run(server, "open_shot", filepath=str(_shot(tmp_path)), discard_unsaved=True)
+    response = run_command(server, "open_shot", filepath=str(_shot(tmp_path)), discard_unsaved=True)
 
     assert response["status"] == "success", response
     assert response["result"]["discarded_unsaved_changes"] is True
@@ -407,7 +398,7 @@ def test_open_shot_refuses_while_scripts_auto_execute_is_enabled(
     """Refuse branch: the preference on means a .blend could run embedded scripts."""
     server, _bpy, wm = _server(monkeypatch, auto_execute=True)
 
-    response = _run(server, "open_shot", filepath=str(_shot(tmp_path)))
+    response = run_command(server, "open_shot", filepath=str(_shot(tmp_path)))
 
     assert response["status"] == "error"
     assert "use_scripts_auto_execute" in response["message"]
@@ -420,7 +411,7 @@ def test_open_shot_proceeds_while_scripts_auto_execute_is_disabled(
     """Allow branch: the factory default (False) does not block a load."""
     server, _bpy, wm = _server(monkeypatch, auto_execute=False)
 
-    response = _run(server, "open_shot", filepath=str(_shot(tmp_path)))
+    response = run_command(server, "open_shot", filepath=str(_shot(tmp_path)))
 
     assert response["status"] == "success", response
     assert len(wm.calls) == 1
@@ -433,7 +424,7 @@ def test_open_shot_refuses_when_the_auto_execute_preference_cannot_be_read(
     server, bpy, wm = _server(monkeypatch)
     bpy.context.preferences = types.SimpleNamespace()
 
-    response = _run(server, "open_shot", filepath=str(_shot(tmp_path)))
+    response = run_command(server, "open_shot", filepath=str(_shot(tmp_path)))
 
     assert response["status"] == "error"
     assert "use_scripts_auto_execute" in response["message"]
@@ -457,7 +448,7 @@ def test_open_shot_validates_the_path_before_any_operator_runs(
     server, _bpy, wm = _server(monkeypatch)
     path = make_path(tmp_path)  # type: ignore[operator]
 
-    response = _run(server, "open_shot", filepath=str(path))
+    response = run_command(server, "open_shot", filepath=str(path))
 
     assert response["status"] == "error"
     assert wm.calls == []
@@ -472,7 +463,7 @@ def test_open_shot_refuses_a_blender_relative_path_in_an_unsaved_session(
     monkeypatch.chdir(tmp_path)
     _shot(tmp_path)
 
-    response = _run(server, "open_shot", filepath="//shot.blend")
+    response = run_command(server, "open_shot", filepath="//shot.blend")
 
     assert response["status"] == "error"
     assert "Blender-relative" in response["message"] and "never been saved" in response["message"]
@@ -487,7 +478,7 @@ def test_open_shot_expands_a_blender_relative_path_against_the_open_file(
     target = _shot(tmp_path, "next.blend")
     server, _bpy, wm = _server(monkeypatch, filepath=str(current))
 
-    response = _run(server, "open_shot", filepath="//next.blend")
+    response = run_command(server, "open_shot", filepath="//next.blend")
 
     assert response["status"] == "success", response
     assert wm.calls[0][1]["filepath"] == os.path.realpath(target)
@@ -502,8 +493,8 @@ def test_open_shot_enforces_the_configured_roots(monkeypatch: pytest.MonkeyPatch
     server, _bpy, wm = _server(monkeypatch)
     monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(inside))
 
-    refused = _run(server, "open_shot", filepath=str(_shot(outside)))
-    allowed = _run(server, "open_shot", filepath=str(_shot(inside)))
+    refused = run_command(server, "open_shot", filepath=str(_shot(outside)))
+    allowed = run_command(server, "open_shot", filepath=str(_shot(inside)))
 
     assert refused["status"] == "error" and "BLENDERMCP_FILE_ROOTS" in refused["message"]
     assert allowed["status"] == "success", allowed
@@ -519,8 +510,8 @@ def test_open_shot_refuses_outside_the_roots_before_saying_whether_the_file_exis
     server, _bpy, _wm = _server(monkeypatch)
     monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(inside))
 
-    missing = _run(server, "open_shot", filepath=str(tmp_path / "nope.blend"))
-    directory = _run(server, "open_shot", filepath=str(tmp_path))
+    missing = run_command(server, "open_shot", filepath=str(tmp_path / "nope.blend"))
+    directory = run_command(server, "open_shot", filepath=str(tmp_path))
 
     assert missing["message"] == directory["message"]
     assert "BLENDERMCP_FILE_ROOTS" in missing["message"]
@@ -537,7 +528,7 @@ def test_a_runtime_error_from_open_mainfile_is_a_clean_error_response(
         f"Error: Loading \"{canonical}\" failed: Failed to read blend file '{canonical}': Missing DNA block\n"
     )
 
-    response = _run(server, "open_shot", filepath=str(shot))
+    response = run_command(server, "open_shot", filepath=str(shot))
 
     assert response["status"] == "error"
     assert "Missing DNA block" in response["message"]
@@ -556,7 +547,7 @@ def test_the_known_path_closes_what_structural_detection_leaves_behind(
     server, _bpy, wm = _server(monkeypatch)
     wm.failures["open_mainfile"] = RuntimeError(f"Error: Cannot open file {canonical}@ for reading: Input/output error")
 
-    message = _run(server, "open_shot", filepath=str(shot))["message"]
+    message = run_command(server, "open_shot", filepath=str(shot))["message"]
 
     assert "John" not in message and "shot.blend" not in message, message
     assert "Input/output error" in message
@@ -576,7 +567,7 @@ def test_a_swap_that_landed_is_still_reported_as_a_success_when_its_report_fails
 
     monkeypatch.setattr(server, "_build_command_handlers", build_then_fail)
 
-    response = _run(server, "open_shot", filepath=str(_shot(tmp_path)))
+    response = run_command(server, "open_shot", filepath=str(_shot(tmp_path)))
 
     assert response["status"] == "success", response
     assert response["result"]["rehandshake_required"] is True
@@ -592,7 +583,7 @@ def test_open_shot_reports_the_new_session_and_asks_for_a_rehandshake(
     before = server.get_session_info()["session_epoch"]  # type: ignore[attr-defined]
     shot = _shot(tmp_path)
 
-    result = _run(server, "open_shot", filepath=str(shot))["result"]
+    result = run_command(server, "open_shot", filepath=str(shot))["result"]
 
     assert result["session_epoch"] == before + 1
     assert result["filepath"] == os.path.realpath(shot)
@@ -616,7 +607,7 @@ def test_open_shot_reports_that_the_capability_set_followed_the_file(
     server, _bpy, wm = _server(monkeypatch)
     wm.scene_flags_after_load["blendermcp_use_polyhaven"] = True
 
-    result = _run(server, "open_shot", filepath=str(_shot(tmp_path)))["result"]
+    result = run_command(server, "open_shot", filepath=str(_shot(tmp_path)))["result"]
 
     assert result["capabilities_changed"] is True
 
@@ -644,7 +635,7 @@ def test_a_flag_that_is_not_a_real_bool_is_refused(
     if cmd_type == "save_shot":
         params["filepath"] = str(tmp_path / "new.blend")
 
-    response = _run(server, cmd_type, **params)
+    response = run_command(server, cmd_type, **params)
 
     assert response["status"] == "error"
     assert flag in response["message"]
@@ -663,7 +654,7 @@ def test_save_shot_passes_compress_and_relative_remap_false_explicitly(
     server, _bpy, wm = _server(monkeypatch)
     target = tmp_path / "new.blend"
 
-    response = _run(server, "save_shot", filepath=str(target))
+    response = run_command(server, "save_shot", filepath=str(target))
 
     assert response["status"] == "success", response
     assert [name for name, _ in wm.calls] == ["save_as_mainfile"]
@@ -679,7 +670,7 @@ def test_save_shot_forwards_an_explicit_opt_in(monkeypatch: pytest.MonkeyPatch, 
     """An explicit True reaches the operator unchanged."""
     server, _bpy, wm = _server(monkeypatch)
 
-    _run(server, "save_shot", filepath=str(tmp_path / "new.blend"), compress=True, relative_remap=True)
+    run_command(server, "save_shot", filepath=str(tmp_path / "new.blend"), compress=True, relative_remap=True)
 
     assert wm.calls[0][1]["compress"] is True
     assert wm.calls[0][1]["relative_remap"] is True
@@ -693,7 +684,7 @@ def test_saving_over_an_existing_file_without_confirmation_calls_no_operator(
     existing = _shot(tmp_path)
     before = existing.read_bytes()
 
-    response = _run(server, "save_shot", filepath=str(existing))
+    response = run_command(server, "save_shot", filepath=str(existing))
 
     assert response["status"] == "error"
     assert "confirm_overwrite" in response["message"]
@@ -709,7 +700,7 @@ def test_saving_over_an_existing_file_with_confirmation_writes_it(
     server, _bpy, wm = _server(monkeypatch)
     existing = _shot(tmp_path)
 
-    response = _run(server, "save_shot", filepath=str(existing), confirm_overwrite=True)
+    response = run_command(server, "save_shot", filepath=str(existing), confirm_overwrite=True)
 
     assert response["status"] == "success", response
     assert response["result"]["overwrote_existing"] is True
@@ -722,7 +713,7 @@ def test_save_shot_in_place_on_an_unsaved_session_is_refused_with_an_actionable_
     """An in-place save needs a file; the message says to pass a filepath."""
     server, _bpy, wm = _server(monkeypatch, filepath="")
 
-    response = _run(server, "save_shot")
+    response = run_command(server, "save_shot")
 
     assert response["status"] == "error"
     assert "filepath" in response["message"] and "never been saved" in response["message"]
@@ -737,7 +728,7 @@ def test_save_shot_in_place_needs_confirmation_because_it_overwrites_the_file_on
     before = current.read_bytes()
     server, _bpy, wm = _server(monkeypatch, filepath=str(current), is_dirty=True)
 
-    response = _run(server, "save_shot")
+    response = run_command(server, "save_shot")
 
     assert response["status"] == "error"
     assert "confirm_overwrite" in response["message"]
@@ -752,7 +743,7 @@ def test_save_shot_in_place_uses_save_mainfile_with_explicit_arguments(
     current = _shot(tmp_path)
     server, _bpy, wm = _server(monkeypatch, filepath=str(current), is_dirty=True)
 
-    response = _run(server, "save_shot", confirm_overwrite=True)
+    response = run_command(server, "save_shot", confirm_overwrite=True)
 
     assert response["status"] == "success", response
     assert [name for name, _ in wm.calls] == ["save_mainfile"]
@@ -778,7 +769,7 @@ def test_a_runtime_error_from_a_save_operator_is_a_clean_error_response(
     if not in_place:
         params["filepath"] = str(target)
 
-    response = _run(server, "save_shot", **params)
+    response = run_command(server, "save_shot", **params)
 
     assert response["status"] == "error"
     assert "Permission denied" in response["message"]
@@ -798,9 +789,9 @@ def test_save_shot_enforces_the_roots_for_an_explicit_target_and_for_the_open_fi
     server, _bpy, wm = _server(monkeypatch, filepath=str(current))
     monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(inside))
 
-    explicit = _run(server, "save_shot", filepath=str(outside / "new.blend"))
-    in_place = _run(server, "save_shot", confirm_overwrite=True)
-    allowed = _run(server, "save_shot", filepath=str(inside / "new.blend"))
+    explicit = run_command(server, "save_shot", filepath=str(outside / "new.blend"))
+    in_place = run_command(server, "save_shot", confirm_overwrite=True)
+    allowed = run_command(server, "save_shot", filepath=str(inside / "new.blend"))
 
     assert explicit["status"] == "error" and "BLENDERMCP_FILE_ROOTS" in explicit["message"]
     assert in_place["status"] == "error" and "BLENDERMCP_FILE_ROOTS" in in_place["message"]
@@ -815,13 +806,13 @@ def test_save_shot_refuses_a_missing_directory_unless_asked_to_create_it(
     server, _bpy, wm = _server(monkeypatch)
     target = tmp_path / "canon" / "shots" / "sh010.blend"
 
-    refused = _run(server, "save_shot", filepath=str(target))
+    refused = run_command(server, "save_shot", filepath=str(target))
 
     assert refused["status"] == "error" and "create_directories=true" in refused["message"]
     assert wm.calls == [] and not (tmp_path / "canon").exists()
     _assert_no_absolute_path(refused["message"], target)
 
-    created = _run(server, "save_shot", filepath=str(target), create_directories=True)
+    created = run_command(server, "save_shot", filepath=str(target), create_directories=True)
 
     assert created["status"] == "success", created
     assert created["result"]["created_directory"] is True
@@ -838,9 +829,11 @@ def test_save_shot_creates_no_directory_outside_the_roots_or_on_a_refusal(
     server, _bpy, wm = _server(monkeypatch)
     monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(inside))
 
-    outside = _run(server, "save_shot", filepath=str(tmp_path / "outside" / "x.blend"), create_directories=True)
-    escape = _run(server, "save_shot", filepath=str(inside / ".." / "escape" / "x.blend"), create_directories=True)
-    not_bool = _run(server, "save_shot", filepath=str(inside / "shots" / "x.blend"), create_directories="yes")
+    outside = run_command(server, "save_shot", filepath=str(tmp_path / "outside" / "x.blend"), create_directories=True)
+    escape = run_command(
+        server, "save_shot", filepath=str(inside / ".." / "escape" / "x.blend"), create_directories=True
+    )
+    not_bool = run_command(server, "save_shot", filepath=str(inside / "shots" / "x.blend"), create_directories="yes")
 
     for response in (outside, escape, not_bool):
         assert response["status"] == "error", response
@@ -856,7 +849,7 @@ def test_save_shot_reports_no_created_directory_when_it_already_existed(
     """`created_directory` is False when the opt-in had nothing to do."""
     server, _bpy, _wm = _server(monkeypatch)
 
-    response = _run(server, "save_shot", filepath=str(tmp_path / "x.blend"), create_directories=True)
+    response = run_command(server, "save_shot", filepath=str(tmp_path / "x.blend"), create_directories=True)
 
     assert response["status"] == "success", response
     assert response["result"]["created_directory"] is False
@@ -869,7 +862,7 @@ def test_save_shot_refuses_a_blender_relative_path_in_an_unsaved_session(
     server, _bpy, wm = _server(monkeypatch, filepath="")
     monkeypatch.chdir(tmp_path)
 
-    response = _run(server, "save_shot", filepath="//new.blend")
+    response = run_command(server, "save_shot", filepath="//new.blend")
 
     assert response["status"] == "error"
     assert "Blender-relative" in response["message"]
@@ -886,7 +879,7 @@ def test_reset_session_without_confirm_is_refused(monkeypatch: pytest.MonkeyPatc
     """Reset discards the session, so it needs `confirm=True`."""
     server, _bpy, wm = _server(monkeypatch, is_dirty=True)
 
-    response = _run(server, "reset_session")
+    response = run_command(server, "reset_session")
 
     assert response["status"] == "error"
     assert "confirm" in response["message"]
@@ -900,7 +893,7 @@ def test_reset_session_reads_the_empty_factory_startup_file_and_never_factory_se
     server, _bpy, wm = _server(monkeypatch, filepath="/shots/sq010.blend", is_dirty=True)
     before = server.get_session_info()["session_epoch"]  # type: ignore[attr-defined]
 
-    response = _run(server, "reset_session", confirm=True)
+    response = run_command(server, "reset_session", confirm=True)
 
     assert response["status"] == "success", response
     assert [name for name, _ in wm.calls] == ["read_homefile"]
@@ -918,7 +911,7 @@ def test_a_runtime_error_from_the_reset_operator_is_a_clean_error_response(monke
     server, _bpy, wm = _server(monkeypatch, filepath="/Users/someone/shots/sq010.blend")
     wm.failures["read_homefile"] = RuntimeError('Error: Cannot read file "/Users/someone/shots/sq010.blend"\n')
 
-    response = _run(server, "reset_session", confirm=True)
+    response = run_command(server, "reset_session", confirm=True)
 
     assert response["status"] == "error"
     _assert_no_absolute_path(response["message"], "/Users/someone/shots/sq010.blend")
@@ -1089,7 +1082,7 @@ def test_save_shot_does_not_report_a_dirty_flag_blender_has_not_cleared_yet(
     """In the GUI the flag clears after the tick, so a same-tick `is_dirty` is untrue; it is not reported."""
     server, _bpy, _wm = _server(monkeypatch)
 
-    result = _run(server, "save_shot", filepath=str(tmp_path / "new.blend"))["result"]
+    result = run_command(server, "save_shot", filepath=str(tmp_path / "new.blend"))["result"]
 
     assert "is_dirty" not in result
 
@@ -1149,7 +1142,7 @@ def test_saving_to_another_directory_warns_about_relative_links_that_will_not_re
     server, bpy, _wm = _server(monkeypatch, filepath=str(current))
     _with_relative_library(bpy, "//libs/lib.blend", "/abs/canon.blend")
 
-    moved = _run(server, "save_shot", filepath=str(tmp_path / "projB" / "shot.blend"))["result"]
+    moved = run_command(server, "save_shot", filepath=str(tmp_path / "projB" / "shot.blend"))["result"]
 
     assert len(moved["warnings"]) == 1
     assert "1 external file path " in moved["warnings"][0]
@@ -1173,7 +1166,7 @@ def test_no_relative_link_warning_when_the_links_still_resolve(
         (tmp_path / "sub").mkdir()
         params["filepath"] = str(tmp_path / "sub" / "shot.blend")
 
-    result = _run(server, "save_shot", **params)["result"]
+    result = run_command(server, "save_shot", **params)["result"]
 
     assert "warnings" not in result, result
 
@@ -1199,7 +1192,7 @@ def test_a_leftover_temp_save_name_beside_the_target_refuses_the_save(
     if not in_place:
         params["filepath"] = str(target)
 
-    response = _run(server, "save_shot", **params)
+    response = run_command(server, "save_shot", **params)
 
     assert response["status"] == "error"
     assert "temporary" in response["message"]
@@ -1217,7 +1210,7 @@ def test_a_relative_image_path_counts_as_an_external_path_that_will_not_resolve(
     server, bpy, _wm = _server(monkeypatch, filepath=str(_shot(tmp_path / "projA")))
     _with_external_paths(bpy, (), ("//textures/t2.png", "/abs/hdri.exr"))
 
-    result = _run(server, "save_shot", filepath=str(tmp_path / "projB" / "shot.blend"))["result"]
+    result = run_command(server, "save_shot", filepath=str(tmp_path / "projB" / "shot.blend"))["result"]
 
     assert result["warnings"] == [
         "1 external file path (images, libraries, etc.) is Blender-relative and will not resolve from the new "
@@ -1234,7 +1227,7 @@ def test_an_indirect_library_is_not_counted_because_blender_rederives_it_from_it
     server, bpy, _wm = _server(monkeypatch, filepath=str(_shot(tmp_path / "projA")))
     _with_external_paths(bpy, (("//libs/lib1.blend", False), ("//libs/deep/lib2.blend", True)), ("//textures/t2.png",))
 
-    result = _run(server, "save_shot", filepath=str(tmp_path / "projB" / "shot.blend"))["result"]
+    result = run_command(server, "save_shot", filepath=str(tmp_path / "projB" / "shot.blend"))["result"]
 
     assert result["warnings"][0].startswith("2 external file paths (images, libraries, etc.) are Blender-relative")
 
@@ -1266,7 +1259,7 @@ def test_a_temp_save_name_that_cannot_be_checked_refuses_the_save(
     if not in_place:
         params["filepath"] = str(tmp_path / "fresh.blend")
 
-    response = _run(server, "save_shot", **params)
+    response = run_command(server, "save_shot", **params)
 
     assert response["status"] == "error"
     assert "cannot be created or checked" in response["message"]
@@ -1281,7 +1274,7 @@ def test_an_occupied_temp_save_name_says_it_may_be_left_by_an_interrupted_save(
     server, _bpy, _wm = _server(monkeypatch)
     Path(f"{os.path.realpath(tmp_path / 'fresh.blend')}@").write_text("x", encoding="utf-8")
 
-    message = _run(server, "save_shot", filepath=str(tmp_path / "fresh.blend"))["message"]
+    message = run_command(server, "save_shot", filepath=str(tmp_path / "fresh.blend"))["message"]
 
     assert "possibly left by an interrupted save" in message
     assert "cannot be created or checked" not in message
@@ -1563,7 +1556,7 @@ def test_save_shot_writes_a_json_provenance_block_into_every_local_scene(
     server, bpy, _wm = _server(monkeypatch)
     bpy.data.scenes = _scene_collection(_StubScene("Scene"), linked)
 
-    response = _run(server, "save_shot", filepath=str(tmp_path / "shot.blend"))
+    response = run_command(server, "save_shot", filepath=str(tmp_path / "shot.blend"))
 
     assert response["status"] == "success", response
     assert response["result"]["provenance_written"] is True
@@ -1581,7 +1574,7 @@ def test_save_shot_names_the_datablocks_this_session_authored(monkeypatch: pytes
     ledger.clear()
     ledger.record([{"collection": "actions", "name": "Hero_Walk"}])
 
-    _run(server, "save_shot", filepath=str(tmp_path / "shot.blend"))
+    run_command(server, "save_shot", filepath=str(tmp_path / "shot.blend"))
 
     block = json.loads(bpy.data.scenes["Scene"][_PROVENANCE])
     assert block["actions"][0]["datablocks"] == ["actions:Hero_Walk"]
@@ -1596,7 +1589,7 @@ def test_a_failed_save_leaves_no_scene_claiming_provenance(monkeypatch: pytest.M
     bpy.data.scenes["Kept"][_PROVENANCE] = "{}"
     wm.failures["save_as_mainfile"] = RuntimeError("cannot write")
 
-    response = _run(server, "save_shot", filepath=str(tmp_path / "shot.blend"))
+    response = run_command(server, "save_shot", filepath=str(tmp_path / "shot.blend"))
 
     assert response["status"] == "error"
     assert _PROVENANCE not in bpy.data.scenes["Fresh"]
@@ -1607,7 +1600,7 @@ def test_save_shot_writes_nothing_when_provenance_is_declined(monkeypatch: pytes
     """A canon publish has to be byte-stable, so the block must be refusable."""
     server, bpy, _wm = _server(monkeypatch)
 
-    response = _run(server, "save_shot", filepath=str(tmp_path / "shot.blend"), write_provenance=False)
+    response = run_command(server, "save_shot", filepath=str(tmp_path / "shot.blend"), write_provenance=False)
 
     assert response["result"]["provenance_written"] is False
     assert "provenance_ingredients" not in response["result"]
@@ -1620,7 +1613,7 @@ def test_save_shot_refuses_checksums_without_configured_file_roots(
     """Hashing a library path out of the opened file is a read oracle unless it is confined."""
     server, bpy, _wm = _server(monkeypatch)
 
-    response = _run(server, "save_shot", filepath=str(tmp_path / "shot.blend"), provenance_checksums=True)
+    response = run_command(server, "save_shot", filepath=str(tmp_path / "shot.blend"), provenance_checksums=True)
 
     assert response["status"] == "error"
     assert "BLENDERMCP_FILE_ROOTS" in response["message"]
@@ -1698,7 +1691,7 @@ def test_save_shot_bounds_each_library_hash_by_the_per_file_limit(
     monkeypatch.setattr(_addon_module(server, "handlers.provenance"), "MAX_DIGEST_FILE_BYTES", 64)
     read = _counted_reads(monkeypatch, _addon_module(server, "file_digest"))
 
-    response = _run(server, "save_shot", filepath=str(canon / "shot.blend"), provenance_checksums=True)
+    response = run_command(server, "save_shot", filepath=str(canon / "shot.blend"), provenance_checksums=True)
 
     assert response["status"] == "success", response
     (ingredient,) = json.loads(bpy.data.scenes["Scene"][_PROVENANCE])["ingredients"]
@@ -1727,7 +1720,7 @@ def test_save_shot_records_each_ingredient_as_a_link_from_the_file_it_writes(
     ]
     monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(project))
 
-    response = _run(server, "save_shot", filepath=str(project / "shots" / "v2" / "shot.blend"))
+    response = run_command(server, "save_shot", filepath=str(project / "shots" / "v2" / "shot.blend"))
 
     assert response["status"] == "success", response
     in_roots, outside = json.loads(bpy.data.scenes["Scene"][_PROVENANCE])["ingredients"]
