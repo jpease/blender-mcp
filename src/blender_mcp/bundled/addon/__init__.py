@@ -25,7 +25,7 @@ bl_info = {
 # Keep in sync with blender_mcp.addon_manager.EXPECTED_ADDON_PROTOCOL_VERSION.
 # The server reads handshake fields without comparing versions, so an older
 # addon that omits writable_output_roots gets an empty list.
-ADDON_PROTOCOL_VERSION = 47
+ADDON_PROTOCOL_VERSION = 48
 
 from . import render_result_record, session  # ruff: ignore[module-import-not-at-top-of-file]
 from .handlers import render_jobs  # ruff: ignore[module-import-not-at-top-of-file]

@@ -345,18 +345,18 @@ ROWS: list[Revert] = [
     Revert(
         "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 277_769",
-        # One byte below the *measured* payload (277,769). The ceiling sits exactly on it now, but
+        "SHOT_MODE_BYTE_CEILING = 277_754",
+        # One byte below the *measured* payload (277,754). The ceiling sits exactly on it now, but
         # a ceiling with headroom would let a revert to itself-minus-one pass and prove nothing.
-        "SHOT_MODE_BYTE_CEILING = 277_768",
+        "SHOT_MODE_BYTE_CEILING = 277_753",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
         "server tools: the default ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 92_624",
-        # Same rule: one byte below the measured core payload (92,624), not below the ceiling.
-        "DEFAULT_MODE_BYTE_CEILING = 92_623",
+        "DEFAULT_MODE_BYTE_CEILING = 92_609",
+        # Same rule: one byte below the measured core payload (92,609), not below the ceiling.
+        "DEFAULT_MODE_BYTE_CEILING = 92_608",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(

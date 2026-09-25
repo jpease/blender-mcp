@@ -5,7 +5,7 @@ import logging
 import os
 
 from collections.abc import Sequence
-from typing import Annotated, Literal
+from typing import Annotated
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
@@ -15,6 +15,7 @@ from ...addon_manager import EXPECTED_ADDON_PROTOCOL_VERSION, AddonHandshake
 from ..app import mcp
 from ..bundles import BUNDLES, TOOLSETS_ENV_VAR
 from ..connection import BlenderTransportError, force_addon_handshake, get_blender_connection
+from ..integrations import INTEGRATIONS, Provider, advertises, disabled_note, provider_of, withheld_providers
 from ..mount_map import (
     CORE_BUNDLE,
     bundle_tool_names,
@@ -27,21 +28,10 @@ from .envelope import ok
 
 logger = logging.getLogger("BlenderMCPServer")
 
-Provider = Literal["polyhaven", "sketchfab", "nd"]
-
 _STATUS_COMMANDS: dict[Provider, str] = {
     "polyhaven": "get_polyhaven_status",
     "sketchfab": "get_sketchfab_status",
     "nd": "get_nd_status",
-}
-
-# The provider-gated command each optional integration adds to the addon's handler table
-# (`command_registry.py _build_command_handlers`). Its presence in the handshake's capability
-# list is that integration being enabled for the open .blend.
-_INTEGRATION_CAPABILITIES: dict[Provider, str] = {
-    "polyhaven": "import_polyhaven_asset",
-    "sketchfab": "import_sketchfab_model",
-    "nd": "nd_boolean",
 }
 
 
@@ -145,19 +135,26 @@ def _toolset_payload(mounted: frozenset[str]) -> dict[str, object]:
     }
 
 
-def _tool_lookup(tool_name: str, capabilities: Sequence[str], mounted: frozenset[str]) -> dict[str, object]:
+def _tool_lookup(
+    tool_name: str,
+    capabilities: Sequence[str],
+    mounted: frozenset[str],
+    withheld: frozenset[Provider] = frozenset(),
+) -> dict[str, object]:
     """
-    Answer, for one tool name, which of four different situations the caller is in.
+    Answer, for one tool name, which of five different situations the caller is in.
 
-    Mounted; implemented but not mounted here; absent from this server build while the
-    connected add-on still serves the command; or unknown to both. They call for opposite
-    responses - retry, change the environment, upgrade the server, fix the spelling - and a
-    client's "unknown tool" error cannot tell them apart.
+    Mounted; mounted but withheld because its integration is disabled; implemented but not
+    mounted here; absent from this server build while the connected add-on still serves the
+    command; or unknown to both. They call for opposite responses - retry, tick a checkbox,
+    change the environment, upgrade the server, fix the spelling - and a client's "unknown
+    tool" error cannot tell them apart.
 
     Args:
         tool_name: The name asked about.
         capabilities: The command names the connected add-on advertises.
         mounted: The tool names registered in this process.
+        withheld: The integrations the handshake shows disabled.
 
     Returns:
         dict[str, object]: The verdict and the evidence behind it.
@@ -165,7 +162,10 @@ def _tool_lookup(tool_name: str, capabilities: Sequence[str], mounted: frozenset
     """
     providers = bundles_providing(tool_name)
     addon_command = tool_name in capabilities
-    if tool_name in mounted:
+    integration = provider_of(tool_name)
+    if tool_name in mounted and integration in withheld:
+        verdict = f"Mounted, but withheld from the tool list and refused. {disabled_note(integration)}"
+    elif tool_name in mounted:
         verdict = "Mounted: callable in this session."
     elif providers:
         verdict = (
@@ -224,9 +224,8 @@ def _status_payload(
         "expected_protocol_version": EXPECTED_ADDON_PROTOCOL_VERSION,
         "addon_version": result.addon_version,
         "capability_count": len(result.capabilities),
-        "integrations_available": {
-            provider: command in result.capabilities for provider, command in _INTEGRATION_CAPABILITIES.items()
-        },
+        # A false one's tools are withheld from tools/list and refused (`app.py`).
+        "integrations_available": {provider: advertises(result, provider) for provider in INTEGRATIONS},
         "blender_version": result.blender_version,
         "writable_output_roots": result.writable_output_roots,
         # What Cycles renders on, from the add-on's Preferences: `cycles.device = "GPU"` falls back
@@ -266,7 +265,9 @@ def _status_payload(
         "toolsets": _toolset_payload(mounted),
     }
     if tool_name is not None:
-        payload["tool_lookup"] = _tool_lookup(tool_name, result.capabilities, mounted)
+        payload["tool_lookup"] = _tool_lookup(
+            tool_name, result.capabilities, mounted, withheld=withheld_providers(result)
+        )
     if mounted_tools:
         payload["mounted_tools"] = _mounted_tools_page(mounted, limit=tool_limit, offset=tool_offset)
     if detail:
@@ -392,8 +393,8 @@ async def get_addon_status(
         Most fields are what the add-on reported about itself; a handshake that
         never completed raises instead of being rendered as one.
         "up_to_date" (bool), "protocol_version"/"expected_protocol_version", "addon_version",
-        "capability_count" and "integrations_available" (per-provider, whether the addon advertises that
-        integration's commands), "capabilities" (the command names, only with detail), "blender_version",
+        "capability_count" and "integrations_available" (per-provider; false: its tools are unlisted and
+        refused), "capabilities" (the command names, only with detail), "blender_version",
         "missing_commands"/"missing_parameters" (empty when current; non-empty means the installed add-on
         predates this server even though its protocol number matches, and must be reinstalled via
         "update_command" before those commands will work - they were not omitted from the project),

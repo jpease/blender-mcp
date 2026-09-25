@@ -66,6 +66,7 @@ ADDON_LIGHTING_INSPECTION = ROOT / "src/blender_mcp/bundled/addon/handlers/light
 ADDON_LIGHTING_RENDERING = ROOT / "src/blender_mcp/bundled/addon/handlers/lighting/rendering.py"
 SERVER_LIGHTING_INSPECTION_TOOL = ROOT / "src/blender_mcp/server/tools/lighting/inspection.py"
 SERVER_LIGHTING_RENDERING_TOOL = ROOT / "src/blender_mcp/server/tools/lighting/rendering.py"
+SERVER_LIGHTING_CONSTRUCTION_TOOL = ROOT / "src/blender_mcp/server/tools/lighting/construction.py"
 ADDON_CR_PRIMITIVES = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/primitives.py"
 ADDON_POSING = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/posing.py"
 ADDON_CR_INSPECTION = ROOT / "src/blender_mcp/bundled/addon/handlers/character_rigging/inspection.py"
@@ -88,12 +89,18 @@ ADDON_CAMERA_SHARED = ROOT / "src/blender_mcp/bundled/addon/handlers/camera/_sha
 ADDON_CAMERA_CORE = ROOT / "src/blender_mcp/bundled/addon/handlers/camera/core.py"
 ADDON_RENDERING = ROOT / "src/blender_mcp/bundled/addon/handlers/rendering.py"
 ADDON_DELIVERY = ROOT / "src/blender_mcp/bundled/addon/handlers/delivery.py"
+# Every geometry-nodes builder, and which space each reads the objects it references in.
+ADDON_GN_WORKFLOWS = ROOT / "src/blender_mcp/bundled/addon/handlers/geometry_nodes/workflows.py"
+# Which optional integration gates which tool, and whether the handshake shows it enabled.
+SERVER_INTEGRATIONS = ROOT / "src/blender_mcp/server/integrations.py"
 RENDER_COVERAGE_SCRIPT = ROOT / "scripts/render_coverage.py"
 SERVER_RENDERING_TOOL = ROOT / "src/blender_mcp/server/tools/rendering.py"
 SERVER_DOCUMENTATION = ROOT / "src/blender_mcp/server/tools/_documentation.py"
 # Where the tool catalog is registered, and where the hardening pass that follows the
 # registration imports is called from.
 SERVER_TOOLS_INIT = ROOT / "src/blender_mcp/server/tools/__init__.py"
+# The hardening pass itself: which config every generated argument model is given.
+SERVER_STRICT_ARGS = ROOT / "src/blender_mcp/server/tools/_strict_args.py"
 SERVER_BUNDLES = ROOT / "src/blender_mcp/server/bundles.py"
 TEST_BUNDLES_FILE = ROOT / "tests/server/test_bundles.py"
 # `scripts/update_addon_surface.py` imports the snapshot's builder and serializer from this
@@ -210,6 +217,8 @@ GNT = "tests/server/tools/geometry_nodes/test_tools.py"
 NDSTATUST = "tests/server/tools/test_nd_status.py"
 NDOUTT = "tests/server/tools/test_nd_outcome.py"
 SRVPHT = "tests/server/tools/test_polyhaven.py"
+GNSPACET = "tests/test_geometry_nodes_builder_spaces.py"
+INTEGT = "tests/server/test_integration_gating.py"
 HOSTILE_LIB = f"{SESSIONT}::test_a_hostile_library_path_is_reduced_the_same_way_a_failure_note_is"
 # The `name` half of the same table, with short ids so a row can list its nodes; the
 # `filepath` half's ids run to hundreds of characters.

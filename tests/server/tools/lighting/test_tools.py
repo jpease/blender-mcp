@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import load_addon
+from conftest import StubFactory, load_addon
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 
@@ -189,6 +189,33 @@ def test_create_studio_lighting_dispatches_rig_then_preview(monkeypatch) -> None
     assert preview_command[1]["target_engine"] == "EEVEE"
     assert preview_command[1]["output_paths"] == {"EEVEE": "/tmp/studio_preview.png"}
     assert [item["data"] for item in result] == [{"lights": []}, {"lights": []}]
+
+
+@pytest.mark.parametrize(
+    "preview",
+    [
+        pytest.param({"preview_output_path": "studio_preview.png"}, id="relative-path"),
+        pytest.param({"preview_output_path": "/tmp/studio_preview.jpg"}, id="not-png"),
+        pytest.param({"preview_engine": "CYCLES", "preview_samples": 65}, id="unconfirmed-cycles-samples"),
+        pytest.param({"frame": 1_048_575}, id="frame-beyond-blender"),
+    ],
+)
+def test_create_studio_lighting_refuses_a_bad_preview_before_building_the_rig(
+    stub_blender_connection: StubFactory, preview: dict
+) -> None:
+    """
+    A preview that was always going to be refused must not leave three lights behind first.
+
+    The rig's handler refuses member names that already exist, so a rig built before its preview
+    was refused blocked the corrected retry until the lights were deleted by hand.
+    """
+    connection = stub_blender_connection({"lights": []})
+    request = {"scene_name": "Scene", "target_object_name": "Product", "camera_name": "Camera", "frame": 1}
+
+    with pytest.raises(ToolError):
+        run_tool(lighting.create_studio_lighting, **{**request, **preview})
+
+    assert connection.calls == []
 
 
 def test_lighting_quality_expands_strict_agent_payload(monkeypatch) -> None:

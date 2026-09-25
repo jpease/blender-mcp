@@ -140,33 +140,87 @@ async def configure_color_management(
     )
 
 
-def _preview_paths(engine: str, output_path: str | None, cycles_output_path: str | None, eevee_output_path: str | None):
-    """Resolve explicit output paths or create unique temporary PNG paths."""
-    if engine != "BOTH" and (cycles_output_path or eevee_output_path):
+# The add-on's own frame range (`handlers/lighting/rendering.py` `_MIN_FRAME`/`_MAX_FRAME`).
+_MAX_FRAME = 1_048_574
+# Above this many samples a Cycles preview is a long render, and runs only on confirmation.
+_MAX_UNCONFIRMED_CYCLES_SAMPLES = 64
+
+
+def validate_preview_arguments(
+    target_engine: str,
+    frame: int,
+    samples: int,
+    confirm_long_render: bool,
+    output_path: str | None = None,
+    cycles_output_path: str | None = None,
+    eevee_output_path: str | None = None,
+) -> dict[str, str | None]:
+    """
+    Refuse every preview argument that is wrong regardless of the scene, before anything dispatches.
+
+    The one preflight both `render_lighting_preview` and `create_studio_lighting` pass, so a studio
+    rig is never built for a preview that was always going to be refused - the rig's handler
+    refuses its own member names, so a rig left behind by a refused preview blocks the retry.
+    What only Blender can judge - the output directory, an existing file, the engine's
+    availability - is still refused by the preview handler.
+
+    Args:
+        target_engine: CYCLES, EEVEE, or BOTH.
+        frame: The frame to render.
+        samples: Requested sample count for every rendered engine.
+        confirm_long_render: Whether a Cycles preview above 64 samples was confirmed.
+        output_path: The single-engine path, or None for a temporary file.
+        cycles_output_path: The Cycles path of a BOTH preview, or None for a temporary file.
+        eevee_output_path: The EEVEE path of a BOTH preview, or None for a temporary file.
+
+    Returns:
+        dict[str, str | None]: Each rendered engine's explicit absolute ``.png`` path, or None
+            where the caller left it to a temporary file.
+
+    Raises:
+        ToolError: For a frame outside Blender's range, unconfirmed Cycles samples above 64, a
+            path argument that does not fit ``target_engine``, a path that is not an absolute
+            ``.png``, or two engines sharing one path.
+
+    """
+    if not -_MAX_FRAME <= frame <= _MAX_FRAME:
+        raise ToolError(f"frame must be an integer in [{-_MAX_FRAME}, {_MAX_FRAME}]")
+    if target_engine in {"CYCLES", "BOTH"} and samples > _MAX_UNCONFIRMED_CYCLES_SAMPLES and not confirm_long_render:
+        raise ToolError("Cycles previews above 64 samples require confirm_long_render=true")
+    if target_engine != "BOTH" and (cycles_output_path or eevee_output_path):
         raise ToolError("Use output_path for a single-engine preview")
-    if engine == "BOTH" and output_path:
+    if target_engine == "BOTH" and output_path:
         raise ToolError("Use cycles_output_path and eevee_output_path for a BOTH preview")
-    requested = {
-        "CYCLES": cycles_output_path if engine == "BOTH" else output_path,
-        "EEVEE": eevee_output_path if engine == "BOTH" else output_path,
-    }
-    resolved = {}
-    temporary = set()
-    for item in ["CYCLES", "EEVEE"] if engine == "BOTH" else [engine]:
-        path = requested[item]
+    requested = (
+        {"CYCLES": cycles_output_path, "EEVEE": eevee_output_path}
+        if target_engine == "BOTH"
+        else {target_engine: output_path}
+    )
+    explicit = {}
+    for engine, path in requested.items():
         if path is not None:
             parsed = Path(path)
             if not parsed.is_absolute() or parsed.suffix.lower() != ".png":
-                raise ToolError(f"{item} output path must be an absolute .png path")
-            resolved[item] = str(parsed)
-        else:
-            descriptor, path = tempfile.mkstemp(prefix=f"blender_lighting_{item.lower()}_", suffix=".png")
-            os.close(descriptor)
-            os.unlink(path)
-            resolved[item] = path
-            temporary.add(path)
-    if len(set(resolved.values())) != len(resolved):
+                raise ToolError(f"{engine} output path must be an absolute .png path")
+            explicit[engine] = str(parsed)
+    if len(set(explicit.values())) != len(explicit):
         raise ToolError("Each preview engine requires a distinct output path")
+    return {engine: explicit.get(engine) for engine in requested}
+
+
+def _preview_paths(requested: dict[str, str | None]) -> tuple[dict[str, str], set[str]]:
+    """Keep each explicit path and give every other engine a unique temporary PNG path."""
+    resolved = {}
+    temporary = set()
+    for engine, path in requested.items():
+        if path is not None:
+            resolved[engine] = path
+            continue
+        descriptor, temporary_path = tempfile.mkstemp(prefix=f"blender_lighting_{engine.lower()}_", suffix=".png")
+        os.close(descriptor)
+        os.unlink(temporary_path)
+        resolved[engine] = temporary_path
+        temporary.add(temporary_path)
     return resolved, temporary
 
 
@@ -197,9 +251,11 @@ async def render_lighting_preview(
     Its ``matched_state`` names every light the frame was rendered under rather than echoing their
     state; call ``inspect_lighting_setup`` for that.
     """
-    if target_engine in {"CYCLES", "BOTH"} and samples > 64 and not confirm_long_render:
-        raise ToolError("Cycles previews above 64 samples require confirm_long_render=true")
-    paths, temporary = _preview_paths(target_engine, output_path, cycles_output_path, eevee_output_path)
+    paths, temporary = _preview_paths(
+        validate_preview_arguments(
+            target_engine, frame, samples, confirm_long_render, output_path, cycles_output_path, eevee_output_path
+        )
+    )
     try:
         result = await call_blender(
             "render_lighting_preview",

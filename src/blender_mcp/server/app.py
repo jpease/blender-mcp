@@ -1,16 +1,25 @@
 """The shared FastMCP app instance and server lifespan management."""
 
+import asyncio
 import logging
+import weakref
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.lowlevel import NotificationOptions
+from mcp.server.models import InitializationOptions
+from mcp.server.session import ServerSession
+from mcp.types import ContentBlock
+from mcp.types import Tool as MCPTool
 
 from .. import __version__
 from ..addon_manager import check_addon_status_on_startup, format_handshake_log
 from .connection import disconnect_blender, get_blender_connection, get_last_handshake
+from .integrations import integration_refusal, provider_of, withheld_tools
 
 logger = logging.getLogger("BlenderMCPServer")
 
@@ -155,8 +164,90 @@ such as `optics`/`display`) instead of flat top-level keywords - read that argum
 its field list before calling.
 """.strip()
 
+
+class BlenderFastMCP(FastMCP):
+    """
+    FastMCP whose tool list follows which optional integrations the open .blend enables.
+
+    `BLENDER_MCP_TOOLSETS` decides what a process mounts; the handshake decides which mounted
+    integration tools can do anything. tools/list omits the tools of an integration the latest
+    handshake shows disabled (`integrations.py`), a call to one is refused before dispatch, and a
+    session that has listed tools is sent notifications/tools/list_changed once a later handshake
+    - a (re)connect, a file swap, get_addon_status - changes that set.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        lifespan: Callable[[FastMCP], AbstractAsyncContextManager[dict[str, Any]]],
+        instructions: str,
+    ) -> None:
+        """
+        Build the app, advertising that its tool list can change.
+
+        Args:
+            name: The server name sent at initialize.
+            lifespan: The startup/shutdown context.
+            instructions: The server instructions sent at initialize.
+
+        """
+        super().__init__(name, lifespan=lifespan, instructions=instructions)
+        # What each session was last shown as withheld, so a change is announced once.
+        self._withheld_shown: weakref.WeakKeyDictionary[ServerSession, frozenset[str]] = weakref.WeakKeyDictionary()
+        create_options = self._mcp_server.create_initialization_options
+
+        def advertising_tool_list_changes(
+            notification_options: NotificationOptions | None = None,
+            experimental_capabilities: dict[str, dict[str, Any]] | None = None,
+        ) -> InitializationOptions:
+            # Every transport builds its initialize reply through this, and the SDK's default
+            # tells a client the tool list never changes.
+            return create_options(
+                notification_options or NotificationOptions(tools_changed=True), experimental_capabilities
+            )
+
+        self._mcp_server.create_initialization_options = advertising_tool_list_changes
+
+    def _session(self) -> ServerSession | None:
+        """Read the session of the request being handled, or None outside one."""
+        try:
+            return self._mcp_server.request_context.session
+        except LookupError:
+            return None
+
+    async def list_tools(self) -> list[MCPTool]:
+        """List the mounted tools, less those a disabled integration withholds."""
+        withheld = withheld_tools(get_last_handshake())
+        session = self._session()
+        if session is not None:
+            self._withheld_shown[session] = withheld
+        return [tool for tool in await super().list_tools() if tool.name not in withheld]
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Sequence[ContentBlock] | dict[str, Any]:
+        """Refuse a withheld tool before dispatch, and announce a tool list the call changed."""
+        try:
+            provider = provider_of(name)
+            refusal = None if provider is None else await asyncio.to_thread(integration_refusal, name, provider)
+            if refusal is not None:
+                raise ToolError(refusal)
+            return await super().call_tool(name, arguments)
+        finally:
+            await self._announce_tool_list_change()
+
+    async def _announce_tool_list_change(self) -> None:
+        """Tell a session that has listed tools when the withheld set it was shown is stale."""
+        session = self._session()
+        if session is None or session not in self._withheld_shown:
+            return
+        withheld = withheld_tools(get_last_handshake())
+        if self._withheld_shown[session] != withheld:
+            self._withheld_shown[session] = withheld
+            await session.send_tool_list_changed()
+
+
 # Create the MCP server with lifespan support
-mcp = FastMCP("BlenderMCP", lifespan=server_lifespan, instructions=SERVER_INSTRUCTIONS)
+mcp = BlenderFastMCP("BlenderMCP", lifespan=server_lifespan, instructions=SERVER_INSTRUCTIONS)
 # FastMCP 1.x does not expose its low-level server's version in the public
 # constructor. Set it explicitly so MCP initialize responses advertise this
 # package's version instead of falling back to the unrelated MCP SDK version.

@@ -72,7 +72,7 @@ def _module_source_files(module_name: str) -> tuple[Path, ...]:
 
 
 @functools.cache
-def _module_tool_names(module_name: str) -> frozenset[str]:
+def module_tool_names(module_name: str) -> frozenset[str]:
     """
     Read the tool names one module entry registers, by parsing rather than importing.
 
@@ -103,9 +103,9 @@ def bundle_tool_names() -> Mapping[str, frozenset[str]]:
         Bundle name to tool names. Cached; the sources cannot change while a process runs.
 
     """
-    mapping = {CORE_BUNDLE: frozenset().union(*(_module_tool_names(name) for name in CORE_MODULES))}
+    mapping = {CORE_BUNDLE: frozenset().union(*(module_tool_names(name) for name in CORE_MODULES))}
     for bundle, modules in BUNDLES.items():
-        mapping[bundle] = frozenset().union(*(_module_tool_names(name) for name in modules))
+        mapping[bundle] = frozenset().union(*(module_tool_names(name) for name in modules))
     return MappingProxyType(mapping)
 
 

@@ -10,7 +10,7 @@ from ...app import mcp
 from .._dispatch import call_blender
 from .._inputs import StrictModel, dump_input
 from ._shared import LightType, StudioLightingMood
-from .rendering import render_lighting_preview
+from .rendering import render_lighting_preview, validate_preview_arguments
 
 
 class LightSettings(StrictModel):
@@ -254,6 +254,7 @@ async def create_studio_lighting(
     Returns the rig-creation result (names and roles of the created lights), the preview image(s),
     and the preview's own result envelope, in that order.
     """
+    validate_preview_arguments(preview_engine, frame, preview_samples, confirm_long_render, preview_output_path)
     rig_result = await call_blender(
         "create_studio_lighting",
         {

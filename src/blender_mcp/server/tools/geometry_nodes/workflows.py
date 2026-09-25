@@ -46,6 +46,7 @@ async def create_procedural_scatter(
 
     Instances remain unrealized by default. Source object/collection, density or minimum distance,
     mask, seed, scale range, original-geometry passthrough, and realization are exposed as controls.
+    Each instance is the source's own shape; where the source sits in the scene does not move it.
     """
     if density < 0 or distance_min <= 0 or scale_min < 0 or scale_max < scale_min or guide_length <= 0:
         raise ValueError("Require density >= 0, distance_min > 0, and 0 <= scale_min <= scale_max")
@@ -72,7 +73,9 @@ async def create_curve_generator(
     Build and attach an editable curve-to-mesh generator for cables, pipes, rails, or trims.
 
     The source curve stays editable. Radius, resampling, trim range, profile, cap policy, and material
-    are explicit; generated geometry is evaluated in the modifier object's local space.
+    are explicit. The mesh follows the path curve where it sits in the world, whatever the modifier
+    object's transform; a profile curve is read in its own local space, so only its shape matters,
+    and is scaled by radius.
     """
     if radius <= 0 or resolution < 2 or not (0 <= trim_start <= trim_end <= 1):
         raise ValueError("Require radius > 0, resolution >= 2, and 0 <= trim_start <= trim_end <= 1")
@@ -99,7 +102,9 @@ async def create_procedural_array(
     Build and attach an instanced linear, grid, radial, or curve-following array.
 
     Use the existing Array modifier tool for ordinary one-axis mesh repetition. This builder is for
-    multi-axis layouts, explicit pivots, curve orientation, and preserved instances.
+    multi-axis layouts, explicit pivots, curve orientation, and preserved instances. The pivot's world
+    location is the radial centre, and a CURVE layout follows its curve where it sits in the world;
+    each copy is the source's own shape, wherever the source sits.
     """
     if count < 1 or count_y < 1:
         raise ValueError("count and count_y must be at least 1")
@@ -144,8 +149,9 @@ async def create_procedural_boolean(
     """
     Build and attach a live multi-cutter Boolean system without deleting cutter objects.
 
-    Cutter dependencies stay explicit and editable. Collection instances are realized only on the
-    cutter branch required by the Boolean node; the target object's base mesh remains unchanged.
+    Cutter dependencies stay explicit and editable. Each cutter cuts where it sits in the world, so
+    moving it moves the cut. Collection instances are realized only on the cutter branch required by
+    the Boolean node; the target object's base mesh remains unchanged.
     """
     return await _build("create_procedural_boolean", _without_context(locals()), object_name, group_name)
 
@@ -169,6 +175,7 @@ async def create_procedural_deformer(
 
     The result documents object-versus-world-space behavior and keeps strength, scale, axis, seed,
     target, and mask contracts exposed instead of relying on a legacy Texture datablock.
+    PROXIMITY_PUSH measures distance to the target where it sits in the world.
     """
     if scale <= 0:
         raise ValueError("scale must be positive")

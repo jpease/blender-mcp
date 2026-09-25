@@ -283,6 +283,15 @@ unmounted bundle holds, and `get_addon_status(tool_name="create_dolly_camera_rig
 the `BLENDER_MCP_TOOLSETS` value that would mount it), served by a newer add-on than this server,
 or unknown to both.
 
+Mounting a bundle is not the same as the integration behind it being usable. Poly Haven,
+Sketchfab and ND tools do something only while the open `.blend` ticks that integration's checkbox
+in the BlenderMCP sidebar panel. Once the add-on's handshake shows an integration disabled, the
+server leaves its tools out of `tools/list`, refuses a call to one before anything reaches Blender
+(naming the checkbox), and sends `notifications/tools/list_changed` to a client that had already
+listed them; `get_addon_status`'s `integrations_available` says which are on. Until a handshake has
+happened nothing is withheld, and the first call to an integration tool takes one to decide. After
+ticking a checkbox, call `get_addon_status`: it re-reads the handshake and the tools are listed again.
+
 Add one MCP server entry per mode or bundle set you want available this session — set the env var
 on that entry, not globally, so each client config controls exactly which tools it sees:
 

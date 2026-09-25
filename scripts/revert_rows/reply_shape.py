@@ -62,9 +62,8 @@ ROWS: list[Revert] = [
     Revert(
         "get_addon_status: every optional integration is reported available",
         SERVER_CORE_TOOL,
-        "            provider: command in result.capabilities for provider, command in "
-        "_INTEGRATION_CAPABILITIES.items()\n",
-        "            provider: True for provider, command in _INTEGRATION_CAPABILITIES.items()\n",
+        '        "integrations_available": {provider: advertises(result, provider) for provider in INTEGRATIONS},\n',
+        '        "integrations_available": {provider: True for provider in INTEGRATIONS},\n',
         (
             f"{CORET}::test_get_addon_status_summarizes_the_capabilities_instead_of_listing_them",
             f"{CORET}::test_get_addon_status_reports_an_addon_with_no_optional_integrations",

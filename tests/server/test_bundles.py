@@ -586,7 +586,10 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # parameter name that matched no reply key). 39 is `confirm_reset`/`confirm_unlink` replacing a
 # bare `confirm`. `get_camera_rig_info` gives back 60: its pages resume through `children_offset`
 # now, so the sentence mapping `children_next_offset` onto `child_offset` is gone.
-SHOT_MODE_BYTE_CEILING = 277_769
+#
+# Lowered from 277,769, measured at 277,754 - 15 bytes fewer: `get_addon_status` words its
+# `integrations_available` more tightly now that a disabled integration's tools are unlisted.
+SHOT_MODE_BYTE_CEILING = 277_754
 
 # The same rule as above, for the default, core-only surface.
 #
@@ -629,7 +632,9 @@ SHOT_MODE_BYTE_CEILING = 277_769
 #
 # Raised from 92,582, measured at 92,624 - 42 bytes: `confirm_reset`/`confirm_unlink` replacing a
 # bare `confirm`, and `scene_name` replacing `scene_uid` on the two linking tools.
-DEFAULT_MODE_BYTE_CEILING = 92_624
+#
+# Lowered from 92,624, measured at 92,609: the same `get_addon_status` wording as the shot ceiling.
+DEFAULT_MODE_BYTE_CEILING = 92_609
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

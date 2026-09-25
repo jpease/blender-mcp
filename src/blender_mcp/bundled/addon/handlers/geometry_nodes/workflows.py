@@ -115,10 +115,27 @@ def _set_source(node, source_type: str, source_name: str) -> None:
         set_input(node, "Collection", source)
 
 
-def _source_node(group, source_type: str, source_name: str, location=(-350, -250)):
-    """Create an Object Info or Collection Info node with an explicit dependency."""
+def _source_node(
+    group,
+    source_type: str,
+    source_name: str,
+    *,
+    transform_space: str,
+    role: str = "instance_source",
+    location=(-350, -250),
+):
+    """
+    Create an Object Info or Collection Info node with an explicit dependency.
+
+    `transform_space` has no default because the two readings answer different questions.
+    RELATIVE reads the source where it sits in the world, expressed in the modifier object's
+    local space: a cutter, a path, a pivot or a proximity target the builder promises to follow.
+    ORIGINAL reads the source's own local geometry and ignores where it sits: a shape the graph
+    places itself, such as an instance or a profile cross-section.
+    """
     bl_idname = "GeometryNodeObjectInfo" if source_type == "OBJECT" else "GeometryNodeCollectionInfo"
-    node = _new_node(group, bl_idname, "instance_source", location)
+    node = _new_node(group, bl_idname, role, location)
+    node.transform_space = transform_space
     _set_source(node, source_type, source_name)
     return node
 
@@ -194,6 +211,32 @@ def _instance_transform_chain(group, instance, location=(180, 100), rotation=(0.
         "scale_instances": scale,
         "translate_instances": translate,
     }
+
+
+def _curve_to_mesh(group, curve_node, profile: tuple[Any, str], fill_caps: bool, nodes: dict[str, Any]):
+    """
+    Sweep `profile` along `curve_node`'s curve, scaled by that curve's radius, and register both nodes.
+
+    Curve to Mesh no longer scales its profile by the radius attribute on its own; its Scale
+    field does, so a radius set upstream reaches the mesh only through the Radius field wired here.
+    """
+    profile_node, profile_output = profile
+    curve_to_mesh = _new_node(group, "GeometryNodeCurveToMesh", "curve_to_mesh", (260, 100))
+    _expose(
+        group,
+        curve_to_mesh,
+        "Fill Caps",
+        "Fill Caps",
+        "NodeSocketBool",
+        fill_caps,
+        "Create end faces on open curve profiles",
+    )
+    link(group, curve_node, "Curve", curve_to_mesh, "Curve")
+    link(group, profile_node, profile_output, curve_to_mesh, "Profile Curve")
+    radius_field = _new_node(group, "GeometryNodeInputRadius", "radius_field", (60, -60))
+    link(group, radius_field, "Radius", curve_to_mesh, "Scale")
+    nodes.update({"curve_to_mesh": curve_to_mesh, "radius_field": radius_field})
+    return curve_to_mesh
 
 
 def _finish_builder(obj, group, modifier, node_map: dict[str, Any], *, warnings=None, estimated_instances=None):
@@ -471,7 +514,8 @@ class GeometryNodesWorkflowHandlersMixin:
                     source_value = None
                     link(group, source, "Curve", instance, "Instance")
                 else:
-                    source = _source_node(group, source_type, source_name)
+                    # Each instance is the source's own shape; where the source sits is not the scatter's.
+                    source = _source_node(group, source_type, source_name, transform_space="ORIGINAL")
                     source_value = source_object if source_type == "OBJECT" else source_collection
                     _expose(
                         group,
@@ -629,8 +673,15 @@ class GeometryNodesWorkflowHandlersMixin:
                 curve_obj = bpy.data.objects.get(curve_object_name)
                 if curve_obj is None or curve_obj.type != "CURVE":
                     raise ValueError(f"Curve object not found or not CURVE: {curve_object_name}")
-                source = _new_node(group, "GeometryNodeObjectInfo", "curve_source", (-650, 100))
-                set_input(source, "Object", curve_obj)
+                # The path is followed where it sits in the world, not where its local data says.
+                source = _source_node(
+                    group,
+                    "OBJECT",
+                    curve_obj.name,
+                    transform_space="RELATIVE",
+                    role="curve_source",
+                    location=(-650, 100),
+                )
                 _expose(
                     group,
                     source,
@@ -711,8 +762,15 @@ class GeometryNodesWorkflowHandlersMixin:
                 profile_obj = bpy.data.objects.get(profile_object_name)
                 if profile_obj is None or profile_obj.type != "CURVE":
                     raise ValueError(f"Profile object not found or not CURVE: {profile_object_name}")
-                profile = _new_node(group, "GeometryNodeObjectInfo", "profile_source", (-50, -160))
-                set_input(profile, "Object", profile_obj)
+                # A cross-section in its own space: its world placement would offset the tube off the path.
+                profile = _source_node(
+                    group,
+                    "OBJECT",
+                    profile_obj.name,
+                    transform_space="ORIGINAL",
+                    role="profile_source",
+                    location=(-50, -160),
+                )
                 _expose(
                     group,
                     profile,
@@ -728,18 +786,7 @@ class GeometryNodesWorkflowHandlersMixin:
                 set_input(profile, "Resolution", max(3, min(resolution, 512)))
                 set_input(profile, "Radius", 1.0)
                 profile_output = "Curve"
-            curve_to_mesh = _new_node(group, "GeometryNodeCurveToMesh", "curve_to_mesh", (260, 100))
-            _expose(
-                group,
-                curve_to_mesh,
-                "Fill Caps",
-                "Fill Caps",
-                "NodeSocketBool",
-                fill_caps,
-                "Create end faces on open curve profiles",
-            )
-            link(group, radius_node, "Curve", curve_to_mesh, "Curve")
-            link(group, profile, profile_output, curve_to_mesh, "Profile Curve")
+            curve_to_mesh = _curve_to_mesh(group, radius_node, (profile, profile_output), fill_caps, nodes)
             terminal = curve_to_mesh
             if material_name:
                 material = bpy.data.materials.get(material_name)
@@ -773,13 +820,13 @@ class GeometryNodesWorkflowHandlersMixin:
                     "set_tilt": tilt,
                     "set_radius": radius_node,
                     "profile": profile,
-                    "curve_to_mesh": curve_to_mesh,
                 }
             )
             modifier = _attach_builder(obj, group)
             result = _finish_builder(obj, group, modifier, nodes)
             result["coordinate_space"] = (
-                "Source curve coordinates are transformed into the modifier object's local space."
+                "The path curve is read where it sits in the world, expressed in the modifier object's local "
+                "space; a profile curve is read in its own local space."
             )
             return result
         except Exception:
@@ -949,8 +996,10 @@ class GeometryNodesWorkflowHandlersMixin:
                     pivot = bpy.data.objects.get(pivot_object_name)
                     if pivot is None:
                         raise ValueError(f"Pivot object not found: {pivot_object_name}")
-                    pivot_info = _new_node(group, "GeometryNodeObjectInfo", "pivot_source", (0, -350))
-                    set_input(pivot_info, "Object", pivot)
+                    # Its Location output then names the pivot's world position in this object's space.
+                    pivot_info = _source_node(
+                        group, "OBJECT", pivot.name, transform_space="RELATIVE", role="pivot_source", location=(0, -350)
+                    )
                     _expose(
                         group,
                         pivot_info,
@@ -958,7 +1007,7 @@ class GeometryNodesWorkflowHandlersMixin:
                         "Pivot",
                         "NodeSocketObject",
                         pivot,
-                        "Object whose world transform defines the radial pivot",
+                        "Object whose world location is the radial pivot",
                     )
                     add_pivot = _new_node(group, "ShaderNodeVectorMath", "add_pivot", (430, -100))
                     add_pivot.operation = "ADD"
@@ -988,8 +1037,10 @@ class GeometryNodesWorkflowHandlersMixin:
                 curve = bpy.data.objects.get(curve_object_name) if curve_object_name else None
                 if curve is None or curve.type != "CURVE":
                     raise ValueError("CURVE layout requires curve_object_name naming a curve object")
-                curve_info = _new_node(group, "GeometryNodeObjectInfo", "curve_source", (-550, 100))
-                set_input(curve_info, "Object", curve)
+                # The array follows the curve where it sits in the world, not where its local data says.
+                curve_info = _source_node(
+                    group, "OBJECT", curve.name, transform_space="RELATIVE", role="curve_source", location=(-550, 100)
+                )
                 _expose(
                     group,
                     curve_info,
@@ -1007,7 +1058,8 @@ class GeometryNodesWorkflowHandlersMixin:
                 link(group, curve_info, "Geometry", points, "Curve")
                 points_output = "Points"
                 nodes["curve_source"] = curve_info
-            source = _source_node(group, "OBJECT", source_name, (-300, -180))
+            # Each copy is the source's own shape; the layout above decides where it goes.
+            source = _source_node(group, "OBJECT", source_name, transform_space="ORIGINAL", location=(-300, -180))
             _expose(group, source, "Object", "Source", "NodeSocketObject", source_obj, "Object instanced by the array")
             instance = _new_node(group, "GeometryNodeInstanceOnPoints", "instance_on_points", (0, 100))
             link(group, points, points_output, instance, "Points")
@@ -1100,7 +1152,10 @@ class GeometryNodesWorkflowHandlersMixin:
             if mask_attribute:
                 nodes["panel_mask"] = mask
             if source_collection_name:
-                source = _source_node(group, "COLLECTION", source_collection_name, (-300, -160))
+                # Each panel variant is its own shape; the face points decide where it goes.
+                source = _source_node(
+                    group, "COLLECTION", source_collection_name, transform_space="ORIGINAL", location=(-300, -160)
+                )
                 source_output = "Instances"
                 source_collection = bpy.data.collections[source_collection_name]
                 _expose(
@@ -1204,7 +1259,8 @@ class GeometryNodesWorkflowHandlersMixin:
         try:
             obj, group = _prepare_builder(object_name, group_name, "BOOLEAN", "live multi-cutter boolean")
             group_input, group_output = _group_io(group)
-            source = _source_node(group, cutter_source, cutter_name, (-400, -100))
+            # A cutter cuts where it sits in the world; its local data alone would cut at this object's origin.
+            source = _source_node(group, cutter_source, cutter_name, transform_space="RELATIVE", location=(-400, -100))
             source_value = (
                 bpy.data.objects.get(cutter_name)
                 if cutter_source == "OBJECT"
@@ -1352,8 +1408,15 @@ class GeometryNodesWorkflowHandlersMixin:
                     target = bpy.data.objects.get(target_object_name) if target_object_name else None
                     if target is None:
                         raise ValueError("PROXIMITY_PUSH requires target_object_name")
-                    target_info = _new_node(group, "GeometryNodeObjectInfo", "target_source", (-520, 0))
-                    set_input(target_info, "Object", target)
+                    # Distance is measured to the target where it sits in the world.
+                    target_info = _source_node(
+                        group,
+                        "OBJECT",
+                        target.name,
+                        transform_space="RELATIVE",
+                        role="target_source",
+                        location=(-520, 0),
+                    )
                     proximity = _new_node(group, "GeometryNodeProximity", "proximity", (-300, 0))
                     map_range = _new_node(group, "ShaderNodeMapRange", "falloff", (-100, 0))
                     set_input(map_range, "From Min", 0.0)
