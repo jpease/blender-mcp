@@ -581,7 +581,12 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # `inspect_render_setup`, `configure_lighting_quality`, `inspect_render_output`) and the honest
 # `max_duration_seconds` contract. 75 is `list_character_bones`. The rest is the core surface
 # below.
-SHOT_MODE_BYTE_CEILING = 277_300
+#
+# Raised from 277,300, measured at 277,372 - 72 bytes, all of it `get_camera_rig_info` naming
+# which parameter each of its pages resumes through: `children_next_offset` goes back as
+# `child_offset`, a name a caller cannot guess, and the envelope's resume hint now names the reply
+# key rather than an `offset=` the tool does not take.
+SHOT_MODE_BYTE_CEILING = 277_372
 
 # The same rule as above, for the default, core-only surface.
 #

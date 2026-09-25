@@ -323,11 +323,37 @@ def test_each_shortened_pages_warning_names_that_page_and_no_other() -> None:
     shortened = [warning for warning in result["warnings"] if "was shortened to" in warning]
     assert shortened == [
         f"files was shortened to {len(payload['files'])} of {_OVER_BUDGET} records to stay within the "
-        f"{REPLY_BYTE_BUDGET}-byte reply budget; continue with offset={len(payload['files'])}.",
+        f"{REPLY_BYTE_BUDGET}-byte reply budget; continue from files_next_offset={len(payload['files'])}.",
         f"progress was shortened to {len(payload['progress'])} of {_OVER_BUDGET // 2} records to stay "
-        f"within the {REPLY_BYTE_BUDGET}-byte reply budget; continue with "
-        f"offset={_RESUMED_OFFSET + len(payload['progress'])}.",
+        f"within the {REPLY_BYTE_BUDGET}-byte reply budget; continue from "
+        f"progress_next_offset={_RESUMED_OFFSET + len(payload['progress'])}.",
     ]
+
+
+def test_a_camera_rig_page_resumes_from_the_offset_it_was_requested_at() -> None:
+    """
+    `get_camera_rig_info` pages `children` through a parameter named `child_offset`.
+
+    Its reply carried only `children_next_offset`, so a page requested at child_offset=50 and cut
+    by the budget was resumed from 0 - re-reading the fifty children already seen - and the warning
+    said `offset=`, a parameter the tool does not take.
+    """
+    data = {
+        "children": _records(_OVER_BUDGET),
+        "children_total": 2 * _OVER_BUDGET,
+        "children_offset": 50,
+        "children_returned_count": _OVER_BUDGET,
+        "children_truncated": True,
+        "children_next_offset": 50 + _OVER_BUDGET,
+    }
+
+    result = ok(data)
+    kept = len(result["data"]["children"])
+
+    assert 0 < kept < _OVER_BUDGET
+    assert result["data"]["children_next_offset"] == 50 + kept
+    assert any(warning.endswith(f"continue from children_next_offset={50 + kept}.") for warning in result["warnings"])
+    assert not any("offset=" in warning and "children_next_offset=" not in warning for warning in result["warnings"])
 
 
 def test_a_reply_too_big_at_one_record_per_page_says_so_rather_than_offering_an_offset() -> None:

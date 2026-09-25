@@ -4717,7 +4717,7 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: a linked collection is not instanced, so the next save drops it",
         ADDON_LINKING,
-        "            _link_into(scene.collection.children, linked_collections)  # type: ignore[attr-defined]\n",
+        "    _link_into(scene.collection.children, linked_collections)  # type: ignore[attr-defined]\n",
         "",
         (f"{LKT}::test_link_instances_what_it_linked_so_a_save_keeps_it",),
     ),
@@ -5654,18 +5654,18 @@ REVERTS: list[Revert] = [
     Revert(
         "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 259_500",
-        # One byte below the *measured* payload (259,274), not below the ceiling: the ceiling has
-        # headroom by design, so reverting it to 259_499 would still pass and prove nothing.
-        "SHOT_MODE_BYTE_CEILING = 259_273",
+        "SHOT_MODE_BYTE_CEILING = 277_372",
+        # One byte below the *measured* payload (277,372). The ceiling sits exactly on it now, but
+        # a ceiling with headroom would let a revert to itself-minus-one pass and prove nothing.
+        "SHOT_MODE_BYTE_CEILING = 277_371",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
         "server tools: the default ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 89_250",
-        # Same rule: one byte below the measured core payload (89,044), not below the ceiling.
-        "DEFAULT_MODE_BYTE_CEILING = 89_043",
+        "DEFAULT_MODE_BYTE_CEILING = 92_559",
+        # Same rule: one byte below the measured core payload (92,559), not below the ceiling.
+        "DEFAULT_MODE_BYTE_CEILING = 92_558",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
@@ -6125,7 +6125,7 @@ REVERTS: list[Revert] = [
         "get_addon_status: the command names ship on every status call, asked for or not",
         SERVER_CORE_TOOL,
         '    if detail:\n        payload["capabilities"] = result.capabilities\n',
-        '    payload["capabilities"] = result.capabilities\n',
+        '    payload["capabilities"] = result.capabilities\n    if detail:\n',
         (f"{CORET}::test_get_addon_status_summarizes_the_capabilities_instead_of_listing_them",),
     ),
     Revert(
@@ -6134,6 +6134,13 @@ REVERTS: list[Revert] = [
         "    if detail:\n",
         "    if False:\n",
         (f"{CORET}::test_get_addon_status_lists_the_command_names_only_on_request",),
+    ),
+    Revert(
+        "get_addon_status: the machine's whole device list ships on every status call",
+        SERVER_CORE_TOOL,
+        '            else {key: value for key, value in result.render_devices.items() if key != "available_devices"}\n',
+        "            else result.render_devices\n",
+        (f"{CORET}::test_get_addon_status_reports_render_devices_with_the_machine_list_only_on_detail",),
     ),
     Revert(
         "get_addon_status: the capability count is hardcoded instead of counted",
@@ -6247,23 +6254,23 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: link_canon_library ignores detail for the objects it instanced",
         ADDON_LINKING,
-        "            instanced = _counted_page(brought_in, _linked_entry, MAX_LISTED_DATABLOCKS, detail=detail)\n",
-        "            instanced = _counted_page(brought_in, _linked_entry, MAX_LISTED_DATABLOCKS, detail=False)\n",
+        "_counted_page(brought_in, _linked_entry, MAX_LISTED_DATABLOCKS, detail=detail)",
+        "_counted_page(brought_in, _linked_entry, MAX_LISTED_DATABLOCKS, detail=False)",
         (f"{LKT}::test_link_detail_pages_the_members_as_records",),
     ),
     Revert(
         "linking: link_canon_library ignores detail for the overrides it builds",
         ADDON_LINKING,
-        "            overrides = _override_all(list(linked_collections), scene, detail=detail)\n",
-        "            overrides = _override_all(list(linked_collections), scene, detail=False)\n",
+        "        overrides = _override_all(list(linked_collections), scene, detail=detail)\n",
+        "        overrides = _override_all(list(linked_collections), scene, detail=False)\n",
         (f"{LKT}::test_link_as_override_names_the_override_roots_and_counts_the_rest",),
     ),
     Revert(
         "linking: a linked collection's members are left out of the instanced count",
         ADDON_LINKING,
-        "            members = [obj for collection in linked_collections for obj in collection.all_objects]"
+        "    members = [obj for collection in linked_collections for obj in collection.all_objects]"
         "  # type: ignore[attr-defined]\n",
-        "            members = []\n",
+        "    members = []\n",
         (f"{LKT}::test_link_names_the_roots_it_brought_in_and_counts_every_member",),
     ),
     # --- changed_objects crosses into the envelope, bounded, with its total named ---
@@ -6318,6 +6325,26 @@ REVERTS: list[Revert] = [
             f"{ENVT}::test_a_page_whose_owner_takes_no_offset_is_marked_truncated_but_offers_none",
             f"{ENVT}::test_a_prefixed_page_without_its_own_offset_offers_no_offset_to_resume_from",
             f"{LKT}::test_a_detail_listing_shortened_by_the_budget_still_offers_no_datablock_offset",
+        ),
+    ),
+    Revert(
+        "reply budget: a prefixed page's resume hint names an offset= its tool may not take",
+        SERVER_ENVELOPE,
+        '    if names["next_offset"] != "next_offset":\n',
+        "    if False:\n",
+        (
+            f"{ENVT}::test_a_camera_rig_page_resumes_from_the_offset_it_was_requested_at",
+            f"{ENVT}::test_each_shortened_pages_warning_names_that_page_and_no_other",
+        ),
+    ),
+    Revert(
+        "reply budget: a shortened page resumes from 0 instead of the offset it was requested at",
+        SERVER_ENVELOPE,
+        '    return int(owner.get(names["offset"]) or 0)\n',
+        "    return 0\n",
+        (
+            f"{ENVT}::test_a_camera_rig_page_resumes_from_the_offset_it_was_requested_at",
+            f"{ENVT}::test_a_second_page_is_shortened_when_cutting_the_first_one_is_not_enough",
         ),
     ),
     # --- a light record is trimmed to what a listing is asked for ---
@@ -7728,8 +7755,8 @@ REVERTS: list[Revert] = [
         # surface moved and the number did not - has to be re-pointed at the new pair.
         "addon surface: the dispatch table moved while the protocol number stayed where it was",
         ADDON_MANAGER,
-        "EXPECTED_ADDON_PROTOCOL_VERSION = 39",
-        "EXPECTED_ADDON_PROTOCOL_VERSION = 38",
+        "EXPECTED_ADDON_PROTOCOL_VERSION = 45",
+        "EXPECTED_ADDON_PROTOCOL_VERSION = 44",
         (
             f"{SURFT}::test_snapshot_records_the_protocol_version_the_server_expects",
             f"{SURFT}::test_both_protocol_constants_agree",

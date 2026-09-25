@@ -25,8 +25,9 @@ async def get_camera_rig_info(
 
     The result labels local and world transforms separately and includes camera optics, DOF,
     constraints, drivers, actions, render gate, active-camera state, camera markers, rig metadata,
-    and a bounded descendant page. Continue pages with the returned next offsets. This tool never
-    evaluates another frame and never changes the scene.
+    and a bounded descendant page. Continue pages by passing `children_next_offset` as
+    `child_offset` and `animation_next_offset` as `animation_offset`. This tool never evaluates
+    another frame and never changes the scene.
     """
     return await call_blender(
         "get_camera_rig_info",

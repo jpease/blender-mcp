@@ -38,6 +38,94 @@ def _finding(severity, code, obj, prop, message, remediation, frame=None):
     return result
 
 
+def _prefixed_page(prefix, items, offset, limit, ceiling, capped, record=None):
+    """
+    Cut one page out of a list and name its pagination keys after the list.
+
+    The page's own `<prefix>_offset` is what the reply envelope resumes a budget-shortened page
+    from; without it a page requested past the start resumed from 0.
+
+    Args:
+        prefix: The list's key in the reply.
+        items: Every item, in page order.
+        offset: The requested start.
+        limit: The requested page size.
+        ceiling: The largest page size `paginate` allows.
+        capped: Whether `items` was itself cut short while being gathered.
+        record: Turns one item into its reply record; the item itself when omitted.
+
+    Returns:
+        dict: The page and its `_total`, `_offset`, `_returned_count`, `_truncated`,
+        `_next_offset` and `_scan_capped` keys.
+
+    """
+    start, end, truncated, next_offset = paginate(len(items), offset, limit, ceiling)
+    page = [record(item) for item in items[start:end]] if record else items[start:end]
+    return {
+        prefix: page,
+        f"{prefix}_total": len(items),
+        f"{prefix}_offset": start,
+        f"{prefix}_returned_count": len(page),
+        f"{prefix}_truncated": truncated or capped,
+        f"{prefix}_next_offset": next_offset,
+        f"{prefix}_scan_capped": capped,
+    }
+
+
+def _member_record(entry):
+    """Describe one rig descendant for the `children` page."""
+    obj, depth = entry
+    return {
+        "name": obj.name,
+        "type": obj.type,
+        "depth": depth,
+        "parent": obj.parent.name if obj.parent else None,
+        "constraints": [_constraint_info(item) for item in obj.constraints],
+        "drivers": _driver_records(obj),
+        "rig_metadata": _rig_metadata(obj),
+    }
+
+
+def _rig_animation(root, descendants):
+    """Gather the root's and each descendant's action records, up to `_MAX_ANIMATION_RECORDS`."""
+    animation = _action_records("OBJECT", root, _MAX_ANIMATION_RECORDS)
+    if root.type == "CAMERA":
+        animation.extend(_action_records("CAMERA_DATA", root.data, _MAX_ANIMATION_RECORDS - len(animation)))
+    for descendant, _depth in descendants:
+        remaining = _MAX_ANIMATION_RECORDS - len(animation)
+        if remaining <= 0:
+            break
+        animation.extend(_action_records(descendant.name, descendant, remaining))
+        if descendant.type == "CAMERA":
+            remaining = _MAX_ANIMATION_RECORDS - len(animation)
+            if remaining <= 0:
+                break
+            animation.extend(_action_records(f"{descendant.name}:CAMERA_DATA", descendant.data, remaining))
+    return animation
+
+
+def _rig_camera_markers(scene, root, descendants):
+    """List the timeline markers bound to any camera in the inspected rig."""
+    camera_names = {obj.name for obj, _depth in [(root, 0), *descendants] if obj.type == "CAMERA"}
+    return [
+        {"name": marker.name, "frame": marker.frame, "camera": marker.camera.name}
+        for marker in scene.timeline_markers
+        if marker.camera is not None and marker.camera.name in camera_names
+    ]
+
+
+def _render_gate(render):
+    """Report the resolution and pixel aspect the camera frames against."""
+    return {
+        "resolution_x": render.resolution_x,
+        "resolution_y": render.resolution_y,
+        "resolution_percentage": render.resolution_percentage,
+        "pixel_aspect_x": render.pixel_aspect_x,
+        "pixel_aspect_y": render.pixel_aspect_y,
+        "display_aspect": (render.resolution_x * render.pixel_aspect_x) / (render.resolution_y * render.pixel_aspect_y),
+    }
+
+
 class _InspectionMixin:
     """Provide read-only camera-rig inspection and validation handlers."""
 
@@ -59,44 +147,7 @@ class _InspectionMixin:
         animation_limit = _bounded_int(animation_limit, "animation_limit", 1, 500)
         animation_offset = _bounded_int(animation_offset, "animation_offset", 0, _MAX_ANIMATION_RECORDS - 1)
         descendants, descendants_capped = _descendants(root, descendant_depth)
-        child_start, child_end, child_truncated, child_next = paginate(len(descendants), child_offset, child_limit, 200)
-        members = []
-        for obj, depth in descendants[child_start:child_end]:
-            members.append(
-                {
-                    "name": obj.name,
-                    "type": obj.type,
-                    "depth": depth,
-                    "parent": obj.parent.name if obj.parent else None,
-                    "constraints": [_constraint_info(item) for item in obj.constraints],
-                    "drivers": _driver_records(obj),
-                    "rig_metadata": _rig_metadata(obj),
-                }
-            )
-        animation = _action_records("OBJECT", root, _MAX_ANIMATION_RECORDS)
-        if root.type == "CAMERA":
-            animation.extend(_action_records("CAMERA_DATA", root.data, _MAX_ANIMATION_RECORDS - len(animation)))
-        for descendant, _depth in descendants:
-            remaining = _MAX_ANIMATION_RECORDS - len(animation)
-            if remaining <= 0:
-                break
-            animation.extend(_action_records(descendant.name, descendant, remaining))
-            if descendant.type == "CAMERA":
-                remaining = _MAX_ANIMATION_RECORDS - len(animation)
-                if remaining <= 0:
-                    break
-                animation.extend(_action_records(f"{descendant.name}:CAMERA_DATA", descendant.data, remaining))
-        animation_capped = len(animation) >= _MAX_ANIMATION_RECORDS
-        anim_start, anim_end, anim_truncated, anim_next = paginate(
-            len(animation), animation_offset, animation_limit, 500
-        )
-        inspected_camera_names = {obj.name for obj, _depth in [(root, 0), *descendants] if obj.type == "CAMERA"}
-        markers = [
-            {"name": marker.name, "frame": marker.frame, "camera": marker.camera.name}
-            for marker in scene.timeline_markers
-            if marker.camera is not None and marker.camera.name in inspected_camera_names
-        ]
-        render = scene.render
+        animation = _rig_animation(root, descendants)
         result = {
             "scene": scene.name,
             "object": root.name,
@@ -107,28 +158,19 @@ class _InspectionMixin:
             "drivers": _driver_records(root),
             "rig_metadata": _rig_metadata(root),
             "active_scene_camera": scene.camera == root,
-            "camera_markers": markers,
-            "render_gate": {
-                "resolution_x": render.resolution_x,
-                "resolution_y": render.resolution_y,
-                "resolution_percentage": render.resolution_percentage,
-                "pixel_aspect_x": render.pixel_aspect_x,
-                "pixel_aspect_y": render.pixel_aspect_y,
-                "display_aspect": (render.resolution_x * render.pixel_aspect_x)
-                / (render.resolution_y * render.pixel_aspect_y),
-            },
-            "children": members,
-            "children_total": len(descendants),
-            "children_returned_count": len(members),
-            "children_truncated": child_truncated or descendants_capped,
-            "children_next_offset": child_next,
-            "children_scan_capped": descendants_capped,
-            "animation": animation[anim_start:anim_end],
-            "animation_total": len(animation),
-            "animation_returned_count": anim_end - anim_start,
-            "animation_truncated": anim_truncated or animation_capped,
-            "animation_next_offset": anim_next,
-            "animation_scan_capped": animation_capped,
+            "camera_markers": _rig_camera_markers(scene, root, descendants),
+            "render_gate": _render_gate(scene.render),
+            **_prefixed_page(
+                "children", descendants, child_offset, child_limit, 200, descendants_capped, _member_record
+            ),
+            **_prefixed_page(
+                "animation",
+                animation,
+                animation_offset,
+                animation_limit,
+                500,
+                len(animation) >= _MAX_ANIMATION_RECORDS,
+            ),
         }
         if root.type == "CAMERA":
             result["camera_data"] = root.data.name

@@ -218,7 +218,7 @@ raw_operator(
 print(
     "  client form of that text:",
     repr(
-        file_lifecycle._operator_failure_message(
+        file_lifecycle.operator_failure_message(
             "save_shot",
             RuntimeError(f"Error: Cannot open file {target}@ for writing: Permission denied"),
             (str(target),),

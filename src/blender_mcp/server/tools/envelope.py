@@ -293,6 +293,11 @@ def _resume_hint(owner: dict, key: str, kept: int) -> str:
     """
     How the records a cut to `kept` drops can still be read.
 
+    A bare page resumes through the tool's `offset`. A prefixed page belongs to a tool whose
+    parameter for it the envelope cannot name - `get_camera_rig_info` takes `child_offset` for its
+    `children` page - so the hint names the reply key the tool documents, never an `offset=` the
+    tool may not accept.
+
     Args:
         owner: The dict holding the page.
         key: The key whose value is the list of records.
@@ -305,7 +310,10 @@ def _resume_hint(owner: dict, key: str, kept: int) -> str:
     names = _pagination_names(owner, key)
     if names is None or "next_offset" not in names:
         return _NARROW_SCOPE
-    return f"continue with offset={_page_offset(owner, names) + kept}"
+    resume_at = _page_offset(owner, names) + kept
+    if names["next_offset"] != "next_offset":
+        return f"continue from {names['next_offset']}={resume_at}"
+    return f"continue with offset={resume_at}"
 
 
 def _staged(reply: dict, cuts: Sequence[PageCut], pending: str | None = None) -> dict:

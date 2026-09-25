@@ -248,6 +248,16 @@ assert validation["sampled_frames"] == [1, 20]
 assert scene.frame_current == 7
 assert "visual correctness was not inferred" in validation["verification"]
 
+# A page's reply names the offset it was cut at, so the envelope can resume a shortened page from
+# there rather than from 0.
+pager = _new_object("Smoke Pager Root")
+for index in range(3):
+    _new_object(f"Smoke Pager Child {index}").parent = pager
+paged = handler.get_camera_rig_info(scene.name, pager.name, child_limit=1, child_offset=1)
+assert (paged["children_total"], paged["children_offset"], paged["children_returned_count"]) == (3, 1, 1), paged
+assert paged["children_next_offset"] == 2, paged
+assert paged["animation_offset"] == 0, paged
+
 handler.create_camera_markers(scene.name, "REMOVE", [{"name": "Smoke Shot"}])
 assert scene.timeline_markers.get("Smoke Shot") is None
 

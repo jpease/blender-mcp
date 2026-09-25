@@ -232,7 +232,8 @@ for hostile in (
     "\u2044etc\u2044passwd",
     "/shots/a\u200bb\u200dc\ufeff.blend",
 ):
-    note = session._failure_note("Loading", hostile)
+    # As the add-on's load and save failure handlers call it: a directory is never named.
+    note = session._failure_note("Loading", hostile, is_directory=session._names_a_directory(hostile))
     print(f"  lines={len(note.splitlines())} {note!r}")
 
 print("--- writable_output_roots changes across a swap ---")

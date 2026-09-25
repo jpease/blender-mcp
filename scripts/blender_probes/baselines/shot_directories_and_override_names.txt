@@ -12,7 +12,7 @@ Info: Saved as "sh010.blend"
   [ok] the saved file reopens
 Info: Saved as "sh020.blend"
   [ok] created_directory is False for an existing directory
-  [ok] refused outside the roots: 'path is outside the allowed file roots (BLENDERMCP_FILE_ROOTS); see file_roots in get_addon_status'
+  [ok] refused outside the roots: "path is outside the allowed file roots (BLENDERMCP_FILE_ROOTS); pass a full absolute path inside one of the file_roots get_addon_status reports, or a path relative to the open .blend with Blender's double-slash prefix"
   [ok] nothing was created outside the roots
 B. find_object after override_hierarchy_create
 Info: Saved as "canon.blend"
