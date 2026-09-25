@@ -73,18 +73,33 @@ def _jobs(monkeypatch, tmp_path):
     fake_bpy.ops.wm = types.SimpleNamespace(save_as_mainfile=save_as_mainfile)
     fake_bpy.app.binary_path = "/opt/blender/blender"
     timers = []
+
+    def unregister(function):
+        """Remove one registration, refusing an absent one as Blender does."""
+        for index, (registered, _kwargs) in enumerate(timers):
+            if registered is function:
+                del timers[index]
+                return
+        raise ValueError("Error: function is not registered")
+
     fake_bpy.app.timers = types.SimpleNamespace(
         is_registered=lambda function: any(function is registered for registered, _ in timers),
         register=lambda function, **kwargs: timers.append((function, kwargs)),
+        unregister=unregister,
     )
     children = []
 
-    def popen(args, **kwargs):
-        child = _FakeChild(args, **kwargs)
-        children.append(child)
-        return child
+    class Popen(_FakeChild):
+        """Stands in for `subprocess.Popen`, subscriptable as the real class is, so the module can load again."""
 
-    monkeypatch.setattr(module.subprocess, "Popen", popen)
+        def __init__(self, args, **kwargs):
+            super().__init__(args, **kwargs)
+            children.append(self)
+
+        def __class_getitem__(cls, _item):
+            return cls
+
+    monkeypatch.setattr(module.subprocess, "Popen", Popen)
     root = tmp_path / "roots"
     root.mkdir()
     monkeypatch.setenv("BLENDERMCP_OUTPUT_ROOTS", str(root))
@@ -299,6 +314,76 @@ def test_the_backup_watchdog_stops_polling_once_no_child_is_held(jobs) -> None:
     _update(jobs, created["job_id"], state="DONE")
     jobs.children[0].returncode = 0
     assert watch() is None
+
+
+def test_unregistering_the_add_on_stops_the_watchdog_but_leaves_the_job_running(jobs) -> None:
+    """The job outlives the add-on; only the handle goes, so its fate is read from the record as for any old job."""
+    created = _create(jobs)
+
+    jobs.module.unregister_handlers()
+
+    assert jobs.timers == []
+    child = jobs.children[0]
+    assert not child.terminated
+    # Without the handle, an exit is no longer seen through it: a fresh heartbeat is judged alive.
+    child.returncode = 1
+    assert jobs.handler.manage_render_job("READ", job_id=created["job_id"])["state"] == "QUEUED"
+
+
+def test_a_reloaded_add_on_watches_its_new_jobs_with_one_timer(jobs) -> None:
+    """A timer left behind by the replaced module would keep firing beside the new module's."""
+    _create(jobs)
+    jobs.module.unregister_handlers()
+
+    reloaded = importlib.reload(jobs.module)
+    reloaded.RenderJobHandlersMixin().manage_render_job(
+        "CREATE",
+        scene_name="Scene",
+        filepath=str(jobs.root / "again" / "shot_"),
+        mode="ANIMATION",
+        frame_start=1,
+        frame_end=3,
+        confirm_render=True,
+        create_directories=True,
+    )
+
+    assert [function for function, _ in jobs.timers] == [reloaded._watch_owned_jobs]
+
+
+def _run_child(jobs, created):
+    """Run the job's child render loop here, against a stub operator that writes each frame it renders."""
+    scene = jobs.module.bpy.data.scenes["Scene"]
+    scene.frame_set = lambda frame: setattr(scene, "frame_current", frame)
+
+    def render(**_kwargs):
+        Path(scene.render.filepath).write_bytes(b"frame")
+        return {"FINISHED"}
+
+    jobs.module.bpy.ops.render = types.SimpleNamespace(render=render)
+    job_json = str(Path(created["blend_copy"]).with_name("job.json"))
+    job_file = jobs.module.job_file
+    job_file._render(job_file._ChildJob(job_json, tempdir=""), job_file.read_job(job_json))
+
+
+@pytest.mark.parametrize("confirm_overwrite", [False, True])
+def test_a_job_never_renders_over_a_frame_that_appeared_after_it_was_created(jobs, confirm_overwrite) -> None:
+    """CREATE refuses existing frames; one written after it must still survive the child unless confirmed."""
+    created = _create(jobs, confirm_overwrite=confirm_overwrite)
+    appeared = jobs.root / "renders" / "shot_0002.png"
+    appeared.write_bytes(b"not this job's")
+
+    if confirm_overwrite:
+        _run_child(jobs, created)
+        assert appeared.read_bytes() == b"frame"
+        assert _record(jobs, created["job_id"])["frames_done"] == 3
+        return
+    with pytest.raises(ValueError, match="confirm_overwrite"):
+        _run_child(jobs, created)
+    assert appeared.read_bytes() == b"not this job's"
+    record = _record(jobs, created["job_id"])
+    assert (record["frames_done"], record["last_file"]) == (1, str(jobs.root / "renders" / "shot_0001.png"))
+    directory = Path(created["blend_copy"]).parent
+    assert [entry["frame"] for entry in jobs.module.job_file.read_file_records(str(directory))] == [1]
 
 
 @pytest.mark.parametrize(

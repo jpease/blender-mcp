@@ -7,7 +7,7 @@ from typing import Any
 
 import bpy
 
-from ...helpers import apply_modifier, preserve_mode_and_selection, set_active
+from ...helpers import apply_modifier
 from ._shared import OWNERSHIP_KEY, ROLE_KEY, SOURCE_KEY, evaluated_summary, require_nodes_modifier, require_object
 
 
@@ -170,9 +170,7 @@ class GeometryNodesDeliveryHandlersMixin:
                     if modifier_name is None:
                         raise RuntimeError("Validated modifier_name was unexpectedly missing")
                     modifier = require_nodes_modifier(output, modifier_name)
-                    with preserve_mode_and_selection():
-                        set_active(output)
-                        apply_modifier(output, modifier)
+                    apply_modifier(output, modifier)
                     live_state = any(item.type == "NODES" for item in output.modifiers)
                     topology_indices_stale = True
                 else:

@@ -12,6 +12,8 @@ import types
 
 import pytest
 
+from mcp.server.fastmcp.exceptions import ToolError
+
 from blender_mcp.server.tools import _image_transport
 
 
@@ -81,7 +83,7 @@ def test_inline_reply_without_image_data_is_an_error(monkeypatch) -> None:
     send = _Recorder({"width": 640})
     _handshake(monkeypatch, _image_transport.INLINE_IMAGE_PROTOCOL_VERSION)
 
-    with pytest.raises(Exception, match="no inline image data"):
+    with pytest.raises(ToolError, match="no inline image data"):
         _request(send)
 
 
@@ -111,7 +113,7 @@ def test_temp_file_transport_reports_an_error_reply(monkeypatch) -> None:
     send = _Recorder({"error": "No 3D viewport found"}, writes=b"file-png")
     _handshake(monkeypatch, None)
 
-    with pytest.raises(Exception, match="No 3D viewport found"):
+    with pytest.raises(ToolError, match="No 3D viewport found"):
         _request(send)
 
 
@@ -139,5 +141,5 @@ def test_temp_file_transport_reports_a_reply_that_wrote_nothing(monkeypatch) -> 
     send = _Recorder({})  # writes nothing
     _handshake(monkeypatch, None)
 
-    with pytest.raises(Exception, match=r"Screenshot file was not created.*did not write"):
+    with pytest.raises(ToolError, match=r"Screenshot file was not created.*did not write"):
         _request(send)

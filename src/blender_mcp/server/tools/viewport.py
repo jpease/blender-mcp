@@ -1,19 +1,16 @@
 """Scene/object introspection and viewport screenshot tools."""
 
 import asyncio
-import logging
 
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context, Image
-from mcp.server.fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from ..app import mcp
 from ._dispatch import call_blender, send_command
+from ._inputs import StrictModel, dump_input
 from .image_capture import capture_png
-
-logger = logging.getLogger("BlenderMCPServer")
 
 
 @mcp.tool()
@@ -45,11 +42,7 @@ async def list_scene_objects(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender("list_scene_objects", {"limit": limit, "offset": offset, "search": search})
-    except Exception as e:
-        logger.error(f"Error getting scene info from Blender: {e}")
-        raise ToolError(f"Error getting scene info: {e}") from e
+    return await call_blender("list_scene_objects", {"limit": limit, "offset": offset, "search": search})
 
 
 ViewportOverlay = Literal["CAVITY", "WIREFRAMES", "FACE_ORIENTATION"]
@@ -75,11 +68,7 @@ async def set_viewport_overlay(ctx: Context, toggle: ViewportOverlay, enabled: b
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender("set_viewport_overlay", {"toggle": toggle, "enabled": enabled})
-    except Exception as e:
-        logger.error(f"Error toggling viewport overlay: {e}")
-        raise ToolError(f"Error toggling viewport overlay: {e}") from e
+    return await call_blender("set_viewport_overlay", {"toggle": toggle, "enabled": enabled})
 
 
 @mcp.tool()
@@ -128,13 +117,9 @@ async def get_object_info(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender(
-            "get_object_info", {"name": object_name, "sections": sections, "limit": limit, "offset": offset}
-        )
-    except Exception as e:
-        logger.error(f"Error getting object info from Blender: {e}")
-        raise ToolError(f"Error getting object info: {e}") from e
+    return await call_blender(
+        "get_object_info", {"name": object_name, "sections": sections, "limit": limit, "offset": offset}
+    )
 
 
 @mcp.tool()
@@ -186,24 +171,16 @@ async def get_mesh_data(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender(
-            "get_mesh_data",
-            {
-                "object_name": object_name,
-                "element_type": element_type,
-                "limit": limit,
-                "offset": offset,
-                "selected_only": selected_only,
-            },
-        )
-    except Exception as e:
-        logger.error(f"Error getting mesh data from Blender: {e}")
-        raise ToolError(f"Error getting mesh data: {e}") from e
-
-
-class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    return await call_blender(
+        "get_mesh_data",
+        {
+            "object_name": object_name,
+            "element_type": element_type,
+            "limit": limit,
+            "offset": offset,
+            "selected_only": selected_only,
+        },
+    )
 
 
 # Named so the two RUF069-sensitive float comparisons below compare against a constant
@@ -217,7 +194,7 @@ _DEFAULT_LENS_MM: float = 50.0
 _DEGENERATE_LENGTH_SQUARED: float = 1e-16
 
 
-class ViewSpec(_StrictModel):
+class ViewSpec(StrictModel):
     """
     An ad hoc camera view for get_viewport_screenshot, independent of the live viewport.
 
@@ -311,7 +288,7 @@ async def get_viewport_screenshot(
         "method", "view_source", "shading_mode".
 
     Raises:
-        Exception: If the operation cannot be completed.
+        ToolError: If Blender refused the capture, the round trip failed, or no image came back.
 
     """
     return await asyncio.to_thread(
@@ -320,11 +297,10 @@ async def get_viewport_screenshot(
         "get_viewport_screenshot",
         {
             "max_size": max_size,
-            "view": view.model_dump() if view is not None else None,
+            "view": dump_input(view),
             "shading_override": shading_override,
         },
         prefix="blender_mcp_viewport_",
         metadata=_screenshot_metadata,
-        failure="Screenshot failed",
         missing_file="Screenshot file was not created",
     )

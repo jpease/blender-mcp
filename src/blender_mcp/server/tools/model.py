@@ -1,18 +1,13 @@
 """Higher-level modeling tools built on top of mesh modifiers/operations."""
 
-import logging
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from ..app import mcp
 from ._dispatch import call_blender, send_blender_command
 from .envelope import STALE_INDEX_WARNING, envelope_for, ok
-
-logger = logging.getLogger("BlenderMCPServer")
 
 Axis = Literal["X", "Y", "Z"]
 Space = Literal["LOCAL", "WORLD"]
@@ -52,22 +47,18 @@ async def copy_object_transform(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender(
-            "copy_object_transform",
-            {
-                "object_name": object_name,
-                "reference_object_name": reference_object_name,
-                "match_location": match_location,
-                "match_rotation": match_rotation,
-                "match_scale": match_scale,
-                "space": space,
-            },
-            changed_objects=[object_name],
-        )
-    except Exception as e:
-        logger.error(f"Error matching reference transform: {e}")
-        raise ToolError(f"Error matching reference transform: {e}") from e
+    return await call_blender(
+        "copy_object_transform",
+        {
+            "object_name": object_name,
+            "reference_object_name": reference_object_name,
+            "match_location": match_location,
+            "match_rotation": match_rotation,
+            "match_scale": match_scale,
+            "space": space,
+        },
+        changed_objects=[object_name],
+    )
 
 
 @mcp.tool()
@@ -114,24 +105,20 @@ async def add_radial_array_modifier(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        result = await send_blender_command(
-            "add_radial_array_modifier",
-            {
-                "object_name": object_name,
-                "count": count,
-                "axis": axis,
-                "apply": apply,
-                "pivot_object_name": pivot_object_name,
-                "pivot_location": list(pivot_location) if pivot_location else None,
-                "radius": radius,
-            },
-        )
-        warnings = [STALE_INDEX_WARNING] if apply else None
-        return ok(result, changed_objects=[object_name], warnings=warnings)
-    except Exception as e:
-        logger.error(f"Error creating radial array: {e}")
-        raise ToolError(f"Error creating radial array: {e}") from e
+    result = await send_blender_command(
+        "add_radial_array_modifier",
+        {
+            "object_name": object_name,
+            "count": count,
+            "axis": axis,
+            "apply": apply,
+            "pivot_object_name": pivot_object_name,
+            "pivot_location": list(pivot_location) if pivot_location else None,
+            "radius": radius,
+        },
+    )
+    warnings = [STALE_INDEX_WARNING] if apply else None
+    return ok(result, changed_objects=[object_name], warnings=warnings)
 
 
 @mcp.tool()
@@ -150,10 +137,6 @@ async def sync_data_name(ctx: Context, object_names: Annotated[list[str], Field(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        reply = await send_blender_command("sync_data_name", {"object_names": object_names})
-        changed = reply.get("names", object_names) if isinstance(reply, dict) else object_names
-        return envelope_for(reply, changed_objects=changed)
-    except Exception as e:
-        logger.error(f"Error syncing data-block names: {e}")
-        raise ToolError(f"Error syncing data-block names: {e}") from e
+    reply = await send_blender_command("sync_data_name", {"object_names": object_names})
+    changed = reply.get("names", object_names) if isinstance(reply, dict) else object_names
+    return envelope_for(reply, changed_objects=changed)

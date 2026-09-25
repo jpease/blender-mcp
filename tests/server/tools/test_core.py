@@ -226,7 +226,7 @@ _CAPABILITIES = ["get_addon_info", "import_polyhaven_asset", "nd_boolean", "open
 def test_get_addon_status_summarizes_the_capabilities_instead_of_listing_them(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """291 command names on every handshake is the list the server gates on, not something an agent acts on."""
+    """Every command name on every handshake is the list the server gates on, not something an agent acts on."""
     _install_handshake(monkeypatch, _handshake(capabilities=_CAPABILITIES))
 
     payload = asyncio.run(core.get_addon_status(ctx=None))["data"]  # pyright: ignore[reportArgumentType]

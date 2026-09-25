@@ -1,4 +1,4 @@
-# ruff: file-ignore[too-many-branches, too-many-locals, too-many-statements, undocumented-public-method]
+# ruff: file-ignore[too-many-branches, too-many-locals, undocumented-public-method]
 """Blender-side scene rendering and view-layer handlers."""
 
 import math
@@ -15,6 +15,7 @@ from ..helpers import color_management_snapshot
 from ..image_reply import finalize_image_reply, image_destination
 from ..output_roots import configured_file_roots
 from ..render_devices import effective_cycles_device
+from ..render_job_supervisor import refuse_existing_output, render_frame
 from ..render_properties import FLAT_ROUTES, NESTED_SECTIONS, RENDER_PATCH_PROPERTIES
 from ..render_result_record import record_render_result, render_result_record
 from .blend_files import require_bool
@@ -51,12 +52,12 @@ _FRAME_IN_FILENAME = re.compile(r"(?<![0-9])[0-9]{4}$")
 # How many per-frame progress records a detail=True ANIMATION reply carries. Its twin is
 # `_PROGRESS_ENTRY_LIMIT` in `src/blender_mcp/server/tools/rendering.py`, which caps the
 # orchestrated per-frame path at the same length: one animation must truncate identically
-# however it was driven. Change one and change the other.
+# however it was driven. `tests/test_rendering_twins.py` fails when the two differ.
 _PROGRESS_ENTRY_LIMIT = 1000
 # A STILL is one `bpy.ops.render.render` call, which nothing in-process can interrupt, so a
 # duration bound on it would be checked once, before it starts, and never again. Its twin is
 # `_STILL_DURATION_REFUSAL` in `src/blender_mcp/server/tools/rendering.py`, which refuses the
-# same request before it is sent.
+# same request before it is sent; `tests/test_rendering_twins.py` fails when the two differ.
 _STILL_DURATION_REFUSAL = (
     "max_duration_seconds cannot bound a STILL render: one frame renders in a single blocking call "
     "nothing in-process can interrupt, so the bound would never be applied. For a hard wall-clock "
@@ -69,7 +70,7 @@ def _duration_overrun_warnings(duration_seconds, max_duration_seconds):
     Say so when an ANIMATION ran past its between-frames duration bound.
 
     Its twin is `_duration_overrun_warnings` in `src/blender_mcp/server/tools/rendering.py`,
-    for the orchestrated path; change one and change the other.
+    for the orchestrated path; `tests/test_rendering_twins.py` fails when the two disagree.
 
     Args:
         duration_seconds: How long the run took.
@@ -865,7 +866,8 @@ def _animation_summary(
     This is the one place the shape is spelled on this side of the socket. Its twin is
     `_animation_summary` in `src/blender_mcp/server/tools/rendering.py`, which builds the same
     keys from N per-frame STILL replies for the orchestrated path; the add-on cannot import the
-    server package, so the shape is stated twice and the two must be changed together.
+    server package, so the shape is stated twice, and `tests/test_rendering_twins.py` fails when
+    the two disagree.
 
     Args:
         scene_name: Name of the scene that rendered.
@@ -981,26 +983,6 @@ def _validate_render_request(scene, *, mode, frame, max_animation_frames, view_l
     return mode
 
 
-def _refuse_existing_output(path, confirm_overwrite, frame=None):
-    """
-    Refuse to render over a file that already exists, unless the caller confirmed it.
-
-    Args:
-        path: The absolute file a frame would be written to.
-        confirm_overwrite: Whether the caller accepted replacing existing output.
-        frame: The ANIMATION frame that file belongs to, or None for a STILL.
-
-    Raises:
-        ValueError: When the file exists and the overwrite was not confirmed.
-
-    """
-    if confirm_overwrite or not os.path.exists(path):
-        return
-    if frame is None:
-        raise ValueError("Output file already exists; set confirm_overwrite=True to replace it")
-    raise ValueError(f"Animation output already exists for frame {frame}; set confirm_overwrite=True to replace it")
-
-
 def _frame_outputs(scene, output, frames):
     """
     Name the exact file Blender writes for each frame of an ANIMATION template.
@@ -1096,13 +1078,13 @@ def plan_render_job(
     )
     confirm_overwrite = require_bool("confirm_overwrite", confirm_overwrite)
     if mode == "STILL":
-        _refuse_existing_output(output, confirm_overwrite)
+        refuse_existing_output(output, confirm_overwrite)
         frames = [{"frame": frame if frame is not None else scene.frame_current, "path": output}]
     else:
         numbers = _validate_animation_frame_range(scene, max_animation_frames, confirm_frame_range, frame_range)
         frames = _frame_outputs(scene, output, numbers)
         for entry in frames:
-            _refuse_existing_output(entry["path"], confirm_overwrite, entry["frame"])
+            refuse_existing_output(entry["path"], confirm_overwrite, entry["frame"])
     return {"scene": scene, "mode": mode, "output": output, "frames": frames}
 
 
@@ -1297,7 +1279,7 @@ class RenderingHandlersMixin:
         create_directories = require_bool("create_directories", create_directories)
         output = _resolve_render_output(scene, requested_filepath, mode, create_directories)
         if mode == "STILL":
-            _refuse_existing_output(output, confirm_overwrite)
+            refuse_existing_output(output, confirm_overwrite)
         render_slot_policy = str(render_slot_policy).upper()
         if render_slot_policy not in {"USE_ACTIVE", "NEW_SLOT", "REPLACE_ACTIVE"}:
             raise ValueError("render_slot_policy must be USE_ACTIVE, NEW_SLOT, or REPLACE_ACTIVE")
@@ -1317,7 +1299,6 @@ class RenderingHandlersMixin:
             slot = render_result.render_slots.new(name=f"MCP {int(time.time())}")
             render_result.render_slots.active_index = list(render_result.render_slots).index(slot)
         try:
-            scene.render.filepath = output
             frames = (
                 list(range(scene.frame_start, scene.frame_end + 1, scene.frame_step))
                 if mode == "ANIMATION"
@@ -1330,38 +1311,18 @@ class RenderingHandlersMixin:
                 if max_duration_seconds is not None and time.monotonic() - started >= max_duration_seconds:
                     cancelled = True
                     break
-                # Measured on 5.2.2: frame_set is what applies the timeline's camera-marker
-                # binding - a bare `scene.frame_current = n` assignment does not - and
-                # bpy.ops.render.render applies it again on top, overwriting a scene.camera
-                # forced between the two. So this loop already renders the camera the markers
-                # resolve to, exactly as Blender's own animation render does, and no per-frame
-                # camera switching here could override that if it wanted to.
-                scene.frame_set(current_frame)
-                if mode == "ANIMATION":
-                    scene.render.filepath = output
-                    frame_output = os.path.abspath(scene.render.frame_path(frame=current_frame))
-                    _refuse_existing_output(frame_output, confirm_overwrite, current_frame)
-                    scene.render.filepath = frame_output
-                else:
-                    frame_output = output
-                kwargs = {"animation": False, "write_still": True, "scene": scene.name}
-                if view_layer_name:
-                    kwargs["layer"] = view_layer_name
-                result = bpy.ops.render.render(**kwargs)
-                if "FINISHED" not in result:
-                    raise RuntimeError(f"Blender render was cancelled at frame {current_frame}: {result}")
-                exists = os.path.isfile(frame_output)
-                if verify_outputs and not exists:
-                    raise RuntimeError(f"Render reported FINISHED but output is missing: {frame_output}")
-                written_files.append(
-                    {
-                        "frame": current_frame,
-                        "path": frame_output,
-                        "bytes": os.path.getsize(frame_output) if exists else None,
-                    }
+                entry, result = render_frame(
+                    scene,
+                    current_frame,
+                    output,
+                    animation=mode == "ANIMATION",
+                    view_layer_name=view_layer_name,
+                    confirm_overwrite=confirm_overwrite,
+                    require_output=verify_outputs,
                 )
+                written_files.append(entry)
                 # After the render, whose start cleared any earlier record.
-                record_render_result(scene.name, current_frame, frame_output if exists else None)
+                record_render_result(scene.name, current_frame, entry["path"] if entry["bytes"] is not None else None)
             completed = True
         finally:
             # The caller's template text, never the resolved absolute path: persisting `output`

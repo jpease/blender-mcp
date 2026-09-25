@@ -43,10 +43,10 @@ fmt-check:
 typecheck:
     {{PYTHON}} -m basedpyright
 
-# The four gates CLAUDE.md requires before a hand-off, cheapest first
-check: lint fmt-check typecheck test
+# The four gates CLAUDE.md requires before a hand-off, plus the revert-anchor check, cheapest first
+check: lint fmt-check anchors typecheck test
 
-# Report revert-matrix rows whose anchor no longer applies to its target file
+# Report revert-matrix rows whose anchor no longer applies; a broken or unparseable one fails it
 anchors:
     {{PYTHON}} scripts/check_revert_anchors.py
 

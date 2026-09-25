@@ -20,11 +20,12 @@ from .image_capture import capture_png
 # How many per-frame progress records a detail=True ANIMATION reply carries. Its twin is
 # `_PROGRESS_ENTRY_LIMIT` in `src/blender_mcp/bundled/addon/handlers/rendering.py`, which caps
 # the single-call path at the same length: one animation must truncate identically however it
-# was driven. Change one and change the other.
+# was driven. `tests/test_rendering_twins.py` fails when the two differ.
 _PROGRESS_ENTRY_LIMIT = 1000
 # A STILL is one blocking render call the add-on cannot interrupt, so a duration bound on it would
 # be checked once, before it starts. Its twin is `_STILL_DURATION_REFUSAL` in
-# `src/blender_mcp/bundled/addon/handlers/rendering.py`, which refuses the same request there.
+# `src/blender_mcp/bundled/addon/handlers/rendering.py`, which refuses the same request there;
+# `tests/test_rendering_twins.py` fails when the two differ.
 _STILL_DURATION_REFUSAL = (
     "max_duration_seconds cannot bound a STILL render: one frame renders in a single blocking call "
     "nothing in-process can interrupt, so the bound would never be applied. For a hard wall-clock "
@@ -37,7 +38,7 @@ def _duration_overrun_warnings(duration_seconds: float, max_duration_seconds: fl
     Say so when an ANIMATION ran past its between-frames duration bound.
 
     Its twin is `_duration_overrun_warnings` in `src/blender_mcp/bundled/addon/handlers/rendering.py`,
-    for the single-call path; change one and change the other.
+    for the single-call path; `tests/test_rendering_twins.py` fails when the two disagree.
 
     Args:
         duration_seconds: How long the run took.
@@ -474,7 +475,7 @@ def _animation_summary(
     This is the one place the shape is spelled on this side of the socket. Its twin is
     `_animation_summary` in `src/blender_mcp/bundled/addon/handlers/rendering.py`, which builds
     the same keys from its own render loop; the add-on cannot import this package, so the shape
-    is stated twice and the two must be changed together.
+    is stated twice, and `tests/test_rendering_twins.py` fails when the two disagree.
 
     Args:
         scene_name: Name of the scene that rendered.
@@ -846,7 +847,7 @@ async def inspect_render_output(
         leaves them null, with a warning that its origin is unknown.
 
     Raises:
-        Exception: If the operation cannot be completed.
+        ToolError: If Blender refused the inspection, the round trip failed, or no image came back.
 
     """
     return await asyncio.to_thread(
@@ -856,6 +857,5 @@ async def inspect_render_output(
         {"output_path": output_path, "frame": frame, "max_size": max_size},
         prefix="blender_mcp_render_output_",
         metadata=_render_output_metadata,
-        failure="Render output inspection failed",
         missing_file="Rendered-frame copy was not created",
     )

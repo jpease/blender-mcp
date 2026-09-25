@@ -20,8 +20,8 @@ in the file runs, as for every file this add-on loads.
 
 Jobs outlive this add-on on purpose: stopping the MCP server, disabling the add-on or quitting
 Blender stops none of them, and each still ends at its own deadline. A job started before this
-add-on was last loaded is no longer a process it holds a handle to, so its liveness is judged by
-its heartbeat and recorded pid instead.
+add-on was last registered is no longer a process it holds a handle to, so its liveness is judged
+by its heartbeat and recorded pid instead.
 """
 
 import logging
@@ -135,7 +135,7 @@ class _OwnedJob:
 
 
 # Children this add-on session started, by job id. `_watch_owned_jobs` reaps them and enforces
-# their deadline; a reload of the add-on forgets them, and they carry on regardless.
+# their deadline; `unregister_handlers` forgets them, and they carry on regardless.
 _OWNED_JOBS: dict[str, _OwnedJob] = {}
 
 
@@ -240,7 +240,7 @@ def _pid_alive(pid):
     """
     Report whether a recorded pid still names a running process, without signalling it.
 
-    A child this add-on started but no longer holds a handle to (the add-on was reloaded) is
+    A child this add-on started but no longer holds a handle to (the add-on was unregistered since) is
     reaped here, or it would linger as a zombie that looks alive.
 
     Args:
@@ -426,6 +426,22 @@ def _watch_owned_jobs():
         except Exception:
             logger.exception("Render job watchdog failed for job %s", job_id)
     return _WATCH_INTERVAL_SECONDS if _OWNED_JOBS else None
+
+
+def unregister_handlers():
+    """
+    Detach the watchdog timer and drop this session's child handles, as the add-on unregisters.
+
+    The timer is `persistent`, so it would otherwise outlive the add-on and keep firing into a
+    module a reload has replaced, beside the timer the new module registers for its own jobs.
+    `_start` registers at most one, so one unregister removes it. The children are not stopped -
+    jobs outlive the add-on by design - only forgotten: each still ends at its own deadline, and
+    READ, LIST and DELETE judge it by its heartbeat and recorded pid, as they judge a job any
+    earlier session started. The watchdog registers itself again when the next job starts.
+    """
+    if bpy.app.timers.is_registered(_watch_owned_jobs):
+        bpy.app.timers.unregister(_watch_owned_jobs)
+    _OWNED_JOBS.clear()
 
 
 def _log_tail(path):

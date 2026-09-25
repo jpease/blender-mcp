@@ -1,18 +1,17 @@
 """
-A render job's file protocol, and the script that renders the job inside its own `blender -b`.
+A render job's file protocol, the one-frame render step, and the script that renders a job in its own `blender -b`.
 
 `manage_render_job(action="CREATE")` saves a copy of the open file into `<jobs_root>/<job_id>/`,
 writes `job.json` beside it, and starts
 `blender -b -q -Y <copy> --python-exit-code 1 --python <this file> -- <job.json>`. Run as
-`__main__`, this file renders the frames `job.json` names exactly as `render_scene` renders in
-process - `frame_set`, then one `bpy.ops.render.render(write_still=True)` per frame into the file
-Blender's own `frame_path()` names - and keeps `job.json` current as it goes. Every written frame
+`__main__`, this file renders the frames `job.json` names with `render_frame`, the same per-frame
+step `render_scene` runs in process, and keeps `job.json` current as it goes. Every written frame
 is appended to `files.jsonl`, so `job.json`, rewritten every second, stays small however long the
 animation.
 
-Both processes read and write `job.json`, so the protocol is spelled here once: the add-on imports
-the helpers above `main`; the child loads this file by path, outside the add-on package, so it
-imports nothing from it.
+Both processes read and write `job.json`, and both render a frame, so the protocol and the frame
+step are spelled here once: the add-on imports the helpers above `main`; the child loads this file
+by path, outside the add-on package, so it imports nothing from it.
 
 A daemon watchdog thread refreshes `heartbeat_at` every second and ends the process - mid-frame,
 which no in-process render can do - when `cancel_requested` is set, when `job.json` is gone, or when
@@ -148,6 +147,80 @@ def read_file_records(job_dir):
         return []
 
 
+def refuse_existing_output(path, confirm_overwrite, frame=None):
+    """
+    Refuse to render over a file that already exists, unless the caller confirmed it.
+
+    Args:
+        path: The absolute file a frame would be written to.
+        confirm_overwrite: Whether the caller accepted replacing existing output.
+        frame: The ANIMATION frame that file belongs to, or None for a STILL.
+
+    Raises:
+        ValueError: When the file exists and the overwrite was not confirmed.
+
+    """
+    if confirm_overwrite or not os.path.exists(path):
+        return
+    if frame is None:
+        raise ValueError("Output file already exists; set confirm_overwrite=True to replace it")
+    raise ValueError(f"Animation output already exists for frame {frame}; set confirm_overwrite=True to replace it")
+
+
+def render_frame(scene, frame, output, *, animation, view_layer_name, confirm_overwrite, require_output=True):
+    """
+    Render one frame into its file: the step `render_scene` and a job's child both take per frame.
+
+    Measured on 5.2.2: `frame_set` is what applies the timeline's camera-marker binding - a bare
+    `scene.frame_current = n` assignment does not - and `bpy.ops.render.render` applies it again on
+    top, overwriting a `scene.camera` forced between the two. So each frame renders the camera the
+    markers resolve to, exactly as Blender's own animation render does.
+
+    Leaves `scene.render.filepath` set to the frame's file; the caller restores it.
+
+    Args:
+        scene: The scene to render.
+        frame: The frame to render.
+        output: The absolute STILL file, or the ANIMATION template Blender's `frame_path()` expands.
+        animation: Whether `output` is a per-frame template.
+        view_layer_name: The one view layer to render, or None for every enabled one.
+        confirm_overwrite: Whether an existing file for this frame may be replaced.
+        require_output: Whether a FINISHED render that wrote no file is an error.
+
+    Returns:
+        tuple[dict, set[str]]: The frame's record - "frame", "path", and "bytes", which is None
+        when the file is missing and `require_output` is False - and the operator's result.
+
+    Raises:
+        ValueError: When the frame's file already exists and the overwrite was not confirmed.
+        RuntimeError: When Blender did not finish the frame, or, with `require_output`, finished
+            without writing its file.
+
+    """
+    scene.frame_set(frame)
+    if animation:
+        scene.render.filepath = output
+        frame_output = os.path.abspath(scene.render.frame_path(frame=frame))
+        refuse_existing_output(frame_output, confirm_overwrite, frame)
+    else:
+        frame_output = output
+        refuse_existing_output(frame_output, confirm_overwrite)
+    scene.render.filepath = frame_output
+    kwargs = {"animation": False, "write_still": True, "scene": scene.name}
+    if view_layer_name:
+        kwargs["layer"] = view_layer_name
+    result = bpy.ops.render.render(**kwargs)
+    if "FINISHED" not in result:
+        raise RuntimeError(f"Blender render was cancelled at frame {frame}: {sorted(result)}")
+    if os.path.isfile(frame_output):
+        size = os.path.getsize(frame_output)
+    elif require_output:
+        raise RuntimeError(f"Render reported FINISHED but output is missing: {frame_output}")
+    else:
+        size = None
+    return {"frame": frame, "path": frame_output, "bytes": size}, result
+
+
 def _exit_now(code, tempdir) -> NoReturn:
     """
     End this process at once, from any thread, removing Blender's own temporary directory.
@@ -279,22 +352,20 @@ def _watch(job, deadline_at):
 
 def _render(job, record):
     """
-    Render every frame the record names, the way `render_scene` does in process.
+    Render every frame the record names with `render_frame`, as `render_scene` does in process.
 
     Args:
         job: This process's job handle.
         record: The job record as the parent wrote it.
 
     Raises:
-        RuntimeError: When the scene is missing, a frame's file already exists unconfirmed, or
-            Blender does not finish a frame or write its file.
+        RuntimeError: When the scene is missing, or Blender does not finish a frame or write its file.
+        ValueError: When a frame's file already exists and the job did not confirm the overwrite.
 
     """
     scene = bpy.data.scenes.get(record["scene_name"])
     if scene is None:
         raise RuntimeError(f"Scene not found in the saved copy: {record['scene_name']}")
-    output = record["filepath"]
-    view_layer_name = record.get("view_layer_name")
     deadline_at = record.get("deadline_at")
     bytes_written = 0
     frames = range(record["frame_start"], record["frame_end"] + 1, record["frame_step"])
@@ -302,29 +373,18 @@ def _render(job, record):
         if deadline_at is not None and time.time() >= deadline_at:
             with job.lock:
                 _time_out(job, record, f"before frame {frame}")
-        # frame_set applies the timeline's camera markers, exactly as render_scene does.
-        scene.frame_set(frame)
-        if record["mode"] == "ANIMATION":
-            scene.render.filepath = output
-            frame_output = os.path.abspath(scene.render.frame_path(frame=frame))
-        else:
-            frame_output = output
-        if os.path.exists(frame_output) and not record.get("confirm_overwrite"):
-            raise RuntimeError(f"Output for frame {frame} appeared after the job was created: {frame_output}")
-        scene.render.filepath = frame_output
         job.update(state=RENDERING, current_frame=frame)
-        kwargs = {"animation": False, "write_still": True, "scene": scene.name}
-        if view_layer_name:
-            kwargs["layer"] = view_layer_name
-        result = bpy.ops.render.render(**kwargs)
-        if "FINISHED" not in result:
-            raise RuntimeError(f"Blender render was cancelled at frame {frame}: {sorted(result)}")
-        if not os.path.isfile(frame_output):
-            raise RuntimeError(f"Render reported FINISHED but output is missing: {frame_output}")
-        size = os.path.getsize(frame_output)
-        append_file_record(job.directory, {"frame": frame, "path": frame_output, "bytes": size})
-        bytes_written += size
-        job.update(frames_done=frames_done, bytes_written=bytes_written, last_file=frame_output)
+        entry, _result = render_frame(
+            scene,
+            frame,
+            record["filepath"],
+            animation=record["mode"] == "ANIMATION",
+            view_layer_name=record.get("view_layer_name"),
+            confirm_overwrite=record.get("confirm_overwrite"),
+        )
+        append_file_record(job.directory, entry)
+        bytes_written += entry["bytes"]
+        job.update(frames_done=frames_done, bytes_written=bytes_written, last_file=entry["path"])
     job.update(state=DONE, current_frame=None, finished_at=time.time())
 
 

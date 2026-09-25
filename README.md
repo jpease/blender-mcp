@@ -451,6 +451,9 @@ pipx install poetry
 poetry install --with dev
 ```
 
+Poetry is the only environment manager: `poetry.toml` keeps the virtualenv in `.venv/`, which is the
+interpreter every `just` recipe runs, and `poetry.lock` is the lock file.
+
 ### Running from source
 
 ```bash
@@ -460,11 +463,12 @@ poetry run blender-mcp
 ### Lint, format, type-check, test
 
 ```bash
-poetry run ruff check .
-poetry run ruff format --check .
-poetry run pytest
-basedpyright
+just check   # changed-line ruff, ruff format --check, revert-matrix anchors, basedpyright, pytest
+just smoke   # the tests/blender_*_smoke.py scripts against a real headless Blender
 ```
+
+`just lint` holds only the lines a branch introduces to ruff; `just lint-all` reports the inherited
+backlog and is not a gate.
 
 ### Building a distributable package
 

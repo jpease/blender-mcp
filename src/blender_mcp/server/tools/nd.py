@@ -1,18 +1,13 @@
 """ND (HugeMenace) non-destructive hard-surface workflow tools."""
 
-import logging
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from ..app import mcp
 from ._dispatch import send_blender_command
 from .envelope import ok
-
-logger = logging.getLogger("BlenderMCPServer")
 
 BooleanMode = Literal["UNION", "DIFFERENCE", "INTERSECT"]
 LodMode = Literal["HIGH", "LOW"]
@@ -78,19 +73,15 @@ async def nd_boolean(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        result = await send_blender_command(
-            "nd_boolean",
-            {
-                "object_name": object_name,
-                "cutter_object_name": cutter_object_name,
-                "mode": mode,
-            },
-        )
-        return _nd_outcome(result, changed_objects=[object_name, cutter_object_name])
-    except Exception as e:
-        logger.error(f"Error applying ND boolean: {e}")
-        raise ToolError(f"Error applying ND boolean: {e}") from e
+    result = await send_blender_command(
+        "nd_boolean",
+        {
+            "object_name": object_name,
+            "cutter_object_name": cutter_object_name,
+            "mode": mode,
+        },
+    )
+    return _nd_outcome(result, changed_objects=[object_name, cutter_object_name])
 
 
 @mcp.tool()
@@ -128,14 +119,10 @@ async def nd_mark_as_util(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        result = await send_blender_command(
-            "nd_mark_as_util", {"object_names": object_names, "unmark": unmark, "parent_to": parent_to}
-        )
-        return ok(result, changed_objects=object_names)
-    except Exception as e:
-        logger.error(f"Error marking ND utility objects: {e}")
-        raise ToolError(f"Error marking ND utility objects: {e}") from e
+    result = await send_blender_command(
+        "nd_mark_as_util", {"object_names": object_names, "unmark": unmark, "parent_to": parent_to}
+    )
+    return ok(result, changed_objects=object_names)
 
 
 @mcp.tool()
@@ -166,13 +153,9 @@ async def nd_clean_utils(ctx: Context, confirm: bool = False) -> dict:
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        result = await send_blender_command("nd_clean_utils", {"confirm": confirm})
-        removed = result.get("removed_objects", []) if isinstance(result, dict) else []
-        return _nd_outcome(result, changed_objects=removed)
-    except Exception as e:
-        logger.error(f"Error cleaning ND utility objects: {e}")
-        raise ToolError(f"Error cleaning ND utility objects: {e}") from e
+    result = await send_blender_command("nd_clean_utils", {"confirm": confirm})
+    removed = result.get("removed_objects", []) if isinstance(result, dict) else []
+    return _nd_outcome(result, changed_objects=removed)
 
 
 @mcp.tool()
@@ -199,14 +182,10 @@ async def nd_create_id_material(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        result = await send_blender_command(
-            "nd_create_id_material", {"object_names": object_names, "material_name": material_name}
-        )
-        return _nd_outcome(result, changed_objects=object_names, changed_resources=[material_name])
-    except Exception as e:
-        logger.error(f"Error creating ND ID material: {e}")
-        raise ToolError(f"Error creating ND ID material: {e}") from e
+    result = await send_blender_command(
+        "nd_create_id_material", {"object_names": object_names, "material_name": material_name}
+    )
+    return _nd_outcome(result, changed_objects=object_names, changed_resources=[material_name])
 
 
 @mcp.tool()
@@ -228,13 +207,9 @@ async def nd_bulk_create_id_materials(ctx: Context, object_names: ObjectNameList
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        result = await send_blender_command("nd_bulk_create_id_materials", {"object_names": object_names})
-        materials = result.get("material_names", []) if isinstance(result, dict) else []
-        return _nd_outcome(result, changed_objects=object_names, changed_resources=materials)
-    except Exception as e:
-        logger.error(f"Error bulk-creating ND ID materials: {e}")
-        raise ToolError(f"Error bulk-creating ND ID materials: {e}") from e
+    result = await send_blender_command("nd_bulk_create_id_materials", {"object_names": object_names})
+    materials = result.get("material_names", []) if isinstance(result, dict) else []
+    return _nd_outcome(result, changed_objects=object_names, changed_resources=materials)
 
 
 @mcp.tool()
@@ -261,13 +236,9 @@ async def nd_set_lod_suffix(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        result = await send_blender_command("nd_set_lod_suffix", {"object_names": object_names, "mode": mode})
-        changed = result.get("names", object_names) if isinstance(result, dict) else object_names
-        return _nd_outcome(result, changed_objects=changed)
-    except Exception as e:
-        logger.error(f"Error setting ND LOD suffix: {e}")
-        raise ToolError(f"Error setting ND LOD suffix: {e}") from e
+    result = await send_blender_command("nd_set_lod_suffix", {"object_names": object_names, "mode": mode})
+    changed = result.get("names", object_names) if isinstance(result, dict) else object_names
+    return _nd_outcome(result, changed_objects=changed)
 
 
 @mcp.tool()
@@ -292,13 +263,9 @@ async def nd_single_vertex(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        result = await send_blender_command("nd_single_vertex", {"location": list(location)})
-        name = result.get("name") if isinstance(result, dict) else None
-        return _nd_outcome(result, changed_objects=[name] if name else [])
-    except Exception as e:
-        logger.error(f"Error creating ND single vertex: {e}")
-        raise ToolError(f"Error creating ND single vertex: {e}") from e
+    result = await send_blender_command("nd_single_vertex", {"location": list(location)})
+    name = result.get("name") if isinstance(result, dict) else None
+    return _nd_outcome(result, changed_objects=[name] if name else [])
 
 
 @mcp.tool()
@@ -327,12 +294,8 @@ async def nd_apply_modifiers(ctx: Context, object_names: ObjectNameList) -> dict
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        result = await send_blender_command("nd_apply_modifiers", {"object_names": object_names})
-        return _nd_outcome(result, changed_objects=object_names)
-    except Exception as e:
-        logger.error(f"Error applying ND modifiers: {e}")
-        raise ToolError(f"Error applying ND modifiers: {e}") from e
+    result = await send_blender_command("nd_apply_modifiers", {"object_names": object_names})
+    return _nd_outcome(result, changed_objects=object_names)
 
 
 @mcp.tool()
@@ -361,12 +324,8 @@ async def nd_pulse_viewport_toggle(ctx: Context, toggle: PulseToggle) -> dict:
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        result = await send_blender_command("nd_pulse_viewport_toggle", {"toggle": toggle})
-        return _nd_outcome(result)
-    except Exception as e:
-        logger.error(f"Error pulsing ND viewport toggle: {e}")
-        raise ToolError(f"Error pulsing ND viewport toggle: {e}") from e
+    result = await send_blender_command("nd_pulse_viewport_toggle", {"toggle": toggle})
+    return _nd_outcome(result)
 
 
 @mcp.tool()
@@ -388,9 +347,5 @@ async def nd_capture_utils(ctx: Context) -> dict:
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        result = await send_blender_command("nd_capture_utils", {})
-        return _nd_outcome(result)
-    except Exception as e:
-        logger.error(f"Error capturing ND utility objects: {e}")
-        raise ToolError(f"Error capturing ND utility objects: {e}") from e
+    result = await send_blender_command("nd_capture_utils", {})
+    return _nd_outcome(result)

@@ -409,11 +409,13 @@ def _load_addon(monkeypatch):
         if active is not None:
             active.mode = mode
 
-    def _modifier_apply(modifier) -> None:
+    def _modifier_apply(modifier):
         obj = bpy.context.view_layer.objects.active
         mod = obj.modifiers.get(modifier)
-        if mod is not None:
-            obj.modifiers.remove(mod)
+        if mod is None:
+            return {"CANCELLED"}
+        obj.modifiers.remove(mod)
+        return {"FINISHED"}
 
     def _select_all(action="SELECT") -> None:
         if action == "DESELECT":
@@ -1077,3 +1079,91 @@ def test_nd_single_vertex_cancelled_does_not_report_stale_active_object(monkeypa
     assert result["cancelled"] is True
     # The pre-existing active object is restored, not reported as the new vertex.
     assert bpy.context.view_layer.objects.active is prior
+
+
+def _cancel_modifier_apply(monkeypatch, bpy) -> None:
+    monkeypatch.setattr(bpy.ops.object, "modifier_apply", lambda modifier: {"CANCELLED"})
+
+
+def _vertex_only_mesh_object(bpy, name):
+    # topology_revision reads edge/polygon vertex indices, which the default fake mesh lacks.
+    obj = _new_mesh_object(bpy, name)
+    obj.data = FakeMeshData(n_verts=3, n_edges=0, n_polys=0)
+    return obj
+
+
+def _configure_surface_projection(server, bpy):
+    _vertex_only_mesh_object(bpy, "Low")
+    _vertex_only_mesh_object(bpy, "High")
+    return server.configure_surface_projection(
+        object_name="Low", target_object_name="High", modifier_name="Projection", apply=True
+    )
+
+
+def _transfer_mesh_attributes(server, bpy):
+    _vertex_only_mesh_object(bpy, "High")
+    _vertex_only_mesh_object(bpy, "Low")
+    return server.transfer_mesh_attributes(
+        source_object_name="High", object_name="Low", data_types=["SEAMS"], modifier_name="Projection", apply=True
+    )
+
+
+def _apply_geometry_nodes_modifier(server, bpy):
+    obj = _vertex_only_mesh_object(bpy, "Low")
+    obj.modifiers.new(name="Projection", type="NODES").node_group = None
+    return server.manage_geometry_nodes_modifier(
+        object_name="Low", modifier_name="Projection", action="APPLY", confirm_destructive=True
+    )
+
+
+@pytest.mark.parametrize(
+    "run",
+    [_configure_surface_projection, _transfer_mesh_attributes, _apply_geometry_nodes_modifier],
+    ids=["configure_surface_projection", "transfer_mesh_attributes", "manage_geometry_nodes_modifier"],
+)
+def test_cancelled_modifier_apply_raises_instead_of_reporting_applied(monkeypatch, run) -> None:
+    addon, bpy = _load_addon(monkeypatch)
+    server = addon.BlenderMCPServer()
+    _cancel_modifier_apply(monkeypatch, bpy)
+
+    with pytest.raises(RuntimeError, match=r"(?s)(?=.*'Projection')(?=.*'Low')"):
+        run(server, bpy)
+
+    assert [modifier.name for modifier in bpy.data.objects["Low"].modifiers] == ["Projection"]
+
+
+@pytest.mark.parametrize(
+    "run",
+    [_configure_surface_projection, _transfer_mesh_attributes],
+    ids=["configure_surface_projection", "transfer_mesh_attributes"],
+)
+def test_finished_retopology_modifier_apply_reports_applied(monkeypatch, run) -> None:
+    addon, bpy = _load_addon(monkeypatch)
+    server = addon.BlenderMCPServer()
+
+    result = run(server, bpy)
+
+    assert result["applied"] is True
+    assert result["modifier"] is None
+    assert result["modifier_order"] == []
+
+
+def test_cancelled_solidify_apply_raises_instead_of_reporting_applied(monkeypatch) -> None:
+    addon, bpy = _load_addon(monkeypatch)
+    server = addon.BlenderMCPServer()
+    _new_mesh_object(bpy, "Shell")
+    _cancel_modifier_apply(monkeypatch, bpy)
+
+    with pytest.raises(RuntimeError, match="Solidify"):
+        server.mesh_solidify(object_name="Shell", thickness=0.1, apply=True)
+
+
+def test_finished_solidify_apply_reports_applied(monkeypatch) -> None:
+    addon, bpy = _load_addon(monkeypatch)
+    server = addon.BlenderMCPServer()
+    obj = _new_mesh_object(bpy, "Shell")
+
+    result = server.mesh_solidify(object_name="Shell", thickness=0.1, apply=True)
+
+    assert result["applied"] is True
+    assert list(obj.modifiers) == []

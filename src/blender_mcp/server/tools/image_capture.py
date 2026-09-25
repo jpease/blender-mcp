@@ -1,15 +1,11 @@
 """The one round trip every tool that returns Blender's pixels makes."""
 
-import logging
-
 from collections.abc import Callable
 
 from mcp.server.fastmcp import Image
 
 from ._image_transport import request_image
 from .envelope import ok
-
-logger = logging.getLogger("BlenderMCPServer")
 
 
 def capture_png(
@@ -19,7 +15,6 @@ def capture_png(
     *,
     prefix: str,
     metadata: Callable[[dict], dict],
-    failure: str,
     missing_file: str,
 ) -> list[Image | dict]:
     """
@@ -40,21 +35,17 @@ def capture_png(
         prefix: Temporary-file name prefix for the shared-path transport, so a file that
             outlives a crash names its source.
         metadata: Builds the envelope's data from the command's reply.
-        failure: Prefix for the raised error, naming the operation that failed.
         missing_file: Error text for a command that reported success but wrote nothing.
 
     Returns:
         list[Image | dict]: The image, then the envelope carrying its metadata.
 
     Raises:
-        Exception: If the command failed, reported an error, or produced no image.
+        ToolError: If Blender refused the command or the round trip failed (`send`'s own
+            error, unchanged), or the command answered without producing an image.
 
     """
-    try:
-        image_bytes, result = request_image(
-            send, command, {**params, "format": "png"}, prefix=prefix, missing_file=missing_file
-        )
-        return [Image(data=image_bytes, format="png"), ok(metadata(result))]
-    except Exception as e:
-        logger.error(f"{failure}: {e!s}")
-        raise Exception(f"{failure}: {e!s}") from e
+    image_bytes, result = request_image(
+        send, command, {**params, "format": "png"}, prefix=prefix, missing_file=missing_file
+    )
+    return [Image(data=image_bytes, format="png"), ok(metadata(result))]

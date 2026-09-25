@@ -454,9 +454,31 @@ def mesh_counts(obj):
 
 
 def apply_modifier(obj, modifier) -> None:
+    """
+    Apply one modifier to obj's mesh through `bpy.ops.object.modifier_apply`.
+
+    Runs in Object Mode with obj as the sole selected, active object, then restores the
+    caller's mode and selection. The operator reports refusal by returning a set without
+    FINISHED rather than raising, so a result lacking FINISHED is raised here: a caller
+    that returns after this call has an applied modifier, never a cancelled one.
+
+    Args:
+        obj: The object that owns the modifier.
+        modifier: The modifier to apply; must belong to obj.
+
+    Raises:
+        RuntimeError: When the operator did not finish, naming the object, the modifier,
+            and the operator's result.
+
+    """
+    name = modifier.name
     with preserve_mode_and_selection():
         set_active(obj)
-        bpy.ops.object.modifier_apply(modifier=modifier.name)
+        result = bpy.ops.object.modifier_apply(modifier=name)
+    if "FINISHED" not in result:
+        raise RuntimeError(
+            f"Blender did not apply modifier '{name}' on '{obj.name}' (operator returned {sorted(result)})"
+        )
 
 
 def _world_bounds(matrix_world, vertices):
@@ -539,9 +561,10 @@ def modifier_result(obj, modifier, applied):
     depsgraph-evaluated object instead.
 
     Args:
-        obj: Value for obj.
-        modifier: Value for modifier.
-        applied: Value for applied.
+        obj: The object that owns (or owned) the modifier.
+        modifier: The live modifier, or None when there is none to evaluate.
+        applied: True only after `apply_modifier` returned for this modifier, which it does
+            only when Blender's operator finished; the reply echoes it as `applied`.
 
     Returns:
         Result produced by the operation.

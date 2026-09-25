@@ -7,7 +7,8 @@ first); UNPARSEABLE, whose reverted file does not compile, so its test would fai
 on syntax rather than behaviour; and AMBIGUOUS, whose `old` text occurs more than
 once, so `apply()` reverts the first copy, which may not be the site the row
 means. Ambiguous rows are reported, not refused; fix one by adding a line of
-context to its anchor.
+context to its anchor. A BROKEN or UNPARSEABLE row makes the exit status 1, which
+is how `just check` refuses a hand-off that left the matrix behind its sources.
 """
 
 import importlib.util
@@ -52,3 +53,5 @@ for row, err in unparseable:
 print(f"\nrows whose anchor is not unique (apply() takes the first): {len(ambiguous)}")
 for row, count in ambiguous:
     print(f"  AMBIGUOUS x{count}  {row.label}\n                  in {row.path.relative_to(rm.ROOT)}")
+
+sys.exit(1 if missing or unparseable else 0)

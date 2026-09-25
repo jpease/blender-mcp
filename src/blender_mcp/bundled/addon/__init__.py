@@ -28,6 +28,7 @@ bl_info = {
 ADDON_PROTOCOL_VERSION = 45
 
 from . import render_result_record, session  # ruff: ignore[module-import-not-at-top-of-file]
+from .handlers import render_jobs  # ruff: ignore[module-import-not-at-top-of-file]
 from .server_core import BlenderMCPServer  # ruff: ignore[module-import-not-at-top-of-file]
 from .ui import (  # ruff: ignore[module-import-not-at-top-of-file]
     BLENDERMCP_AddonPreferences,
@@ -39,6 +40,7 @@ from .ui import (  # ruff: ignore[module-import-not-at-top-of-file]
 
 # Registration functions
 def register() -> None:
+    """Install the scene properties, lifecycle handlers and UI; start the server when auto-start is on."""
     bpy.types.Scene.blendermcp_port = IntProperty(
         name="Port",
         description="Port for the BlenderMCP server",
@@ -115,6 +117,7 @@ def register() -> None:
 
 
 def unregister() -> None:
+    """Stop the server, then detach every handler and timer and remove what `register` installed."""
     # Stop the server if it's running
     if hasattr(bpy.types, "blendermcp_server") and bpy.types.blendermcp_server:
         bpy.types.blendermcp_server.stop()
@@ -122,6 +125,9 @@ def unregister() -> None:
 
     session.unregister_handlers()
     render_result_record.unregister_handlers()
+    # After the server stops, so no job can start behind it. There is no register half: the
+    # watchdog registers itself when a job starts, and a reload must not leave the old one firing.
+    render_jobs.unregister_handlers()
 
     bpy.utils.unregister_class(BLENDERMCP_PT_Panel)
     bpy.utils.unregister_class(BLENDERMCP_OT_StartServer)

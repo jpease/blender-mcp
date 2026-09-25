@@ -181,8 +181,9 @@ probe (`ready: False [ENGINE_UNAVAILABLE]`).
   finding in a file you touch is not yours, but no line you write may add one. `typecheck`
   is whole-tree and at zero — keep it there.
 - Every new behaviour test wants a revert-matrix row unless a written-down reason says why
-  no single revert can break it. Rows live in `scripts/revert_matrix.py`; `just anchors` is
-  the cheap check, `just matrix --only <prefix>` the real one.
+  no single revert can break it. Rows live in `scripts/revert_rows/`, in modules named for
+  the area their rows guard and joined by `scripts/revert_matrix.py`; `just anchors` (part of
+  `just check`) is the cheap check, `just matrix --only <prefix>` the real one.
 - Adding an MCP tool or widening a schema moves the advertised-catalog byte ceilings in
   `tests/server/test_bundles.py` and needs a reply fixture plus representative arguments in
   `scripts/measure_reply_sizes.py`, or `tests/server/test_reply_budget.py` fails.

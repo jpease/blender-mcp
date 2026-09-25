@@ -4,7 +4,7 @@ import contextlib
 
 import bpy
 
-from ...helpers import preserve_mode_and_selection, set_active, sync_from_editmode
+from ...helpers import apply_modifier, sync_from_editmode
 from .primitives import _armature_object, _finite, _mesh_object, _plain
 from .skinning import _restore_groups, _snapshot_groups
 
@@ -44,18 +44,6 @@ _BENDY_FIELDS = {
 }
 
 
-def _apply_data_transfer_modifier(target, modifier):
-    with preserve_mode_and_selection():
-        if bpy.context.mode != "OBJECT":
-            result = bpy.ops.object.mode_set(mode="OBJECT")
-            if "FINISHED" not in result:
-                raise RuntimeError(f"Could not enter Object Mode: {result}")
-        set_active(target)
-        result = bpy.ops.object.modifier_apply(modifier=modifier.name)
-        if not isinstance(result, (set, frozenset)) or "FINISHED" not in result:
-            raise RuntimeError(f"Data Transfer modifier application did not finish: {result}")
-
-
 def _normalize_vertex_groups(mesh):
     for vertex in mesh.data.vertices:
         assignments = [(mesh.vertex_groups[item.group], float(item.weight)) for item in vertex.groups]
@@ -69,6 +57,117 @@ def _normalize_vertex_groups(mesh):
         factor = max(0.0, 1.0 - locked_sum) / editable_sum
         for group, weight in editable:
             group.add([vertex.index], weight * factor, "REPLACE")
+
+
+_DATA_TRANSFER_FIELDS = (
+    "object",
+    "use_vert_data",
+    "data_types_verts",
+    "vert_mapping",
+    "layers_vgroup_select_src",
+    "layers_vgroup_select_dst",
+    "mix_mode",
+    "mix_factor",
+    "use_object_transform",
+    "use_max_distance",
+    "max_distance",
+)
+
+
+def _validate_transfer_options(
+    source, target, mapping, source_groups, mix_mode, mix_factor, max_distance, commit, confirm_commit, normalize
+):
+    if mapping not in _TRANSFER_MAPPINGS:
+        raise ValueError(f"Unsupported vertex mapping: {mapping}")
+    if mapping == "TOPOLOGY" and len(source.data.vertices) != len(target.data.vertices):
+        raise ValueError("TOPOLOGY mapping requires equal source and target vertex counts")
+    if source_groups not in {"ALL", "DEFORM"}:
+        raise ValueError("source_groups must be ALL or DEFORM")
+    if mix_mode not in _TRANSFER_MIX_MODES:
+        raise ValueError(f"Unsupported mix mode: {mix_mode}")
+    mix_factor = _finite(mix_factor, "mix_factor")
+    if not 0 <= mix_factor <= 1:
+        raise ValueError("mix_factor must be in [0, 1]")
+    if max_distance is not None and _finite(max_distance, "max_distance") <= 0:
+        raise ValueError("max_distance must be positive")
+    if commit and not confirm_commit:
+        raise ValueError("confirm_commit=True is required to apply transferred weights")
+    if normalize and not commit:
+        raise ValueError("normalize=True requires commit=True because live weights are not yet committed")
+    return mix_factor
+
+
+def _existing_transfer_modifier(target, modifier_name, destination_policy):
+    existing = target.modifiers.get(modifier_name)
+    if existing is not None and existing.type != "DATA_TRANSFER":
+        raise ValueError(f"Modifier '{modifier_name}' exists and is not DATA_TRANSFER")
+    if existing is not None and destination_policy == "ERROR":
+        raise ValueError(f"Data Transfer modifier '{modifier_name}' already exists")
+    if destination_policy not in {"ERROR", "UPDATE"}:
+        raise ValueError("destination_policy must be ERROR or UPDATE")
+    return existing
+
+
+def _transfer_group_names(source, source_groups):
+    selected_group_names = {group.name for group in source.vertex_groups}
+    if source_groups == "DEFORM":
+        armature_modifiers = [modifier for modifier in source.modifiers if modifier.type == "ARMATURE"]
+        source_armature = next(
+            (modifier.object for modifier in armature_modifiers if modifier.object is not None),
+            source.parent if getattr(source.parent, "type", None) == "ARMATURE" else None,
+        )
+        if source_armature is None:
+            raise ValueError("source_groups='DEFORM' requires an Armature modifier or armature parent")
+        deform_names = {bone.name for bone in source_armature.data.bones if bone.use_deform}
+        selected_group_names &= deform_names
+        if not selected_group_names:
+            raise ValueError("Source mesh has no vertex groups matching deform bones")
+    return selected_group_names
+
+
+def _configure_weight_transfer(
+    target,
+    modifier,
+    source,
+    group_names,
+    mapping,
+    source_groups,
+    mix_mode,
+    mix_factor,
+    use_object_transform,
+    max_distance,
+):
+    for group_name in sorted(group_names):
+        if target.vertex_groups.get(group_name) is None:
+            target.vertex_groups.new(name=group_name)
+    modifier.object = source
+    modifier.use_vert_data = True
+    modifier.data_types_verts = {"VGROUP_WEIGHTS"}
+    modifier.vert_mapping = mapping
+    modifier.layers_vgroup_select_src = "ALL" if source_groups == "ALL" else "BONE_DEFORM"
+    modifier.layers_vgroup_select_dst = "NAME"
+    modifier.mix_mode = mix_mode
+    modifier.mix_factor = mix_factor
+    modifier.use_object_transform = bool(use_object_transform)
+    modifier.use_max_distance = max_distance is not None
+    if max_distance is not None:
+        modifier.max_distance = max_distance
+
+
+def _commit_weight_transfer(target, modifier, normalize):
+    apply_modifier(target, modifier)
+    if normalize:
+        _normalize_vertex_groups(target)
+
+
+def _undo_weight_transfer(target, groups_snapshot, modifier, created, previous):
+    _restore_groups(target, groups_snapshot)
+    if created and target.modifiers.get(modifier.name) is not None:
+        target.modifiers.remove(modifier)
+    elif previous is not None:
+        for field, value in previous.items():
+            with contextlib.suppress(Exception):
+                setattr(modifier, field, value)
 
 
 class DeformationHandlersMixin:
@@ -96,43 +195,20 @@ class DeformationHandlersMixin:
             raise ValueError("Source and target meshes must differ")
         sync_from_editmode(source)
         sync_from_editmode(target)
-        if mapping not in _TRANSFER_MAPPINGS:
-            raise ValueError(f"Unsupported vertex mapping: {mapping}")
-        if mapping == "TOPOLOGY" and len(source.data.vertices) != len(target.data.vertices):
-            raise ValueError("TOPOLOGY mapping requires equal source and target vertex counts")
-        if source_groups not in {"ALL", "DEFORM"}:
-            raise ValueError("source_groups must be ALL or DEFORM")
-        if mix_mode not in _TRANSFER_MIX_MODES:
-            raise ValueError(f"Unsupported mix mode: {mix_mode}")
-        mix_factor = _finite(mix_factor, "mix_factor")
-        if not 0 <= mix_factor <= 1:
-            raise ValueError("mix_factor must be in [0, 1]")
-        if max_distance is not None and _finite(max_distance, "max_distance") <= 0:
-            raise ValueError("max_distance must be positive")
-        if commit and not confirm_commit:
-            raise ValueError("confirm_commit=True is required to apply transferred weights")
-        if normalize and not commit:
-            raise ValueError("normalize=True requires commit=True because live weights are not yet committed")
-        existing = target.modifiers.get(modifier_name)
-        if existing is not None and existing.type != "DATA_TRANSFER":
-            raise ValueError(f"Modifier '{modifier_name}' exists and is not DATA_TRANSFER")
-        if existing is not None and destination_policy == "ERROR":
-            raise ValueError(f"Data Transfer modifier '{modifier_name}' already exists")
-        if destination_policy not in {"ERROR", "UPDATE"}:
-            raise ValueError("destination_policy must be ERROR or UPDATE")
-        selected_group_names = {group.name for group in source.vertex_groups}
-        if source_groups == "DEFORM":
-            armature_modifiers = [modifier for modifier in source.modifiers if modifier.type == "ARMATURE"]
-            source_armature = next(
-                (modifier.object for modifier in armature_modifiers if modifier.object is not None),
-                source.parent if getattr(source.parent, "type", None) == "ARMATURE" else None,
-            )
-            if source_armature is None:
-                raise ValueError("source_groups='DEFORM' requires an Armature modifier or armature parent")
-            deform_names = {bone.name for bone in source_armature.data.bones if bone.use_deform}
-            selected_group_names &= deform_names
-            if not selected_group_names:
-                raise ValueError("Source mesh has no vertex groups matching deform bones")
+        mix_factor = _validate_transfer_options(
+            source,
+            target,
+            mapping,
+            source_groups,
+            mix_mode,
+            mix_factor,
+            max_distance,
+            commit,
+            confirm_commit,
+            normalize,
+        )
+        existing = _existing_transfer_modifier(target, modifier_name, destination_policy)
+        selected_group_names = _transfer_group_names(source, source_groups)
         locked = sorted(
             group.name for group in target.vertex_groups if group.lock_weight and group.name in selected_group_names
         )
@@ -142,52 +218,24 @@ class DeformationHandlersMixin:
         groups_snapshot = _snapshot_groups(target)
         created = existing is None
         modifier = existing or target.modifiers.new(name=modifier_name, type="DATA_TRANSFER")
-        previous = None
-        if not created:
-            previous = {
-                field: getattr(modifier, field)
-                for field in (
-                    "object",
-                    "use_vert_data",
-                    "data_types_verts",
-                    "vert_mapping",
-                    "layers_vgroup_select_src",
-                    "layers_vgroup_select_dst",
-                    "mix_mode",
-                    "mix_factor",
-                    "use_object_transform",
-                    "use_max_distance",
-                    "max_distance",
-                )
-            }
+        previous = None if created else {field: getattr(modifier, field) for field in _DATA_TRANSFER_FIELDS}
         try:
-            for group_name in sorted(selected_group_names):
-                if target.vertex_groups.get(group_name) is None:
-                    target.vertex_groups.new(name=group_name)
-            modifier.object = source
-            modifier.use_vert_data = True
-            modifier.data_types_verts = {"VGROUP_WEIGHTS"}
-            modifier.vert_mapping = mapping
-            modifier.layers_vgroup_select_src = "ALL" if source_groups == "ALL" else "BONE_DEFORM"
-            modifier.layers_vgroup_select_dst = "NAME"
-            modifier.mix_mode = mix_mode
-            modifier.mix_factor = mix_factor
-            modifier.use_object_transform = bool(use_object_transform)
-            modifier.use_max_distance = max_distance is not None
-            if max_distance is not None:
-                modifier.max_distance = max_distance
+            _configure_weight_transfer(
+                target,
+                modifier,
+                source,
+                selected_group_names,
+                mapping,
+                source_groups,
+                mix_mode,
+                mix_factor,
+                use_object_transform,
+                max_distance,
+            )
             if commit:
-                _apply_data_transfer_modifier(target, modifier)
-                if normalize:
-                    _normalize_vertex_groups(target)
+                _commit_weight_transfer(target, modifier, normalize)
         except Exception:
-            _restore_groups(target, groups_snapshot)
-            if created and target.modifiers.get(modifier.name) is not None:
-                target.modifiers.remove(modifier)
-            elif previous is not None:
-                for field, value in previous.items():
-                    with contextlib.suppress(Exception):
-                        setattr(modifier, field, value)
+            _undo_weight_transfer(target, groups_snapshot, modifier, created, previous)
             raise
         return {
             "source_mesh": source.name,

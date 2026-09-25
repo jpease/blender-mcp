@@ -9,7 +9,7 @@ import bmesh
 import bpy
 import mathutils
 
-from ...helpers import get_mesh_object, mesh_counts, preserve_mode_and_selection, set_active
+from ...helpers import apply_modifier, get_mesh_object, mesh_counts, preserve_mode_and_selection, set_active
 from ._shared import (
     _TRANSFER_TYPES,
     _editable_bmesh,
@@ -433,13 +433,6 @@ def _create_world_geometry_object(name, collection, source, vertices, faces):
     return obj
 
 
-def _apply_modifier_checked(obj, modifier):
-    with preserve_mode_and_selection():
-        set_active(obj)
-        result = bpy.ops.object.modifier_apply(modifier=modifier.name)
-        _require_finished(result, f"Apply modifier '{modifier.name}'")
-
-
 def _target_preflight(target, duplicate_tolerance):
     depsgraph = bpy.context.evaluated_depsgraph_get()
     evaluated = target.evaluated_get(depsgraph)
@@ -566,6 +559,66 @@ def _prepare_lod_levels(levels, master, base_faces):
             }
         )
     return prepared
+
+
+def _lod_transfer_types(master, transfer_data_types):
+    requested_types = {str(value).upper() for value in (transfer_data_types or [])}
+    unknown_types = requested_types - _TRANSFER_TYPES
+    if unknown_types:
+        raise ValueError(f"Unknown transfer_data_types: {sorted(unknown_types)}")
+    if "UVS" in requested_types and not master.data.uv_layers:
+        raise ValueError(f"Master '{master.name}' has no UV layers to transfer")
+    if "VERTEX_GROUPS" in requested_types and not master.vertex_groups:
+        raise ValueError(f"Master '{master.name}' has no vertex groups to transfer")
+    if "COLOR_ATTRIBUTES" in requested_types and not master.data.color_attributes:
+        raise ValueError(f"Master '{master.name}' has no color attributes to transfer")
+    if "MATERIAL_INDICES" in requested_types and not master.material_slots:
+        raise ValueError(f"Master '{master.name}' has no materials to transfer")
+    return requested_types
+
+
+def _evaluated_counts(obj):
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = obj.evaluated_get(depsgraph)
+    evaluated_mesh = evaluated.to_mesh()
+    try:
+        return {
+            "vertices": len(evaluated_mesh.vertices),
+            "edges": len(evaluated_mesh.edges),
+            "polygons": len(evaluated_mesh.polygons),
+        }
+    finally:
+        evaluated.to_mesh_clear()
+
+
+def _reduce_lod(lod, spec):
+    if spec["method"] == "DECIMATE":
+        modifier = lod.modifiers.new(name="RetopologyLODDecimate", type="DECIMATE")
+        modifier.decimate_type = "COLLAPSE"
+        modifier.ratio = spec["ratio"]
+        modifier.use_collapse_triangulate = False
+        modifier.use_symmetry = spec["use_symmetry"]
+        modifier.symmetry_axis = spec["symmetry_axis"]
+        modifier.vertex_group = spec["vertex_group"]
+        modifier.vertex_group_factor = spec["vertex_group_factor"]
+        modifier.invert_vertex_group = spec["invert_vertex_group"]
+        apply_modifier(lod, modifier)
+        return
+    _run_quadriflow(
+        lod,
+        {
+            "mode": "FACES",
+            "target_faces": spec["target_faces"],
+            "target_ratio": spec["ratio"],
+            "target_edge_length": 0.1,
+            "use_mesh_symmetry": spec["use_symmetry"],
+            "preserve_sharp": spec["preserve_sharp"],
+            "preserve_boundary": spec["preserve_boundary"],
+            "preserve_attributes": spec["preserve_attributes"],
+            "smooth_normals": spec["smooth_normals"],
+            "seed": spec["seed"],
+        },
+    )
 
 
 class _AdvancedMixin:
@@ -914,110 +967,23 @@ class _AdvancedMixin:
         source = get_mesh_object(source_object_name) if source_object_name else None
         if reproject and source is None:
             raise ValueError("source_object_name is required when reproject=True")
-        requested_types = {str(value).upper() for value in (transfer_data_types or [])}
-        unknown_types = requested_types - _TRANSFER_TYPES
-        if unknown_types:
-            raise ValueError(f"Unknown transfer_data_types: {sorted(unknown_types)}")
-        if "UVS" in requested_types and not master.data.uv_layers:
-            raise ValueError(f"Master '{master.name}' has no UV layers to transfer")
-        if "VERTEX_GROUPS" in requested_types and not master.vertex_groups:
-            raise ValueError(f"Master '{master.name}' has no vertex groups to transfer")
-        if "COLOR_ATTRIBUTES" in requested_types and not master.data.color_attributes:
-            raise ValueError(f"Master '{master.name}' has no color attributes to transfer")
-        if "MATERIAL_INDICES" in requested_types and not master.material_slots:
-            raise ValueError(f"Master '{master.name}' has no materials to transfer")
-        depsgraph = bpy.context.evaluated_depsgraph_get()
-        evaluated = master.evaluated_get(depsgraph)
-        evaluated_mesh = evaluated.to_mesh()
-        try:
-            base_counts = {
-                "vertices": len(evaluated_mesh.vertices),
-                "edges": len(evaluated_mesh.edges),
-                "polygons": len(evaluated_mesh.polygons),
-            }
-        finally:
-            evaluated.to_mesh_clear()
+        requested_types = _lod_transfer_types(master, transfer_data_types)
+        base_counts = _evaluated_counts(master)
         if base_counts["polygons"] < 2:
             raise ValueError("The evaluated master needs at least two polygons to generate reduced LODs")
         prepared = _prepare_lod_levels(levels, master, base_counts["polygons"])
         collection = _named_collection(collection_name)
-        records = []
-        warnings = []
-        for index, spec in enumerate(prepared):
-            lod = _evaluated_mesh_copy(master, spec["name"], collection)
-            layers_before = _data_layer_snapshot(lod)
-            if spec["method"] == "DECIMATE":
-                modifier = lod.modifiers.new(name="RetopologyLODDecimate", type="DECIMATE")
-                modifier.decimate_type = "COLLAPSE"
-                modifier.ratio = spec["ratio"]
-                modifier.use_collapse_triangulate = False
-                modifier.use_symmetry = spec["use_symmetry"]
-                modifier.symmetry_axis = spec["symmetry_axis"]
-                modifier.vertex_group = spec["vertex_group"]
-                modifier.vertex_group_factor = spec["vertex_group_factor"]
-                modifier.invert_vertex_group = spec["invert_vertex_group"]
-                _apply_modifier_checked(lod, modifier)
-            else:
-                _run_quadriflow(
-                    lod,
-                    {
-                        "mode": "FACES",
-                        "target_faces": spec["target_faces"],
-                        "target_ratio": spec["ratio"],
-                        "target_edge_length": 0.1,
-                        "use_mesh_symmetry": spec["use_symmetry"],
-                        "preserve_sharp": spec["preserve_sharp"],
-                        "preserve_boundary": spec["preserve_boundary"],
-                        "preserve_attributes": spec["preserve_attributes"],
-                        "smooth_normals": spec["smooth_normals"],
-                        "seed": spec["seed"],
-                    },
-                )
-            failed_projection = []
-            if reproject:
-                with _editable_bmesh(lod) as bm:
-                    failed_projection = _project_vertices(lod, list(bm.verts), source, offset)
-            transfer_result = None
-            if requested_types:
-                transfer_result = self.transfer_mesh_attributes(
-                    master.name,
-                    lod.name,
-                    sorted(requested_types),
-                    modifier_name=f"LOD{index + 1}DataTransfer",
-                    apply=False,
-                )
-                modifier_name = transfer_result.get("modifier")
-                if modifier_name:
-                    _apply_modifier_checked(lod, lod.modifiers.get(modifier_name))
-            layers_after = _data_layer_snapshot(lod)
-            lost_layers = _lost_data_layers(layers_before, layers_after)
-            if lost_layers:
-                warnings.append(f"{lod.name} lost data layers: {lost_layers}")
-            lod["blender_mcp_lod_master"] = master.name
-            lod["blender_mcp_lod_level"] = index + 1
-            lod["blender_mcp_lod_ratio"] = spec["ratio"]
-            validation = self.validate_retopology(
-                lod.name,
-                profile=profile,
-                source_object_name=source.name if source else None,
-                check_skin_weights=bool(lod.vertex_groups),
+        records = [
+            self._generate_lod_level(
+                master, source, collection, index, spec, profile, reproject, offset, requested_types
             )
-            records.append(
-                {
-                    "name": lod.name,
-                    "level": index + 1,
-                    "method": spec["method"],
-                    "requested_ratio": spec["ratio"],
-                    "target_faces": spec["target_faces"],
-                    "counts": mesh_counts(lod),
-                    "failed_projection_vertex_indices": failed_projection,
-                    "transferred_data_types": sorted(requested_types),
-                    "transfer_result": transfer_result,
-                    "lost_data_layers": lost_layers,
-                    "validation": validation,
-                    "topology_revision": topology_revision(lod),
-                }
-            )
+            for index, spec in enumerate(prepared)
+        ]
+        warnings = [
+            f"{record['name']} lost data layers: {record['lost_data_layers']}"
+            for record in records
+            if record["lost_data_layers"]
+        ]
         return {
             "master": master.name,
             "source": source.name if source else None,
@@ -1027,4 +993,49 @@ class _AdvancedMixin:
             "levels": records,
             "created_objects": [record["name"] for record in records],
             "warnings": warnings,
+        }
+
+    def _generate_lod_level(self, master, source, collection, index, spec, profile, reproject, offset, requested_types):
+        lod = _evaluated_mesh_copy(master, spec["name"], collection)
+        layers_before = _data_layer_snapshot(lod)
+        _reduce_lod(lod, spec)
+        failed_projection = []
+        if reproject:
+            with _editable_bmesh(lod) as bm:
+                failed_projection = _project_vertices(lod, list(bm.verts), source, offset)
+        transfer_result = None
+        if requested_types:
+            transfer_result = self.transfer_mesh_attributes(
+                master.name,
+                lod.name,
+                sorted(requested_types),
+                modifier_name=f"LOD{index + 1}DataTransfer",
+                apply=False,
+            )
+            modifier_name = transfer_result.get("modifier")
+            if modifier_name:
+                apply_modifier(lod, lod.modifiers.get(modifier_name))
+        lost_layers = _lost_data_layers(layers_before, _data_layer_snapshot(lod))
+        lod["blender_mcp_lod_master"] = master.name
+        lod["blender_mcp_lod_level"] = index + 1
+        lod["blender_mcp_lod_ratio"] = spec["ratio"]
+        validation = self.validate_retopology(
+            lod.name,
+            profile=profile,
+            source_object_name=source.name if source else None,
+            check_skin_weights=bool(lod.vertex_groups),
+        )
+        return {
+            "name": lod.name,
+            "level": index + 1,
+            "method": spec["method"],
+            "requested_ratio": spec["ratio"],
+            "target_faces": spec["target_faces"],
+            "counts": mesh_counts(lod),
+            "failed_projection_vertex_indices": failed_projection,
+            "transferred_data_types": sorted(requested_types),
+            "transfer_result": transfer_result,
+            "lost_data_layers": lost_layers,
+            "validation": validation,
+            "topology_revision": topology_revision(lod),
         }

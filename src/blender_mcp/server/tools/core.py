@@ -360,11 +360,7 @@ async def get_integration_status(ctx: Context, provider: Provider | None = None)
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return ok(await _collect_integration_status(provider))
-    except Exception as e:
-        logger.error(f"Error checking integration status: {e}")
-        raise ToolError(f"Error checking integration status: {e}") from e
+    return ok(await _collect_integration_status(provider))
 
 
 @mcp.tool()

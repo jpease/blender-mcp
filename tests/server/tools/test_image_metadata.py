@@ -3,6 +3,9 @@ import os
 
 import pytest
 
+from mcp.server.fastmcp.exceptions import ToolError
+
+from blender_mcp.server.connection import BlenderOperationError
 from blender_mcp.server.tools import _dispatch, _image_transport, viewport
 from blender_mcp.server.tools.sketchfab import _preview_metadata
 from blender_mcp.server.tools.viewport import _screenshot_metadata
@@ -71,7 +74,7 @@ def test_screenshot_tempfile_is_removed_when_blender_fails(monkeypatch, tmp_path
 
     class Connection:
         def send_command(self, *_args, **_kwargs):
-            raise RuntimeError("capture failed")
+            raise BlenderOperationError("No 3D viewport found")
 
     def fake_mkstemp(**_kwargs):
         descriptor = os.open(screenshot, os.O_CREAT | os.O_RDWR)
@@ -84,7 +87,7 @@ def test_screenshot_tempfile_is_removed_when_blender_fails(monkeypatch, tmp_path
     monkeypatch.setattr(_image_transport, "get_last_handshake", lambda: None)
     monkeypatch.setattr(_image_transport.tempfile, "mkstemp", fake_mkstemp)
 
-    with pytest.raises(Exception, match="Screenshot failed"):
+    with pytest.raises(ToolError, match=r"^No 3D viewport found$"):
         # The tool is async so its blocking socket work stays off the event loop;
         # asyncio.run drives it without the suite needing an async plugin.
         asyncio.run(viewport.get_viewport_screenshot(ctx=None))

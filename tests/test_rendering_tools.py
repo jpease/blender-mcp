@@ -19,6 +19,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 from test_mutation_transaction import _load_addon
 
+from blender_mcp.server.connection import BlenderOperationError
 from blender_mcp.server.tools import _dispatch, _image_transport, rendering
 
 RENDER_COMMANDS = {
@@ -236,7 +237,7 @@ def test_inspect_render_output_tempfile_is_removed_when_blender_fails(monkeypatc
 
     class _FailingConnection:
         def send_command(self, *_args, **_kwargs):
-            raise RuntimeError("inspection failed")
+            raise BlenderOperationError("No render result to inspect")
 
     def fake_mkstemp(**_kwargs):
         descriptor = os.open(rendered, os.O_CREAT | os.O_RDWR)
@@ -246,7 +247,7 @@ def test_inspect_render_output_tempfile_is_removed_when_blender_fails(monkeypatc
     monkeypatch.setattr(_image_transport, "get_last_handshake", lambda: None)
     monkeypatch.setattr(_image_transport.tempfile, "mkstemp", fake_mkstemp)
 
-    with pytest.raises(Exception, match="Render output inspection failed"):
+    with pytest.raises(ToolError, match=r"^No render result to inspect$"):
         asyncio.run(rendering.inspect_render_output(ctx=None))
 
     assert not rendered.exists()
@@ -749,6 +750,24 @@ def test_render_scene_renders_to_the_scenes_own_output_path(monkeypatch, tmp_pat
     assert result["filepath"] == str(tmp_path / "sh010.png")
     assert (tmp_path / "sh010.png").is_file()
     assert result["first_file"] == result["last_file"] == str(tmp_path / "sh010.png")
+
+
+def test_render_scene_accepts_a_frame_that_wrote_no_file_only_when_outputs_are_not_verified(
+    monkeypatch, tmp_path
+) -> None:
+    """verify_outputs=False is the one path where a FINISHED frame may leave no file; its size is then unknown."""
+    handler, _scene, fake_bpy = _renderable(monkeypatch, tmp_path)
+    fake_bpy.ops.render = types.SimpleNamespace(render=lambda **_kwargs: {"FINISHED"})
+    output = str(tmp_path / "unwritten.png")
+
+    with pytest.raises(RuntimeError):
+        handler.render_scene("Scene", output, confirm_render=True, verify_passes=False)
+    result = handler.render_scene(
+        "Scene", output, confirm_render=True, verify_passes=False, verify_outputs=False, detail=True
+    )
+
+    assert result["files"] == [{"frame": 1, "path": output, "bytes": None}]
+    assert result["bytes_written"] == 0
 
 
 def test_render_scene_refuses_an_animation_over_blenders_untouched_default_range(monkeypatch, tmp_path) -> None:

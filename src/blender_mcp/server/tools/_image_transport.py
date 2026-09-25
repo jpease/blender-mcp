@@ -28,6 +28,8 @@ import tempfile
 from collections.abc import Callable
 from typing import Any
 
+from mcp.server.fastmcp.exceptions import ToolError
+
 from ..connection import get_last_handshake
 
 # First addon protocol version whose image handlers accept `inline=True` and
@@ -97,14 +99,14 @@ def _request_inline(
         tuple[bytes, dict[str, Any]]: The decoded image bytes, then the reply.
 
     Raises:
-        Exception: If Blender reported an error, or answered without image bytes.
+        ToolError: If Blender reported an error, or answered without image bytes.
 
     """
     result = send(command, {**params, "inline": True})
     _raise_for_error(result)
     encoded = result.get("image_base64")
     if not encoded:
-        raise Exception(f"{command} returned no inline image data")
+        raise ToolError(f"{command} returned no inline image data")
     return base64.b64decode(encoded), result
 
 
@@ -128,7 +130,7 @@ def _request_via_shared_path(
         tuple[bytes, dict[str, Any]]: The image bytes read back, then the reply.
 
     Raises:
-        Exception: If Blender reported an error, or wrote no image.
+        ToolError: If Blender reported an error, or wrote no image.
 
     """
     descriptor, temp_path = tempfile.mkstemp(prefix=prefix, suffix=".png")
@@ -139,7 +141,7 @@ def _request_via_shared_path(
         # mkstemp already created the file, so its mere existence proves nothing; an empty
         # one is what a Blender that cannot see this path leaves behind.
         if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
-            raise Exception(
+            raise ToolError(
                 f"{missing_file}: {command} did not write an image to {temp_path}. If Blender is "
                 "running on another host or in a container it cannot see this path - update the "
                 "Blender addon so the server can request image bytes inline instead."
@@ -161,8 +163,8 @@ def _raise_for_error(result: dict[str, Any]) -> None:
         result: The command's reply.
 
     Raises:
-        Exception: If the reply carries an `error` key.
+        ToolError: If the reply carries an `error` key.
 
     """
     if isinstance(result, dict) and "error" in result:
-        raise Exception(result["error"])
+        raise ToolError(result["error"])

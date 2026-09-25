@@ -4,7 +4,7 @@ from typing import Any
 
 import bpy
 
-from ...helpers import apply_modifier, preserve_mode_and_selection, set_active
+from ...helpers import apply_modifier
 from ._shared import (
     OWNERSHIP_KEY,
     applicable_to_object,
@@ -140,6 +140,46 @@ def _restore_raw_input(modifier, identifier: str, state: dict[str, Any]) -> None
             modifier[property_name] = state[key]
         elif property_name in modifier:
             del modifier[property_name]
+
+
+def _move_modifier(obj, modifier, stack_index) -> None:
+    """Move a modifier to an exact, validated stack index."""
+    if stack_index is None:
+        raise ValueError("MOVE requires stack_index")
+    if not 0 <= int(stack_index) < len(obj.modifiers):
+        raise ValueError(f"stack_index must be between 0 and {len(obj.modifiers) - 1}")
+    current = list(obj.modifiers).index(modifier)
+    obj.modifiers.move(current, int(stack_index))
+
+
+def _set_modifier_visibility(modifier, show_viewport, show_render) -> None:
+    """Set whichever of the viewport and render visibility flags were supplied."""
+    if show_viewport is None and show_render is None:
+        raise ValueError("SET_VISIBILITY requires show_viewport and/or show_render")
+    if show_viewport is not None:
+        modifier.show_viewport = show_viewport
+    if show_render is not None:
+        modifier.show_render = show_render
+
+
+def _replace_modifier_group(obj, modifier, replacement_group_name) -> None:
+    """Point a modifier at another node group that supports the object's type."""
+    if not replacement_group_name:
+        raise ValueError("REPLACE_GROUP requires replacement_group_name")
+    replacement = require_group(replacement_group_name)
+    if not applicable_to_object(replacement, obj):
+        raise ValueError(f"Replacement group does not support {obj.type}")
+    modifier.node_group = replacement
+
+
+def _commit_modifier(obj, modifier, action: str, confirm_destructive) -> None:
+    """Remove or apply a modifier, only when the caller confirmed the destructive action."""
+    if not confirm_destructive:
+        raise ValueError(f"confirm_destructive=True is required for {action}")
+    if action == "REMOVE":
+        obj.modifiers.remove(modifier)
+    else:
+        apply_modifier(obj, modifier)
 
 
 class GeometryNodesModifierHandlersMixin:
@@ -280,40 +320,18 @@ class GeometryNodesModifierHandlersMixin:
                 raise ValueError("RENAME requires new_name")
             modifier.name = new_name
         elif action == "MOVE":
-            if stack_index is None:
-                raise ValueError("MOVE requires stack_index")
-            if not 0 <= int(stack_index) < len(obj.modifiers):
-                raise ValueError(f"stack_index must be between 0 and {len(obj.modifiers) - 1}")
-            current = list(obj.modifiers).index(modifier)
-            obj.modifiers.move(current, int(stack_index))
+            _move_modifier(obj, modifier, stack_index)
         elif action == "SET_VISIBILITY":
-            if show_viewport is None and show_render is None:
-                raise ValueError("SET_VISIBILITY requires show_viewport and/or show_render")
-            if show_viewport is not None:
-                modifier.show_viewport = show_viewport
-            if show_render is not None:
-                modifier.show_render = show_render
+            _set_modifier_visibility(modifier, show_viewport, show_render)
         elif action == "MUTE":
             if mute is None:
                 raise ValueError("MUTE requires mute")
             modifier.show_viewport = not mute
             modifier.show_render = not mute
         elif action == "REPLACE_GROUP":
-            if not replacement_group_name:
-                raise ValueError("REPLACE_GROUP requires replacement_group_name")
-            replacement = require_group(replacement_group_name)
-            if not applicable_to_object(replacement, obj):
-                raise ValueError(f"Replacement group does not support {obj.type}")
-            modifier.node_group = replacement
+            _replace_modifier_group(obj, modifier, replacement_group_name)
         elif action in {"REMOVE", "APPLY"}:
-            if not confirm_destructive:
-                raise ValueError(f"confirm_destructive=True is required for {action}")
-            if action == "REMOVE":
-                obj.modifiers.remove(modifier)
-            else:
-                with preserve_mode_and_selection():
-                    set_active(obj)
-                    apply_modifier(obj, modifier)
+            _commit_modifier(obj, modifier, action, confirm_destructive)
         else:
             raise ValueError(f"Unsupported modifier action: {action}")
         bpy.context.view_layer.update()

@@ -1,18 +1,13 @@
 """Direct mesh-editing tools."""
 
-import logging
-
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from ..app import mcp
 from ._dispatch import call_blender, send_blender_command
 from .envelope import STALE_INDEX_WARNING, envelope_for
-
-logger = logging.getLogger("BlenderMCPServer")
 
 PrimitiveType = Literal["CUBE", "SPHERE", "CYLINDER", "CONE", "TORUS", "PLANE", "CURVE"]
 PrimitivePurpose = Literal["blockout"]
@@ -50,25 +45,21 @@ async def create_primitive_object(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        reply = await send_blender_command(
-            "create_primitive",
-            {
-                "primitive_type": primitive_type,
-                "name": name,
-                "location": list(location),
-                "rotation": list(rotation),
-                "size": size,
-                "dimensions": list(dimensions) if dimensions is not None else None,
-                "purpose": purpose,
-            },
-        )
-        created_name = reply.get("name") if isinstance(reply, dict) else None
-        changed = [created_name] if isinstance(created_name, str) else []
-        return envelope_for(reply, changed_objects=changed)
-    except Exception as e:
-        logger.error(f"Error creating primitive: {e}")
-        raise ToolError(f"Error creating primitive: {e}") from e
+    reply = await send_blender_command(
+        "create_primitive",
+        {
+            "primitive_type": primitive_type,
+            "name": name,
+            "location": list(location),
+            "rotation": list(rotation),
+            "size": size,
+            "dimensions": list(dimensions) if dimensions is not None else None,
+            "purpose": purpose,
+        },
+    )
+    created_name = reply.get("name") if isinstance(reply, dict) else None
+    changed = [created_name] if isinstance(created_name, str) else []
+    return envelope_for(reply, changed_objects=changed)
 
 
 @mcp.tool()
@@ -98,20 +89,16 @@ async def mesh_extrude(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender(
-            "mesh_extrude",
-            {
-                "object_name": object_name,
-                "offset": list(offset),
-                "face_indices": face_indices,
-            },
-            changed_objects=[object_name],
-            warnings=[STALE_INDEX_WARNING],
-        )
-    except Exception as e:
-        logger.error(f"Error extruding mesh: {e}")
-        raise ToolError(f"Error extruding mesh: {e}") from e
+    return await call_blender(
+        "mesh_extrude",
+        {
+            "object_name": object_name,
+            "offset": list(offset),
+            "face_indices": face_indices,
+        },
+        changed_objects=[object_name],
+        warnings=[STALE_INDEX_WARNING],
+    )
 
 
 @mcp.tool()
@@ -143,21 +130,17 @@ async def mesh_inset(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender(
-            "mesh_inset",
-            {
-                "object_name": object_name,
-                "thickness": thickness,
-                "depth": depth,
-                "face_indices": face_indices,
-            },
-            changed_objects=[object_name],
-            warnings=[STALE_INDEX_WARNING],
-        )
-    except Exception as e:
-        logger.error(f"Error insetting mesh faces: {e}")
-        raise ToolError(f"Error insetting mesh faces: {e}") from e
+    return await call_blender(
+        "mesh_inset",
+        {
+            "object_name": object_name,
+            "thickness": thickness,
+            "depth": depth,
+            "face_indices": face_indices,
+        },
+        changed_objects=[object_name],
+        warnings=[STALE_INDEX_WARNING],
+    )
 
 
 @mcp.tool()
@@ -195,23 +178,19 @@ async def mesh_bevel(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender(
-            "mesh_bevel",
-            {
-                "object_name": object_name,
-                "offset": offset,
-                "segments": segments,
-                "affect": affect,
-                "edge_indices": edge_indices,
-                "vertex_indices": vertex_indices,
-            },
-            changed_objects=[object_name],
-            warnings=[STALE_INDEX_WARNING],
-        )
-    except Exception as e:
-        logger.error(f"Error beveling mesh: {e}")
-        raise ToolError(f"Error beveling mesh: {e}") from e
+    return await call_blender(
+        "mesh_bevel",
+        {
+            "object_name": object_name,
+            "offset": offset,
+            "segments": segments,
+            "affect": affect,
+            "edge_indices": edge_indices,
+            "vertex_indices": vertex_indices,
+        },
+        changed_objects=[object_name],
+        warnings=[STALE_INDEX_WARNING],
+    )
 
 
 @mcp.tool()
@@ -255,26 +234,22 @@ async def mesh_bridge(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender(
-            "mesh_bridge",
-            {
-                "object_name": object_name,
-                "loop_a_edge_indices": loop_a_edge_indices,
-                "loop_b_edge_indices": loop_b_edge_indices,
-                "edge_indices": edge_indices,
-                "cuts": cuts,
-                "interpolation": interpolation,
-                "smoothness": smoothness,
-                "twist_offset": twist_offset,
-                "expected_revision": expected_revision,
-            },
-            changed_objects=[object_name],
-            warnings=[STALE_INDEX_WARNING],
-        )
-    except Exception as e:
-        logger.error(f"Error bridging mesh edge loops: {e}")
-        raise ToolError(f"Error bridging mesh edge loops: {e}") from e
+    return await call_blender(
+        "mesh_bridge",
+        {
+            "object_name": object_name,
+            "loop_a_edge_indices": loop_a_edge_indices,
+            "loop_b_edge_indices": loop_b_edge_indices,
+            "edge_indices": edge_indices,
+            "cuts": cuts,
+            "interpolation": interpolation,
+            "smoothness": smoothness,
+            "twist_offset": twist_offset,
+            "expected_revision": expected_revision,
+        },
+        changed_objects=[object_name],
+        warnings=[STALE_INDEX_WARNING],
+    )
 
 
 SymmetrizeDirection = Literal["NEGATIVE_X", "POSITIVE_X", "NEGATIVE_Y", "POSITIVE_Y", "NEGATIVE_Z", "POSITIVE_Z"]
@@ -300,19 +275,15 @@ async def mesh_symmetrize(ctx: Context, object_name: str, direction: SymmetrizeD
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender(
-            "mesh_symmetrize",
-            {
-                "object_name": object_name,
-                "direction": direction,
-            },
-            changed_objects=[object_name],
-            warnings=[STALE_INDEX_WARNING],
-        )
-    except Exception as e:
-        logger.error(f"Error symmetrizing mesh: {e}")
-        raise ToolError(f"Error symmetrizing mesh: {e}") from e
+    return await call_blender(
+        "mesh_symmetrize",
+        {
+            "object_name": object_name,
+            "direction": direction,
+        },
+        changed_objects=[object_name],
+        warnings=[STALE_INDEX_WARNING],
+    )
 
 
 @mcp.tool()
@@ -344,22 +315,18 @@ async def mesh_boolean(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        changed = [object_name] + ([] if keep_cutter else [cutter_object_name])
-        return await call_blender(
-            "mesh_boolean",
-            {
-                "object_name": object_name,
-                "cutter_object_name": cutter_object_name,
-                "operation": operation,
-                "keep_cutter": keep_cutter,
-            },
-            changed_objects=changed,
-            warnings=[STALE_INDEX_WARNING],
-        )
-    except Exception as e:
-        logger.error(f"Error applying mesh boolean: {e}")
-        raise ToolError(f"Error applying mesh boolean: {e}") from e
+    changed = [object_name] + ([] if keep_cutter else [cutter_object_name])
+    return await call_blender(
+        "mesh_boolean",
+        {
+            "object_name": object_name,
+            "cutter_object_name": cutter_object_name,
+            "operation": operation,
+            "keep_cutter": keep_cutter,
+        },
+        changed_objects=changed,
+        warnings=[STALE_INDEX_WARNING],
+    )
 
 
 @mcp.tool()
@@ -389,20 +356,16 @@ async def mesh_subdivide(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender(
-            "mesh_subdivide",
-            {
-                "object_name": object_name,
-                "cuts": cuts,
-                "face_indices": face_indices,
-            },
-            changed_objects=[object_name],
-            warnings=[STALE_INDEX_WARNING],
-        )
-    except Exception as e:
-        logger.error(f"Error subdividing mesh: {e}")
-        raise ToolError(f"Error subdividing mesh: {e}") from e
+    return await call_blender(
+        "mesh_subdivide",
+        {
+            "object_name": object_name,
+            "cuts": cuts,
+            "face_indices": face_indices,
+        },
+        changed_objects=[object_name],
+        warnings=[STALE_INDEX_WARNING],
+    )
 
 
 @mcp.tool()
@@ -425,19 +388,15 @@ async def mesh_remesh(ctx: Context, object_name: str, voxel_size: Annotated[floa
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender(
-            "mesh_remesh",
-            {
-                "object_name": object_name,
-                "voxel_size": voxel_size,
-            },
-            changed_objects=[object_name],
-            warnings=[STALE_INDEX_WARNING],
-        )
-    except Exception as e:
-        logger.error(f"Error remeshing mesh: {e}")
-        raise ToolError(f"Error remeshing mesh: {e}") from e
+    return await call_blender(
+        "mesh_remesh",
+        {
+            "object_name": object_name,
+            "voxel_size": voxel_size,
+        },
+        changed_objects=[object_name],
+        warnings=[STALE_INDEX_WARNING],
+    )
 
 
 @mcp.tool()
@@ -468,20 +427,16 @@ async def mesh_solidify(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender(
-            "mesh_solidify",
-            {
-                "object_name": object_name,
-                "thickness": thickness,
-                "apply": apply,
-            },
-            changed_objects=[object_name],
-            warnings=[STALE_INDEX_WARNING] if apply else [],
-        )
-    except Exception as e:
-        logger.error(f"Error solidifying mesh: {e}")
-        raise ToolError(f"Error solidifying mesh: {e}") from e
+    return await call_blender(
+        "mesh_solidify",
+        {
+            "object_name": object_name,
+            "thickness": thickness,
+            "apply": apply,
+        },
+        changed_objects=[object_name],
+        warnings=[STALE_INDEX_WARNING] if apply else [],
+    )
 
 
 @mcp.tool()
@@ -507,11 +462,7 @@ async def clear_materials(
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender("clear_materials", {"object_names": object_names}, changed_objects=object_names)
-    except Exception as e:
-        logger.error(f"Error clearing materials: {e}")
-        raise ToolError(f"Error clearing materials: {e}") from e
+    return await call_blender("clear_materials", {"object_names": object_names}, changed_objects=object_names)
 
 
 @mcp.tool()
@@ -535,11 +486,7 @@ async def clear_vertex_groups(ctx: Context, object_name: str) -> dict:
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender("clear_vertex_groups", {"object_name": object_name}, changed_objects=[object_name])
-    except Exception as e:
-        logger.error(f"Error clearing vertex groups: {e}")
-        raise ToolError(f"Error clearing vertex groups: {e}") from e
+    return await call_blender("clear_vertex_groups", {"object_name": object_name}, changed_objects=[object_name])
 
 
 @mcp.tool()
@@ -564,8 +511,4 @@ async def clear_edge_marks(ctx: Context, object_name: str) -> dict:
         ToolError: If the operation cannot be completed.
 
     """
-    try:
-        return await call_blender("clear_edge_marks", {"object_name": object_name}, changed_objects=[object_name])
-    except Exception as e:
-        logger.error(f"Error clearing edge marks: {e}")
-        raise ToolError(f"Error clearing edge marks: {e}") from e
+    return await call_blender("clear_edge_marks", {"object_name": object_name}, changed_objects=[object_name])

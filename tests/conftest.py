@@ -137,7 +137,7 @@ class RecordingConnection:
 
     """
 
-    def __init__(self, result: object = None) -> None:
+    def __init__(self, result: object = None, error: Exception | None = None) -> None:
         """
         Start with an empty recording.
 
@@ -145,10 +145,13 @@ class RecordingConnection:
             result: Reply to return from every command. When None, echoes a
                 `changed_objects` entry named after the `name` parameter, or
                 `"Created"` when there is none, as the scene authoring tools expect.
+            error: Raised by every command after it is recorded, standing in for a
+                refusal or a dropped socket; `result` is then never returned.
 
         """
         self.calls: list[tuple[str, dict]] = []
         self._result = result
+        self._error = error
 
     def send_command(self, command: str, params: dict) -> object:
         """
@@ -161,8 +164,13 @@ class RecordingConnection:
         Returns:
             The configured reply, or the default echo when none was configured.
 
+        Raises:
+            Exception: The configured `error`, when one was given.
+
         """
         self.calls.append((command, params))
+        if self._error is not None:
+            raise self._error
         if self._result is not None:
             return self._result
         return {
@@ -188,18 +196,19 @@ def stub_blender_connection(monkeypatch: pytest.MonkeyPatch) -> StubFactory:
 
     """
 
-    def _install(result: object = None) -> RecordingConnection:
+    def _install(result: object = None, error: Exception | None = None) -> RecordingConnection:
         """
         Install the stub and hand back the recorder holding its calls.
 
         Args:
             result: Reply every command should return, or None for the default echo.
+            error: Exception every command should raise instead of replying, or None.
 
         Returns:
             The `RecordingConnection` now serving this test.
 
         """
-        connection = RecordingConnection(result)
+        connection = RecordingConnection(result, error)
         monkeypatch.setattr(_PATCH_TARGET, lambda: connection)
         return connection
 
