@@ -320,17 +320,26 @@ def test_a_symlinked_parent_directory_is_refused(tmp_path: Path) -> None:
 
 
 def test_a_directory_where_a_file_is_expected_is_refused(tmp_path: Path) -> None:
-    """A directory named `x.blend` passes the suffix check; Blender answers it with shape 2."""
+    """
+    A directory named `x.blend` passes the suffix check; Blender answers it with shape 2.
+
+    Matched on "is a directory": a missing file's refusal also says "directory", naming the one
+    its path points into, so the bare word would accept a directory read as a missing file.
+    """
     (tmp_path / "looks_like.blend").mkdir()
 
-    _refusal(_file_paths(), str(tmp_path / "looks_like.blend"), must_exist=True, match="directory", tmp_path=tmp_path)
+    _refusal(
+        _file_paths(), str(tmp_path / "looks_like.blend"), must_exist=True, match="is a directory", tmp_path=tmp_path
+    )
 
 
 def test_a_directory_where_a_save_target_is_expected_is_refused(tmp_path: Path) -> None:
     """Saving over a directory is never the caller's intent."""
     (tmp_path / "looks_like.blend").mkdir()
 
-    _refusal(_file_paths(), str(tmp_path / "looks_like.blend"), must_exist=False, match="directory", tmp_path=tmp_path)
+    _refusal(
+        _file_paths(), str(tmp_path / "looks_like.blend"), must_exist=False, match="is a directory", tmp_path=tmp_path
+    )
 
 
 def test_a_missing_file_is_refused(tmp_path: Path) -> None:

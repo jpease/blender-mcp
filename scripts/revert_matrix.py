@@ -664,8 +664,8 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{ANIMT}::test_an_edited_key_inside_the_cycle_or_off_a_cycled_curve_stays_quiet",
     f"{ANIMT}::test_the_cycle_notice_is_measured_before_the_batch_starts_inserting",
     # --- an INSPECT cycle call reads, and a probe restores what it borrowed ---
-    f"{DRT}::test_the_params_decide_whether_these_commands_read_or_write[set_action_cycle-reading14-writing14]",
     f"{DRT}::test_the_params_decide_whether_these_commands_read_or_write[set_action_cycle-reading15-writing15]",
+    f"{DRT}::test_the_params_decide_whether_these_commands_read_or_write[set_action_cycle-reading16-writing16]",
     f"{DRT}::test_these_commands_run_outside_the_transaction"
     "[probe_bone_axis-restores its own trial pose, so there is no net mutation to snapshot]",
 )
@@ -3712,7 +3712,9 @@ REVERTS: list[Revert] = [
             "    if is_directory:\n"
             '        return "path is a directory, not a .blend file"\n'
             "    if not exists:\n"
-            '        return "file does not exist"\n'
+            "        if not directory_exists:\n"
+            '            return "file does not exist, and neither does the directory named in its path"\n'
+            '        return "file does not exist, though the directory named in its path does"\n'
             "    if not readable:\n"
             '        return "file could not be read"\n'
             "    if not is_blend_header(header):\n"
@@ -3722,7 +3724,8 @@ REVERTS: list[Revert] = [
         "    return None\n",
         (
             f"{_OPEN_VERDICT}[a directory named x.blend is not a file]",
-            f"{_OPEN_VERDICT}[missing]",
+            f"{_OPEN_VERDICT}[a mistyped filename]",
+            f"{_OPEN_VERDICT}[a mistyped directory - the same sentence until this split them]",
             f"{_OPEN_VERDICT}[unreadable is refused, not treated as a bad header]",
             f"{_OPEN_VERDICT}[a zip renamed .blend]",
         ),
@@ -3758,9 +3761,28 @@ REVERTS: list[Revert] = [
     Revert(
         "file paths: a missing file is not refused before it is opened",
         ADDON_FILE_PATHS,
-        ('    if not exists:\n        return "file does not exist"\n'),
+        (
+            "    if not exists:\n"
+            "        if not directory_exists:\n"
+            '            return "file does not exist, and neither does the directory named in its path"\n'
+            '        return "file does not exist, though the directory named in its path does"\n'
+        ),
         "",
         (f"{FPT}::test_a_missing_file_is_refused",),
+    ),
+    Revert(
+        "file paths: a relative path outside the roots is not told it resolved against the working directory",
+        ADDON_FILE_PATHS,
+        '        raise PathOutsideRootsError(f"{refusal}{_RELATIVE_ROOTS_REFUSAL}") from None\n',
+        "        raise\n",
+        (f"{FPT}::test_a_relative_path_outside_the_roots_is_told_where_it_resolved",),
+    ),
+    Revert(
+        "file paths: an absolute path outside the roots is told it resolved against the working directory",
+        ADDON_FILE_PATHS,
+        "        if os.path.isabs(os.path.expanduser(raw)):\n            raise\n",
+        "",
+        (f"{FPT}::test_a_relative_path_outside_the_roots_is_told_where_it_resolved",),
     ),
     Revert(
         "file paths: the magic-byte check is skipped",
@@ -4355,7 +4377,12 @@ REVERTS: list[Revert] = [
         ADDON_FILE_PATHS,
         (
             "    resolved = canonical_path(raw)\n"
-            "    enforce_roots(resolved, roots)\n"
+            "    try:\n"
+            "        enforce_roots(resolved, roots)\n"
+            "    except PathOutsideRootsError as refusal:\n"
+            "        if os.path.isabs(os.path.expanduser(raw)):\n"
+            "            raise\n"
+            '        raise PathOutsideRootsError(f"{refusal}{_RELATIVE_ROOTS_REFUSAL}") from None\n'
             "    if not (_has_blend_suffix(raw) and _has_blend_suffix(resolved)):\n"
             '        raise ValueError("path must name a file ending in .blend")\n'
             "    if must_exist:\n"
@@ -4693,7 +4720,7 @@ REVERTS: list[Revert] = [
     Revert(
         "linking: absent names are not refused inside the load block",
         ADDON_LINKING,
-        "                _refuse_absent_names(data_from, collection_names, object_names, world_names)\n",
+        "            _refuse_absent_names(data_from, collection_names, object_names, world_names)\n",
         "",
         (f"{LKT}::test_link_refuses_a_name_absent_from_the_file_and_leaves_no_library",),
     ),
@@ -8417,8 +8444,8 @@ REVERTS: list[Revert] = [
         ),
         '        "set_action_cycle": CommandSpec(),\n',
         (
-            f"{DRT}::test_the_params_decide_whether_these_commands_read_or_write[set_action_cycle-reading14-writing14]",
             f"{DRT}::test_the_params_decide_whether_these_commands_read_or_write[set_action_cycle-reading15-writing15]",
+            f"{DRT}::test_the_params_decide_whether_these_commands_read_or_write[set_action_cycle-reading16-writing16]",
         ),
     ),
     Revert(
@@ -8567,8 +8594,8 @@ REVERTS: list[Revert] = [
         # `truncated` with nowhere to resume from is the one paging shape the envelope forbids.
         "rig reading: the deformed-mesh page ignores the offset it told the caller to resume from",
         ADDON_POSING,
-        "                len(bound), mesh_offset, _MAX_DEFORMED_MESHES, _MAX_DEFORMED_MESHES\n",
-        "                len(bound), 0, _MAX_DEFORMED_MESHES, _MAX_DEFORMED_MESHES\n",
+        "paginate(len(bound), mesh_offset, _MAX_DEFORMED_MESHES, _MAX_DEFORMED_MESHES)",
+        "paginate(len(bound), 0, _MAX_DEFORMED_MESHES, _MAX_DEFORMED_MESHES)",
         (f"{CTRLT}::test_a_rig_deforming_more_meshes_than_one_page_is_resumable",),
     ),
     Revert(
