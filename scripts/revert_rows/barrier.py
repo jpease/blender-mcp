@@ -13,6 +13,7 @@ from .common import (
     ADDON_MANAGER,
     ADDON_SERVER_CORE,
     ADDON_SESSION,
+    ADDON_SOCKET_TRANSPORT,
     ADDON_TEXT_HYGIENE,
     AMT,
     CONNT,
@@ -68,7 +69,7 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "barrier: the enqueue path stops stamping, so the mid-load window is invisible again",
-        ADDON_SERVER_CORE,
+        ADDON_SOCKET_TRANSPORT,
         "        self._stamp_session(command)",
         "        pass  # stamping reverted",
         (
@@ -91,7 +92,7 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "barrier: the enqueue path reaches for bpy on a client thread",
-        ADDON_SERVER_CORE,
+        ADDON_SOCKET_TRANSPORT,
         "        self._stamp_session(command)\n        logger.debug(",
         "        self._stamp_session(command)\n        _ = bpy.data\n        logger.debug(",
         (f"{THREADT}::test_the_stamp_is_read_without_touching_bpy_on_the_client_thread",),
@@ -331,14 +332,14 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "barrier: the write-lock acquisition is unbounded again, outside both of the path's own bounds",
-        ADDON_SERVER_CORE,
+        ADDON_SOCKET_TRANSPORT,
         "        acquired = send_lock.acquire(False) if lock_timeout <= 0 else send_lock.acquire(timeout=lock_timeout)",
         "        acquired = send_lock.acquire()",
         (f"{THREADT}::test_a_malformed_frame_arriving_mid_rejection_cannot_park_the_main_thread",),
     ),
     Revert(
         "barrier: a failed timeout restore reports the frame as delivered, leaving the peer spinning",
-        ADDON_SERVER_CORE,
+        ADDON_SOCKET_TRANSPORT,
         (
             "            logger.warning(\n"
             "                \"Could not restore a client socket's own timeout"

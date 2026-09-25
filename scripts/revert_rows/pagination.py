@@ -8,7 +8,7 @@ limit asked for rather than the page cut, some let a whole float through an inte
 Label prefix: `pagination:`.
 """
 
-from .common import ADDON_HELPERS, ADDON_SERVER_CORE, CAMT, LIGHTT, LKT, RJOBT, SOIT, Revert
+from .common import ADDON_HELPERS, ADDON_SCENE_INSPECTION, CAMT, LIGHTT, LKT, RJOBT, SOIT, Revert
 
 ROWS: list[Revert] = [
     # --- one page shape for every paged reply ---------------------------------------------------
@@ -17,7 +17,7 @@ ROWS: list[Revert] = [
         # which a total of 0 clamps to 0: each page advertised a `next_offset` that led back to
         # the first page.
         "pagination: get_object_info ignores its offset, so every type_data page restarts at the first record",
-        ADDON_SERVER_CORE,
+        ADDON_SCENE_INSPECTION,
         "        type_data = self._object_type_data(obj, sections, limit, offset)\n",
         "        type_data = self._object_type_data(obj, sections, limit, 0)\n",
         (f"{SOIT}::test_get_object_info_resumes_its_type_data_pages_from_the_offset_it_was_given",),

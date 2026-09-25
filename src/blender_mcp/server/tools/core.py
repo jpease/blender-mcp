@@ -36,7 +36,7 @@ _STATUS_COMMANDS: dict[Provider, str] = {
 }
 
 # The provider-gated command each optional integration adds to the addon's handler table
-# (`server_core.py _build_command_handlers`). Its presence in the handshake's capability
+# (`command_registry.py _build_command_handlers`). Its presence in the handshake's capability
 # list is that integration being enabled for the open .blend.
 _INTEGRATION_CAPABILITIES: dict[Provider, str] = {
     "polyhaven": "import_polyhaven_asset",

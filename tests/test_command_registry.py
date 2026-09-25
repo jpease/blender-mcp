@@ -16,7 +16,9 @@ import pytest
 
 from conftest import ROOT_ADDON, load_addon
 
-SERVER_CORE = ROOT_ADDON.parent / "server_core.py"
+# The registry, and the server that dispatches from it: a second classification table
+# could grow back beside the registry in either one.
+REGISTRY_SOURCES = (ROOT_ADDON.parent / "command_registry.py", ROOT_ADDON.parent / "server_core.py")
 
 # The `CommandSpec` fields that classify a command, as opposed to gating it.
 CLASSIFICATION_FIELDS = (
@@ -48,7 +50,22 @@ def server_core(monkeypatch: pytest.MonkeyPatch):
     return sys.modules[f"{addon.__name__}.server_core"]
 
 
-def test_every_registered_command_resolves_to_a_handler(server_core) -> None:
+@pytest.fixture
+def command_registry(server_core):
+    """
+    Read the add-on's `command_registry` out of the same load as `server_core`.
+
+    Args:
+        server_core: The loaded `server_core`, whose package the registry belongs to.
+
+    Returns:
+        ModuleType: The loaded `command_registry`.
+
+    """
+    return sys.modules[f"{server_core.__package__}.command_registry"]
+
+
+def test_every_registered_command_resolves_to_a_handler(server_core, command_registry) -> None:
     """
     A row naming a method this class does not have would be an undispatchable command.
 
@@ -58,12 +75,12 @@ def test_every_registered_command_resolves_to_a_handler(server_core) -> None:
     """
     server = server_core.BlenderMCPServer()
 
-    missing = sorted(name for name in server_core.COMMANDS if not callable(getattr(server, name, None)))
+    missing = sorted(name for name in command_registry.COMMANDS if not callable(getattr(server, name, None)))
 
     assert not missing, f"registered commands with no handler behind them: {missing}"
 
 
-def test_the_whole_dispatch_table_comes_from_the_registry(server_core) -> None:
+def test_the_whole_dispatch_table_comes_from_the_registry(server_core, command_registry) -> None:
     """
     Enabling every provider must advertise exactly the registry, no more and no less.
 
@@ -76,15 +93,15 @@ def test_the_whole_dispatch_table_comes_from_the_registry(server_core) -> None:
     for flag in ("blendermcp_use_polyhaven", "blendermcp_use_sketchfab", "blendermcp_use_nd"):
         setattr(scene, flag, True)
 
-    assert set(server._build_command_handlers()) == set(server_core.COMMANDS)
+    assert set(server._build_command_handlers()) == set(command_registry.COMMANDS)
 
 
-def test_a_disabled_provider_withholds_exactly_its_own_commands(server_core) -> None:
+def test_a_disabled_provider_withholds_exactly_its_own_commands(server_core, command_registry) -> None:
     """The gate is the spec's `provider` field, so no second list can disagree with it."""
     server = server_core.BlenderMCPServer()
 
     assert set(server._build_command_handlers()) == {
-        name for name, spec in server_core.COMMANDS.items() if spec.provider is None
+        name for name, spec in command_registry.COMMANDS.items() if spec.provider is None
     }
 
 
@@ -107,19 +124,20 @@ def test_no_classification_set_survives_outside_the_registry() -> None:
         "_TICK_ENDING_COMMANDS",
         "_INDETERMINATE_SAFE_COMMANDS",
     }
-    tree = ast.parse(SERVER_CORE.read_text(encoding="utf-8"))
-
-    assigned = {
-        target.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        for target in node.targets
-        if isinstance(target, ast.Name)
-    } | {
-        node.target.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
-    }
+    assigned: set[str] = set()
+    for path in REGISTRY_SOURCES:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        assigned |= {
+            target.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        } | {
+            node.target.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+        }
 
     assert not assigned & retired, f"a retired classification table came back: {sorted(assigned & retired)}"
 
@@ -182,7 +200,7 @@ def test_ping_answers_read_only_without_a_live_blender(server_core) -> None:
         pytest.param({"object_name": 7}, [], id="a-non-string-scalar-is-not-a-name"),
     ],
 )
-def test_target_names_reads_the_naming_convention(server_core, params: dict, expected: list[str]) -> None:
+def test_target_names_reads_the_naming_convention(command_registry, params: dict, expected: list[str]) -> None:
     """
     Rollback protection is decided by parameter naming, and this is that decision.
 
@@ -191,9 +209,9 @@ def test_target_names_reads_the_naming_convention(server_core, params: dict, exp
     silent failure worth pinning.
 
     Args:
-        server_core: The loaded add-on module under test.
+        command_registry: The loaded add-on module under test.
         params: One command's params.
         expected: The names that must be protected, in capture order.
 
     """
-    assert server_core.target_names(params) == expected
+    assert command_registry.target_names(params) == expected

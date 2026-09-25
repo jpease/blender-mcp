@@ -14,6 +14,7 @@ from .common import (
     ADDON_FILE_PATHS,
     ADDON_OBJECT_LOOKUP,
     ADDON_SCENE,
+    ADDON_SCENE_INSPECTION,
     ADDON_SERVER_CORE,
     CANDT,
     FLT,
@@ -251,10 +252,10 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "object lookup: get_object_info looks its object up by Blender's list order",
-        ADDON_SERVER_CORE,
-        # The 8-space call alone also matches, as a suffix, the deeper copy in
-        # `_resolve_targets`, which comes first, and `apply()` replaces only the
-        # first match. The trailing `if not obj:` makes the anchor unique.
+        ADDON_SCENE_INSPECTION,
+        # The trailing `if not obj:` keeps the anchor on this lookup: the 8-space call alone
+        # would also match, as a suffix, any deeper copy of it earlier in the file, and
+        # `apply()` replaces only the first match.
         "        obj = find_object(bpy.data.objects, name)\n        if not obj:\n",
         "        obj = bpy.data.objects.get(name)\n        if not obj:\n",
         (f"{SOIT}::test_object_name_lookups_resolve_to_the_override_even_when_the_linked_original_is_listed_first",),
@@ -278,14 +279,14 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "object lookup: get_object_info does not say whether it read an override",
-        ADDON_SERVER_CORE,
+        ADDON_SCENE_INSPECTION,
         '            "is_override": getattr(obj, "override_library", None) is not None,',
         '            "is_override": False,',
         (f"{SOIT}::test_get_object_info_says_whether_it_resolved_an_override_or_a_linked_object",),
     ),
     Revert(
         "object lookup: get_object_info publishes a linked object's library name unreduced",
-        ADDON_SERVER_CORE,
+        ADDON_SCENE_INSPECTION,
         '"library": client_safe_name_leaf(obj.library.name) if',
         '"library": obj.library.name if',
         (f"{SOIT}::test_get_object_info_says_whether_it_resolved_an_override_or_a_linked_object",),

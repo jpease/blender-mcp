@@ -4,13 +4,13 @@ Rows guarding rollback that survives a file swap or a library reload.
 Label prefixes: `transaction:`, `transaction harness:`.
 """
 
-from .common import ADDON_OBJECT_STATE, ADDON_SERVER_CORE, ADDON_SESSION, ADDON_TRANSACTION, MUTT, TSWAPT, Revert
+from .common import ADDON_COMMAND_REGISTRY, ADDON_OBJECT_STATE, ADDON_SESSION, ADDON_TRANSACTION, MUTT, TSWAPT, Revert
 
 ROWS: list[Revert] = [
     # --- rollback that survives a file swap or a library reload -------
     Revert(
         "transaction: the library commands enter mutation_transaction, so a failed reload deletes what it reloaded",
-        ADDON_SERVER_CORE,
+        ADDON_COMMAND_REGISTRY,
         "            or spec.datablock_replacing\n",
         "",
         (
@@ -20,7 +20,7 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "transaction: link_canon_library joins the datablock-replacing set, so a failed link leaks its library",
-        ADDON_SERVER_CORE,
+        ADDON_COMMAND_REGISTRY,
         '        "link_canon_library": CommandSpec(),',
         '        "link_canon_library": CommandSpec(datablock_replacing=True),',
         (

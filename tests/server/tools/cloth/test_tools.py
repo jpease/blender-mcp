@@ -612,7 +612,7 @@ def test_owned_membership_lookup_is_exact(monkeypatch) -> None:
 def test_p1_dispatch_targets_and_geometry_capture_are_declared(monkeypatch) -> None:
     addon, _bpy = load_addon(monkeypatch, data={})
     server = addon.BlenderMCPServer()
-    target_names = sys.modules[f"{addon.__name__}.server_core"].target_names
+    target_names = sys.modules[f"{addon.__name__}.command_registry"].target_names
 
     assert target_names({"cloth_object_name": "Cape"}) == ["Cape"]
     assert target_names({"garment_object_name": "Skirt"}) == ["Skirt"]
@@ -922,6 +922,6 @@ def test_phase_two_commands_are_dispatched_and_transaction_targets_are_declared(
     assert "prepare_cloth_render_surface" in commands
     assert "export_cloth_simulation" in commands
     assert "analyze_cloth_performance" in commands
-    assert sys.modules[f"{addon.__name__}.server_core"].target_names(
+    assert sys.modules[f"{addon.__name__}.command_registry"].target_names(
         {"render_object_name": "Cape_render", "source_object_name": "Cape"}
     ) == ["Cape_render", "Cape"]

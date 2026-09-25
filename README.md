@@ -238,10 +238,10 @@ command = "blender-mcp"
 
 ## Tool Bundles
 
-blender-mcp registers just over 300 tools in total. Sending all of them to a client on every
+blender-mcp has several hundred tools (`just catalog all` counts them). Sending all of them to a client on every
 connection can be large enough to eat into the context available for the actual task, so by
 default a server process only registers its **core** bundle — scene inspection, object editing,
-object removal, viewport, animation, and file lifecycle/linking (36 tools). Everything else is
+object removal, viewport, animation, and file lifecycle/linking. Everything else is
 opt-in, selected with the `BLENDER_MCP_TOOLSETS` environment variable (a comma-separated list of
 names, or `all` for the previous everything-registered behavior).
 

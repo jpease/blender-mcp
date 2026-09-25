@@ -8,7 +8,7 @@ a cancellation that lands between frames (proven by `scenario_render_progress.py
 escape hatch (`orchestrate_animation=False`) hands the whole range to Blender in a single
 command, as the tool originally did.
 
-`TASK_STATE.md` recorded the resulting open question: nobody had timed the two against a
+That left an open question: nobody had timed the two against a
 production-sized animation, and the orchestrated path is the default. A ten-second shot at
 24 fps is 240 round trips; if each one costs a tenth of a second, the default silently adds
 half a minute to every animation render.

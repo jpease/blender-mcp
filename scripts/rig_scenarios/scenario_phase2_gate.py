@@ -51,7 +51,7 @@ barrier = importlib.util.module_from_spec(_BARRIER_SPEC)
 _BARRIER_SPEC.loader.exec_module(barrier)
 
 _COMMAND_TIMEOUT_SECONDS = 180.0
-# Mirrors the `session_swap` rows of `server_core.COMMANDS`. Membership goes by command
+# Mirrors the `session_swap` rows of `command_registry.COMMANDS`. Membership goes by command
 # type, so even a refused swap discards what was queued behind it.
 _SESSION_SWAP_COMMANDS = frozenset({"open_shot", "reset_session"})
 

@@ -17,6 +17,7 @@ import ast
 import dataclasses
 import json
 import socket
+import sys
 import threading
 import time
 import types
@@ -28,6 +29,8 @@ import pytest
 from conftest import ROOT_ADDON, load_addon_for_module
 
 SERVER_CORE = ROOT_ADDON.parent / "server_core.py"
+# Where the client threads frame, decode and queue what a socket delivers.
+SOCKET_TRANSPORT = ROOT_ADDON.parent / "socket_transport.py"
 
 
 class _StubWindowManagerOps:
@@ -169,7 +172,7 @@ _server_core, _registered, _session, _window_manager_ops = _load_server_core()
 BlenderMCPServer = _server_core.BlenderMCPServer
 # The one command registry, so a classification assertion reads the same table
 # the dispatcher does.
-COMMANDS = _server_core.COMMANDS
+COMMANDS = sys.modules[f"{_server_core.__package__}.command_registry"].COMMANDS
 
 
 def _free_port():
@@ -1136,10 +1139,12 @@ def test_the_enqueue_path_is_the_only_producer_and_it_stamps() -> None:
     The drain already rejects unstamped commands; this keeps that branch
     unreachable. Any `.put` or `.put_nowait` call counts, whatever its receiver:
     an alias or a queue passed as an argument would evade a receiver check, and
-    `command_queue` is the module's only queue.
+    `command_queue` is the server's only queue. Both modules that reach it are
+    scanned: `server_core` owns and drains it, and `socket_transport` fills it.
     """
-    text = SERVER_CORE.read_text(encoding="utf-8")
-    assert _queue_producers(text) == ["_decode_and_queue_frame"], "the queue has producers that may not stamp"
+    producers = [name for path in (SERVER_CORE, SOCKET_TRANSPORT) for name in _queue_producers(path.read_text("utf-8"))]
+    assert producers == ["_decode_and_queue_frame"], "the queue has producers that may not stamp"
+    text = SOCKET_TRANSPORT.read_text(encoding="utf-8")
     tree = ast.parse(text)
     source = ast.get_source_segment(
         text,
@@ -1160,7 +1165,7 @@ def test_the_stamp_is_read_without_touching_bpy_on_the_client_thread() -> None:
 
     The stub `bpy` answers from any thread, so no other test here would catch it.
     """
-    tree = ast.parse(SERVER_CORE.read_text(encoding="utf-8"))
+    tree = ast.parse(SOCKET_TRANSPORT.read_text(encoding="utf-8"))
     function = next(
         node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "_decode_and_queue_frame"
     )

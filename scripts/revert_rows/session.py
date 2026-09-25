@@ -9,10 +9,10 @@ Label prefixes: `handshake:`, `get_addon_status:`, `session:`, `text hygiene:`.
 
 from .common import (
     ADDON_BLEND_FILES,
+    ADDON_COMMAND_REGISTRY,
     ADDON_FILE_LIFECYCLE,
     ADDON_INIT,
     ADDON_MANAGER,
-    ADDON_SERVER_CORE,
     ADDON_SESSION,
     ADDON_TEXT_HYGIENE,
     AMT,
@@ -277,7 +277,7 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "session: get_session_info is absent from the dispatch table, so the poll surface cannot be polled",
-        ADDON_SERVER_CORE,
+        ADDON_COMMAND_REGISTRY,
         '        "get_session_info": CommandSpec(read_only=True, indeterminate_safe=True),',
         '        "get_session_info_reverted": CommandSpec(read_only=True, indeterminate_safe=True),',
         (f"{SESSIONT}::test_get_session_info_is_registered_and_read_only",),
@@ -293,14 +293,14 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "session: save_shot joins the swap set, discarding a whole batch every time a client checkpoints",
-        ADDON_SERVER_CORE,
+        ADDON_COMMAND_REGISTRY,
         '        "save_shot": CommandSpec(tick_ending=True),',
         '        "save_shot": CommandSpec(tick_ending=True, session_swap=True),',
         (f"{SESSIONT}::test_the_session_swap_set_holds_the_commands_that_replace_the_database",),
     ),
     Revert(
         "session: a swap is wrapped in mutation_transaction, whose rollback would enumerate the whole new file",
-        ADDON_SERVER_CORE,
+        ADDON_COMMAND_REGISTRY,
         "            or spec.session_swap\n",
         "",
         (f"{SESSIONT}::test_a_session_swap_command_never_reaches_mutation_transaction",),

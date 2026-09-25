@@ -10,11 +10,11 @@ Label prefixes: `linking:`, `polyhaven:`, `file paths:`.
 from .common import (
     ADDON_BLEND_FILES,
     ADDON_CANDIDATES,
+    ADDON_COMMAND_REGISTRY,
     ADDON_FILE_PATHS,
     ADDON_HELPERS,
     ADDON_LINKING,
     ADDON_POLYHAVEN,
-    ADDON_SERVER_CORE,
     FPT,
     LKT,
     PHT,
@@ -68,7 +68,7 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "linking: link_canon_library joins the replacing set, so a failed link keeps its Library",
-        ADDON_SERVER_CORE,
+        ADDON_COMMAND_REGISTRY,
         '        "link_canon_library": CommandSpec(),',
         '        "link_canon_library": CommandSpec(datablock_replacing=True),',
         (
@@ -78,7 +78,7 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "linking: reload_library leaves the replacing set and is transacted",
-        ADDON_SERVER_CORE,
+        ADDON_COMMAND_REGISTRY,
         '        "reload_library": CommandSpec(datablock_replacing=True),',
         '        "reload_library": CommandSpec(),',
         (f"{LKT}::test_the_three_replacing_commands_never_enter_a_transaction_and_the_link_does",),
@@ -242,7 +242,7 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "linking: list_libraries is not read-only, so it pays for a transaction",
-        ADDON_SERVER_CORE,
+        ADDON_COMMAND_REGISTRY,
         '        "list_libraries": CommandSpec(read_only=True),',
         '        "list_libraries": CommandSpec(),',
         (
@@ -513,7 +513,7 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "linking: unlink_libraries is not registered",
-        ADDON_SERVER_CORE,
+        ADDON_COMMAND_REGISTRY,
         '        "unlink_libraries": CommandSpec(datablock_replacing=True),\n',
         "",
         (

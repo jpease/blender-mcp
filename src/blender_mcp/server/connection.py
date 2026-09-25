@@ -196,9 +196,9 @@ _SIDE_EFFECT_FREE_COMMANDS = frozenset({"get_addon_info", "ping"})
 class BlenderConnection:
     """Manage a serialized socket connection to a Blender addon."""
 
-    # Messages are newline-delimited JSON (see server_core.py's handle_client
-    # for why framing is required). Keep this in sync with that file's
-    # _MAX_MESSAGE_BYTES.
+    # Messages are newline-delimited JSON (see the add-on's socket_transport.py,
+    # `extract_frames`, for why framing is required). Keep this in sync with that
+    # file's _MAX_MESSAGE_BYTES.
     _MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 
     host: str
@@ -249,8 +249,8 @@ class BlenderConnection:
         r"""
         Receive exactly one newline-delimited JSON response.
 
-        Messages are terminated by a single `\n` (see server_core.py's
-        handle_client for why explicit framing is needed - trying to
+        Messages are terminated by a single `\n` (see the add-on's socket_transport.py,
+        `extract_frames`, for why explicit framing is needed - trying to
         json.loads() a growing buffer can't tell "incomplete message" apart
         from "complete message plus the start of the next one", and treating
         the latter as incomplete means it can never parse again). Any bytes

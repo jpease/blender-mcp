@@ -18,6 +18,11 @@ ADDON_FILE_PATHS = ROOT / "src/blender_mcp/bundled/addon/file_paths.py"
 ADDON_LIBRARY_DIGEST = ROOT / "src/blender_mcp/bundled/addon/library_digest.py"
 ADDON_POLYHAVEN = ROOT / "src/blender_mcp/bundled/addon/handlers/polyhaven.py"
 ADDON_SERVER_CORE = ROOT / "src/blender_mcp/bundled/addon/server_core.py"
+# What `server_core.py` was split into: the socket transport and its framing, the command
+# registry with every classification and gate read from it, and the scene-inspection handlers.
+ADDON_SOCKET_TRANSPORT = ROOT / "src/blender_mcp/bundled/addon/socket_transport.py"
+ADDON_COMMAND_REGISTRY = ROOT / "src/blender_mcp/bundled/addon/command_registry.py"
+ADDON_SCENE_INSPECTION = ROOT / "src/blender_mcp/bundled/addon/handlers/scene_inspection.py"
 ADDON_CAPABILITY_INTROSPECTION = ROOT / "src/blender_mcp/bundled/addon/capability_introspection.py"
 ADDON_KEY_STYLE = ROOT / "src/blender_mcp/bundled/addon/handlers/key_style.py"
 SERVER_CORE_TOOL = ROOT / "src/blender_mcp/server/tools/core.py"

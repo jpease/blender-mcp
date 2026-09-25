@@ -9,13 +9,13 @@ Label prefixes: `render settings:`, `transaction:`, `scene validation:`,
 """
 
 from .common import (
+    ADDON_COMMAND_REGISTRY,
     ADDON_DELIVERY,
     ADDON_FILE_LIFECYCLE,
     ADDON_LIBRARY_DIGEST,
     ADDON_PROVENANCE,
     ADDON_RENDERING,
     ADDON_SCENE,
-    ADDON_SERVER_CORE,
     ADDON_SESSION,
     ADDON_TRANSACTION,
     DRT,
@@ -524,7 +524,7 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "dispatch: a render that stores its output template still bypasses the transaction",
-        ADDON_SERVER_CORE,
+        ADDON_COMMAND_REGISTRY,
         "            or (spec.non_undo_when is not None and spec.non_undo_when(params))",
         '            or cmd_type in {"render_scene"}',
         (f"{DRT}::test_a_render_that_persists_its_output_template_is_transacted",),

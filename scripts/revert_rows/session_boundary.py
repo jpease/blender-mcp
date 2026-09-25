@@ -10,9 +10,11 @@ Label prefixes: `text hygiene:`, `session:`, `barrier:`, `handshake:`, `get_addo
 
 from .common import (
     ADDON_BLEND_FILES,
+    ADDON_COMMAND_REGISTRY,
     ADDON_MANAGER,
     ADDON_SERVER_CORE,
     ADDON_SESSION,
+    ADDON_SOCKET_TRANSPORT,
     ADDON_TEXT_HYGIENE,
     AMT,
     CONNT,
@@ -122,7 +124,7 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "barrier: the latch refuses the commands that repair and report it, wedging the addon for good",
-        ADDON_SERVER_CORE,
+        ADDON_COMMAND_REGISTRY,
         (
             '        "get_addon_info": CommandSpec(read_only=True, indeterminate_safe=True),\n'
             '        "get_session_info": CommandSpec(read_only=True, indeterminate_safe=True),\n'
@@ -204,9 +206,9 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "barrier: BlockingIOError falls through to `break` again, so EAGAIN reads as a dead client",
-        ADDON_SERVER_CORE,
-        "                except BlockingIOError:",
-        "                except TimeoutError:",
+        ADDON_SOCKET_TRANSPORT,
+        "            except BlockingIOError:",
+        "            except TimeoutError:",
         (f"{THREADT}::test_a_peer_whose_recv_reports_would_block_is_not_disconnected",),
     ),
     # --- the server boundary ---

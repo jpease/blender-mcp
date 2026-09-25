@@ -9,11 +9,11 @@ Label prefixes: `get_addon_status:`, `dispatch:`, `deformed geometry:`, `cycle:`
 
 from .common import (
     ADDON_ANIMATION,
+    ADDON_COMMAND_REGISTRY,
     ADDON_CR_INSPECTION,
     ADDON_FILE_PATHS,
     ADDON_HELPERS,
     ADDON_POSING,
-    ADDON_SERVER_CORE,
     ANIMT,
     CORET,
     CRFT,
@@ -74,7 +74,7 @@ ROWS: list[Revert] = [
         # Dispatched as a write, an inspection pays for a snapshot, a diff and an undo
         # checkpoint to report a number it only read.
         "dispatch: an INSPECT cycle call is dispatched as a write",
-        ADDON_SERVER_CORE,
+        ADDON_COMMAND_REGISTRY,
         (
             '        "set_action_cycle": CommandSpec(\n'
             '            read_only_when=lambda params: str(params.get("operation", "SET")).upper() == "INSPECT"\n'
@@ -91,7 +91,7 @@ ROWS: list[Revert] = [
         # there is no net mutation for a transaction to snapshot - and the snapshot it would
         # take sits around every trial turn of a read-only question.
         "dispatch: the bone-axis probe is dispatched as a mutation",
-        ADDON_SERVER_CORE,
+        ADDON_COMMAND_REGISTRY,
         '        "probe_bone_axis": CommandSpec(read_only=True),\n',
         '        "probe_bone_axis": CommandSpec(),\n',
         (

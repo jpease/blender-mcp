@@ -52,7 +52,6 @@ root = "."
 [tool.ruff]
 target-version = "py313"
 line-length = 120
-extend-exclude = [".audit_tmp"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -139,7 +138,7 @@ build-backend = "setuptools.build_meta"
 packages = [{ include = "blender_mcp", from = "src" }]
 
 [tool.poetry.group.dev.dependencies]
-ruff = ">=0.16.5"
+ruff = "0.16.5"
 pytest = ">=8.0"
 blender-python-stubs = "^5.2.1.1"
 basedpyright = "^1.39.10"

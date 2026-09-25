@@ -192,12 +192,12 @@ def test_the_datablock_replacing_set_is_the_three_library_commands_and_nothing_r
     """
     data = _data_with_libraries()
     addon, _bpy = load_addon(monkeypatch, data=data)
-    _server, server_core, _session, _txn = _modules(addon)
+    commands = sys.modules[f"{addon.__name__}.command_registry"].COMMANDS
 
-    replacing = {name for name, spec in server_core.COMMANDS.items() if spec.datablock_replacing}
+    replacing = {name for name, spec in commands.items() if spec.datablock_replacing}
     assert replacing == set(_LIBRARY_COMMANDS)
-    assert not {name for name in replacing if server_core.COMMANDS[name].session_swap}
-    assert not {name for name in replacing if server_core.COMMANDS[name].read_only}
+    assert not {name for name in replacing if commands[name].session_swap}
+    assert not {name for name in replacing if commands[name].read_only}
     assert "link_canon_library" not in replacing
 
 

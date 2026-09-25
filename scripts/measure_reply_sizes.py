@@ -884,7 +884,7 @@ def _capability_names() -> tuple[str, ...]:
     Read the add-on's advertised command names out of its own source, without importing `bpy`.
 
     `server_core.get_addon_info` publishes `sorted(self._build_command_handlers())`, which is
-    every row of the module-level `COMMANDS` registry whose spec carries no `provider` gate.
+    every row of `command_registry`'s module-level `COMMANDS` registry whose spec carries no `provider` gate.
     The provider-gated rows come and go with the open .blend's scene flags and are absent
     while those integrations are disabled, which is the default.
 
@@ -898,7 +898,7 @@ def _capability_names() -> tuple[str, ...]:
     """
     import ast  # ruff: ignore[import-outside-top-level] - kept local so importing this module parses nothing.
 
-    source = (_SRC_ROOT / "blender_mcp" / "bundled" / "addon" / "server_core.py").read_text(encoding="utf-8")
+    source = (_SRC_ROOT / "blender_mcp" / "bundled" / "addon" / "command_registry.py").read_text(encoding="utf-8")
     registry = next(
         (
             node.value
@@ -908,10 +908,10 @@ def _capability_names() -> tuple[str, ...]:
         None,
     )
     if registry is None:
-        raise SystemExit("refusing to measure: server_core.COMMANDS not found")
+        raise SystemExit("refusing to measure: command_registry.COMMANDS not found")
     table = next((node for node in ast.walk(registry) if isinstance(node, ast.Dict) and node.keys), None)
     if table is None:
-        raise SystemExit("refusing to measure: server_core.COMMANDS holds no command rows")
+        raise SystemExit("refusing to measure: command_registry.COMMANDS holds no command rows")
     return tuple(
         sorted(
             key.value
@@ -984,7 +984,7 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
     """
     return {
         # --- core: server_core.py -------------------------------------------------------
-        # `server_core.py:1855 get_addon_info`.
+        # `server_core.py:910 get_addon_info`.
         "get_addon_info": lambda _scale: {
             "name": "Blender MCP",
             "addon_version": [2, 0, 0],
@@ -999,7 +999,7 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
         "get_polyhaven_status": lambda _scale: {"enabled": False, "message": _PROVIDER_MESSAGE},
         "get_sketchfab_status": lambda _scale: {"enabled": False, "message": _PROVIDER_MESSAGE},
         "get_nd_status": lambda _scale: {"enabled": False, "message": _PROVIDER_MESSAGE},
-        # --- scene inspection: server_core.py:2014, handlers/scene.py -------------------
+        # --- scene inspection: handlers/scene_inspection.py:149, handlers/scene.py ------
         "get_object_info": lambda _scale: {
             "name": "Hero",
             "type": "MESH",

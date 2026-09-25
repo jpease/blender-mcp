@@ -17,15 +17,16 @@ Blender changes, and read the output.
 | `rig_scenarios/` | The scenarios the rig runs. See below. |
 | `measure_catalog.py` | Measures the advertised `tools/list` payload for a `BLENDER_MCP_TOOLSETS` value. The byte ceilings in `tests/server/test_bundles.py` come from it. Covered by `tests/test_measure_catalog.py`. |
 | `quiet_box.py` | Stamps the machine's load into an artifact, so a contended run says so itself. The threading tests carry wall-clock bounds, and this is how a failure caused by a busy machine is told apart from a real one. Covered by `tests/test_quiet_box.py`. |
-| `revert_matrix.py` | Reverts the behaviour each test names and checks the test then fails. A test that still passes with its fix reverted proves nothing. `--only <prefix>` selects a group (`linking`, `file paths`, `barrier`, `session`, …), `--list` prints them all. A full run takes hours. |
+| `revert_matrix.py` | Reverts the behaviour each test names and checks the test then fails. A test that still passes with its fix reverted proves nothing. `--only <prefix>` selects a group (`linking`, `file paths`, `barrier`, `session`, …), `--list` prints them all. A full run takes several minutes on a quiet machine. |
 | `revert_rows/` | The matrix's rows, one module per stretch of the table, named for the area most of its rows guard; each module's docstring lists the label prefixes it holds. `common.py` holds the `Revert` type and the files and test nodes rows cite. A new row goes in the module for its prefix. |
 | `check_revert_anchors.py` | Reports revert-matrix rows that no longer apply to their target file, and exits 1 on a broken or unparseable one; `just check` runs it. The matrix quotes source text, so editing a quoted line silently breaks a row. **Run this after editing any file the matrix reverts.** Covered by `tests/test_check_revert_anchors.py`. |
-| `lint_changed.py` | The enforced lint gate (`just lint`). Runs ruff over the files a branch touches and reports only the findings that land on lines the branch introduced, so the inherited upstream backlog stays out of the way without letting new work add to it. `just lint-all` is the whole backlog. Covered by `tests/test_lint_changed.py`. |
+| `lint_changed.py` | The enforced lint gate (`just lint`). Runs ruff over the files a branch touches and reports only the findings that land on lines the branch introduced, so the inherited upstream backlog stays out of the way without letting new work add to it. Function-size metrics are ratcheted per function against the base, so editing inside a legacy oversized function is not a finding but raising its measured value is. `just lint-all` is the whole backlog. Covered by `tests/test_lint_changed.py`. |
 
-`tests/blender_*_smoke.py` are the other half of this: 19 scripts that drive the
+`tests/blender_*_smoke.py` are the other half of this: scripts that drive the
 add-on's handlers against a real headless Blender. pytest never collects them
 (they are scripts, not `test_*.py`) and CI has no Blender, so `just smoke` is the
-only thing that runs them. It takes about 20 seconds for the whole set.
+only thing that runs them, well under a minute for the whole set. Each loads the
+add-on through `tests/smoke_addon.py`.
 
 ### rig_scenarios/
 
@@ -46,7 +47,7 @@ socket command, goes in a `--blender-script`.
 
 ## Blender API probes
 
-`blender_probes/` holds 24 probes. Every Blender API fact asserted in this codebase was
+`blender_probes/` holds the probes. Every Blender API fact asserted in this codebase was
 established by one of them, which is why they are committed rather than thrown away: when
 Blender changes, re-running them is how you find out what changed. They take no arguments:
 
@@ -60,7 +61,7 @@ Most print an observation transcript for a person to read; only
 ### Vetting a new Blender release
 
 ```
-just probes          # run all 24 against their recorded baselines: ~16 s, no GUI
+just probes          # run every probe against its recorded baseline: seconds, no GUI
 just probes-record   # accept the current transcripts, once every diff is understood
 ```
 

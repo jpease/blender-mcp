@@ -862,7 +862,7 @@ def test_the_session_swap_set_holds_the_commands_that_replace_the_database(
     save.
     """
     addon, _bpy = load_addon(monkeypatch, data={"filepath": "", "is_dirty": False, "libraries": []})
-    commands = sys.modules[f"{addon.__name__}.server_core"].COMMANDS
+    commands = sys.modules[f"{addon.__name__}.command_registry"].COMMANDS
 
     assert {name for name, spec in commands.items() if spec.session_swap} == {"open_shot", "reset_session"}
 
@@ -900,7 +900,8 @@ def test_a_session_swap_command_never_reaches_mutation_transaction(
 
     monkeypatch.setattr(server_core, "mutation_transaction", recording_transaction)
 
-    for cmd_type in (name for name, spec in server_core.COMMANDS.items() if spec.session_swap):
+    commands = sys.modules[f"{addon.__name__}.command_registry"].COMMANDS
+    for cmd_type in (name for name, spec in commands.items() if spec.session_swap):
         assert server._run_handler(cmd_type, lambda: {"ok": True}, {}) == {"ok": True}
 
     assert not entered

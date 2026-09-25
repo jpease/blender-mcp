@@ -6,6 +6,7 @@ Label prefix: `file lifecycle:`.
 
 from .common import (
     ADDON_BLEND_FILES,
+    ADDON_COMMAND_REGISTRY,
     ADDON_FILE_LIFECYCLE,
     ADDON_FILE_PATHS,
     ADDON_SERVER_CORE,
@@ -358,7 +359,7 @@ ROWS: list[Revert] = [
     ),
     Revert(
         "file lifecycle: the three commands are not in the dispatch table",
-        ADDON_SERVER_CORE,
+        ADDON_COMMAND_REGISTRY,
         '        "open_shot": CommandSpec(session_swap=True, indeterminate_safe=True),\n'
         '        "save_shot": CommandSpec(tick_ending=True),\n'
         '        "reset_session": CommandSpec(session_swap=True, indeterminate_safe=True),\n',
