@@ -8,6 +8,8 @@ Label prefixes: `handshake:`, `transport:`, `transport control:`, `strict args:`
 `addon surface:`.
 """
 
+import re
+
 from .common import (
     ADDON_CAPABILITY_INTROSPECTION,
     ADDON_MANAGER,
@@ -25,6 +27,12 @@ from .common import (
     TEST_ADDON_SURFACE_FILE,
     Revert,
 )
+
+# Read from the source, so a protocol bump re-points the row below without an edit to it.
+_PROTOCOL_MATCH = re.search(r"^EXPECTED_ADDON_PROTOCOL_VERSION = (\d+)$", ADDON_MANAGER.read_text(), re.MULTILINE)
+if _PROTOCOL_MATCH is None:
+    raise SystemExit(f"EXPECTED_ADDON_PROTOCOL_VERSION not found in {ADDON_MANAGER}")
+CURRENT_PROTOCOL = int(_PROTOCOL_MATCH.group(1))
 
 # Named because inline the parametrized node ids pass the line limit.
 STUDIO_PREFLIGHT = "test_create_studio_lighting_refuses_a_bad_preview_before_building_the_rig"
@@ -156,13 +164,12 @@ ROWS: list[Revert] = [
     ),
     # --- a dispatch-surface change cannot reach a user behind an unchanged protocol number ---
     Revert(
-        # The anchor carries the current number, so `just anchors` reports this row BROKEN on the
-        # next protocol bump. That is the cheapest possible reminder that the row's claim - the
-        # surface moved and the number did not - has to be re-pointed at the new pair.
+        # The anchor is built from the number in the source, so the row follows every bump: the
+        # revert puts the previous number back while the snapshot keeps the current surface.
         "addon surface: the dispatch table moved while the protocol number stayed where it was",
         ADDON_MANAGER,
-        "EXPECTED_ADDON_PROTOCOL_VERSION = 48",
-        "EXPECTED_ADDON_PROTOCOL_VERSION = 47",
+        f"EXPECTED_ADDON_PROTOCOL_VERSION = {CURRENT_PROTOCOL}",
+        f"EXPECTED_ADDON_PROTOCOL_VERSION = {CURRENT_PROTOCOL - 1}",
         (
             f"{SURFT}::test_snapshot_records_the_protocol_version_the_server_expects",
             f"{SURFT}::test_both_protocol_constants_agree",

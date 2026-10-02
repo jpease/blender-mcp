@@ -7,10 +7,13 @@ first); UNPARSEABLE, whose reverted file does not compile, so its test would fai
 on syntax rather than behaviour; and AMBIGUOUS, whose `old` text occurs more than
 once, so `apply()` reverts the first copy, which may not be the site the row
 means. Ambiguous rows are reported, not refused; fix one by adding a line of
-context to its anchor. A BROKEN or UNPARSEABLE row makes the exit status 1, which
-is how `just check` refuses a hand-off that left the matrix behind its sources.
+context to its anchor. Each BROKEN row is printed with the closest window of
+its file's current lines, so re-pointing it is usually a copy step. A BROKEN or
+UNPARSEABLE row makes the exit status 1, which is how `just check` refuses a
+hand-off that left the matrix behind its sources.
 """
 
+import difflib
 import importlib.util
 import pathlib
 import py_compile
@@ -24,6 +27,35 @@ if spec is None or spec.loader is None:
 rm = importlib.util.module_from_spec(spec)
 sys.modules["rm"] = rm
 spec.loader.exec_module(rm)
+
+
+def closest_snippet(anchor: str, text: str) -> tuple[float, int, str]:
+    """
+    Find the window of `text` that most resembles a vanished anchor.
+
+    Args:
+        anchor: The row's `old` text, no longer present.
+        text: The target file's current contents.
+
+    Returns:
+        tuple[float, int, str]: Similarity ratio, 1-based start line, and the window's text.
+
+    """
+    lines = text.splitlines(keepends=True)
+    width = max(1, len(anchor.splitlines()))
+    best = (0.0, 0, "")
+    matcher = difflib.SequenceMatcher(autojunk=False)
+    matcher.set_seq2(anchor)
+    for start in range(max(1, len(lines) - width + 1)):
+        window = "".join(lines[start : start + width])
+        matcher.set_seq1(window)
+        if matcher.real_quick_ratio() <= best[0] or matcher.quick_ratio() <= best[0]:
+            continue
+        ratio = matcher.ratio()
+        if ratio > best[0]:
+            best = (ratio, start + 1, window)
+    return best
+
 
 missing, unparseable, ambiguous, ok = [], [], [], 0
 for row in rm.REVERTS:
@@ -47,6 +79,12 @@ for row in rm.REVERTS:
 print(f"rows: {len(rm.REVERTS)}   anchors intact: {ok}   anchors BROKEN: {len(missing)}")
 for row in missing:
     print(f"  BROKEN  {row.label}\n            in {row.path.relative_to(rm.ROOT)}")
+    text = row.path.read_text() if row.path.is_file() else ""
+    ratio, line, window = closest_snippet(row.old, text)
+    if window:
+        print(f"            closest current text (line {line}, {ratio:.0%} similar):")
+        for source_line in window.rstrip("\n").splitlines():
+            print(f"            | {source_line}")
 print(f"\nrows whose reverted form does not parse: {len(unparseable)}")
 for row, err in unparseable:
     print(f"  UNPARSEABLE  {row.label}\n                 {err}")

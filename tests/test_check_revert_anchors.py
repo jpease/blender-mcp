@@ -60,3 +60,17 @@ def test_only_a_row_that_cannot_run_fails_the_check(tmp_path: Path, old: str, ne
     result = subprocess.run([sys.executable, str(CHECKER)], cwd=tmp_path, capture_output=True, text=True, check=False)
 
     assert result.returncode == expected_status, result.stdout + result.stderr
+
+
+def test_a_broken_row_is_shown_the_closest_current_text(tmp_path: Path) -> None:
+    """A renamed anchor is reported with the line it most resembles, so re-pointing it is a copy."""
+    (tmp_path / "scripts").mkdir()
+    matrix = _MATRIX.format(old="def answer_value():", new="def answer_value(value=None):")
+    (tmp_path / "scripts" / "revert_matrix.py").write_text(matrix, encoding="utf-8")
+    (tmp_path / "target.py").write_text(_TARGET, encoding="utf-8")
+
+    result = subprocess.run([sys.executable, str(CHECKER)], cwd=tmp_path, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 1
+    assert "(line 1," in result.stdout
+    assert "| def answer():" in result.stdout
