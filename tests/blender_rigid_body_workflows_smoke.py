@@ -8,12 +8,15 @@ Run with::
 
 # Blender runtime types are dynamic in this executable harness.
 
+import itertools
 import json
+import math
 import sys
 
 from pathlib import Path
 
 import bpy
+import mathutils
 
 sys.path.append(str(Path(__file__).resolve().parent))
 from smoke_addon import load_addon
@@ -22,6 +25,7 @@ package_name = "blender_mcp_rigid_body_workflow_smoke"
 load_addon(package_name)
 
 RigidBodyHandlersMixin = sys.modules[f"{package_name}.handlers.rigid_body"].RigidBodyHandlersMixin
+_action_fcurves = sys.modules[f"{package_name}.handlers.object_animation"]._action_fcurves
 
 
 class Harness(RigidBodyHandlersMixin):
@@ -33,6 +37,50 @@ def add_cube(name, location):
     obj = bpy.context.object
     obj.name = name
     return obj
+
+
+def _channel_at(obj, data_path, frame):
+    _action, curves = _action_fcurves(obj)
+    by_index = {curve.array_index: curve for curve in curves if curve.data_path == data_path}
+    return tuple(by_index[index].evaluate(frame) for index in range(len(by_index)))
+
+
+def _arc(first, second):
+    """Measure the angle between two orientations, whichever hemisphere either is spelled in."""
+    return 2.0 * math.acos(min(1.0, abs(first.normalized().dot(second.normalized()))))
+
+
+def _test_bake_keys_a_turn_the_short_way(handler, scene):
+    """
+    Bake a body turning 40 degrees a frame through +-180 and read the curve between the keys.
+
+    The `matrix_world` setter spells each frame's orientation with w >= 0, so the frames either
+    side of the half turn (160 and 200 degrees) came back on opposite hemispheres and the baked
+    curve between two correct poses spun 320 degrees the wrong way.
+    """
+    frames = range(1, 11)
+    pivot = bpy.data.objects.new("Turn Pivot", None)
+    pivot.location = (20.0, 0.0, 0.0)
+    scene.collection.objects.link(pivot)
+    for frame in frames:
+        pivot.rotation_euler = (0.0, 0.0, math.radians(40.0 * (frame - 1)))
+        pivot.keyframe_insert(data_path="rotation_euler", index=2, frame=frame)
+    body = add_cube("Turning Body", (0.0, 0.0, 0.0))
+    body.parent = pivot
+    handler.add_rigid_bodies(scene.name, [body.name], "ACTIVE")
+    body.rigid_body.kinematic = True
+
+    baked = handler.bake_rigid_bodies_to_keyframes(scene.name, [body.name], frames[0], frames[-1])
+    output = bpy.data.objects[baked["output_objects"][0]]
+    keyed = [mathutils.Quaternion(_channel_at(output, "rotation_quaternion", frame)) for frame in frames]
+    for frame, value in zip(frames, keyed, strict=True):
+        asked = mathutils.Quaternion((0.0, 0.0, 1.0), math.radians(40.0 * (frame - 1)))
+        assert _arc(value, asked) < 1e-4, f"baked key at {frame} is not the simulated pose"
+    for before, after in itertools.pairwise(keyed):
+        assert before.dot(after) >= 0.0, f"adjacent baked keys {before} and {after} sit on opposite hemispheres"
+    midway = mathutils.Quaternion(_channel_at(output, "rotation_quaternion", 5.5))
+    detour = _arc(keyed[4], midway) + _arc(midway, keyed[5]) - _arc(keyed[4], keyed[5])
+    assert detour < 1e-3, f"the baked curve leaves the 40-degree arc between frames 5 and 6 by {math.degrees(detour)}"
 
 
 handler = Harness()
@@ -190,6 +238,7 @@ baked = handler.bake_rigid_bodies_to_keyframes(
 )
 assert len(baked["created_duplicates"]) == 1
 assert baked["source_rigid_bodies_retained"] is True
+_test_bake_keys_a_turn_the_short_way(handler, scene)
 
 constraint_name = network["edges"][0]["constraint"]
 removed_constraint = handler.remove_rigid_body_components(

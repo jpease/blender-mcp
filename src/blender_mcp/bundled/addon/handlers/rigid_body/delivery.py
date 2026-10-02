@@ -5,6 +5,7 @@ import contextlib
 
 import bpy
 
+from ..animation import _continuous_rotation
 from .inspection_and_setup import (
     _ensure_collection,
     _remove_rigid_body,
@@ -33,6 +34,33 @@ def _key_transform(obj, frame, key_scale):
     for path in paths:
         if not obj.keyframe_insert(data_path=path, frame=frame, group="Rigid Body Bake"):
             raise RuntimeError(f"Failed to key {obj.name}.{path} at frame {frame}")
+
+
+def _key_outputs(sources, outputs, depsgraph, frame, key_scale, previous_rotations):
+    """
+    Place and key every output at its source's evaluated matrix for one frame.
+
+    The `matrix_world` setter spells each orientation with w >= 0, so a body turning through a
+    half turn between two frames flipped hemisphere and its curve spun the long way round. Each
+    rotation is re-spelled nearest the one this output was keyed with at the previous frame.
+
+    Args:
+        sources: The simulated objects, read before any output moves.
+        outputs: The objects receiving the bake, one per source.
+        depsgraph: The depsgraph evaluated at this frame.
+        frame: The frame to key.
+        key_scale: Whether scale is keyed too.
+        previous_rotations: Each output's last keyed quaternion by name; updated in place.
+
+    """
+    matrices = [source.evaluated_get(depsgraph).matrix_world.copy() for source in sources]
+    for output, matrix in zip(outputs, matrices, strict=True):
+        output.matrix_world = matrix
+        rotation = _continuous_rotation(
+            "QUATERNION", output.rotation_quaternion.copy(), previous_rotations.get(output.name)
+        )
+        output.rotation_quaternion = previous_rotations[output.name] = rotation
+        _key_transform(output, frame, key_scale)
 
 
 class RigidBodyDeliveryHandlers:
@@ -103,16 +131,14 @@ class RigidBodyDeliveryHandlers:
         original_frame = scene.frame_current
         original_subframe = scene.frame_subframe
         original_matrices = {obj.name: obj.matrix_world.copy() for obj in outputs}
+        previous_rotations = {}
         try:
             for frame in frames:
                 scene.frame_set(frame)
                 view_layer = _view_layer_for(scene)
                 view_layer.update()
                 depsgraph = view_layer.depsgraph
-                matrices = [source.evaluated_get(depsgraph).matrix_world.copy() for source in sources]
-                for output, matrix in zip(outputs, matrices, strict=True):
-                    output.matrix_world = matrix
-                    _key_transform(output, frame, key_scale)
+                _key_outputs(sources, outputs, depsgraph, frame, key_scale, previous_rotations)
         except Exception:
             for output in outputs:
                 if output.animation_data:
