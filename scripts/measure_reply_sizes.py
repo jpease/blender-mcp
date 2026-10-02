@@ -1833,6 +1833,29 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "changed_objects": [],
             "changed_resources": [],
         },
+        # `handlers/lighting/rendering.py render_contact_sheet`, at its 30-cell cap.
+        "render_contact_sheet": lambda _scale: {
+            "scene": "Scene",
+            "target_engine": "EEVEE",
+            "runtime_engine": "BLENDER_EEVEE",
+            "samples": 16,
+            "grid": {"width": 1536, "height": 720, "columns": 6, "rows": 5, "cell_width": 256, "cell_height": 144},
+            "cells": [
+                {
+                    "index": index,
+                    "camera": f"Camera_Shot_{index % 6:02d}",
+                    "frame": 1001 + index,
+                    "row": index // 6,
+                    "column": index % 6,
+                }
+                for index in range(30)
+            ],
+            "output_path": "/shots/hero/preview/contact_sheet.png",
+            "size_bytes": 912_408,
+            "warnings": [],
+            "changed_objects": [],
+            "changed_resources": [],
+        },
         # --- character posing: handlers/character_rigging/posing.py ---------------------
         # `handlers/character_rigging/inspection.py sample_deformed_geometry`, the domain's only
         # evaluated readback: one page of vertices, each a world position, a normal and the
@@ -1878,29 +1901,6 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             },
             "limitations": list(_DEFORMED_SAMPLE_LIMITATIONS),
         },
-        # `handlers/character_rigging/posing.py:201 list_character_bones`, paged at 200.
-        "list_character_bones": lambda scale: {
-            "armature_object": "Hero_Rig",
-            "bones": {
-                "items": [
-                    {"name": _bone_name(index), "parent": _bone_name(index - 1) if index else None, "deform": True}
-                    for index in range(min(scale.bones, _BONE_PAGE))
-                ],
-                "total": scale.bones,
-                "offset": 0,
-                "limit": _BONE_PAGE,
-                "truncated": scale.bones > _BONE_PAGE,
-                "next_offset": _BONE_PAGE if scale.bones > _BONE_PAGE else None,
-            },
-        },
-        # `handlers/character_rigging/posing.py probe_bone_axis`, which pages nothing: the six
-        # signed axes are the whole basis, so the largest reply this tool can send is one entry
-        # per axis, each carrying two world points, a travel vector and one component per named
-        # reference direction. Bounded by the handler at six axes and six directions.
-        "probe_bone_axis": lambda _scale: {
-            "armature_object": "Hero_Rig",
-            "bone": _bone_name(3),
-            "space": "LOCAL",
         # `handlers/character_rigging/evaluated_range.py sample_evaluated_range`: one page of frames,
         # each the bones' world head and tail and one mesh's bounds and penetration of a floor.
         "sample_evaluated_range": lambda _scale: {
@@ -1944,6 +1944,29 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "timeline_restored": {"frame": 1, "subframe": 0.0},
             "inside_test": "RAY_PARITY",
         },
+        # `handlers/character_rigging/posing.py:201 list_character_bones`, paged at 200.
+        "list_character_bones": lambda scale: {
+            "armature_object": "Hero_Rig",
+            "bones": {
+                "items": [
+                    {"name": _bone_name(index), "parent": _bone_name(index - 1) if index else None, "deform": True}
+                    for index in range(min(scale.bones, _BONE_PAGE))
+                ],
+                "total": scale.bones,
+                "offset": 0,
+                "limit": _BONE_PAGE,
+                "truncated": scale.bones > _BONE_PAGE,
+                "next_offset": _BONE_PAGE if scale.bones > _BONE_PAGE else None,
+            },
+        },
+        # `handlers/character_rigging/posing.py probe_bone_axis`, which pages nothing: the six
+        # signed axes are the whole basis, so the largest reply this tool can send is one entry
+        # per axis, each carrying two world points, a travel vector and one component per named
+        # reference direction. Bounded by the handler at six axes and six directions.
+        "probe_bone_axis": lambda _scale: {
+            "armature_object": "Hero_Rig",
+            "bone": _bone_name(3),
+            "space": "LOCAL",
             "degrees": 15.0,
             "bone_length_m": 0.284531,
             "witness_bone": _bone_name(9),
@@ -2407,6 +2430,12 @@ _ARGUMENTS: Mapping[str, Mapping[str, object]] = MappingProxyType(
         "link_canon_library": {"filepath": "/shots/canon/canon.blend"},
         "list_character_bones": {"armature_object_name": "Hero_Rig"},
         "sample_deformed_geometry": {"mesh_object_name": "Hero"},
+        "sample_evaluated_range": {
+            "frame_start": 1,
+            "frame_end": 120,
+            "bone_points": [{"armature_object_name": "Rig", "bone_name": _bone_name(index)} for index in range(3)],
+            "mesh_metrics": {"object_names": ["Body"], "against_object_names": ["Floor"]},
+        },
         "list_libraries": {},
         "list_lights": {"scene_name": "Scene"},
         "list_scene_objects": {},
@@ -2430,12 +2459,6 @@ _ARGUMENTS: Mapping[str, Mapping[str, object]] = MappingProxyType(
         "manage_nla_tracks": {
             "target": {"type": "OBJECT", "name": "Hero_Rig"},
             "action": "CREATE_TRACK",
-        "sample_evaluated_range": {
-            "frame_start": 1,
-            "frame_end": 120,
-            "bone_points": [{"armature_object_name": "Rig", "bone_name": _bone_name(index)} for index in range(3)],
-            "mesh_metrics": {"object_names": ["Body"], "against_object_names": ["Floor"]},
-        },
             "track_name": "Base",
         },
         "manage_object_constraints": {
@@ -2458,6 +2481,10 @@ _ARGUMENTS: Mapping[str, Mapping[str, object]] = MappingProxyType(
             "camera_name": "Camera_Hero",
             "frame": 1,
             "target_engine": "EEVEE",
+        },
+        "render_contact_sheet": {
+            "scene_name": "Scene",
+            "cells": [{"camera_name": f"Camera_Shot_{index % 6:02d}", "frame": 1001 + index} for index in range(30)],
         },
         "render_scene": {
             "scene_name": "Scene",
@@ -2523,6 +2550,10 @@ _UNMEASURED: Mapping[str, str] = MappingProxyType(
         ),
         "render_lighting_preview": (
             "image content: one base64 PNG per previewed engine, sized by the render. "
+            "Its envelope item is measured below."
+        ),
+        "render_contact_sheet": (
+            "image content: one base64 PNG of the grid, sized by the cells' renders. "
             "Its envelope item is measured below."
         ),
         "create_studio_lighting": (

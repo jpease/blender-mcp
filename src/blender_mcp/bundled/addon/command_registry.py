@@ -365,6 +365,7 @@ COMMANDS: Mapping[str, CommandSpec] = MappingProxyType(
         "configure_lighting_quality": CommandSpec(),
         "configure_color_management": CommandSpec(),
         "render_lighting_preview": CommandSpec(),
+        "render_contact_sheet": CommandSpec(),
         "list_materials": CommandSpec(read_only=True),
         "inspect_material": CommandSpec(read_only=True),
         "get_shader_node_type_info": CommandSpec(read_only=True),

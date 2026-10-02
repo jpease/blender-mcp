@@ -146,6 +146,7 @@ LIST_CAPS: dict[tuple[str, str], int] = {
     ("sample_evaluated_range", "bone_points"): 32,
     ("sample_evaluated_range", "mesh_metrics.object_names"): 16,
     ("sample_evaluated_range", "mesh_metrics.against_object_names"): 16,
+    ("render_contact_sheet", "cells"): 30,
     ("validate_lighting_setup", "subject_object_names"): 100,
     ("patch_shader_graph", "operations"): 500,
 }

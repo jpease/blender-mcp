@@ -1,5 +1,7 @@
 """Engine quality, color-management, and bounded lighting-preview MCP tools."""
 
+import contextlib
+import math
 import os
 import tempfile
 
@@ -12,7 +14,7 @@ from pydantic import Field
 
 from ...app import mcp
 from .._dispatch import call_blender
-from .._inputs import StrictModel, dump_input
+from .._inputs import StrictModel, dump_input, dump_inputs
 
 
 class CyclesLightingQuality(StrictModel):
@@ -144,6 +146,10 @@ async def configure_color_management(
 _MAX_FRAME = 1_048_574
 # Above this many samples a Cycles preview is a long render, and runs only on confirmation.
 _MAX_UNCONFIRMED_CYCLES_SAMPLES = 64
+# A contact sheet's bounds; `handlers/lighting/rendering.py` enforces the same ones. Its single
+# inline image holds no more pixels than a BOTH preview at its largest (two 1024x1024 stills).
+_MAX_CONTACT_SHEET_CELLS = 30
+_MAX_CONTACT_SHEET_PIXELS = 2 * 1024 * 1024
 
 
 def validate_preview_arguments(
@@ -224,6 +230,21 @@ def _preview_paths(requested: dict[str, str | None]) -> tuple[dict[str, str], se
     return resolved, temporary
 
 
+def _read_png(path: str, label: str) -> Image:
+    """Read one PNG the add-on wrote into inline image content, refusing a file that never appeared."""
+    if not os.path.exists(path):
+        raise ToolError(f"{label} file was not created")
+    with open(path, "rb") as handle:
+        return Image(data=handle.read(), format="png")
+
+
+def _remove_temporary(paths: set[str]) -> None:
+    """Delete the temporary PNGs a render tool allocated, whether or not the add-on wrote them."""
+    for path in paths:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path)
+
+
 @mcp.tool(structured_output=False)
 async def render_lighting_preview(
     ctx: Context,
@@ -271,19 +292,120 @@ async def render_lighting_preview(
                 "confirm_overwrite": confirm_overwrite,
             },
         )
-        content: list[Image | dict] = []
-        for engine in ["CYCLES", "EEVEE"] if target_engine == "BOTH" else [target_engine]:
-            path = paths[engine]
-            if path in temporary:
-                if not os.path.exists(path):
-                    raise ToolError(f"{engine} preview file was not created")
-                with open(path, "rb") as handle:
-                    content.append(Image(data=handle.read(), format="png"))
+        content: list[Image | dict] = [
+            _read_png(paths[engine], f"{engine} preview")
+            for engine in (["CYCLES", "EEVEE"] if target_engine == "BOTH" else [target_engine])
+            if paths[engine] in temporary
+        ]
         content.append(result)
         return content
     finally:
-        for path in temporary:
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
+        _remove_temporary(temporary)
+
+
+class ContactSheetCell(StrictModel):
+    """One still of a contact sheet: which camera renders it, at which frame."""
+
+    camera_name: str = Field(min_length=1)
+    frame: int = Field(ge=-_MAX_FRAME, le=_MAX_FRAME)
+
+
+def _contact_sheet_grid(cell_count: int, columns: int | None, cell_width: int, cell_height: int) -> tuple[int, int]:
+    """
+    Lay a contact sheet out and refuse one whose grid exceeds the inline-image pixel cap.
+
+    Args:
+        cell_count: How many cells the sheet holds.
+        columns: Requested columns, or None for the smallest square-ish grid.
+        cell_width: Width of each cell in pixels.
+        cell_height: Height of each cell in pixels.
+
+    Returns:
+        tuple[int, int]: The grid's width and height in pixels.
+
+    Raises:
+        ToolError: When columns exceeds the cell count, or the grid holds more than
+            2,097,152 pixels.
+
+    """
+    if columns is not None and columns > cell_count:
+        raise ToolError(f"columns must be at most the number of cells ({cell_count})")
+    columns = columns or math.ceil(math.sqrt(cell_count))
+    width, height = columns * cell_width, math.ceil(cell_count / columns) * cell_height
+    if width * height > _MAX_CONTACT_SHEET_PIXELS:
+        raise ToolError(
+            f"The contact sheet would be {width}x{height} pixels, over the {_MAX_CONTACT_SHEET_PIXELS}-pixel cap; "
+            "use fewer or smaller cells"
+        )
+    return width, height
+
+
+@mcp.tool(structured_output=False)
+async def render_contact_sheet(
+    ctx: Context,
+    scene_name: str,
+    cells: Annotated[list[ContactSheetCell], Field(min_length=1, max_length=_MAX_CONTACT_SHEET_CELLS)],
+    target_engine: Literal["CYCLES", "EEVEE"] = "EEVEE",
+    cell_width: Annotated[int, Field(ge=64, le=512)] = 256,
+    cell_height: Annotated[int, Field(ge=64, le=512)] = 144,
+    columns: Annotated[int, Field(ge=1, le=_MAX_CONTACT_SHEET_CELLS)] | None = None,
+    samples: Annotated[int, Field(ge=1, le=1024)] = 16,
+    output_path: str | None = None,
+    confirm_overwrite: bool = False,
+    confirm_long_render: bool = False,
+) -> list[Image | dict]:
+    """
+    Render small stills of several camera/frame pairs and return them as one grid image.
+
+    Every cell is a still of the user's actual scene, rendered at the cell size with its camera
+    and frame; camera, frame, resolution, engine and samples are overridden and restored
+    afterwards, including when a cell fails. Every camera and frame is checked before the first
+    cell renders. Cells fill the grid left to right, top to bottom; a short last row stays
+    transparent. The envelope's ``cells`` gives each cell's index, camera, frame, row and
+    column (row 0 is the top), and ``grid`` its pixel size. Cycles above 64 samples requires
+    ``confirm_long_render``. Blender is blocked for all of the cell renders, one after another; for
+    a longer batch than this tool admits, render frames with manage_render_job instead.
+
+    Args:
+        ctx: MCP request context.
+        scene_name: Exact name of the scene to render.
+        cells: The stills, in grid order; each names a camera object in the scene and a frame.
+        target_engine: The engine every cell renders with.
+        cell_width: Width of each cell in pixels.
+        cell_height: Height of each cell in pixels.
+        columns: Grid columns, at most the number of cells; omitted, the smallest square-ish grid.
+            The whole grid may hold at most 2,097,152 pixels.
+        samples: Sample count for every cell.
+        output_path: Absolute ``.png`` path to also write the grid to; omitted, it is only returned
+            inline.
+        confirm_overwrite: Replace an existing file at ``output_path``.
+        confirm_long_render: Allow Cycles above 64 samples.
+
+    """
+    _contact_sheet_grid(len(cells), columns, cell_width, cell_height)
+    paths, temporary = _preview_paths(
+        validate_preview_arguments(target_engine, cells[0].frame, samples, confirm_long_render, output_path)
+    )
+    path = paths[target_engine]
+    try:
+        result = await call_blender(
+            "render_contact_sheet",
+            {
+                "scene_name": scene_name,
+                "cells": dump_inputs(cells),
+                "target_engine": target_engine,
+                "output_path": path,
+                "cell_width": cell_width,
+                "cell_height": cell_height,
+                "columns": columns,
+                "samples": samples,
+                "confirm_overwrite": confirm_overwrite,
+            },
+        )
+        image = _read_png(path, "Contact sheet")
+        if path in temporary:
+            # The file is gone once this returns; only a caller's own output_path is worth naming.
+            result["data"]["output_path"] = None
+        return [image, result]
+    finally:
+        _remove_temporary(temporary)

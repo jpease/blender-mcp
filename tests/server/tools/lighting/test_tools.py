@@ -32,6 +32,7 @@ LIGHTING_COMMANDS = {
     "configure_lighting_quality",
     "configure_color_management",
     "render_lighting_preview",
+    "render_contact_sheet",
 }
 READ_ONLY_LIGHTING_COMMANDS = {
     "list_lights",
@@ -490,3 +491,148 @@ def test_configuring_a_widely_shared_light_counts_its_users_and_names_only_the_l
     }
     assert result["changed_objects"] == ["Practical_05"]
     assert result["changed_resources"] == ["Practical Bulb"]
+
+
+def _contact_sheet_arguments(**arguments):
+    """Validate arguments the way FastMCP does before `render_contact_sheet` runs."""
+    tool = lighting.mcp._tool_manager._tools["render_contact_sheet"]
+    return tool.fn_metadata.arg_model.model_validate(arguments)
+
+
+def _cells(count, camera_name="Camera"):
+    return [{"camera_name": camera_name, "frame": index + 1} for index in range(count)]
+
+
+def test_contact_sheet_arguments_refuse_too_many_cells_and_out_of_range_frames() -> None:
+    assert len(_contact_sheet_arguments(scene_name="Scene", cells=_cells(30)).cells) == 30
+    with pytest.raises(ValidationError, match="at most 30"):
+        _contact_sheet_arguments(scene_name="Scene", cells=_cells(31))
+    with pytest.raises(ValidationError):
+        _contact_sheet_arguments(scene_name="Scene", cells=[])
+    with pytest.raises(ValidationError):
+        _contact_sheet_arguments(scene_name="Scene", cells=[{"camera_name": "Camera", "frame": 1_048_575}])
+    with pytest.raises(ValidationError):
+        _contact_sheet_arguments(scene_name="Scene", cells=_cells(2), cell_width=513)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "refusal"),
+    [
+        pytest.param({"cells": _cells(30), "cell_width": 512, "cell_height": 512}, "pixel cap", id="oversize-grid"),
+        pytest.param({"cells": _cells(2), "columns": 3}, "at most the number of cells", id="columns-over-cells"),
+        pytest.param(
+            {"cells": _cells(2), "target_engine": "CYCLES", "samples": 65}, "confirm_long_render", id="sample-gate"
+        ),
+        pytest.param({"cells": _cells(2), "output_path": "sheet.png"}, "absolute .png", id="relative-output"),
+    ],
+)
+def test_contact_sheet_refuses_before_dispatch(stub_blender_connection: StubFactory, arguments, refusal) -> None:
+    connection = stub_blender_connection()
+    validated = _contact_sheet_arguments(scene_name="Scene", **arguments)
+
+    with pytest.raises(ToolError, match=refusal):
+        run_tool(lighting.render_contact_sheet, **validated.model_dump_one_level())
+
+    assert connection.calls == []
+
+
+def test_a_temporary_contact_sheet_is_returned_inline_then_deleted_and_not_named(monkeypatch) -> None:
+    written = []
+
+    class WritingConnection(StubConnection):
+        def send_command(self, command, params):
+            Path(params["output_path"]).write_bytes(b"\x89PNG grid")
+            written.append(params["output_path"])
+            self.calls.append((command, params))
+            return {**self.result, "output_path": params["output_path"]}
+
+    connection = WritingConnection({"grid": {"columns": 2}})
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+    validated = _contact_sheet_arguments(
+        scene_name="Scene", cells=_cells(3), target_engine="CYCLES", samples=128, confirm_long_render=True
+    )
+
+    image, envelope = run_tool(lighting.render_contact_sheet, **validated.model_dump_one_level())
+
+    [(command, params)] = connection.calls
+    assert command == "render_contact_sheet"
+    assert params["cells"] == _cells(3)
+    assert (params["target_engine"], params["samples"], params["columns"]) == ("CYCLES", 128, None)
+    assert image.data == b"\x89PNG grid"
+    assert envelope["data"]["output_path"] is None
+    assert not Path(written[0]).exists(), "the temporary grid PNG was left behind"
+
+
+def _contact_sheet_handler(monkeypatch):
+    """Build a rendering handler over two cameras and a cube, and refuse any start at rendering."""
+    objects = _ObjectsByName(
+        {
+            name: types.SimpleNamespace(name=name, type=kind)
+            for name, kind in (("Front", "CAMERA"), ("Side", "CAMERA"), ("Cube", "MESH"))
+        }
+    )
+    scene = types.SimpleNamespace(name="Scene", objects=objects, camera=objects["Front"], frame_current=7)
+    addon, _bpy = load_addon(monkeypatch, data={"objects": objects, "scenes": {"Scene": scene}})
+    rendering = sys.modules[f"{addon.__name__}.handlers.lighting.rendering"]
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a refused contact sheet started overriding the scene")
+
+    monkeypatch.setattr(rendering, "_preview_render_session", refuse)
+    return rendering.LightingRenderHandlers(), scene
+
+
+_FRONT = {"camera_name": "Front", "frame": 1}
+
+
+@pytest.mark.parametrize(
+    ("cells", "options", "refusal"),
+    [
+        pytest.param(
+            [_FRONT, {"camera_name": "Missing", "frame": 2}], {}, "Object not found: Missing", id="unknown-camera"
+        ),
+        pytest.param(
+            [_FRONT, {"camera_name": "Cube", "frame": 2}],
+            {},
+            r"cells\[1\]: object 'Cube' is not a camera",
+            id="not-a-camera",
+        ),
+        pytest.param(
+            [_FRONT, {"camera_name": "Side", "frame": 1_048_575}],
+            {},
+            r"cells\[1\]\.frame must be",
+            id="frame-beyond-blender",
+        ),
+        pytest.param([{"camera_name": "Side", "frame": 1.0}], {}, r"cells\[0\]\.frame must be", id="float-frame"),
+        pytest.param([_FRONT] * 31, {}, "1 to 30 cells", id="too-many-cells"),
+        pytest.param([_FRONT] * 30, {"cell_width": 512, "cell_height": 512}, "pixel cap", id="oversize-grid"),
+        pytest.param([_FRONT], {"cell_width": 32}, "cell_width", id="cell-too-small"),
+        pytest.param([_FRONT], {"columns": 2}, "columns", id="columns-over-cells"),
+        pytest.param([_FRONT], {"samples": 0}, "samples", id="no-samples"),
+        pytest.param([_FRONT], {"target_engine": "BOTH"}, "CYCLES or EEVEE", id="both-engines"),
+    ],
+)
+def test_contact_sheet_handler_refuses_the_whole_sheet_before_rendering(monkeypatch, cells, options, refusal) -> None:
+    """Every cell is checked before the first render, so a bad last cell leaves the scene untouched."""
+    handler, scene = _contact_sheet_handler(monkeypatch)
+    request = {"target_engine": "EEVEE", "output_path": "/tmp/sheet.png", **options}
+
+    with pytest.raises(ValueError, match=refusal):
+        handler.render_contact_sheet("Scene", cells, **request)
+
+    assert scene.camera.name == "Front"
+    assert scene.frame_current == 7
+
+
+@pytest.mark.parametrize(
+    ("count", "columns", "grid"),
+    [(1, None, (1, 1)), (3, None, (2, 2)), (4, None, (2, 2)), (10, None, (4, 3)), (5, 5, (5, 1)), (5, 2, (2, 3))],
+)
+def test_contact_sheet_layout_defaults_to_the_smallest_square_ish_grid(monkeypatch, count, columns, grid) -> None:
+    addon, _bpy = load_addon(monkeypatch, data={})
+    rendering = sys.modules[f"{addon.__name__}.handlers.lighting.rendering"]
+
+    layout = rendering._contact_sheet_layout(count, columns, 100, 64)
+
+    assert (layout["columns"], layout["rows"]) == grid
+    assert (layout["width"], layout["height"]) == (grid[0] * 100, grid[1] * 64)

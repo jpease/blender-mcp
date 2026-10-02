@@ -1,7 +1,11 @@
 # pyright: reportGeneralTypeIssues=false, reportOptionalSubscript=false
 """Lighting quality, color-management, and bounded preview-render handlers."""
 
+import contextlib
+import math
 import os
+import shutil
+import tempfile
 
 import bpy
 
@@ -36,6 +40,12 @@ MAX_RENDER_RESULT_FLOATS = 16 * 1024 * 1024
 _MIN_PREVIEW_SIZE = 16
 _MAX_PREVIEW_SIZE = 1024
 _MAX_PREVIEW_SAMPLES = 1024
+# The server's own bounds (`server/tools/lighting/rendering.py`): a sheet is many small stills
+# returned inline as one image, so it holds no more pixels than a BOTH preview at its largest.
+_MAX_CONTACT_SHEET_CELLS = 30
+_MIN_CONTACT_SHEET_CELL_SIZE = 64
+_MAX_CONTACT_SHEET_CELL_SIZE = 512
+_MAX_CONTACT_SHEET_PIXELS = 2 * _MAX_PREVIEW_SIZE * _MAX_PREVIEW_SIZE
 
 
 def _validate_quality_owner(owner, patch, allowed):
@@ -215,6 +225,44 @@ def _restore_preview_render_state(scene, old):
         scene.eevee.taa_render_samples = old["eevee_samples"]
 
 
+@contextlib.contextmanager
+def _preview_render_session(scene, width, height):
+    """
+    Override `scene` for bounded PNG stills, then put back everything a preview render changes.
+
+    Camera, frame, engine and samples are the block's to set; all of them, the resolution and
+    format set here, and the Render Result are restored on exit, including on a failed render.
+
+    Yields:
+        list[str]: Empty while the block runs; on exit it holds a warning when the prior Render
+            Result could not be restored and the last preview still occupies it.
+
+    """
+    render_result = _snapshot_render_result()
+    # Each preview render clears render_scene's record of what Render Result holds.
+    prior_record = snapshot_render_result_record()
+    old = _preview_render_state(scene)
+    warnings = []
+    render = scene.render
+    try:
+        render.resolution_x = int(width)
+        render.resolution_y = int(height)
+        render.resolution_percentage = 100
+        render.image_settings.file_format = "PNG"
+        render.image_settings.color_mode = "RGBA"
+        yield warnings
+    finally:
+        _restore_preview_render_state(scene, old)
+        if not _restore_render_result(render_result):
+            warnings.append(
+                "The prior Render Result could not be restored and now holds this preview; "
+                "scene render settings were restored."
+            )
+        elif render_result is not None:
+            # Its prior pixels are back, so whatever rendered them is again what it holds.
+            restore_render_result_record(prior_record)
+
+
 def _render_preview(scene, engine, runtime_engine, samples, path):
     """Render one engine's still to `path` and describe the non-empty PNG it wrote."""
     render = scene.render
@@ -237,6 +285,111 @@ def _render_preview(scene, engine, runtime_engine, samples, path):
         "size_bytes": os.path.getsize(path),
         "samples": int(samples),
     }
+
+
+def _bounded_int(value, label, low, high):
+    """Refuse anything but an int in [low, high]: a bool, and a float even when it is whole."""
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ValueError(f"{label} must be an integer in [{low}, {high}]")
+    return value
+
+
+def _contact_sheet_layout(count, columns, cell_width, cell_height):
+    """Resolve the grid's columns and rows, refusing a cell size or grid outside the sheet's bounds."""
+    size = (_MIN_CONTACT_SHEET_CELL_SIZE, _MAX_CONTACT_SHEET_CELL_SIZE)
+    cell_width = _bounded_int(cell_width, "cell_width", *size)
+    cell_height = _bounded_int(cell_height, "cell_height", *size)
+    columns = math.ceil(math.sqrt(count)) if columns is None else _bounded_int(columns, "columns", 1, count)
+    rows = math.ceil(count / columns)
+    width, height = columns * cell_width, rows * cell_height
+    if width * height > _MAX_CONTACT_SHEET_PIXELS:
+        raise ValueError(
+            f"A {columns}x{rows} grid of {cell_width}x{cell_height} cells is {width}x{height} pixels, over the "
+            f"{_MAX_CONTACT_SHEET_PIXELS}-pixel cap; use fewer or smaller cells"
+        )
+    return {
+        "width": width,
+        "height": height,
+        "columns": columns,
+        "rows": rows,
+        "cell_width": cell_width,
+        "cell_height": cell_height,
+    }
+
+
+def _contact_sheet_cells(scene, cells):
+    """Resolve every cell's camera and frame, refusing the whole sheet before anything renders."""
+    if not isinstance(cells, list) or not 1 <= len(cells) <= _MAX_CONTACT_SHEET_CELLS:
+        raise ValueError(f"cells must be a list of 1 to {_MAX_CONTACT_SHEET_CELLS} cells")
+    resolved = []
+    for index, cell in enumerate(cells):
+        if not isinstance(cell, dict) or set(cell) != {"camera_name", "frame"}:
+            raise ValueError(f"cells[{index}] must have exactly camera_name and frame")
+        camera = object_in_scene(scene, cell["camera_name"])
+        if camera.type != "CAMERA":
+            raise ValueError(f"cells[{index}]: object '{cell['camera_name']}' is not a camera")
+        resolved.append((camera, _bounded_int(cell["frame"], f"cells[{index}].frame", MIN_FRAME, MAX_FRAME)))
+    return resolved
+
+
+def _read_cell_pixels(path, cell_width, cell_height):
+    """Load one rendered cell PNG, copy its pixels out, and remove the image datablock again."""
+    import numpy as np  # ruff: ignore[import-outside-top-level] -- Blender's numpy; absent from the test env
+
+    image = bpy.data.images.load(path, check_existing=False)
+    try:
+        if tuple(image.size) != (cell_width, cell_height):
+            raise RuntimeError(f"Cell render is {tuple(image.size)}, not {(cell_width, cell_height)}: {path}")
+        pixels = np.empty(cell_width * cell_height * 4, dtype=np.float32)
+        image.pixels.foreach_get(pixels)
+    finally:
+        bpy.data.images.remove(image)
+    return pixels.reshape(cell_height, cell_width, 4)
+
+
+def _write_contact_sheet(grid, path):
+    """Save the composited RGBA grid as a PNG through a temporary image datablock it then removes."""
+    height, width, _channels = grid.shape
+    image = bpy.data.images.new("mcp_contact_sheet", width, height, alpha=True)
+    try:
+        image.pixels.foreach_set(grid.ravel())
+        image.filepath_raw = path
+        image.file_format = "PNG"
+        image.save()
+    finally:
+        bpy.data.images.remove(image)
+    if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+        raise RuntimeError(f"Contact sheet did not create a non-empty PNG: {path}")
+
+
+def _render_contact_sheet_grid(scene, cells, engine, runtime_engine, samples, layout):
+    """
+    Render every cell into a scratch directory and composite them, row 0 at the top, into one grid.
+
+    The caller has already overridden resolution and format; this sets each cell's camera and
+    frame. Blender's pixel rows run bottom-up, so row 0 is placed at the top of that buffer.
+    """
+    import numpy as np  # ruff: ignore[import-outside-top-level] -- Blender's numpy; absent from the test env
+
+    cell_width, cell_height = layout["cell_width"], layout["cell_height"]
+    # Cells the last row leaves empty stay transparent.
+    grid = np.zeros((layout["height"], layout["width"], 4), dtype=np.float32)
+    scratch = tempfile.mkdtemp(prefix="blender_mcp_contact_sheet_")
+    try:
+        for index, (camera, frame) in enumerate(cells):
+            scene.camera = camera
+            scene.frame_set(frame)
+            path = os.path.join(scratch, f"cell_{index:02d}.png")
+            _render_preview(scene, engine, runtime_engine, samples, path)
+            row, column = divmod(index, layout["columns"])
+            bottom = (layout["rows"] - 1 - row) * cell_height
+            left = column * cell_width
+            grid[bottom : bottom + cell_height, left : left + cell_width] = _read_cell_pixels(
+                path, cell_width, cell_height
+            )
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    return grid
 
 
 class LightingRenderHandlers:
@@ -363,33 +516,12 @@ class LightingRenderHandlers:
         engines = [target_engine] if target_engine != "BOTH" else ["CYCLES", "EEVEE"]
         resolved_engines = {engine: resolve_engine(engine) for engine in engines}
         paths = _preview_output_paths(engines, output_paths, confirm_overwrite)
-        render_result = _snapshot_render_result()
-        # Each preview render clears render_scene's record of what Render Result holds.
-        prior_record = snapshot_render_result_record()
-        render = scene.render
-        old = _preview_render_state(scene)
-        outputs = []
-        restore_warning = None
-        try:
+        with _preview_render_session(scene, width, height) as warnings:
             scene.camera = camera
             scene.frame_set(int(frame))
-            render.resolution_x = int(width)
-            render.resolution_y = int(height)
-            render.resolution_percentage = 100
-            render.image_settings.file_format = "PNG"
-            render.image_settings.color_mode = "RGBA"
-            for engine in engines:
-                outputs.append(_render_preview(scene, engine, resolved_engines[engine], samples, paths[engine]))
-        finally:
-            _restore_preview_render_state(scene, old)
-            if not _restore_render_result(render_result):
-                restore_warning = (
-                    "The prior Render Result could not be restored and now holds this preview; "
-                    "scene render settings were restored."
-                )
-            elif render_result is not None:
-                # Its prior pixels are back, so whatever rendered them is again what it holds.
-                restore_render_result_record(prior_record)
+            outputs = [
+                _render_preview(scene, engine, resolved_engines[engine], samples, paths[engine]) for engine in engines
+            ]
         return {
             "scene": scene.name,
             "camera": camera.name,
@@ -398,7 +530,54 @@ class LightingRenderHandlers:
             "height": int(height),
             "outputs": outputs,
             "matched_state": _matched_state(scene),
-            "warnings": [restore_warning] if restore_warning else [],
+            "warnings": warnings,
+            "changed_objects": [],
+            "changed_resources": [],
+        }
+
+    def render_contact_sheet(
+        self,
+        scene_name,
+        cells,
+        target_engine,
+        output_path,
+        cell_width=256,
+        cell_height=144,
+        columns=None,
+        samples=16,
+        confirm_overwrite=False,
+    ):
+        """Render small stills of camera/frame cells into one PNG grid and restore all temporary state."""
+        scene = scene_by_name(scene_name)
+        if target_engine not in {"CYCLES", "EEVEE"}:
+            raise ValueError("target_engine must be CYCLES or EEVEE")
+        samples = _bounded_int(samples, "samples", 1, _MAX_PREVIEW_SAMPLES)
+        resolved = _contact_sheet_cells(scene, cells)
+        layout = _contact_sheet_layout(len(resolved), columns, cell_width, cell_height)
+        runtime_engine = resolve_engine(target_engine)
+        path = _preview_output_paths([target_engine], {target_engine: output_path}, confirm_overwrite)[target_engine]
+        with _preview_render_session(scene, layout["cell_width"], layout["cell_height"]) as warnings:
+            grid = _render_contact_sheet_grid(scene, resolved, target_engine, runtime_engine, samples, layout)
+        _write_contact_sheet(grid, path)
+        return {
+            "scene": scene.name,
+            "target_engine": target_engine,
+            "runtime_engine": runtime_engine,
+            "samples": samples,
+            "grid": layout,
+            "cells": [
+                {
+                    "index": index,
+                    "camera": camera.name,
+                    "frame": frame,
+                    "row": index // layout["columns"],
+                    "column": index % layout["columns"],
+                }
+                for index, (camera, frame) in enumerate(resolved)
+            ],
+            "output_path": path,
+            "size_bytes": os.path.getsize(path),
+            "warnings": warnings,
             "changed_objects": [],
             "changed_resources": [],
         }

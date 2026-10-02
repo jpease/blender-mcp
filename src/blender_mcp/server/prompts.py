@@ -92,7 +92,9 @@ def asset_creation_strategy() -> str:
           afterward (with no arguments it reads the in-memory Render Result, which holds
           whatever rendered last); for a bounded preview render, use render_lighting_preview
           (the real scene, its camera/resolution/engine/samples overridden and then restored)
-          or render_pbr_material_preview (a disposable staging scene) instead.
+          or render_pbr_material_preview (a disposable staging scene) instead; to compare
+          several cameras or frames at a glance, render_contact_sheet returns one grid of small
+          stills of the real scene.
 
     6. When two characters must touch, solve the contact, don't hand-build it.
         - Read the real positions first: get_character_rig_info(armature_object_name=...,

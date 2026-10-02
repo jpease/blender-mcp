@@ -2,15 +2,16 @@
 Shared structured-result envelope for MCP tool return values.
 
 Every tool that returns a dict (all tools except `get_viewport_screenshot`,
-`get_sketchfab_model_preview`, `render_lighting_preview`, `render_pbr_material_preview`,
-`inspect_render_output`, and `create_studio_lighting`, which return one or more images
-plus this same envelope as additional content items - see their docstrings) uses `ok()`
-to build it:
+`get_sketchfab_model_preview`, `render_lighting_preview`, `render_contact_sheet`,
+`render_pbr_material_preview`, `inspect_render_output`, and `create_studio_lighting`, which
+return one or more images plus this same envelope as additional content items - see their
+docstrings) uses `ok()` to build it:
 
-Of those five, only `get_viewport_screenshot` is a live viewport capture (OpenGL/GPU
+Of those, only `get_viewport_screenshot` is a live viewport capture (OpenGL/GPU
 offscreen draw, not a render). `render_pbr_material_preview` renders a disposable staging
-scene (a studio material preview); `render_lighting_preview` renders the user's actual scene
-(a lighting comparison) with its camera, frame, resolution, engine and samples temporarily
+scene (a studio material preview); `render_lighting_preview` (a lighting comparison) and
+`render_contact_sheet` (a grid of camera/frame stills) render the user's actual scene with its
+camera, frame, resolution, engine and samples temporarily
 overridden and restored afterwards. `render_scene` renders the user's actual scene but only
 writes files to disk and returns metadata (path, size, per-frame status), not pixels;
 call `inspect_render_output` afterward, pointed at one of those written paths, to actually

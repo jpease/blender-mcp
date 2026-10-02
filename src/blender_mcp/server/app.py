@@ -97,19 +97,20 @@ Every tool below returns one of two shapes:
      naming what the call touches beyond its reply.
 
 2. get_viewport_screenshot, get_sketchfab_model_preview, render_lighting_preview,
-   render_pbr_material_preview, and inspect_render_output
+   render_contact_sheet, render_pbr_material_preview, and inspect_render_output
    return image content followed by the same ok() dict described above. A lighting preview
    returns inline images in CYCLES/EEVEE order for engines without explicit output paths;
-   fully explicit output paths return only the envelope. PBR previews likewise return inline images
-   for engines without explicit paths, followed by their envelope. Read the final item for metadata
-   and warnings rather than inspecting only the image content.
+   fully explicit output paths return only the envelope. A contact sheet always returns its one
+   grid image. PBR previews likewise return inline images for engines without explicit paths,
+   followed by their envelope. Read the final item for metadata and warnings rather than
+   inspecting only the image content.
    - get_viewport_screenshot is a live viewport capture, not a render - it will not match
      final render output (engine, lighting, color management). render_pbr_material_preview
-     renders a disposable staging scene. render_lighting_preview renders the user's actual
-     scene, with its camera, frame, resolution, engine and samples temporarily overridden and
-     restored afterwards. render_scene renders the user's actual scene but only writes files to
-     disk and never returns pixels itself - only its written-path/size/status metadata. To
-     actually see render_scene's pixels, call inspect_render_output(output_path=<its "last_file",
+     renders a disposable staging scene. render_lighting_preview and render_contact_sheet render
+     the user's actual scene, with its camera, frame, resolution, engine and samples temporarily
+     overridden and restored afterwards. render_scene renders the user's actual scene but only
+     writes files to disk and never returns pixels itself - only its written-path/size/status
+     metadata. To actually see render_scene's pixels, call inspect_render_output(output_path=<its "last_file",
      or one of its detail=true "files" paths>) afterward. With no output_path it reads the
      in-memory Render Result instead, which holds only the most recent render, whoever started
      it (a lighting preview or a render from Blender's UI included); a Render Result

@@ -56,6 +56,7 @@ _FILE_TOOLS = {
     "export_rigid_body_animation",
     "manage_geometry_nodes_bake",
     "render_lighting_preview",
+    "render_contact_sheet",
     "setup_liquid_shot",
     "render_scene",
     # Writes its frames from a separate process, and saves only a copy of the open file.
@@ -76,6 +77,7 @@ _IMAGE_TOOLS = {
     "get_viewport_screenshot",
     "get_sketchfab_model_preview",
     "render_lighting_preview",
+    "render_contact_sheet",
     "render_pbr_material_preview",
     "inspect_render_output",
 }
