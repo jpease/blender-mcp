@@ -12,7 +12,6 @@ _SYNC_MODES = {"NONE", "FRAME_DROP", "AUDIO_SYNC"}
 _UNIT_PROPERTIES = {"system", "scale_length"}
 _SCENE_PROPERTIES = {"sync_mode", "use_gravity", "gravity"}
 _PHYSICS_PATCH_PROPERTIES = _UNIT_PROPERTIES | _SCENE_PROPERTIES
-_MAX_CONVERT_SECONDS = 32
 _MIN_SCALE_LENGTH = 0.001
 _MAX_SCALE_LENGTH = 100.0
 _GRAVITY_COMPONENTS = 3
@@ -74,8 +73,8 @@ def _scene_fps(scene):
 def _seconds_to_frame_table(scene, convert_seconds):
     if convert_seconds is None:
         return None
-    if not isinstance(convert_seconds, (list, tuple)) or len(convert_seconds) > _MAX_CONVERT_SECONDS:
-        raise ValueError(f"convert_seconds must be a list of at most {_MAX_CONVERT_SECONDS} numbers")
+    if not isinstance(convert_seconds, (list, tuple)):
+        raise ValueError("convert_seconds must be a list of numbers")
     fps = _scene_fps(scene)
     table = []
     for seconds in convert_seconds:

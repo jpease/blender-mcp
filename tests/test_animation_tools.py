@@ -2,6 +2,7 @@
 """Schema, registration, and forwarding tests for generic animation tools."""
 
 import asyncio
+import sys
 import types
 
 import pytest
@@ -803,7 +804,7 @@ def test_the_cycle_tool_refuses_a_malformed_range_before_the_socket(monkeypatch)
     # A period of zero and a negative blend are refused by the advertised schema, which is
     # what an MCP client validates against before the call is ever made.
     advertised = animation.mcp._tool_manager._tools["set_action_cycle"].parameters["properties"]
-    assert advertised["expected_period_frames"]["anyOf"][0]["exclusiveMinimum"] == pytest.approx(0.0)
+    assert advertised["expected_period_frames"]["exclusiveMinimum"] == pytest.approx(0.0)
     assert advertised["blend_in"]["minimum"] == pytest.approx(0.0)
     assert advertised["blend_out"]["minimum"] == pytest.approx(0.0)
     assert advertised["mode_before"]["default"] == "NONE"
@@ -1128,3 +1129,438 @@ def test_the_cycle_notice_is_measured_before_the_batch_starts_inserting(monkeypa
     assert len(result["warnings"]) == 1, result["warnings"]
     assert "keyed at frame 199" in result["warnings"][0]
     assert [point.co[0] for point in curve.keyframe_points] == [1.0, 17.0, 199.0, 100.0]
+
+
+def _layered_action(name, slot, curves, *, users=1):
+    """Build a layered Action holding `curves` in `slot`'s channelbag, readable through `action_fcurve_collections`."""
+    bag = types.SimpleNamespace(slot_handle=slot.handle, fcurves=_FakeFCurves(curves))
+    strip = types.SimpleNamespace(
+        type="KEYFRAME",
+        channelbags=[bag],
+        channelbag=lambda wanted, ensure=False: bag if wanted.handle == slot.handle else None,
+    )
+    return types.SimpleNamespace(
+        name=name, users=users, is_action_layered=True, slots=[slot], layers=[types.SimpleNamespace(strips=[strip])]
+    )
+
+
+def _slot(handle, name="Rig"):
+    return types.SimpleNamespace(identifier=f"OB{name}", handle=handle, target_id_type="OBJECT", name_display=name)
+
+
+def test_an_unassigned_clip_is_edited_without_touching_the_active_action(monkeypatch) -> None:
+    """assign_action=False writes into the clip's slot; the target keeps the action that drives it."""
+    walk_curve = _FakeCurve("location", 1, frames=(1.0, 17.0))
+    handler, target, _bag = _edit_handler(monkeypatch, [walk_curve])
+    bpy = sys.modules["bpy"]
+    rig = bpy.data.objects.get("Rig")
+    walk, walk_slot = rig.animation_data.action, rig.animation_data.action_slot
+    clip = _layered_action("Rig_wave", _slot(9), [], users=0)
+    bpy.data.actions = types.SimpleNamespace(get=lambda name: clip if name == "Rig_wave" else None)
+
+    result = handler.edit_keyframes(
+        target,
+        [{"data_path": "location", "array_index": 1, "frame": 5, "value": 2.0}],
+        action_name="Rig_wave",
+        assign_action=False,
+    )
+
+    clip_curve = clip.layers[0].strips[0].channelbags[0].fcurves.find("location", index=1)
+    assert [point.co for point in clip_curve.keyframe_points] == [[5.0, 2.0]]
+    assert [point.co[0] for point in walk_curve.keyframe_points] == [1.0, 17.0]
+    assert (rig.animation_data.action, rig.animation_data.action_slot) == (walk, walk_slot)
+    assert (result["action"], result["assigned_action"]) == ("Rig_wave", "Walk")
+    # Nothing references the clip yet: the reply says so as data, not as a warning on the first
+    # step of the intended key-then-ADD_STRIP workflow.
+    assert result["keyed_action_users"] == 0
+    assert result["warnings"] == []
+
+
+def test_an_unassigned_clip_without_a_name_is_refused_before_the_socket(monkeypatch) -> None:
+    connection = _Connection()
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+    target = animation.AnimationTarget(type="OBJECT", name="Rig")
+    edit = animation.KeyframeEdit(data_path="location", frame=1.0, value=0.0)
+
+    with pytest.raises(ToolError, match="assign_action=False requires action_name"):
+        asyncio.run(animation.edit_keyframes(ctx=None, target=target, edits=[edit], assign_action=False))
+
+    assert connection.calls == []
+
+
+def _rig_on_walk_beside_wave(monkeypatch, walk_curves):
+    """Build the `_edit_handler` rig on 'Walk' holding `walk_curves`, with an empty layered 'Wave' in the file."""
+    handler, target, _bag = _edit_handler(monkeypatch, walk_curves)
+    bpy = sys.modules["bpy"]
+    rig = bpy.data.objects.get("Rig")
+    wave = _layered_action("Wave", _slot(9), [], users=0)
+    bpy.data.actions = types.SimpleNamespace(get=lambda name: wave if name == "Wave" else None)
+    return handler, target, rig, wave
+
+
+def test_every_assigning_tool_refuses_to_displace_an_action_that_holds_keys(monkeypatch) -> None:
+    """One guard and one field: edit_keyframes and manage_animation_action ask what the keying tools ask."""
+    handler, target, rig, wave = _rig_on_walk_beside_wave(monkeypatch, [_FakeCurve("location", 0, frames=(1.0, 17.0))])
+    walk = rig.animation_data.action
+    edit = [{"data_path": "location", "array_index": 1, "frame": 5, "value": 2.0}]
+
+    with pytest.raises(ValueError, match=r"'Walk' holds 1 F-Curve\(s\).*confirm_displace_action=True"):
+        handler.edit_keyframes(target, edit, action_name="Wave")
+    with pytest.raises(ValueError, match=r"'Walk' holds 1 F-Curve\(s\).*confirm_displace_action=True"):
+        handler.manage_animation_action(target, "ASSIGN", action_name="Wave")
+    assert rig.animation_data.action is walk
+
+    reply = handler.manage_animation_action(target, "ASSIGN", action_name="Wave", confirm_displace_action=True)
+
+    assert reply["action"] == "Wave"
+    assert rig.animation_data.action is wave
+
+
+def test_displacing_an_action_with_no_keys_needs_no_confirmation(monkeypatch) -> None:
+    """An empty action drives nothing, so moving off it discards no work - the keying tools' rule."""
+    handler, target, rig, wave = _rig_on_walk_beside_wave(monkeypatch, [])
+
+    reply = handler.edit_keyframes(
+        target, [{"data_path": "location", "array_index": 1, "frame": 5, "value": 2.0}], action_name="Wave"
+    )
+
+    assert (reply["action"], reply["assigned_action"]) == ("Wave", "Wave")
+    assert rig.animation_data.action is wave
+
+
+def test_a_bake_refuses_to_displace_keyed_motion_before_it_samples(monkeypatch) -> None:
+    """A bake assigns its new action, so the motion it may be baking from was silently unassigned."""
+    handler, _target, rig, _wave = _rig_on_walk_beside_wave(
+        monkeypatch, [_FakeCurve("location", 0, frames=(1.0, 17.0))]
+    )
+    walk = rig.animation_data.action
+
+    with pytest.raises(ValueError, match=r"Assigning 'Baked' would unassign 'Walk'.*confirm_displace_action=True"):
+        handler.bake_evaluated_animation(
+            {"object_name": "Rig", "transforms": ["LOCATION"]}, 1, 2, action_name="Baked", confirm_bake=True
+        )
+
+    assert rig.animation_data.action is walk
+
+
+class _SlotRefusingAnimation(types.SimpleNamespace):
+    """`animation_data` whose `action_slot` Blender refuses once `refuse` is set, as it does for an unsuitable slot."""
+
+    def __setattr__(self, name, value):
+        if name == "action_slot" and getattr(self, "refuse", False):
+            raise RuntimeError("slot is not suitable")
+        super().__setattr__(name, value)
+
+
+def _borrowing_owner():
+    walk_slot = _slot(1)
+    animation_data = _SlotRefusingAnimation(
+        action=types.SimpleNamespace(name="Walk"), action_slot=walk_slot, nla_tracks=[], drivers=[]
+    )
+    owner = types.SimpleNamespace(name="Rig", animation_data=animation_data)
+    owner.animation_data_create = lambda: animation_data
+    animation_data.refuse = True
+    return owner, animation_data
+
+
+def test_a_slot_the_restore_cannot_put_back_is_reported_not_swallowed(monkeypatch) -> None:
+    addon, _bpy = load_addon(monkeypatch, data={})
+    restored_action_assignment = addon.handlers.action_assignment.restored_action_assignment
+    owner, animation_data = _borrowing_owner()
+    walk = animation_data.action
+    warnings = []
+
+    with restored_action_assignment(owner, warnings, only_on_error=False):
+        animation_data.action = types.SimpleNamespace(name="Wave")
+
+    assert animation_data.action is walk
+    (warning,) = warnings
+    assert "Blender refused its previous slot 'OBRig' (slot is not suitable)" in warning
+
+
+def test_a_slot_refused_while_unwinding_an_error_travels_with_that_error(monkeypatch) -> None:
+    addon, _bpy = load_addon(monkeypatch, data={})
+    restored_action_assignment = addon.handlers.action_assignment.restored_action_assignment
+    owner, animation_data = _borrowing_owner()
+    warnings = []
+
+    with (
+        pytest.raises(
+            RuntimeError, match=r"Could not insert key\. 'Rig' is back on action 'Walk', but Blender refused"
+        ),
+        restored_action_assignment(owner, warnings),
+    ):
+        raise ValueError("Could not insert key")
+
+    assert animation_data.action.name == "Walk"
+    assert warnings == []
+
+
+def _nla_strip(name, slot, curves, frames=(1.0, 24.0), **fields):
+    """
+    Build one NLA strip keying `curves` over `frames`, at Blender's defaults unless `fields` say otherwise.
+
+    Args:
+        name: The strip's name; its action is named `<name>_clip`.
+        slot: The strip's action slot.
+        curves: `(data_path, array_index)` pairs the strip's action keys.
+        frames: The strip's frame_start and frame_end.
+        **fields: Strip fields to change: mute, extrapolation, blend_type, use_animated_influence.
+
+    Returns:
+        types.SimpleNamespace: The strip.
+
+    """
+    strip = types.SimpleNamespace(
+        name=name,
+        mute=False,
+        extrapolation="HOLD",
+        blend_type="REPLACE",
+        use_animated_influence=False,
+        frame_start=frames[0],
+        frame_end=frames[1],
+        action=_layered_action(f"{name}_clip", slot, [_FakeCurve(path, index) for path, index in curves]),
+        action_slot=slot,
+    )
+    for field, value in fields.items():
+        setattr(strip, field, value)
+    return strip
+
+
+def _track(name, *strips, mute=False, is_solo=False):
+    return types.SimpleNamespace(name=name, mute=mute, is_solo=is_solo, strips=list(strips))
+
+
+def _nla_owner(active_curves, strip_curves, **overrides):
+    """
+    Build an ID playing an active Action over one NLA strip, each keying the curves given.
+
+    Args:
+        active_curves: `(data_path, array_index)` pairs the active Action keys.
+        strip_curves: The same, for the strip's Action.
+        **overrides: Animation-data fields to change from a stack where the active Action fully
+            overrides what it shares with the strip, plus `strip_mute`, `track_mute`,
+            `track_solo`, `strip_frames`, `action_frames` (the active Action's frame_range) and
+            `extra_tracks` (stacked above the strip's track).
+
+    Returns:
+        types.SimpleNamespace: The ID.
+
+    """
+    active_slot, strip_slot = _slot(1), _slot(2)
+    strip = _nla_strip(
+        "Wave",
+        strip_slot,
+        strip_curves,
+        overrides.pop("strip_frames", (1.0, 24.0)),
+        mute=overrides.pop("strip_mute", False),
+    )
+    track = _track(
+        "Gestures", strip, mute=overrides.pop("track_mute", False), is_solo=overrides.pop("track_solo", False)
+    )
+    tracks = [track, *overrides.pop("extra_tracks", [])]
+    action = _layered_action("Walk", active_slot, [_FakeCurve(path, index) for path, index in active_curves])
+    action.frame_range = overrides.pop("action_frames", (1.0, 24.0))
+    animation_data = types.SimpleNamespace(
+        use_nla=True,
+        action=action,
+        action_slot=active_slot,
+        action_blend_type="REPLACE",
+        action_influence=1.0,
+        action_extrapolation="HOLD",
+        nla_tracks=tracks,
+    )
+    for field, value in overrides.items():
+        setattr(animation_data, field, value)
+    return types.SimpleNamespace(name="Rig", animation_data=animation_data)
+
+
+def test_an_active_action_overriding_a_strip_names_the_strip_and_the_channels_it_hides(monkeypatch) -> None:
+    """The clip keyed into the active action and then stripped plays nothing; the reply must say so."""
+    addon, _bpy = load_addon(monkeypatch, data={})
+    hidden_strip_warning = addon.handlers.action_assignment.hidden_strip_warning
+    shared = [("location", 0), ("location", 1), ("location", 2), ("rotation_euler", 2), ("scale", 0)]
+    owner = _nla_owner([*shared, ("rotation_euler", 0)], [*shared, ("hide_viewport", 0)])
+
+    (warning,) = hidden_strip_warning(owner)
+
+    assert "'Rig' plays its active action 'Walk'" in warning
+    assert "overriding 5 channel(s) that strip(s) 'Wave' also key" in warning
+    # Bounded: three channels named, the rest counted - warnings are never paged.
+    assert "(location[0], location[1], location[2] and 2 more)" in warning
+    assert "manage_animation_action UNASSIGN" in warning
+    assert "assign_action=False" in warning
+
+
+def test_a_strip_whose_channels_are_already_counted_is_still_named_as_hidden(monkeypatch) -> None:
+    """
+    Once every channel the active action keys is counted, later strips are only checked for one.
+
+    That shortcut is what keeps the scan off every curve of a twenty-strip stack; it must still
+    name each strip it finds, or the notice under-reports the clips that play nothing.
+    """
+    addon, _bpy = load_addon(monkeypatch, data={})
+    location = [("location", 0), ("location", 1), ("location", 2)]
+    nod = _nla_strip("Nod", _slot(3), [("location", 0)])
+    owner = _nla_owner(location, location, extra_tracks=[_track("Nods", nod)])
+
+    (warning,) = addon.handlers.action_assignment.hidden_strip_warning(owner)
+
+    assert "overriding 3 channel(s) that strip(s) 'Nod', 'Wave' also key" in warning
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"use_nla": False},
+        {"action_blend_type": "COMBINE"},
+        {"action_influence": 0.5},
+        {"strip_mute": True},
+        {"track_mute": True},
+        {"extra_tracks": [_track("Solo", is_solo=True)]},
+        # A solo track silences the active action along with every other track.
+        {"track_solo": True},
+        {"use_tweak_mode": True},
+    ],
+    ids=[
+        "nla-off",
+        "combine",
+        "partial-influence",
+        "strip-muted",
+        "track-muted",
+        "other-track-solo",
+        "own-track-solo",
+        "tweak-mode",
+    ],
+)
+def test_a_strip_the_active_action_does_not_fully_override_raises_nothing(monkeypatch, overrides) -> None:
+    addon, _bpy = load_addon(monkeypatch, data={})
+    owner = _nla_owner([("location", 0)], [("location", 0)], **overrides)
+
+    assert addon.handlers.action_assignment.hidden_strip_warning(owner) == []
+
+
+def test_a_strip_keying_other_channels_than_the_active_action_raises_nothing(monkeypatch) -> None:
+    addon, _bpy = load_addon(monkeypatch, data={})
+    owner = _nla_owner([("location", 0)], [("rotation_euler", 2)])
+
+    assert addon.handlers.action_assignment.hidden_strip_warning(owner) == []
+
+
+@pytest.mark.parametrize(
+    ("extrapolation", "action_frames", "hidden"),
+    [
+        # HOLD plays the action's end values on every frame, before and after.
+        ("HOLD", (50.0, 60.0), True),
+        # HOLD_FORWARD plays from the first key on: a strip wholly before it is untouched...
+        ("HOLD_FORWARD", (50.0, 60.0), False),
+        # ...and one after the first key is overridden even past the last.
+        ("HOLD_FORWARD", (1.0, 10.0), True),
+        # NOTHING plays only the keyed range: a strip elsewhere plays.
+        ("NOTHING", (1.0, 10.0), False),
+        ("NOTHING", (35.0, 70.0), True),
+        # One shared frame is a frame the strip does not play.
+        ("NOTHING", (1.0, 30.0), True),
+    ],
+    ids=["hold", "hold-forward-after", "hold-forward-before", "nothing-apart", "nothing-overlapping", "touching"],
+)
+def test_the_active_action_hides_a_strip_only_on_frames_its_extrapolation_plays(
+    monkeypatch, extrapolation, action_frames, hidden
+) -> None:
+    addon, _bpy = load_addon(monkeypatch, data={})
+    owner = _nla_owner(
+        [("location", 0)],
+        [("location", 0)],
+        strip_frames=(30.0, 40.0),
+        action_frames=action_frames,
+        action_extrapolation=extrapolation,
+    )
+
+    assert bool(addon.handlers.action_assignment.hidden_strip_warning(owner)) is hidden
+
+
+def _stacked_strips(lower_frames=(1.0, 24.0), upper_frames=(1.0, 24.0), **upper_fields):
+    """Build an ID with no active action: strip 'Base' on one track, 'Layer' above it, both keying location[0]."""
+    lower = _nla_strip("Base", _slot(2), [("location", 0)], lower_frames)
+    upper = _nla_strip("Layer", _slot(3), [("location", 0)], upper_frames, **upper_fields)
+    animation_data = types.SimpleNamespace(
+        use_nla=True,
+        action=None,
+        action_slot=None,
+        action_blend_type="REPLACE",
+        action_influence=1.0,
+        action_extrapolation="HOLD",
+        nla_tracks=[_track("Lower", lower), _track("Upper", upper)],
+    )
+    return types.SimpleNamespace(name="Rig", animation_data=animation_data), lower, upper
+
+
+def test_a_strip_added_over_a_strip_it_fully_replaces_says_which_it_hides(monkeypatch) -> None:
+    addon, _bpy = load_addon(monkeypatch, data={})
+    owner, lower, upper = _stacked_strips()
+    hidden_strip_warning = addon.handlers.action_assignment.hidden_strip_warning
+
+    # Whichever of the two strips the call added, the pair is reported.
+    for added in (upper, lower):
+        (warning,) = hidden_strip_warning(owner, added)
+        assert "'Rig' plays strip 'Layer' over the NLA at REPLACE, influence 1" in warning
+        assert "strip(s) 'Base' also key (location[0])" in warning
+        assert "manage_nla_tracks PATCH_STRIP" in warning
+        assert "manage_animation_action UNASSIGN" not in warning
+    # Keying or assigning changes only the active action, so a standing strip pair is not its news.
+    assert hidden_strip_warning(owner) == []
+
+
+@pytest.mark.parametrize(
+    ("upper_frames", "upper_fields"),
+    [
+        ((1.0, 24.0), {"blend_type": "ADD"}),
+        ((1.0, 24.0), {"use_animated_influence": True}),
+        ((1.0, 24.0), {"mute": True}),
+        # NOTHING ends the upper strip at its frame_end, before the lower one starts...
+        ((1.0, 10.0), {"extrapolation": "NOTHING"}),
+        # ...and HOLD_FORWARD never plays before its own frame_start.
+        ((50.0, 60.0), {"extrapolation": "HOLD_FORWARD"}),
+    ],
+    ids=["add-blend", "animated-influence", "muted", "nothing-before", "hold-forward-after"],
+)
+def test_an_upper_strip_that_does_not_fully_replace_the_lower_one_raises_nothing(
+    monkeypatch, upper_frames, upper_fields
+) -> None:
+    addon, _bpy = load_addon(monkeypatch, data={})
+    owner, _lower, upper = _stacked_strips((30.0, 40.0), upper_frames, **upper_fields)
+
+    assert addon.handlers.action_assignment.hidden_strip_warning(owner, upper) == []
+
+
+@pytest.mark.parametrize(
+    ("upper_frames", "extrapolation"),
+    [((50.0, 60.0), "HOLD"), ((1.0, 10.0), "HOLD_FORWARD")],
+    ids=["hold-before-the-first-strip", "hold-forward-past-its-end"],
+)
+def test_an_upper_strip_hides_the_lower_one_on_the_frames_it_holds(monkeypatch, upper_frames, extrapolation) -> None:
+    addon, _bpy = load_addon(monkeypatch, data={})
+    owner, _lower, upper = _stacked_strips((30.0, 40.0), upper_frames, extrapolation=extrapolation)
+
+    assert addon.handlers.action_assignment.hidden_strip_warning(owner, upper) != []
+
+
+def test_a_strip_another_tracks_solo_silences_is_not_called_hidden(monkeypatch) -> None:
+    """Under a solo upper track the lower track does not play at all, so nothing of it is hidden."""
+    addon, _bpy = load_addon(monkeypatch, data={})
+    owner, _lower, upper = _stacked_strips()
+    owner.animation_data.nla_tracks[1].is_solo = True
+
+    assert addon.handlers.action_assignment.hidden_strip_warning(owner, upper) == []
+
+
+def test_a_held_strip_stops_holding_at_the_next_strip_in_its_track(monkeypatch) -> None:
+    """Blender holds a strip only through the gap to its track's next strip, which then plays instead."""
+    addon, _bpy = load_addon(monkeypatch, data={})
+    owner, _lower, upper = _stacked_strips((30.0, 40.0), (1.0, 10.0), extrapolation="HOLD_FORWARD")
+    # Same track, keying other channels: it ends the hold at frame 20 and hides nothing itself.
+    owner.animation_data.nla_tracks[1].strips.append(
+        _nla_strip("Pause", _slot(4), [("scale", 0)], (20.0, 25.0), extrapolation="NOTHING")
+    )
+
+    assert addon.handlers.action_assignment.hidden_strip_warning(owner, upper) == []

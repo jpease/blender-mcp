@@ -7,7 +7,13 @@ import re
 
 import bpy
 
-from .action_assignment import cycled_curve_extent
+from .action_assignment import (
+    assigned_action_name,
+    cycled_curve_extent,
+    hidden_strip_warning,
+    refuse_displacement,
+    restored_keys_on_error,
+)
 from .key_style import KeyStyle, style_point
 
 _TARGET_COLLECTIONS = {
@@ -227,13 +233,26 @@ def _cycle_slot_handle(action, owner, slot_identifier):
     return slot.handle, slot.identifier
 
 
-def _assign_action(owner, action, *, replace_active):
+def _assign_action(owner, action, *, confirm_displace):
+    """
+    Assign a layered action to any animatable ID, creating the ID's slot in it when needed.
+
+    Args:
+        owner: The ID to assign to; not only objects, so the slot is made here by ID type.
+        action: The layered action.
+        confirm_displace: Whether the caller confirmed displacing an action that holds keys -
+            the same guard, and the same `confirm_displace_action`, as every keying tool.
+
+    Returns:
+        The slot now assigned.
+
+    Raises:
+        ValueError: If a different action holding keys is assigned and that was not confirmed.
+
+    """
+    if not confirm_displace:
+        refuse_displacement(owner, action.name)
     data = _animation_data(owner, create=True)
-    current = data.action
-    if current is not None and current != action and not replace_active:
-        raise ValueError(
-            f"{owner.name} already uses Action {current.name}; set replace_active=True to replace the assignment"
-        )
     slot = _action_slot(action, owner, create=True)
     data.action = action
     data.action_slot = slot
@@ -637,6 +656,46 @@ def _find_key(fcurve, frame):
     return next((point for point in fcurve.keyframe_points if abs(point.co[0] - frame) <= _KEY_FRAME_TOLERANCE), None)
 
 
+def _apply_keyframe_edits(bag, expanded):
+    """
+    Write one `edit_keyframes` batch into a channelbag, in the order it was given.
+
+    Args:
+        bag: The channelbag of the slot being edited.
+        expanded: `_expanded_edit` records for the whole batch, already validated.
+
+    Returns:
+        list[dict]: One record per key removed or upserted.
+
+    """
+    changed = []
+    for operation, data_path, index, frame, value, style, group in expanded:
+        fcurve = bag.fcurves.find(data_path, index=index)
+        key = _find_key(fcurve, frame) if fcurve else None
+        if operation == "REMOVE":
+            if key is None:
+                continue
+            fcurve.keyframe_points.remove(key, fast=True)
+            if not fcurve.keyframe_points:
+                bag.fcurves.remove(fcurve)
+            else:
+                fcurve.update()
+            changed.append({"operation": operation, "data_path": data_path, "array_index": index, "frame": frame})
+            continue
+        if fcurve is None:
+            fcurve = bag.fcurves.new(data_path, index=index, group_name=group or "")
+        if key is None:
+            key = fcurve.keyframe_points.insert(frame, value, options={"FAST"})
+        else:
+            key.co[1] = value
+        style_point(key, style)
+        fcurve.update()
+        changed.append(
+            {"operation": operation, "data_path": data_path, "array_index": index, "frame": frame, "value": value}
+        )
+    return changed
+
+
 def _driver_fcurve(owner, data_path, index):
     data = owner.animation_data
     if data is None:
@@ -667,8 +726,9 @@ def _safe_expression(expression, variable_names):
 
 
 def _prepare_driver_variables(variables):
-    if not isinstance(variables, list) or len(variables) > 64:
-        raise ValueError("variables must be a list with at most 64 records")
+    # How many is `list_caps`' to refuse, at dispatch.
+    if not isinstance(variables, list):
+        raise ValueError("variables must be a list of records")
     prepared = []
     names = set()
     for spec in variables:
@@ -872,7 +932,7 @@ def _write_baked_curves(bag, channels, channel_tolerances, transform_tolerance, 
     return {"key_count": key_count, "curves": curve_records, "max_reconstruction_error": maximum_error}
 
 
-def _resolved_edit_action(owner, action_name, replace_active, allow_shared):
+def _resolved_edit_action(owner, action_name, confirm_displace, allow_shared, assign_action=True):
     """
     Pick, create or reuse the layered Action one keyframe edit writes into.
 
@@ -883,8 +943,10 @@ def _resolved_edit_action(owner, action_name, replace_active, allow_shared):
     Args:
         owner: The ID being keyed.
         action_name: The Action to create or reuse, or None to edit whatever drives `owner`.
-        replace_active: Whether assigning may displace the Action already there.
+        confirm_displace: Whether assigning may displace an Action already there that holds keys.
         allow_shared: Whether an Action with other users may be edited in place.
+        assign_action: False writes into the named Action's slot for `owner` without assigning
+            it, so the ID's own assignment - animation data included - is never touched.
 
     Returns:
         tuple: The Action and the slot within it this owner's keys belong to.
@@ -894,8 +956,10 @@ def _resolved_edit_action(owner, action_name, replace_active, allow_shared):
             `allow_shared` is not set, or if it is a legacy (non-layered) Action.
 
     """
-    data = _animation_data(owner, create=True)
-    current = data.action
+    if not assign_action and not action_name:
+        raise ValueError("assign_action=False keys a named clip and requires action_name")
+    data = _animation_data(owner, create=assign_action)
+    current = data.action if data is not None else None
     created_action = False
     if action_name:
         action_name = _required_name(action_name, "action_name")
@@ -914,13 +978,37 @@ def _resolved_edit_action(owner, action_name, replace_active, allow_shared):
             )
         if not selected.is_action_layered:
             raise ValueError(f"Action {selected.name} is legacy; convert or duplicate it to a layered Action first")
-        if action_name:
-            return selected, _assign_action(owner, selected, replace_active=replace_active)
+        if action_name and assign_action:
+            return selected, _assign_action(owner, selected, confirm_displace=confirm_displace)
         return selected, _action_slot(selected, owner, create=True)
     except Exception:
         if created_action:
             bpy.data.actions.remove(selected)
         raise
+
+
+def _added_strip_warnings(owner, animation, strip):
+    """
+    Say why a strip just added would play nothing, when something already stops it.
+
+    Args:
+        owner: The ID the strip was added to.
+        animation: Its `animation_data`.
+        strip: The new strip.
+
+    Returns:
+        dict: `{"warnings": [...]}` when NLA evaluation is off or the active action overrides
+        the strip's channels, else empty - so a strip nothing hides says nothing.
+
+    """
+    if not animation.use_nla:
+        warnings = [
+            f"NLA evaluation is off on '{owner.name}' (animation_data.use_nla is False), so strip '{strip.name}' "
+            "plays nothing until it is turned back on."
+        ]
+    else:
+        warnings = hidden_strip_warning(owner, strip)
+    return {"warnings": warnings} if warnings else {}
 
 
 def _curve_key_extent(curve):
@@ -1509,7 +1597,7 @@ class AnimationHandlersMixin:
         action,
         action_name=None,
         source_action_name=None,
-        replace_active=False,
+        confirm_displace_action=False,
     ):
         owner, _target_type = _target(target)
         operation = str(action).upper()
@@ -1548,73 +1636,56 @@ class AnimationHandlersMixin:
                 bpy.data.actions.remove(selected)
             raise ValueError(f"Action {selected.name} is legacy and cannot be assigned by this tool")
         try:
-            slot = _assign_action(owner, selected, replace_active=replace_active)
+            slot = _assign_action(owner, selected, confirm_displace=confirm_displace_action)
         except Exception:
             if operation in {"CREATE", "DUPLICATE"}:
                 bpy.data.actions.remove(selected)
             raise
-        return {
+        reply = {
             "target": owner.name,
             "action": selected.name,
             "slot": slot.identifier,
             "created": operation in {"CREATE", "DUPLICATE"},
             "changed_resources": [owner.name, selected.name],
         }
+        hidden = hidden_strip_warning(owner)
+        if hidden:
+            reply["warnings"] = hidden
+        return reply
 
     def edit_keyframes(
         self,
         target,
         edits,
         action_name=None,
-        replace_active_action=False,
+        confirm_displace_action=False,
         allow_shared_action=False,
+        assign_action=True,
     ):
         owner, _target_type = _target(target)
-        if not isinstance(edits, list) or not 1 <= len(edits) <= 1000:
-            raise ValueError("edits must contain between 1 and 1000 records")
+        if not isinstance(edits, list) or not edits:
+            raise ValueError("edits must contain at least one record")
         expanded = [item for edit in edits for item in _expanded_edit(owner, edit)]
-        selected, slot = _resolved_edit_action(owner, action_name, replace_active_action, allow_shared_action)
+        selected, slot = _resolved_edit_action(
+            owner, action_name, confirm_displace_action, allow_shared_action, assign_action=assign_action
+        )
         bag = _channelbag(selected, slot, create=True)
         # Measured before the loop: the first insert moves the extent a later edit's frame
         # would otherwise be compared against, and would report itself as inside the cycle.
         warnings = _edit_cycle_warnings(bag, expanded)
-        changed = []
-        for operation, data_path, index, frame, value, style, group in expanded:
-            fcurve = bag.fcurves.find(data_path, index=index)
-            key = _find_key(fcurve, frame) if fcurve else None
-            if operation == "REMOVE":
-                if key is None:
-                    continue
-                fcurve.keyframe_points.remove(key, fast=True)
-                if not fcurve.keyframe_points:
-                    bag.fcurves.remove(fcurve)
-                else:
-                    fcurve.update()
-                changed.append({"operation": operation, "data_path": data_path, "array_index": index, "frame": frame})
-                continue
-            if fcurve is None:
-                fcurve = bag.fcurves.new(data_path, index=index, group_name=group or "")
-            if key is None:
-                key = fcurve.keyframe_points.insert(frame, value, options={"FAST"})
-            else:
-                key.co[1] = value
-            style_point(key, style)
-            fcurve.update()
-            changed.append(
-                {
-                    "operation": operation,
-                    "data_path": data_path,
-                    "array_index": index,
-                    "frame": frame,
-                    "value": value,
-                }
-            )
+        with restored_keys_on_error(owner, {item[1] for item in expanded}, action=selected, slot=slot):
+            changed = _apply_keyframe_edits(bag, expanded)
         return {
             "target": owner.name,
             "action": selected.name,
             "slot": slot.identifier,
+            # What drives the target now: under assign_action=False its own action, not the clip.
+            "assigned_action": assigned_action_name(owner),
+            # Zero for a clip nothing holds yet: Blender drops it at save until a strip or an
+            # assignment uses it.
+            "keyed_action_users": selected.users,
             "changed_keyframes": changed,
-            "warnings": warnings,
+            "warnings": warnings + (hidden_strip_warning(owner) if assign_action else []),
             "changed_resources": [owner.name, selected.name],
         }
 
@@ -1631,6 +1702,7 @@ class AnimationHandlersMixin:
         easing=None,
         transform_tolerance=0.0,
         confirm_bake=False,
+        confirm_displace_action=False,
     ):
         if not confirm_bake:
             raise ValueError("confirm_bake=True is required")
@@ -1642,6 +1714,9 @@ class AnimationHandlersMixin:
             raise ValueError(f"Object not found: {object_name}")
         if bpy.data.actions.get(action_name) is not None:
             raise ValueError(f"Action already exists: {action_name}")
+        if not confirm_displace_action:
+            # Asked before sampling, so a refusal costs nothing; the bake then assigns confirmed.
+            refuse_displacement(obj, action_name)
         if frame_end < frame_start or frame_step < 1:
             raise ValueError("Require frame_end >= frame_start and frame_step >= 1")
         frames = list(range(frame_start, frame_end + 1, frame_step))
@@ -1666,7 +1741,7 @@ class AnimationHandlersMixin:
 
         action = bpy.data.actions.new(_required_name(action_name, "action_name"))
         try:
-            slot = _assign_action(obj, action, replace_active=True)
+            slot = _assign_action(obj, action, confirm_displace=True)
             written = _write_baked_curves(
                 _channelbag(action, slot, create=True),
                 channels,
@@ -1874,6 +1949,7 @@ class AnimationHandlersMixin:
                 "strip": strip.name,
                 "action": action_data.name,
                 "changed_resources": [owner.name, action_data.name],
+                **_added_strip_warnings(owner, data, strip),
             }
         elif operation == "PATCH_STRIP":
             strip_name = _required_name(strip_name, "strip_name")

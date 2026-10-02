@@ -16,6 +16,7 @@ import sys
 import types
 
 from conftest import load_addon
+from datablock_doubles import FakeFCurveFields, FakeKeyframeFields
 
 
 class _Vector:
@@ -527,13 +528,13 @@ class _PoseBone:
         self.custom_properties[key] = value
 
 
-class _Key:
+class _Key(FakeKeyframeFields):
     def __init__(self, frame, value) -> None:
         self.co = (float(frame), float(value))
         self.interpolation = "BEZIER"
 
 
-class _FCurve:
+class _FCurve(FakeFCurveFields):
     def __init__(self, data_path, array_index, keys, modifiers=()) -> None:
         self.data_path = data_path
         self.array_index = array_index
@@ -549,6 +550,8 @@ class _Action:
         self.name = name
         self.fcurves = []
         self.slots = ()
+        # Blender counts the ID or strip holding an action; these doubles key assigned actions.
+        self.users = 1
 
 
 class _Actions(dict):
@@ -682,8 +685,20 @@ def _posing(monkeypatch, bones, *, matrix_world=None, objects=None):
         data=types.SimpleNamespace(name="CHAR1_rigData", pose_position="POSE", bones=[]),
         pose=types.SimpleNamespace(bones={bone.name: bone for bone in bones}),
         matrix_world=matrix_world or _Matrix.Identity(4),
-        animation_data_create=lambda: animation,
+        animation_data=None,
     )
+
+    # Blender's animation_data_create() both creates the block and hangs it off the ID, and
+    # animation_data_clear() takes it off again; the handlers read the ID, not the block.
+    def animation_data_create():
+        rig.animation_data = animation
+        return animation
+
+    def animation_data_clear():
+        rig.animation_data = None
+
+    rig.animation_data_create = animation_data_create
+    rig.animation_data_clear = animation_data_clear
     rig.convert_space = lambda pose_bone, matrix, from_space, to_space: _convert_space(
         pose_bone, matrix, from_space, to_space, rig
     )

@@ -140,7 +140,12 @@ class NlaStripPatch(StrictModel):
     frame_end: float | None = None
     action_frame_start: float | None = None
     action_frame_end: float | None = None
-    blend_type: Literal["REPLACE", "COMBINE", "ADD", "SUBTRACT", "MULTIPLY"] | None = None
+    blend_type: Annotated[
+        Literal["REPLACE", "COMBINE", "ADD", "SUBTRACT", "MULTIPLY"] | None,
+        Field(
+            description="Blender 5.2 COMBINE drops small quaternion rotations (x=-0.00045 plays 0); REPLACE keeps them."
+        ),
+    ] = None
     extrapolation: Literal["NOTHING", "HOLD", "HOLD_FORWARD"] | None = None
     influence: Annotated[float | None, Field(ge=0, le=1)] = None
     repeat: Annotated[float | None, Field(gt=0, le=10_000)] = None
@@ -241,9 +246,13 @@ async def manage_animation_action(
     action: Literal["CREATE", "ASSIGN", "DUPLICATE", "UNASSIGN"],
     action_name: Annotated[str | None, Field(min_length=1)] = None,
     source_action_name: Annotated[str | None, Field(min_length=1)] = None,
-    replace_active: bool = False,
+    confirm_displace_action: bool = False,
 ) -> dict:
-    """Create, assign, duplicate, or unassign a Blender 5.1+ layered Action on one exact ID."""
+    """
+    Create, assign, duplicate, or unassign a Blender 5.1+ layered Action on one exact ID.
+
+    Blender 5.x Actions hold one layer: layer motion as NLA strips keyed with assign_action=False.
+    """
     if action in {"CREATE", "ASSIGN", "DUPLICATE"} and action_name is None:
         raise ToolError(f"{action} requires action_name")
     if action == "DUPLICATE" and source_action_name is None:
@@ -257,7 +266,7 @@ async def manage_animation_action(
             "action": action,
             "action_name": action_name,
             "source_action_name": source_action_name,
-            "replace_active": replace_active,
+            "confirm_displace_action": confirm_displace_action,
         },
         changed_resources=[target.name, action_name] if action_name else [target.name],
     )
@@ -269,18 +278,22 @@ async def edit_keyframes(
     target: AnimationTarget,
     edits: Annotated[list[KeyframeEdit], Field(min_length=1, max_length=1000)],
     action_name: Annotated[str | None, Field(min_length=1)] = None,
-    replace_active_action: bool = False,
+    confirm_displace_action: bool = False,
     allow_shared_action: bool = False,
+    assign_action: bool = True,
 ) -> dict:
     """Batch-upsert or remove validated property keyframes in one layered Action without changing current values."""
+    if not assign_action and action_name is None:
+        raise ToolError("assign_action=False requires action_name")
     return await call_blender(
         "edit_keyframes",
         {
             "target": target.model_dump(),
             "edits": [edit.model_dump() for edit in edits],
             "action_name": action_name,
-            "replace_active_action": replace_active_action,
+            "confirm_displace_action": confirm_displace_action,
             "allow_shared_action": allow_shared_action,
+            "assign_action": assign_action,
         },
         changed_resources=[target.name, action_name] if action_name else [target.name],
     )
@@ -435,6 +448,7 @@ async def bake_evaluated_animation(
     easing: Easing | None = None,
     transform_tolerance: Annotated[float, Field(ge=0)] = 0.0,
     confirm_bake: bool = False,
+    confirm_displace_action: bool = False,
 ) -> dict:
     """Bake dependency-graph object/bone transforms and selected properties into a new Action."""
     if frame_end < frame_start:
@@ -457,6 +471,7 @@ async def bake_evaluated_animation(
             "easing": easing,
             "transform_tolerance": transform_tolerance,
             "confirm_bake": confirm_bake,
+            "confirm_displace_action": confirm_displace_action,
         },
         changed_resources=[target.object_name, action_name],
     )

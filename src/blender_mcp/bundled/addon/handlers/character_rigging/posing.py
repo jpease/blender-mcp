@@ -4,10 +4,11 @@ Blender handlers for deterministic pose application and keyframing.
 Two rules shape this module. A bone's target is resolved inside the depth-sorted write loop,
 not before it, because a pose-, world- or rest-space target for a child is only meaningful
 against a parent this same call has already written. And a call that authors animation leaves
-the action it authored assigned to the rig: an action nobody references carries zero users and
-Blender drops it at save, so restoring a previous assignment would throw the work away - which
-is why the restore is conditional on the call having raised, and why it is stated once, in the
-`restored_*` context managers below, rather than in a `finally` block per entry point.
+the action it authored assigned to the rig, unless asked not to with `assign_action=False`: an
+action nobody references carries zero users and Blender drops it at save, so restoring a previous
+assignment would throw the work away - which is why the restore is conditional on the call having
+raised, and why it is stated once, in the `restored_*` context managers, rather than in a
+`finally` block per entry point.
 """
 
 import contextlib
@@ -17,7 +18,16 @@ import bpy
 import mathutils
 
 from ...helpers import deforming_meshes, paginate, prefixed_page, sync_from_editmode
-from ..action_assignment import action_fcurve_collections, assign_named_action, cycled_curve_extent
+from ..action_assignment import (
+    action_fcurve_collections,
+    assign_named_action,
+    assigned_action_name,
+    assigned_slot_identifier,
+    cycled_curve_extent,
+    hidden_strip_warning,
+    restored_action_assignment,
+    restored_keys_on_error,
+)
 from ..key_style import KeyStyle, style_point
 from .axes import (
     _AIM_MIN_LENGTH,
@@ -148,6 +158,24 @@ def _stored_custom_properties(pose_bone, custom):
     return {name: _property_value_as_stored(pose_bone, name, value) for name, value in custom.items()}
 
 
+def _refuse_malformed_pose_list(poses):
+    """
+    Refuse a pose list that is empty or names a bone twice.
+
+    Args:
+        poses: The raw pose entries.
+
+    Raises:
+        ValueError: Naming what is wrong with the list.
+
+    """
+    if not poses:
+        raise ValueError("At least one pose entry is required")
+    names = [item.get("bone_name") for item in poses]
+    if len(names) != len(set(names)):
+        raise ValueError("Each pose bone may appear only once")
+
+
 def _validate_pose_specs(armature, poses, space):
     """
     Check every pose entry and pre-build the targets that do not depend on other bones.
@@ -166,17 +194,14 @@ def _validate_pose_specs(armature, poses, space):
         `aim_at` and `rotate` records in place of the raw ones.
 
     Raises:
-        ValueError: For an unsupported space, an empty or duplicated pose list, an unknown bone
-            or custom property, a malformed matrix, aim or rotate record, or a singular target.
+        ValueError: For an unsupported space, an empty, oversized or duplicated pose list, an
+            unknown bone or custom property, a malformed matrix, aim or rotate record, or a
+            singular target.
 
     """
     if space not in _POSE_SPACES:
         raise ValueError(f"Unsupported pose space: {space}")
-    if not poses:
-        raise ValueError("At least one pose entry is required")
-    names = [item.get("bone_name") for item in poses]
-    if len(names) != len(set(names)):
-        raise ValueError("Each pose bone may appear only once")
+    _refuse_malformed_pose_list(poses)
     prepared = []
     for entry in poses:
         pose_bone = armature.pose.bones.get(entry.get("bone_name"))
@@ -1005,7 +1030,7 @@ def _write_pose_keys(action, prepared, frame, keying_policy):
 
 
 def _action_reply(
-    armature, animation, action, previous_action, keying_policy, changed_bones, changed_keys, interpolation_updates
+    armature, action, keyed_slot, previous_action, keying_policy, changed_bones, changed_keys, interpolation_updates
 ):
     """
     Describe the assignment and the keys any keying call left behind.
@@ -1015,9 +1040,9 @@ def _action_reply(
     `assigned_action` means.
 
     Args:
-        armature: The keyed armature object.
-        animation: Its `animation_data`, read for the assignment this call ended on.
+        armature: The keyed armature object, read for the assignment this call ended on.
         action: The action that was authored.
+        keyed_slot: The identifier of the slot the keys landed in, read while it was assigned.
         previous_action: The action that drove the rig before, or None.
         keying_policy: The policy the caller asked for.
         changed_bones: Every bone the call posed, complete.
@@ -1028,15 +1053,19 @@ def _action_reply(
         dict: The shared reply; each tool adds only its own extras on top.
 
     """
-    assigned_name = getattr(getattr(animation, "action", None), "name", None)
+    assigned_name = assigned_action_name(armature)
     reply = {
         "armature_object": armature.name,
         "action": action.name,
-        "action_slot": getattr(getattr(animation, "action_slot", None), "identifier", None),
+        "action_slot": keyed_slot,
         # An action with no user is dropped at save, so whether the rig is left driven by what
         # this call authored is the difference between animation an artist can open and a reply
-        # that claims success for discarded work.
+        # that claims success for discarded work. Under assign_action=False it names what still
+        # drives the rig, which is how the reply says the clip was keyed and not assigned.
         "assigned_action": assigned_name,
+        # Zero for a clip nothing holds yet: Blender drops it at save until a strip or an
+        # assignment uses it.
+        "keyed_action_users": action.users,
         "keying_policy": keying_policy,
         # The keys are the deliverable, but the page of them is what the reply budget shortens,
         # so name every posed bone separately.
@@ -1055,8 +1084,8 @@ def _action_reply(
 
 def _keyframe_reply(
     armature,
-    animation,
     action,
+    keyed_slot,
     previous_action,
     *,
     keying_policy,
@@ -1070,8 +1099,8 @@ def _keyframe_reply(
 
     Args:
         armature: The posed armature object.
-        animation: Its `animation_data`, read for the assignment this call ended on.
         action: The action that was authored.
+        keyed_slot: The identifier of the slot the keys landed in.
         previous_action: The action that drove the rig before, or None.
         keying_policy: The policy the caller asked for.
         changed_bones: Every bone any frame of the call posed, named once, complete.
@@ -1085,8 +1114,8 @@ def _keyframe_reply(
     """
     reply = _action_reply(
         armature,
-        animation,
         action,
+        keyed_slot,
         previous_action,
         keying_policy,
         changed_bones,
@@ -1149,8 +1178,8 @@ def _pose_key_requests(frame, poses, keys):
 
     Raises:
         ValueError: If neither or both forms are given, if a batched entry is malformed or
-            empty, if a frame is named twice, or if the batch carries more pose entries than
-            one call may apply.
+            empty, if a frame is named twice, or if the batch carries more pose entries in
+            total than one call may apply.
 
     """
     if (frame is not None or poses is not None) == (keys is not None):
@@ -1221,6 +1250,25 @@ def _keyed_custom_properties(prepared_frames):
             written = properties.setdefault(pose_bone.name, [])
             written.extend(name for name in spec.get("custom_properties", {}) if name not in written)
     return properties
+
+
+def _keyed_curve_paths(prepared_frames):
+    """
+    Spell every F-Curve data_path a keying call may write, across every frame.
+
+    Args:
+        prepared_frames: `(frame, prepared)` pairs.
+
+    Returns:
+        set[str]: The full curve paths, for the key restore to snapshot.
+
+    """
+    return {
+        _bone_curve_path(pose_bone.name, path)
+        for _frame, prepared in prepared_frames
+        for pose_bone, spec, _matrix in prepared
+        for path in _pose_key_paths(pose_bone, spec)
+    }
 
 
 def _bare_write_warnings(armature, custom_properties):
@@ -1333,13 +1381,14 @@ def _key_pose_frames(armature, action, prepared_frames, space, keying_policy, st
 # --- What a posing call borrows, and the order it hands it back ----------------------------
 #
 # A call that poses or keys borrows three things from the file: the bones' own channel values,
-# the playhead, and the rig's action assignment. Each has a context manager below that
-# snapshots on entry, so every call states what it is borrowing instead of re-spelling a
-# `finally` block - and the ordering argument is made once, here, rather than in a comment per
-# call site. Nest them playhead-outermost, then the action, then the pose: they unwind
-# inside-out, so the bones are back on their own values before the playhead moves, and from
-# that instant the assigned action drives them. Restore them the other way round and the rig
-# is left holding whatever pose the last solved frame happened to produce.
+# the playhead, and the rig's action assignment. Each has a context manager that snapshots on
+# entry - the assignment's is `action_assignment.restored_action_assignment`, shared with the
+# object keyer - so every call states what it is borrowing instead of re-spelling a `finally`
+# block, and the ordering argument is made once, here, rather than in a comment per call site.
+# Nest them playhead-outermost, then the action, then the pose: they unwind inside-out, so the
+# bones are back on their own values before the playhead moves, and from that instant the
+# assigned action drives them. Restore them the other way round and the rig is left holding
+# whatever pose the last solved frame happened to produce.
 
 
 @contextlib.contextmanager
@@ -1394,38 +1443,6 @@ def restored_playhead(scene):
     finally:
         scene.frame_set(previous_frame)
         bpy.context.view_layer.update()
-
-
-@contextlib.contextmanager
-def restored_action_assignment(animation):
-    """
-    Give the rig its action and slot back if the block raises, and leave them if it does not.
-
-    A call that authored keys leaves its own action assigned on purpose: an action nothing
-    references carries zero users and Blender drops it at save. A call that raised authored
-    nothing, so the action it displaced has to come back - `object_state` does not snapshot
-    `animation_data.action`, so nothing else in the transaction would put it back, and the
-    only symptom is a shot whose character has quietly stopped moving.
-
-    Args:
-        animation: The rig's `animation_data`.
-
-    Yields:
-        bpy.types.Action | None: The action the rig arrived on, for the reply to name.
-
-    """
-    previous_action = animation.action
-    previous_slot = getattr(animation, "action_slot", None)
-    try:
-        yield previous_action
-    except BaseException:
-        animation.action = previous_action
-        if previous_action is not None and previous_slot is not None:
-            # Assigning an action resets the slot, and a slot Blender no longer considers
-            # suitable is its refusal to make, not this unwind's to force.
-            with contextlib.suppress(Exception):
-                animation.action_slot = previous_slot
-        raise
 
 
 def _property_bounds(pose_bone, name):
@@ -1925,6 +1942,7 @@ class PoseAnimationHandlersMixin:
         confirm_displace_action=False,
         action_slot_identifier=None,
         detail=False,
+        assign_action=True,
     ):
         """Pose and key one frame, or every frame of a stride, into one named action."""
         armature = _armature_object(armature_object_name)
@@ -1943,10 +1961,12 @@ class PoseAnimationHandlersMixin:
         changed_bones = _keyed_bone_names(prepared_frames)
         custom_properties = _keyed_custom_properties(prepared_frames)
         scene = bpy.context.scene
-        animation = armature.animation_data_create()
+        restore_warnings = []
         with (
             restored_playhead(scene),
-            restored_action_assignment(animation) as previous_action,
+            # Unassigned, the clip is borrowed only for `keyframe_insert` to write into, so the
+            # rig's own action comes back on success too, and nothing is displaced to guard.
+            restored_action_assignment(armature, restore_warnings, only_on_error=assign_action) as previous_action,
             restored_bone_pose(armature, changed_bones, custom_properties),
         ):
             action = assign_named_action(
@@ -1954,26 +1974,28 @@ class PoseAnimationHandlersMixin:
                 action_name,
                 action_policy,
                 action_slot_identifier,
-                confirm_displace=confirm_displace_action,
+                confirm_displace=confirm_displace_action or not assign_action,
             )
-            keyed = _key_pose_frames(
-                armature,
-                action,
-                prepared_frames,
-                space,
-                keying_policy,
-                style,
-                detail=detail,
-                report_frames=batched,
-            )
+            with restored_keys_on_error(armature, _keyed_curve_paths(prepared_frames)):
+                keyed = _key_pose_frames(
+                    armature,
+                    action,
+                    prepared_frames,
+                    space,
+                    keying_policy,
+                    style,
+                    detail=detail,
+                    report_frames=batched,
+                )
+            keyed_slot = assigned_slot_identifier(armature)
         return _keyframe_reply(
             armature,
-            animation,
             action,
+            keyed_slot,
             previous_action,
             keying_policy=keying_policy,
             changed_bones=changed_bones,
             keyed=keyed,
-            warnings=keyed["warnings"],
+            warnings=keyed["warnings"] + restore_warnings + (hidden_strip_warning(armature) if assign_action else []),
             detail=detail,
         )

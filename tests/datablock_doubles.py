@@ -129,6 +129,47 @@ class FakeModifierStack(list):
             list.remove(self, mod)
 
 
+# `bpy.types.Struct.bl_rna` for a double with no RNA settings of its own to report.
+NO_RNA_SETTINGS = type("NoRnaSettings", (), {"properties": ()})()
+
+
+class FakeKeyframeFields:
+    """
+    The settings a `bpy.types.Keyframe` carries besides `co`, at Blender's defaults.
+
+    A keying call's failure path reads every one of them to put the keys back exactly, so a
+    key double that is ever keyed over has to answer for all of them.
+    """
+
+    handle_left = (0.0, 0.0)
+    handle_right = (0.0, 0.0)
+    handle_left_type = "AUTO_CLAMPED"
+    handle_right_type = "AUTO_CLAMPED"
+    interpolation = "BEZIER"
+    easing = "AUTO"
+    back = 1.70158
+    amplitude = 0.8
+    period = 4.1
+    type = "KEYFRAME"
+    select_control_point = False
+    select_left_handle = False
+    select_right_handle = False
+
+
+class FakeFCurveFields:
+    """The settings a `bpy.types.FCurve` carries besides its keys, at Blender's defaults."""
+
+    group = None
+    extrapolation = "CONSTANT"
+    mute = False
+    hide = False
+    lock = False
+    select = False
+    color_mode = "AUTO_RAINBOW"
+    color = (0.0, 0.0, 0.0)
+    auto_smoothing = "NONE"
+
+
 class FakeMutableObject:
     """Object rich enough for object_state.ObjectState to capture and restore."""
 

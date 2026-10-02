@@ -8,7 +8,8 @@ whose constraints are useful to agents only when their purpose is explicit.
 
 This module performs one final documentation pass after all tool modules have
 registered.  It deliberately changes metadata only: call signatures, dispatch,
-validation, and Blender behavior remain untouched.
+validation, and Blender behavior remain untouched.  That includes the advertised
+schema compaction, which edits `tool.parameters` and never the models that validate.
 """
 
 # The schema vocabulary is intentionally an explicit decision table.
@@ -182,6 +183,11 @@ _PARAMETER_DESCRIPTIONS: dict[str, str] = {
         "Zero-based index into the target array property (for example 0/1/2 for X/Y/Z on a vector or color "
         "channel); the tool description states the sentinel meaning 'not an array property'."
     ),
+    "assign_action": (
+        "False: key action_name without making it the active action; the ID's action, slot and current values "
+        "are left as found. For NLA clips; a clip has no user (keyed_action_users 0) and is dropped at save until "
+        "a strip (manage_nla_tracks ADD_STRIP) or an assignment holds it."
+    ),
     "asset_id": "Exact Poly Haven asset identifier returned by list_polyhaven_assets.",
     "asset_type": "Provider asset class used to filter, download, or interpret the result.",
     "cache_directory": (
@@ -198,6 +204,10 @@ _PARAMETER_DESCRIPTIONS: dict[str, str] = {
         "collide only if they share at least one layer."
     ),
     "confirm_bake": "Explicit acknowledgement that a synchronous bake may be expensive and will store its result.",
+    "confirm_displace_action": (
+        "Required to replace an assigned action that holds keys; they stop driving the ID and are dropped at save "
+        "unless something else uses that action."
+    ),
     "confirm_commit": (
         "Explicit acknowledgement that live data will be committed into base data and cannot be reversed through MCP."
     ),
@@ -483,6 +493,103 @@ def _describe_schema(schema: dict[str, Any], *, explicit: Mapping[str, str] | No
             _describe_schema(definition)
 
 
+# Keywords whose value is one subschema, a list of them, or a name-to-subschema map. Every other
+# keyword's value is data (`default`, `enum`, `const`, `examples`) or a string, and is never walked:
+# a default that happens to be a dict with a "title" key is a value, not a schema.
+_SUBSCHEMA_KEYWORDS = ("items", "additionalProperties", "not", "if", "then", "else", "contains")
+_SUBSCHEMA_LIST_KEYWORDS = ("anyOf", "oneOf", "allOf", "prefixItems")
+_SUBSCHEMA_MAP_KEYWORDS = ("properties", "$defs", "definitions", "patternProperties", "dependentSchemas")
+_NULL_BRANCH = {"type": "null"}
+
+
+def _collapse_optional(schema: dict[str, Any]) -> None:
+    """
+    Advertise an omittable `X | None = None` property as plain `X`.
+
+    Pydantic writes such a field as `{"anyOf": [X, {"type": "null"}], "default": null}`. Every
+    handler forwards an explicit null exactly as it forwards an omission (`exclude_none`, or a
+    plain dump where both read None), so the null branch and the null default cost bytes and tell
+    an agent nothing. Only the advertisement changes: the validating model still accepts null.
+    A `$ref` branch is left in its `anyOf` whenever the property carries anything else (its
+    description, usually): keywords beside a `$ref` are ignored by draft-07 readers and only
+    sometimes merged by later ones, so collapsing would advertise a description some clients
+    never see.
+
+    Args:
+        schema: One non-required property's schema, rewritten in place when it has that shape.
+
+    """
+    branches = schema.get("anyOf")
+    if "default" not in schema or schema["default"] is not None or not isinstance(branches, list):
+        return
+    others = [branch for branch in branches if branch != _NULL_BRANCH]
+    if branches.count(_NULL_BRANCH) != 1 or len(others) != 1 or not isinstance(others[0], dict):
+        return
+    rest = {key: value for key, value in schema.items() if key not in {"anyOf", "default"}}
+    if "$ref" in others[0] and rest:
+        return
+    if set(rest).intersection(others[0]) - {"description", "title"}:
+        return
+    schema.clear()
+    schema.update({**others[0], **rest})
+
+
+def _collapse_uniform_tuple(schema: dict[str, Any]) -> None:
+    """
+    Advertise a fixed-length tuple of one item schema with `items` instead of `prefixItems`.
+
+    Pydantic writes `tuple[float, float, float]` as three identical `prefixItems` entries plus
+    `minItems`/`maxItems` of 3. With `maxItems` equal to the tuple's length no further item can
+    exist, so a single `items` schema accepts exactly the same arrays - and is the form clients
+    reading older JSON Schema drafts, which predate `prefixItems`, understand.
+
+    Args:
+        schema: One array schema, rewritten in place when it has that shape.
+
+    """
+    prefix = schema.get("prefixItems")
+    if not isinstance(prefix, list) or not prefix or "items" in schema:
+        return
+    if schema.get("maxItems") != len(prefix) or any(item != prefix[0] for item in prefix):
+        return
+    del schema["prefixItems"]
+    schema["items"] = prefix[0]
+
+
+def _compact_schema(schema: dict[str, Any]) -> None:
+    """
+    Strip what an advertised schema carries for pydantic's sake rather than an agent's, in place.
+
+    Removes every `title` keyword - a property or model name repeated in title case - collapses
+    each non-required nullable property with `_collapse_optional`, and each uniform tuple with
+    `_collapse_uniform_tuple`. `title` is removed only where it is a keyword: a property *named*
+    `title` (`SafeAreasPatch.title`) is a key of a `properties` map and survives. `$defs` and
+    `$ref` are kept, so shared models stay shared.
+
+    Args:
+        schema: A tool's advertised JSON Schema, or one of its subschemas.
+
+    """
+    schema.pop("title", None)
+    _collapse_uniform_tuple(schema)
+    required = set(schema.get("required", ()))
+    for name, property_schema in (schema.get("properties") or {}).items():
+        if isinstance(property_schema, dict) and name not in required:
+            _collapse_optional(property_schema)
+    subschemas: list[Any] = [schema.get(keyword) for keyword in _SUBSCHEMA_KEYWORDS]
+    for keyword in _SUBSCHEMA_LIST_KEYWORDS:
+        subschemas.extend(schema.get(keyword) or ())
+    for keyword in _SUBSCHEMA_MAP_KEYWORDS:
+        subschemas.extend((schema.get(keyword) or {}).values())
+    for subschema in subschemas:
+        if isinstance(subschema, dict):
+            _compact_schema(subschema)
+        elif isinstance(subschema, list):
+            for item in subschema:
+                if isinstance(item, dict):
+                    _compact_schema(item)
+
+
 def _is_read_only(name: str) -> bool:
     return name.startswith(_READ_ONLY_PREFIXES) and not name.startswith(_MUTATING_READ_PREFIXES)
 
@@ -513,45 +620,45 @@ def _is_idempotent(name: str, read_only: bool) -> bool:
     )
 
 
-def _tool_contract(name: str, *, read_only: bool, returns: str | None) -> str:
-    if name in _IMAGE_TOOLS:
-        output = "Returns image content followed by the standard response envelope; consume both content items."
-    elif returns:
-        output = f"Returns the standard response envelope; data contains {returns.rstrip('.')} ."
-        output = output.replace("  ", " ").replace(" .", ".")
-    else:
-        output = (
-            "Returns the standard response envelope with operation-specific data, warnings, and exact changed "
-            "object/resource names."
-        )
+def _effects_tag(name: str, *, read_only: bool) -> str:
+    """
+    Name what a tool touches beyond its reply, as one bracketed tag kept in the description.
 
+    The tag lives in the description text rather than only in the annotations because a client
+    that converts tools to the OpenAI function format drops annotations. The envelope and the
+    tool-error rule every tool shares are stated once, in the server instructions.
+
+    Args:
+        name: The registered tool name.
+        read_only: Whether the tool advertises `readOnlyHint`.
+
+    Returns:
+        The tag, brackets included.
+
+    """
     if read_only and name in _EXTERNAL_TOOLS:
-        effects = (
-            "Read-only for Blender data, but queries an external provider and may use credentials or network access."
-        )
-    elif read_only and name in _BLEND_FILE_TOOLS:
-        effects = "Read-only for Blender data, but reads .blend files from disk."
-    elif read_only:
-        effects = "Read-only: does not persistently modify Blender data."
-    elif name in _FILE_TOOLS:
-        effects = (
-            "Side effects: may write the explicit output path and may evaluate Blender data; "
-            "it does not save the .blend file."
-        )
-    elif name in _BLEND_FILE_TOOLS:
-        effects = "Side effects: reads or writes a .blend file on disk."
-    elif name in _EXTERNAL_TOOLS:
-        effects = (
-            "Side effects: accesses an external provider and may import or replace Blender data as described above."
-        )
-    else:
-        effects = "Side effects: mutates connected Blender state but never saves the .blend file."
+        return "[read-only; external provider]"
+    if read_only and name in _BLEND_FILE_TOOLS:
+        return "[read-only; reads .blend files]"
+    if read_only:
+        return "[read-only]"
+    if name in _FILE_TOOLS:
+        return "[writes output path; never saves .blend]"
+    if name in _BLEND_FILE_TOOLS:
+        return "[reads/writes .blend on disk]"
+    if name in _EXTERNAL_TOOLS:
+        return "[external provider; may import or replace data]"
+    return "[mutates Blender; never saves .blend]"
 
-    errors = (
-        "Requires a compatible running add-on and valid named resources; validation or Blender failures raise "
-        "MCP tool errors."
-    )
-    return f"{effects} {output} {errors}"
+
+def _tool_contract(name: str, *, read_only: bool, returns: str | None) -> str:
+    tag = _effects_tag(name, read_only=read_only)
+    if name in _IMAGE_TOOLS:
+        return f"{tag} Returns image content followed by the standard response envelope; consume both content items."
+    if returns:
+        # Verbatim: a blanket " ." -> "." rewrite here once turned "the .blend's folder" into "the.blend's".
+        return f"{tag} Data contains {returns.rstrip('.')}."
+    return tag
 
 
 def finalize_tool_documentation(mcp: FastMCP) -> None:
@@ -560,6 +667,8 @@ def finalize_tool_documentation(mcp: FastMCP) -> None:
         body, explicit_parameters, returns = _parse_docstring(tool.description)
         read_only = _is_read_only(tool.name)
         _describe_schema(tool.parameters, explicit=explicit_parameters)
+        # After describing: the description fallbacks read a property's type through its anyOf.
+        _compact_schema(tool.parameters)
         tool.description = f"{body.rstrip()}\n\n{_tool_contract(tool.name, read_only=read_only, returns=returns)}"
         tool.title = _TOOL_TITLES.get(tool.name, _title(tool.name))
         tool.annotations = ToolAnnotations(

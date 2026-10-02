@@ -141,18 +141,25 @@ def main() -> None:
     cube.keyframe_insert("location", frame=1)
     cube.location = (2.0, 1.0, -1.0)
     cube.keyframe_insert("location", frame=3)
+    bake_target = {
+        "object_name": cube.name,
+        "space": "LOCAL",
+        "transforms": ["LOCATION"],
+        "bone_names": [],
+        "properties": [],
+    }
+    # The bake assigns its new action, which would leave the keyed CubeAction driving nothing.
+    keyed_motion = cube.animation_data.action
+    try:
+        handler.bake_evaluated_animation(bake_target, 1, 3, action_name="Cube Evaluated Bake", confirm_bake=True)
+    except ValueError as refusal:
+        assert "confirm_displace_action=True" in str(refusal), refusal
+    else:
+        raise AssertionError("a bake displaced keyed motion without confirm_displace_action")
+    assert cube.animation_data.action == keyed_motion
+    assert bpy.data.actions.get("Cube Evaluated Bake") is None
     baked = handler.bake_evaluated_animation(
-        {
-            "object_name": cube.name,
-            "space": "LOCAL",
-            "transforms": ["LOCATION"],
-            "bone_names": [],
-            "properties": [],
-        },
-        1,
-        3,
-        action_name="Cube Evaluated Bake",
-        confirm_bake=True,
+        bake_target, 1, 3, action_name="Cube Evaluated Bake", confirm_bake=True, confirm_displace_action=True
     )
     assert baked["action"] == "Cube Evaluated Bake"
     assert baked["new_non_shared_action"] is True

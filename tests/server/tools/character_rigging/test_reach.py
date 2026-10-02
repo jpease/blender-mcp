@@ -661,3 +661,28 @@ def test_a_reach_that_fails_part_way_through_hands_back_the_action_it_arrived_on
 
     assert animation.action is root_motion
     assert animation.action_slot is root_slot
+
+
+def test_an_unassigned_reach_clip_keys_without_displacing_the_root_motion(monkeypatch) -> None:
+    """assign_action=False keys the reach into its clip and hands the rig its root motion back."""
+    server, rig, animation, root_motion, root_slot = _rig_keying_over_root_motion(monkeypatch)
+    forearm = rig.pose.bones["forearm"]
+    insert = forearm.keyframe_insert
+    keyed_into = []
+
+    def recording(data_path, frame, group=None):
+        keyed_into.append(rig.animation_data.action.name)
+        return insert(data_path, frame, group)
+
+    forearm.keyframe_insert = recording
+
+    reply = server.keyframe_bone_reach("CHAR1_rig", "CHAR1_sh030_reach", [_plant((1.0, 2.0))], assign_action=False)
+
+    assert set(keyed_into) == {"CHAR1_sh030_reach"}
+    assert animation.action is root_motion
+    assert animation.action_slot is root_slot
+    assert (reply["action"], reply["action_slot"], reply["assigned_action"]) == (
+        "CHAR1_sh030_reach",
+        "OBreach",
+        "CHAR1_sh030_root",
+    )

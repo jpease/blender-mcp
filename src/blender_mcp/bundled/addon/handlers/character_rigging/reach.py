@@ -18,17 +18,24 @@ from typing import NamedTuple
 
 import bpy
 
-from ..action_assignment import assign_named_action
+from ..action_assignment import (
+    assign_named_action,
+    assigned_slot_identifier,
+    hidden_strip_warning,
+    restored_action_assignment,
+    restored_keys_on_error,
+)
 from ..key_style import KeyStyle
 from .axes import _AIM_MIN_LENGTH, _AIM_MIN_RESIDUAL, _AXIS_INDEX
 from .posing import (
     _action_reply,
     _apply_pose_specs,
+    _bone_curve_path,
     _place_playhead,
     _posable_armature,
+    _pose_key_paths,
     _style_written_keys,
     _write_pose_keys,
-    restored_action_assignment,
     restored_bone_pose,
     restored_playhead,
 )
@@ -567,8 +574,8 @@ def _prepared_keyed_reaches(armature, reaches):
         frame), and `keys`, mapping frame to that frame's target fields.
 
     Raises:
-        ValueError: If a reach names no keys, two reaches claim the same bone, a chain or
-            hinge does not resolve, or a key names a target object that does not exist.
+        ValueError: If a reach names no keys, two reaches claim the same bone, a chain or hinge
+            does not resolve, or a key names a target object that does not exist.
 
     """
     claimed = {}
@@ -576,11 +583,11 @@ def _prepared_keyed_reaches(armature, reaches):
     for index, reach in enumerate(reaches):
         if not isinstance(reach, dict):
             raise ValueError(f"reaches[{index}] must be an object")
+        keys = reach.get("keys") or []
         rest_chain, chain_length_source = _resolve_reach_chain(armature, reach, claimed)
         for bone in rest_chain:
             claimed[bone.name] = index
         hinge = _validated_reach_hinge(reach, rest_chain)
-        keys = reach.get("keys") or []
         if not keys:
             raise ValueError(f"reaches[{index}] ('{rest_chain[0].name}') must supply at least one key")
         frames = {}
@@ -798,14 +805,14 @@ def _key_reach_frames(armature, action, prepared, keying_policy, style, toleranc
     }
 
 
-def _keyed_reach_reply(armature, animation, action, previous_action, keyed, tolerance_m, keying_policy):
+def _keyed_reach_reply(armature, action, keyed_slot, previous_action, keyed, tolerance_m, keying_policy):
     """
     Describe what one multi-frame reach keying call left behind.
 
     Args:
-        armature: The keyed armature object.
-        animation: Its `animation_data`, read for the assignment this call ended on.
+        armature: The keyed armature object, read for the assignment this call ended on.
         action: The action that was authored.
+        keyed_slot: The identifier of the slot the keys landed in.
         previous_action: The action that drove the rig before, or None.
         keyed: `_key_reach_frames` output.
         tolerance_m: The tolerance every frame was judged against.
@@ -817,8 +824,8 @@ def _keyed_reach_reply(armature, animation, action, previous_action, keyed, tole
     """
     reply = _action_reply(
         armature,
-        animation,
         action,
+        keyed_slot,
         previous_action,
         keying_policy,
         keyed["changed_bones"],
@@ -883,6 +890,7 @@ class BoneReachHandlersMixin:
         confirm_displace_action=False,
         action_slot_identifier=None,
         detail=False,
+        assign_action=True,
     ):
         """Solve each reach at each of its frames against the evaluated body pose, and key it."""
         armature = _posable_armature(armature_object_name, "key a bone reach")
@@ -893,10 +901,10 @@ class BoneReachHandlersMixin:
         style.validate()
         prepared = _prepared_keyed_reaches(armature, list(reaches or ()))
         scene = bpy.context.scene
-        animation = armature.animation_data_create()
+        restore_warnings = []
         with (
             restored_playhead(scene),
-            restored_action_assignment(animation) as previous_action,
+            restored_action_assignment(armature, restore_warnings, only_on_error=assign_action) as previous_action,
             restored_bone_pose(armature, [bone.name for entry in prepared for bone in entry["rest_chain"]]),
         ):
             action = assign_named_action(
@@ -904,7 +912,17 @@ class BoneReachHandlersMixin:
                 action_name,
                 action_policy,
                 action_slot_identifier,
-                confirm_displace=confirm_displace_action,
+                confirm_displace=confirm_displace_action or not assign_action,
             )
-            keyed = _key_reach_frames(armature, action, prepared, keying_policy, style, tolerance_m, detail)
-        return _keyed_reach_reply(armature, animation, action, previous_action, keyed, tolerance_m, keying_policy)
+            chain_bones = [armature.pose.bones[bone.name] for entry in prepared for bone in entry["rest_chain"]]
+            # A solved matrix keys location, rotation and scale, whichever of them it changed.
+            curve_paths = {
+                _bone_curve_path(pose_bone.name, path)
+                for pose_bone in chain_bones
+                for path in _pose_key_paths(pose_bone, {"matrix": None})
+            }
+            with restored_keys_on_error(armature, curve_paths):
+                keyed = _key_reach_frames(armature, action, prepared, keying_policy, style, tolerance_m, detail)
+            keyed_slot = assigned_slot_identifier(armature)
+        keyed["warnings"] += restore_warnings + (hidden_strip_warning(armature) if assign_action else [])
+        return _keyed_reach_reply(armature, action, keyed_slot, previous_action, keyed, tolerance_m, keying_policy)

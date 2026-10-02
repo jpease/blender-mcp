@@ -40,6 +40,7 @@ from .handlers.scene_physics import ScenePhysicsHandlersMixin
 from .handlers.sketchfab import SketchfabHandlersMixin
 from .handlers.viewport import ViewportHandlersMixin
 from .helpers import get_blendermcp_addon_preferences
+from .list_caps import refuse_oversized_lists
 from .object_lookup import find_object
 from .output_roots import configured_file_roots, configured_roots, writable_roots
 from .render_devices import cycles_device_report
@@ -810,6 +811,8 @@ class BlenderMCPServer(
             return {"status": "error", "message": f"Unknown command type: {cmd_type}"}
         try:
             logger.debug("Dispatching %s", cmd_type)
+            # Before the handler and its transaction: an oversized list is refused having touched nothing.
+            refuse_oversized_lists(cmd_type, params)
             return {"status": "success", "result": self._run_handler(cmd_type, handler, params)}
         except ValueError as refusal:
             # A refusal, not a fault: the handler layer raises ValueError when the client's

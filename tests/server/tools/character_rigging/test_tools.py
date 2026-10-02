@@ -315,6 +315,51 @@ def test_ensure_keys_into_an_existing_action_where_create_refuses_it(monkeypatch
         server.keyframe_character_pose("CHAR1_rig", "CHAR1_sh030_pose", 2.0, list(_POSE), action_policy="CREATE")
 
 
+def _record_assignment_at_insert(rig, pose_bone):
+    """Record which action the rig is assigned at every key Blender would write into it."""
+    keyed_into = []
+    insert = pose_bone.keyframe_insert
+
+    def recording(data_path, frame, group=None):
+        keyed_into.append(rig.animation_data.action.name)
+        return insert(data_path, frame, group)
+
+    pose_bone.keyframe_insert = recording
+    return keyed_into
+
+
+def test_an_unassigned_clip_is_keyed_while_the_rig_keeps_its_root_motion(monkeypatch) -> None:
+    """assign_action=False keys a clip for an NLA strip without displacing what drives the rig."""
+    server, rig, animation, _posing, _spine, head = _head_rig(monkeypatch)
+    root_motion = _Action("CHAR1_sh030_root")
+    root_motion.fcurves.append(_FCurve("location", 0, [(1.0, 0.0), (24.0, 5.0)]))
+    root_slot = types.SimpleNamespace(identifier="OBCHAR1_rig")
+    animation.action, animation.action_slot = root_motion, root_slot
+    rig.animation_data = animation
+    keyed_into = _record_assignment_at_insert(rig, head)
+
+    reply = server.keyframe_character_pose("CHAR1_rig", "CHAR1_wave", 1.0, list(_POSE), assign_action=False)
+
+    # Keyed into the clip - the guard had nothing to refuse - and the rig handed straight back.
+    assert set(keyed_into) == {"CHAR1_wave"}
+    assert animation.action is root_motion
+    assert animation.action_slot is root_slot
+    assert (reply["action"], reply["assigned_action"]) == ("CHAR1_wave", "CHAR1_sh030_root")
+    assert "unassigned_action" not in reply
+
+
+def test_an_unassigned_clip_leaves_a_rig_that_had_no_animation_data_without_any(monkeypatch) -> None:
+    """Borrowing the assignment must not leave an empty animation block behind on the rig."""
+    server, rig, _animation, _posing, _spine, head = _head_rig(monkeypatch)
+    keyed_into = _record_assignment_at_insert(rig, head)
+
+    reply = server.keyframe_character_pose("CHAR1_rig", "CHAR1_wave", 1.0, list(_POSE), assign_action=False)
+
+    assert set(keyed_into) == {"CHAR1_wave"}
+    assert rig.animation_data is None
+    assert reply["assigned_action"] is None
+
+
 class _BoneCollections(list):
     """`Armature.collections_all`, doubling as `Armature.collections` for the root-level edits."""
 

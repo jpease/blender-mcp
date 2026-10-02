@@ -90,7 +90,11 @@ Every tool below returns one of two shapes:
      get_mesh_data call - call get_mesh_data again before reusing indices.
    - A tool-specific failure Blender rejects (bad name, invalid input) raises an MCP
      tool error instead of returning ok:false - stop and fix the input rather than retrying
-     the same call.
+     the same call. Arguments that fail schema validation raise one too, before Blender is
+     touched. Every tool needs a running, compatible add-on.
+   - Each tool description's last paragraph opens with one bracketed effects tag -
+     [read-only], [mutates Blender; never saves .blend], [reads/writes .blend on disk], ... -
+     naming what the call touches beyond its reply.
 
 2. get_viewport_screenshot, get_sketchfab_model_preview, render_lighting_preview,
    render_pbr_material_preview, and inspect_render_output

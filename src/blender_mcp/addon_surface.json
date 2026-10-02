@@ -265,6 +265,7 @@
     "bake_evaluated_animation": [
       "action_name",
       "confirm_bake",
+      "confirm_displace_action",
       "easing",
       "frame_end",
       "frame_start",
@@ -1296,8 +1297,9 @@
     "edit_keyframes": [
       "action_name",
       "allow_shared_action",
+      "assign_action",
+      "confirm_displace_action",
       "edits",
-      "replace_active_action",
       "target"
     ],
     "edit_node_group_interface": [
@@ -1650,6 +1652,7 @@
       "action_policy",
       "action_slot_identifier",
       "armature_object_name",
+      "assign_action",
       "confirm_displace_action",
       "detail",
       "easing",
@@ -1672,6 +1675,7 @@
       "action_policy",
       "action_slot_identifier",
       "armature_object_name",
+      "assign_action",
       "confirm_displace_action",
       "detail",
       "easing",
@@ -1688,6 +1692,7 @@
       "action_name",
       "action_policy",
       "action_slot_identifier",
+      "assign_action",
       "confirm_displace_action",
       "handle_left",
       "handle_right",
@@ -1757,7 +1762,7 @@
     "manage_animation_action": [
       "action",
       "action_name",
-      "replace_active",
+      "confirm_displace_action",
       "source_action_name",
       "target"
     ],
@@ -2613,5 +2618,5 @@
       "scope"
     ]
   },
-  "protocol_version": 48
+  "protocol_version": 50
 }

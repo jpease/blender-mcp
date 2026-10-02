@@ -1,9 +1,8 @@
 # ruff: file-ignore[too-many-branches, too-many-locals, undocumented-public-method]
 """Blender-side handlers for generic object transform keyframing (location/rotation/scale)."""
 
+import contextlib
 import math
-
-from contextlib import suppress
 
 import bpy
 import mathutils
@@ -13,18 +12,27 @@ from .action_assignment import (
     ACTION_POLICIES,
     action_fcurve_collections,
     assign_named_action,
+    assigned_action_name,
     assigned_slot_identifier,
     cycled_curve_extent,
+    hidden_strip_warning,
+    restored_action_assignment,
+    restored_keys_on_error,
 )
 from .key_style import KeyStyle, style_point
 from .scene import _object, _required_name
 from .scene_physics import _scene, _scene_fps
 
-_MAX_BATCH = 500
+# What a WORLD or LOCAL key writes on the way to keying it, and so what an unassigned clip hands
+# back: the keyed values no longer drive the object once its own action is restored.
+_TRANSFORM_CHANNELS = ("location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle", "scale")
 _KEYFRAME_MATCH_TOLERANCE = 1e-5
 # One call may key 500 records, and the envelope lifts warnings whole rather than paging them,
 # so the per-channel cycle notices are named up to this many and then counted.
 _MAX_CYCLE_WARNINGS = 4
+# The same envelope rule for the NLA-override notices: one per keyed object up to this many, then
+# a line counting the rest.
+_MAX_HIDDEN_STRIP_NOTICES = 4
 _SPACES = {"LOCAL", "WORLD"}
 _POLICIES = {"INSERT_ONLY", "REPLACE_EXISTING"}
 _CHANNEL_LENGTHS = {"location": 3, "rotation_euler": 3, "rotation_quaternion": 4, "scale": 3}
@@ -250,23 +258,36 @@ def _apply_and_key(obj, frame, space, channels):
         if "scale" in channels:
             obj.scale = channels["scale"]
 
-    inserted = []
-    try:
-        for data_path in channels:
-            if not obj.keyframe_insert(data_path=data_path, frame=frame):
-                raise RuntimeError(f"Blender refused keyframe insertion for {obj.name}:{data_path} at frame {frame}")
-            inserted.append(data_path)
-    except Exception:
-        for data_path in inserted:
-            with suppress(Exception):
-                obj.keyframe_delete(data_path=data_path, frame=frame)
-        raise
-    return inserted
+    for data_path in channels:
+        if not obj.keyframe_insert(data_path=data_path, frame=frame):
+            raise RuntimeError(f"Blender refused keyframe insertion for {obj.name}:{data_path} at frame {frame}")
+    return list(channels)
 
 
-def _assign_batch_action(prepared, action_name, policy, slot_identifier, confirm_displace):
+@contextlib.contextmanager
+def _restored_object_transform(obj):
     """
-    Put the batch's object on the named action, before a single key is written.
+    Hand the object back the transform channels it arrived with, whatever the block does.
+
+    Keying writes the requested values onto the object first. With the keyed action assigned
+    those values are what it plays; keyed into an unassigned clip they drive nothing, and left
+    in place they would be an unkeyed edit to the object's own pose.
+
+    Args:
+        obj: The object being keyed.
+
+    """
+    snapshot = {name: tuple(getattr(obj, name)) for name in _TRANSFORM_CHANNELS if hasattr(obj, name)}
+    try:
+        yield
+    finally:
+        for name, value in snapshot.items():
+            setattr(obj, name, value)
+
+
+def _batch_owner(prepared, action_name):
+    """
+    Name the one object a batch naming an action keys, before anything is assigned or written.
 
     An ID holds one action, so a batch naming several objects while naming one action is asking
     for every object's keys to land in the same place: whichever object is assigned last wins
@@ -277,9 +298,9 @@ def _assign_batch_action(prepared, action_name, policy, slot_identifier, confirm
     Args:
         prepared: The validated records, read for the objects they key.
         action_name: The action every key in this batch belongs in.
-        policy: ENSURE, CREATE or REUSE - see `assign_named_action`.
-        slot_identifier: Which of the action's slots to key into, or None to resolve it.
-        confirm_displace: Whether the caller confirmed displacing an action that holds keys.
+
+    Returns:
+        The batch's single object.
 
     Raises:
         ValueError: If the batch names more than one distinct object.
@@ -292,9 +313,77 @@ def _assign_batch_action(prepared, action_name, policy, slot_identifier, confirm
             f"({', '.join(sorted(objects))}): an object holds one action, so call keyframe_object_transform "
             "once per object, naming the action that object's keys belong in"
         )
-    assign_named_action(
-        next(iter(objects.values())), action_name, policy, slot_identifier, confirm_displace=confirm_displace
+    return next(iter(objects.values()))
+
+
+def _hidden_strip_warnings(objects):
+    """
+    Collect the NLA-override notice for every object a batch keyed into its active action.
+
+    Args:
+        objects: The keyed objects, repeats allowed.
+
+    Returns:
+        list[str]: One notice per affected object up to `_MAX_HIDDEN_STRIP_NOTICES`, then one line
+        counting the rest - warnings are lifted whole and never paged.
+
+    """
+    unique = {obj.name: obj for obj in objects}
+    affected = [(name, notice) for name, obj in unique.items() for notice in hidden_strip_warning(obj)]
+    listed = [notice for _name, notice in affected[:_MAX_HIDDEN_STRIP_NOTICES]]
+    remainder = affected[_MAX_HIDDEN_STRIP_NOTICES:]
+    if remainder:
+        listed.append(
+            f"{len(remainder)} further keyed object(s) play an active action over NLA strips it overrides the same "
+            f"way, starting with: {', '.join(name for name, _notice in remainder[:_MAX_HIDDEN_STRIP_NOTICES])}."
+        )
+    return listed
+
+
+def _borrow_named_action(
+    borrowed, owner, action_name, policy, slot_identifier, warnings, *, confirm_displace, assign_action
+):
+    """
+    Put the batch's object on the named action for as long as `borrowed` stays open.
+
+    Args:
+        borrowed: The `ExitStack` the keying runs inside; the restores are entered on it.
+        owner: The batch's single object.
+        action_name: The action every key in this batch belongs in.
+        policy: ENSURE, CREATE or REUSE - see `assign_named_action`.
+        slot_identifier: Which of the action's slots to key into, or None to resolve it.
+        warnings: The reply's warnings, where a slot the restore could not put back is named.
+        confirm_displace: Whether the caller confirmed displacing an action that holds keys.
+        assign_action: False keys a clip: the assignment and the object's transform come back
+            on success too, and nothing is displaced for the guard to refuse.
+
+    Returns:
+        bpy.types.Action: The action the keys land in.
+
+    """
+    borrowed.enter_context(restored_action_assignment(owner, warnings, only_on_error=assign_action))
+    if not assign_action:
+        borrowed.enter_context(_restored_object_transform(owner))
+    return assign_named_action(
+        owner, action_name, policy, slot_identifier, confirm_displace=confirm_displace or not assign_action
     )
+
+
+def _refuse_existing_keys(prepared):
+    """
+    Refuse an INSERT_ONLY batch any of whose channels already holds a key at its frame.
+
+    Args:
+        prepared: The validated records, read against the action each object is now keyed into.
+
+    Raises:
+        ValueError: Naming the first record that would overwrite a key.
+
+    """
+    for entry in prepared:
+        existing = [path for path in entry["channels"] if _has_key_at(entry["object"], path, entry["frame"])]
+        if existing:
+            raise ValueError(f"A key already exists at {entry['label']} for {existing}; INSERT_ONLY made no changes")
 
 
 class ObjectAnimationHandlersMixin:
@@ -311,15 +400,18 @@ class ObjectAnimationHandlersMixin:
         action_policy="ENSURE",
         action_slot_identifier=None,
         confirm_displace_action=False,
+        assign_action=True,
     ):
-        if not isinstance(keyframes, list) or not 1 <= len(keyframes) <= _MAX_BATCH:
-            raise ValueError(f"keyframes must contain between 1 and {_MAX_BATCH} records")
+        if not isinstance(keyframes, list) or not keyframes:
+            raise ValueError("keyframes must contain at least one record")
         if policy not in _POLICIES:
             raise ValueError(f"policy must be one of {sorted(_POLICIES)}")
         style = KeyStyle(interpolation, handle_left, handle_right)
         style.validate()
         if action_policy not in ACTION_POLICIES:
             raise ValueError(f"action_policy must be one of {list(ACTION_POLICIES)}")
+        if not assign_action and action_name is None:
+            raise ValueError("assign_action=False keys a named clip and requires action_name")
 
         prepared = []
         seen = set()
@@ -354,44 +446,68 @@ class ObjectAnimationHandlersMixin:
                 }
             )
 
-        if action_name is not None:
-            _assign_batch_action(prepared, action_name, action_policy, action_slot_identifier, confirm_displace_action)
-        if policy == "INSERT_ONLY":
-            # Asked after the action is assigned, because "a key already exists here" is a
-            # question about the action this call is about to write into, not about whatever
-            # happened to be driving the object when the call arrived.
+        keyed_action = None
+        restore_warnings = []
+        with contextlib.ExitStack() as borrowed:
+            if action_name is not None:
+                keyed_action = _borrow_named_action(
+                    borrowed,
+                    _batch_owner(prepared, action_name),
+                    action_name,
+                    action_policy,
+                    action_slot_identifier,
+                    restore_warnings,
+                    confirm_displace=confirm_displace_action,
+                    assign_action=assign_action,
+                )
+            if policy == "INSERT_ONLY":
+                # Asked after the action is assigned, because "a key already exists here" is a
+                # question about the action this call is about to write into, not about whatever
+                # happened to be driving the object when the call arrived.
+                _refuse_existing_keys(prepared)
+            touched = {}
             for entry in prepared:
-                existing = [path for path in entry["channels"] if _has_key_at(entry["object"], path, entry["frame"])]
-                if existing:
-                    raise ValueError(
-                        f"A key already exists at {entry['label']} for {existing}; INSERT_ONLY made no changes"
-                    )
+                touched.setdefault(entry["object_name"], (entry["object"], set()))[1].update(entry["channels"])
+            for owner, data_paths in touched.values():
+                # Entered last, so it unwinds first: the keys go back while each object is still
+                # on the action they were written into.
+                borrowed.enter_context(restored_keys_on_error(owner, data_paths))
 
-        # Measured before a key is written: inserting one moves the extent it is measured
-        # against, and the question is which cycle the call arrived to.
-        warnings = _cycle_extension_warnings(prepared)
-        changed_keys = []
-        for entry in prepared:
-            inserted = _apply_and_key(entry["object"], entry["frame"], entry["space"], entry["channels"])
-            for data_path in inserted:
-                changed_keys.extend(_style_inserted_keys(entry["object"], data_path, entry["frame"], style))
+            # Measured before a key is written: inserting one moves the extent it is measured
+            # against, and the question is which cycle the call arrived to.
+            warnings = _cycle_extension_warnings(prepared)
+            changed_keys = []
+            for entry in prepared:
+                inserted = _apply_and_key(entry["object"], entry["frame"], entry["space"], entry["channels"])
+                for data_path in inserted:
+                    changed_keys.extend(_style_inserted_keys(entry["object"], data_path, entry["frame"], style))
 
-        changed_objects = list(dict.fromkeys(entry["object_name"] for entry in prepared))
-        actions = sorted(
-            {
-                action.name
-                for entry in prepared
-                for action in [_action_fcurves(entry["object"])[0]]
-                if action is not None
-            }
-        )
-        # One slot is only well defined when one object was keyed: a batch spanning several
-        # objects lands in as many slots as it has objects, and `actions` already names those.
-        single_owner = prepared[0]["object"] if len(changed_objects) == 1 else None
+            changed_objects = list(dict.fromkeys(entry["object_name"] for entry in prepared))
+            actions = sorted(
+                {
+                    action.name
+                    for entry in prepared
+                    for action in [_action_fcurves(entry["object"])[0]]
+                    if action is not None
+                }
+            )
+            # One slot is only well defined when one object was keyed: a batch spanning several
+            # objects lands in as many slots as it has objects, and `actions` already names those.
+            single_owner = prepared[0]["object"] if len(changed_objects) == 1 else None
+            action_slot = assigned_slot_identifier(single_owner) if single_owner is not None else None
+        warnings += restore_warnings
+        if assign_action:
+            warnings += _hidden_strip_warnings([entry["object"] for entry in prepared])
         return {
             "keyframes": changed_keys,
             "actions": actions,
-            "action_slot": assigned_slot_identifier(single_owner) if single_owner is not None else None,
+            "action_slot": action_slot,
+            # What drives the keyed object now: under assign_action=False, still its own action
+            # rather than the clip `actions` names. Null for a batch spanning several objects.
+            "assigned_action": assigned_action_name(single_owner),
+            # Zero for a clip nothing holds yet: Blender drops it at save until a strip or an
+            # assignment uses it. Null when no action was named.
+            "keyed_action_users": keyed_action.users if keyed_action is not None else None,
             "policy": policy,
             # The envelope lifts these, so a period this call silently redefined reaches a
             # caller who read nothing but the warnings.

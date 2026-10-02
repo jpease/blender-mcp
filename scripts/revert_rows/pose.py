@@ -4,7 +4,18 @@ Rows guarding posing replies, the pose reaching the file, and the reach solver.
 Label prefixes: `pose:`, `pose control:`.
 """
 
-from .common import ADDON_AXES, ADDON_POSING, ADDON_REACH, CTRLT, LISTT, POSET, REACHT, SERVER_POSING_TOOL, Revert
+from .common import (
+    ADDON_ACTION_ASSIGNMENT,
+    ADDON_AXES,
+    ADDON_POSING,
+    ADDON_REACH,
+    CTRLT,
+    LISTT,
+    POSET,
+    REACHT,
+    SERVER_POSING_TOOL,
+    Revert,
+)
 
 ROWS: list[Revert] = [
     # --- a pose reply names what it changed; the matrices are the part that is trimmed ---
@@ -88,27 +99,12 @@ ROWS: list[Revert] = [
     # --- the pose an agent authors reaches the file, and a child is solved against its parent ---
     Revert(
         # The restore is conditional on the block having raised: a call that authored keys has
-        # to leave its own action assigned, or Blender drops it at save. Turning the `except`
-        # into a `finally` is exactly the unconditional hand-back that discards the work.
+        # to leave its own action assigned, or Blender drops it at save. Restoring on success as
+        # well is exactly the unconditional hand-back that discards the work.
         "pose: the keyed action is unassigned again, so Blender drops it at save",
-        ADDON_POSING,
-        "    try:\n"
-        "        yield previous_action\n"
-        "    except BaseException:\n"
-        "        animation.action = previous_action\n"
-        "        if previous_action is not None and previous_slot is not None:\n"
-        "            # Assigning an action resets the slot, and a slot Blender no longer considers\n"
-        "            # suitable is its refusal to make, not this unwind's to force.\n"
-        "            with contextlib.suppress(Exception):\n"
-        "                animation.action_slot = previous_slot\n"
-        "        raise\n",
-        "    try:\n"
-        "        yield previous_action\n"
-        "    finally:\n"
-        "        animation.action = previous_action\n"
-        "        if previous_action is not None and previous_slot is not None:\n"
-        "            with contextlib.suppress(Exception):\n"
-        "                animation.action_slot = previous_slot\n",
+        ADDON_ACTION_ASSIGNMENT,
+        "    if not only_on_error:\n        refusal = restore()\n",
+        "    if True:\n        refusal = restore()\n",
         (
             f"{POSET}::test_keying_leaves_the_rig_driven_by_the_action_it_authored",
             f"{POSET}::test_keying_reports_the_action_it_displaced",
@@ -558,11 +554,9 @@ ROWS: list[Revert] = [
         # `object_state` does not snapshot `animation_data.action`, so nothing else in the
         # transaction puts the displaced action back when the solve raises mid-range.
         "pose: a reach that raises keeps the action it assigned, displacement and all",
-        ADDON_POSING,
-        "    except BaseException:\n"
-        "        animation.action = previous_action\n"
-        "        if previous_action is not None and previous_slot is not None:\n",
-        "    except BaseException:\n        if False:\n",
+        ADDON_ACTION_ASSIGNMENT,
+        "    except BaseException as original:\n        refusal = restore()\n",
+        "    except BaseException as original:\n        refusal = None\n",
         (f"{REACHT}::test_a_reach_that_fails_part_way_through_hands_back_the_action_it_arrived_on",),
     ),
 ]

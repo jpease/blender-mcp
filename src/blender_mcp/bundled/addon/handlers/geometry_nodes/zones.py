@@ -11,8 +11,6 @@ from .authoring import _apply_graph_operation, atomic_group_edit
 SUPPORTED_ZONE_SOCKET_TYPES = {"GEOMETRY", "FLOAT", "INT", "BOOLEAN", "VECTOR", "ROTATION", "RGBA"}
 SUPPORTED_ATTRIBUTE_DOMAINS = {"POINT", "EDGE", "FACE", "CORNER", "CURVE", "INSTANCE"}
 MAX_REPEAT_ITERATIONS = 256
-MAX_ZONE_ITEMS = 32
-MAX_ZONE_GRAPH_OPERATIONS = 200
 
 
 def _validate_zone_request(
@@ -33,10 +31,8 @@ def _validate_zone_request(
             raise ValueError("Zone node names must not be empty")
         if group.nodes.get(name) is not None:
             raise ValueError(f"Node name already exists in '{group.name}': {name}")
-    if not 1 <= len(state_items) <= MAX_ZONE_ITEMS:
-        raise ValueError(f"state_items must contain 1-{MAX_ZONE_ITEMS} entries")
-    if len(operations) > MAX_ZONE_GRAPH_OPERATIONS:
-        raise ValueError(f"graph_operations is limited to {MAX_ZONE_GRAPH_OPERATIONS} edits")
+    if not state_items:
+        raise ValueError("state_items must contain at least one entry")
     if any(len(location) != 2 or not all(math.isfinite(float(value)) for value in location) for location in locations):
         raise ValueError("Zone node locations must contain two finite numbers")
     if any(not isinstance(item, dict) or not item.get("name") or not item.get("socket_type") for item in state_items):

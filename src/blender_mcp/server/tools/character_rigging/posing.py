@@ -453,6 +453,7 @@ async def keyframe_character_pose(
     confirm_displace_action: bool = False,
     action_slot_identifier: str | None = None,
     detail: bool = False,
+    assign_action: bool = True,
 ) -> dict:
     """
     Apply a pose and insert, replace, or remove exact keys in a named action.
@@ -467,18 +468,14 @@ async def keyframe_character_pose(
     action_policy="ENSURE" (default) keys into action_name whether or not it already exists;
     "CREATE" requires it to be new, "REUSE" requires it to exist, and keying_policy="REMOVE"
     needs an action that is already there (REUSE, or ENSURE finding one). A rig holds one
-    action, so keying a pose into a second one stops the first driving the rig and Blender
-    drops an unreferenced action at save: when another action already holds keys, the call is
-    refused unless confirm_displace_action=True. Root motion keyed by keyframe_object_transform
-    lives in exactly such an action - pass both it and the pose the same action_name and they
-    play back together. Each pose's bone_name must name an existing pose bone on
+    action: root motion keyed by keyframe_object_transform plays back with the pose only when
+    both name the same action_name. Each pose's bone_name must name an existing pose bone on
     armature_object_name. action_slot_identifier selects which of the action's animation slots
     to key by its `identifier`; it is only required when the action already has multiple
     candidate slots and none is unambiguously suitable (inspect the action's slots before
     assuming this can be omitted).
 
-    The call leaves the rig driven by the action it keyed, which is what makes the animation
-    part of the file: an action nothing references has no users and Blender drops it at save.
+    The call leaves the rig driven by the action it keyed unless assign_action=False.
     assigned_action says what drives the rig afterwards, unassigned_action names a different
     action this call displaced, and the pose itself is restored, so the bones then show what
     the action says at the current frame.
@@ -558,6 +555,7 @@ async def keyframe_character_pose(
             "confirm_displace_action": confirm_displace_action,
             "action_slot_identifier": action_slot_identifier,
             "detail": detail,
+            "assign_action": assign_action,
         },
         changed_objects=[armature_object_name],
     )
@@ -788,6 +786,7 @@ async def keyframe_bone_reach(
     confirm_displace_action: bool = False,
     action_slot_identifier: str | None = None,
     detail: bool = False,
+    assign_action: bool = True,
 ) -> dict:
     """
     Solve an IK reach at many frames and key every one of them in a single call.
@@ -828,7 +827,6 @@ async def keyframe_bone_reach(
         easing: Easing direction, meaningful for the SINE..ELASTIC interpolations.
         action_policy: ENSURE keys into action_name whether or not it exists; CREATE
             requires it to be new, REUSE requires it to exist.
-        confirm_displace_action: Required to displace a different action that holds keys.
         action_slot_identifier: Which of the action's slots to key, when several qualify.
         interpolation: Applied to every key this call writes. A contact key usually wants
             handle_left/handle_right="VECTOR" so the foot does not ease through the floor.
@@ -860,6 +858,7 @@ async def keyframe_bone_reach(
             "confirm_displace_action": confirm_displace_action,
             "action_slot_identifier": action_slot_identifier,
             "detail": detail,
+            "assign_action": assign_action,
         },
         changed_objects=[armature_object_name],
     )

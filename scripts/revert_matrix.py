@@ -18,7 +18,7 @@ substring, so the prefix is how a group of rows is selected: `session:`, `barrie
 `candidates:`, `object lookup:`, `polyhaven:`, `output_roots:`, `get_addon_status:`,
 `server tools:`, `server instructions:`, `transport:`, `rig:`, `docker:`,
 `entrypoint:`, `quiet box:`, `reply budget:`, `lighting:`, `pose:`,
-`render settings:`, `strict args:`, `addon surface:`, `action assignment:`,
+`render settings:`, `strict args:`, `addon surface:`, `action assignment:`, `size caps:`,
 `camera:`, `pagination:`, `simulation:`, `data users:`, `counted replies:`, `lint gate:`,
 `geometry nodes:`, `integrations:` and `boundary:`. A `... control:` row is the deliberate
 opposite of its neighbour: it proves that over-enforcing the same line is caught too,
@@ -105,6 +105,7 @@ from revert_rows.common import (
     BUNT,
     CAMT,
     CANDT,
+    CAPST,
     CAPT,
     CLIT,
     CLOTHT,
@@ -210,6 +211,7 @@ NEW_TEST_FILES = (
     DEFORMT,
     GNSPACET,
     INTEGT,
+    CAPST,
 )
 # Nodes in files the matrix does not own. `coverage_gaps()` sees only these and the nodes
 # collected from NEW_TEST_FILES, so a node left off this list is never checked.
@@ -423,6 +425,25 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{BUNT}::test_advertised_parameter_descriptions_do_not_restate_the_schema[shot]",
     f"{BUNT}::test_advertised_parameter_descriptions_contain_no_letter_split_words[None]",
     f"{BUNT}::test_advertised_parameter_descriptions_contain_no_letter_split_words[shot]",
+    # --- the advertised catalog is compacted without changing what any tool accepts ---
+    f"{BUNT}::test_advertised_input_schemas_carry_no_title_keywords[None]",
+    f"{BUNT}::test_advertised_input_schemas_carry_no_title_keywords[shot]",
+    f"{BUNT}::test_advertised_optional_fields_are_not_wrapped_in_a_null_branch[None]",
+    f"{BUNT}::test_advertised_optional_fields_are_not_wrapped_in_a_null_branch[shot]",
+    f"{BUNT}::test_an_optional_model_keeps_its_description_off_the_ref[None]",
+    f"{BUNT}::test_an_optional_model_keeps_its_description_off_the_ref[shot]",
+    f"{BUNT}::test_every_description_carries_exactly_one_effects_tag_that_agrees_with_its_hint[None]",
+    f"{BUNT}::test_every_description_carries_exactly_one_effects_tag_that_agrees_with_its_hint[shot]",
+    f"{BUNT}::test_an_explicit_null_is_accepted_and_forwarded_like_an_omission[configure_render_settings]",
+    f"{BUNT}::test_an_explicit_null_is_accepted_and_forwarded_like_an_omission[set_character_pose]",
+    f"{TDT}::test_an_omittable_nullable_field_is_advertised_as_its_one_type",
+    f"{TDT}::test_a_null_branch_that_means_something_is_kept[required]",
+    f"{TDT}::test_a_null_branch_that_means_something_is_kept[non-null-default]",
+    f"{TDT}::test_a_null_branch_that_means_something_is_kept[two-real-branches]",
+    f"{TDT}::test_only_title_keywords_are_removed_never_a_property_or_a_value_named_title",
+    f"{TDT}::test_only_a_bounded_uniform_tuple_is_advertised_with_items[uniform-and-bounded]",
+    f"{TDT}::test_only_a_bounded_uniform_tuple_is_advertised_with_items[unbounded]",
+    f"{TDT}::test_only_a_bounded_uniform_tuple_is_advertised_with_items[mixed]",
     # --- a driver expression may name frame and its declared variables ---
     f"{ANIMT}::test_a_driver_expression_may_name_frame_and_its_declared_variables",
     f"{ANIMT}::test_a_driver_expression_still_refuses_undeclared_names_and_calls",
@@ -445,6 +466,18 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{ENVT}::test_a_reply_within_the_budget_is_sent_whole",
     f"{ENVT}::test_the_keys_the_shortening_adds_are_inside_the_budget_it_measured",
     f"{ENVT}::test_a_page_paged_under_a_prefixed_name_is_still_marked_truncated",
+    f"{ENVT}::test_a_vector_or_matrix_is_never_cut_as_if_it_were_a_page",
+    f"{ENVT}::test_a_numeric_value_is_never_cut_however_long_it_is",
+    f"{ENVT}::test_a_frame_list_is_a_page",
+    f"{ENVT}::test_an_index_list_is_a_page",
+    f"{ENVT}::test_a_list_of_index_pairs_is_a_page",
+    f"{ENVT}::test_a_list_of_name_pairs_is_a_page",
+    f"{ENVT}::test_an_undeclared_frames_list_is_one_value",
+    f"{ENVT}::test_an_undeclared_list_of_names_is_one_value",
+    f"{ENVT}::test_a_complete_value_list_is_never_cut_to_make_room",
+    f"{ENVT}::test_a_map_of_frame_lists_is_shortened_by_whole_entries",
+    f"{ENVT}::test_bare_pagination_declares_the_list_returned_count_counts",
+    f"{ENVT}::test_pages_inside_an_undeclared_list_are_found_and_its_records_kept",
     # --- a light record is trimmed to a listing's facts, with the rest behind detail ---
     f"{LIGHTT}::test_default_light_record_is_identity_plus_the_facts_a_listing_is_asked_for",
     f"{LIGHTT}::test_detail_records_carry_the_state_the_default_record_omits",
@@ -638,6 +671,62 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{NDOUTT}::test_nd_outcome_publishes_the_change_list_a_handler_names_itself_in_place_of_the_targets",
     f"{NDOUTT}::test_nd_outcome_cancelled_drops_a_change_list_the_handler_named",
     f"{SRVPHT}::test_a_model_import_reports_the_roots_the_handler_named_not_every_imported_object",
+    # --- a clip keyed with assign_action=False leaves the ID on its own action ---
+    f"{CRTT}::test_an_unassigned_clip_is_keyed_while_the_rig_keeps_its_root_motion",
+    f"{CRTT}::test_an_unassigned_clip_leaves_a_rig_that_had_no_animation_data_without_any",
+    f"{REACHT}::test_an_unassigned_reach_clip_keys_without_displacing_the_root_motion",
+    f"{OANIMT}::test_an_unassigned_clip_hands_the_object_back_its_action_and_transform",
+    f"{OANIMT}::test_an_unassigned_clip_leaves_an_object_with_no_animation_data_without_any",
+    f"{OANIMT}::test_an_unassigned_clip_without_a_name_is_refused_before_the_socket",
+    f"{ANIMT}::test_an_unassigned_clip_is_edited_without_touching_the_active_action",
+    f"{ANIMT}::test_an_unassigned_clip_without_a_name_is_refused_before_the_socket",
+    # --- an NLA strip the active action fully overrides is named, and only then ---
+    f"{ANIMT}::test_an_active_action_overriding_a_strip_names_the_strip_and_the_channels_it_hides",
+    *(
+        f"{ANIMT}::test_a_strip_the_active_action_does_not_fully_override_raises_nothing[{case}]"
+        for case in (
+            "nla-off",
+            "combine",
+            "partial-influence",
+            "strip-muted",
+            "track-muted",
+            "other-track-solo",
+            "own-track-solo",
+            "tweak-mode",
+        )
+    ),
+    f"{ANIMT}::test_a_strip_keying_other_channels_than_the_active_action_raises_nothing",
+    # --- an override counts only where the upper layer's extrapolation plays, strips included ---
+    *(
+        f"{ANIMT}::test_the_active_action_hides_a_strip_only_on_frames_its_extrapolation_plays[{case}]"
+        for case in (
+            "hold",
+            "hold-forward-after",
+            "hold-forward-before",
+            "nothing-apart",
+            "nothing-overlapping",
+            "touching",
+        )
+    ),
+    f"{ANIMT}::test_a_strip_added_over_a_strip_it_fully_replaces_says_which_it_hides",
+    *(
+        f"{ANIMT}::test_an_upper_strip_that_does_not_fully_replace_the_lower_one_raises_nothing[{case}]"
+        for case in ("add-blend", "animated-influence", "muted", "nothing-before", "hold-forward-after")
+    ),
+    f"{ANIMT}::test_an_upper_strip_hides_the_lower_one_on_the_frames_it_holds[hold-before-the-first-strip]",
+    f"{ANIMT}::test_an_upper_strip_hides_the_lower_one_on_the_frames_it_holds[hold-forward-past-its-end]",
+    f"{ANIMT}::test_a_strip_another_tracks_solo_silences_is_not_called_hidden",
+    f"{ANIMT}::test_a_held_strip_stops_holding_at_the_next_strip_in_its_track",
+    f"{ANIMT}::test_a_strip_whose_channels_are_already_counted_is_still_named_as_hidden",
+    # --- one displacement guard and one field for every tool that assigns an action ---
+    f"{ANIMT}::test_every_assigning_tool_refuses_to_displace_an_action_that_holds_keys",
+    f"{ANIMT}::test_displacing_an_action_with_no_keys_needs_no_confirmation",
+    f"{ANIMT}::test_a_bake_refuses_to_displace_keyed_motion_before_it_samples",
+    # --- a slot the restore cannot put back is reported, never swallowed ---
+    f"{ANIMT}::test_a_slot_the_restore_cannot_put_back_is_reported_not_swallowed",
+    f"{ANIMT}::test_a_slot_refused_while_unwinding_an_error_travels_with_that_error",
+    # --- a keying call that fails part way hands a reused action back its keys ---
+    f"{OANIMT}::test_a_batch_failing_part_way_hands_a_reused_action_back_its_keys",
 )
 
 # Nodes no single revert can break, each with the reason, so the gap check skips them.
@@ -831,19 +920,24 @@ REVERTS: list[Revert] = [
 ]
 
 
-def collected_nodes() -> list[str]:
+def collected_nodes() -> set[str]:
     """
-    Ask pytest which nodes NEW_TEST_FILES collect.
+    Ask pytest, once, which nodes the matrix's test files collect.
+
+    One `--collect-only` over NEW_TEST_FILES and every file NEW_NODES_IN_EXISTING_FILES names:
+    the coverage and staleness checks both read it, where each used to pay for a collection of
+    its own.
 
     Returns:
-        list[str]: Every collected node id, plus NEW_NODES_IN_EXISTING_FILES.
+        set[str]: Every collected node id.
 
     Raises:
-        SystemExit: If collection failed, which would make coverage meaningless.
+        SystemExit: If collection failed, which would make both checks meaningless.
 
     """
+    files = sorted({*NEW_TEST_FILES, *(node.split("::", 1)[0] for node in NEW_NODES_IN_EXISTING_FILES)})
     result = subprocess.run(
-        [".venv/bin/python", "-m", "pytest", "-q", "--collect-only", "-p", "no:cacheprovider", *NEW_TEST_FILES],
+        [".venv/bin/python", "-m", "pytest", "-q", "--collect-only", "-p", "no:cacheprovider", *files],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -851,20 +945,40 @@ def collected_nodes() -> list[str]:
     )
     if result.returncode != 0:
         raise SystemExit(f"collection failed:\n{result.stdout}\n{result.stderr}")
-    nodes = [line.strip() for line in result.stdout.splitlines() if "::test_" in line]
-    return nodes + list(NEW_NODES_IN_EXISTING_FILES)
+    return {line.strip() for line in result.stdout.splitlines() if "::test_" in line}
 
 
-def coverage_gaps() -> list[str]:
+def stale_nodes(collected: set[str]) -> list[str]:
+    """
+    List NEW_NODES_IN_EXISTING_FILES entries their test files no longer collect.
+
+    A renamed or deleted test leaves its entry behind; reporting it lets the list shrink.
+
+    Args:
+        collected: `collected_nodes()` output.
+
+    Returns:
+        list[str]: The stale node ids, sorted.
+
+    """
+    return sorted(set(NEW_NODES_IN_EXISTING_FILES) - collected)
+
+
+def coverage_gaps(collected: set[str]) -> list[str]:
     """
     List nodes that neither a revert nor a written-down exception accounts for.
+
+    Args:
+        collected: `collected_nodes()` output; of it, every node NEW_TEST_FILES collect is owned,
+            and NEW_NODES_IN_EXISTING_FILES are added to those.
 
     Returns:
         list[str]: The uncovered node ids, sorted.
 
     """
+    owned = {node for node in collected if node.split("::", 1)[0] in NEW_TEST_FILES}
     covered = {node for revert in REVERTS for node in revert.nodes}
-    return sorted(set(collected_nodes()) - covered - set(NOT_INDIVIDUALLY_FALSIFIABLE))
+    return sorted((owned | set(NEW_NODES_IN_EXISTING_FILES)) - covered - set(NOT_INDIVIDUALLY_FALSIFIABLE))
 
 
 def _invalidate_bytecode(path: pathlib.Path) -> None:
@@ -986,11 +1100,29 @@ class Report:
     Attributes:
         survivors: Labels of reverts no named node noticed.
         gaps: Node ids nothing accounts for.
+        stale: NEW_NODES_IN_EXISTING_FILES entries no test file collects any more.
 
     """
 
     survivors: list[str] = field(default_factory=list)
     gaps: list[str] = field(default_factory=list)
+    stale: list[str] = field(default_factory=list)
+
+
+def _print_unaccounted(report: Report) -> None:
+    """
+    Print the nodes nothing accounts for and the listed nodes that no longer exist.
+
+    Args:
+        report: The run's findings.
+
+    """
+    print(f"new test nodes with no revert and no written-down reason: {len(report.gaps)}")
+    for node in report.gaps:
+        print(f"    UNCOVERED {node}")
+    print(f"stale NEW_NODES_IN_EXISTING_FILES entries: {len(report.stale)}")
+    for node in report.stale:
+        print(f"    STALE {node}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1009,7 +1141,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--only", default="", help="run only reverts whose label contains this substring")
     arguments = parser.parse_args(argv)
 
-    report = Report(gaps=coverage_gaps())
+    collected = collected_nodes()
+    report = Report(gaps=coverage_gaps(collected), stale=stale_nodes(collected))
     if arguments.list:
         for revert in REVERTS:
             print(f"{revert.label}")
@@ -1018,9 +1151,8 @@ def main(argv: list[str] | None = None) -> int:
         for node, reason in sorted(NOT_INDIVIDUALLY_FALSIFIABLE.items()):
             print(f"[not individually falsifiable] {node}\n    reason: {reason}")
         print(f"\nreverts: {len(REVERTS)}; uncovered nodes: {len(report.gaps)}")
-        for node in report.gaps:
-            print(f"    UNCOVERED {node}")
-        return 1 if report.gaps else 0
+        _print_unaccounted(report)
+        return 1 if report.gaps or report.stale else 0
 
     # A full run is hundreds of pytest runs; the load stamps show whether a survivor
     # may be a busy machine's timing artefact.
@@ -1046,10 +1178,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"reverts that failed to break their own nodes: {len(report.survivors)}")
     for label in report.survivors:
         print(f"    SURVIVOR {label}")
-    print(f"new test nodes with no revert and no written-down reason: {len(report.gaps)}")
-    for node in report.gaps:
-        print(f"    UNCOVERED {node}")
-    return 1 if report.survivors or report.gaps else 0
+    _print_unaccounted(report)
+    return 1 if report.survivors or report.gaps or report.stale else 0
 
 
 if __name__ == "__main__":

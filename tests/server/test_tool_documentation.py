@@ -182,3 +182,90 @@ def test_a_flag_that_frees_a_cache_or_replaces_a_file_marks_its_tool_destructive
     """
     assert not _documentation._is_destructive("tally_frames", {"properties": {}})
     assert _documentation._is_destructive("tally_frames", {"properties": {flag: {"type": "boolean"}}})
+
+
+_NULLABLE_INT: dict[str, Any] = {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}], "default": None}
+
+
+def _compacted(schema: dict[str, Any]) -> dict[str, Any]:
+    """
+    Run the advertisement compaction over a copy of one object schema.
+
+    Args:
+        schema: The schema as pydantic would advertise it.
+
+    Returns:
+        The compacted copy.
+
+    """
+    compacted = copy.deepcopy(schema)
+    _documentation._compact_schema(compacted)
+    return compacted
+
+
+def test_an_omittable_nullable_field_is_advertised_as_its_one_type() -> None:
+    """`int | None = None` reaches the agent as the integer schema, its description kept."""
+    schema = {"type": "object", "properties": {"count": {**_NULLABLE_INT, "description": "Items."}}}
+    assert _compacted(schema)["properties"]["count"] == {"type": "integer", "minimum": 1, "description": "Items."}
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        # Required: null must be sent, so the null branch is the only way to say so.
+        {"type": "object", "properties": {"count": _NULLABLE_INT}, "required": ["count"]},
+        # A non-null default: omitting gives 3, null gives null, and the two differ.
+        {"type": "object", "properties": {"count": {**_NULLABLE_INT, "default": 3}}},
+        # Two real branches: dropping null still leaves an anyOf to advertise.
+        {
+            "type": "object",
+            "properties": {
+                "count": {"anyOf": [{"type": "integer"}, {"type": "string"}, {"type": "null"}], "default": None}
+            },
+        },
+    ],
+    ids=["required", "non-null-default", "two-real-branches"],
+)
+def test_a_null_branch_that_means_something_is_kept(case: dict[str, Any]) -> None:
+    """Collapsing any of these would advertise a narrower or different contract than the model's."""
+    assert _compacted(case)["properties"]["count"]["anyOf"] == case["properties"]["count"]["anyOf"]
+
+
+def test_only_title_keywords_are_removed_never_a_property_or_a_value_named_title() -> None:
+    """`SafeAreasPatch.title` is a real parameter, and a default is data however its keys are spelled."""
+    schema = {
+        "type": "object",
+        "title": "Arguments",
+        "properties": {
+            "title": {"type": "array", "title": "Title", "items": {"type": "number"}},
+            "label": {"type": "object", "default": {"title": "kept"}},
+        },
+        "$defs": {"Patch": {"type": "object", "title": "Patch", "properties": {}}},
+    }
+    assert _compacted(schema) == {
+        "type": "object",
+        "properties": {
+            "title": {"type": "array", "items": {"type": "number"}},
+            "label": {"type": "object", "default": {"title": "kept"}},
+        },
+        "$defs": {"Patch": {"type": "object", "properties": {}}},
+    }
+
+
+@pytest.mark.parametrize(
+    ("tuple_schema", "collapses"),
+    [
+        ({"type": "array", "prefixItems": [{"type": "number"}] * 3, "minItems": 3, "maxItems": 3}, True),
+        # No upper bound: a fourth item is unconstrained under prefixItems but not under items.
+        ({"type": "array", "prefixItems": [{"type": "number"}] * 3, "minItems": 3}, False),
+        ({"type": "array", "prefixItems": [{"type": "number"}, {"type": "string"}], "maxItems": 2}, False),
+    ],
+    ids=["uniform-and-bounded", "unbounded", "mixed"],
+)
+def test_only_a_bounded_uniform_tuple_is_advertised_with_items(tuple_schema: dict[str, Any], collapses: bool) -> None:
+    """`items` is equivalent to `prefixItems` only when every slot matches and no extra slot can exist."""
+    compacted = _compacted(tuple_schema)
+    if collapses:
+        assert compacted == {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+    else:
+        assert compacted == tuple_schema

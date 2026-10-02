@@ -617,7 +617,7 @@ class _FakeActions(dict):
     """`bpy.data.actions`: lookup by name plus creation of a slotless, curveless action."""
 
     def new(self, name) -> types.SimpleNamespace:
-        self[name] = types.SimpleNamespace(name=name, slots=())
+        self[name] = types.SimpleNamespace(name=name, slots=(), users=1)
         return self[name]
 
 

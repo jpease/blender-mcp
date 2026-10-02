@@ -324,14 +324,13 @@ def test_resolve_containers_rejects_non_positive_wall_thickness(monkeypatch) -> 
         handler.shot._resolve_containers(scene, [{"object_name": "Glass", "wall_thickness": 0.0}])
 
 
-def test_resolve_containers_rejects_empty_or_oversized_lists(monkeypatch) -> None:
+def test_resolve_containers_rejects_an_empty_list(monkeypatch) -> None:
+    """The upper bound is refused at dispatch from `list_caps.LIST_CAPS`; the handler owns the empty case."""
     _addon, handler = load_liquid_handler(monkeypatch)
     monkeypatch.setattr(handler.shot, "get_object", _AutoObjectRegistry())
     scene = _fake_scene(["Glass"])
-    with pytest.raises(ValueError, match="1-16"):
+    with pytest.raises(ValueError, match="at least one record"):
         handler.shot._resolve_containers(scene, [])
-    with pytest.raises(ValueError, match="1-16"):
-        handler.shot._resolve_containers(scene, [{"object_name": "Glass"}] * 17)
 
 
 def test_resolve_containers_defaults_proxy_name_from_object(monkeypatch) -> None:
@@ -358,11 +357,11 @@ def test_resolve_sources_rejects_unknown_behavior(monkeypatch) -> None:
         handler.shot._resolve_sources(scene, [{"object_name": "Pour", "behavior": "SPLASH"}], 24.0, 1)
 
 
-def test_resolve_sources_rejects_empty_or_oversized_lists(monkeypatch) -> None:
+def test_resolve_sources_rejects_an_empty_list(monkeypatch) -> None:
     _addon, handler = load_liquid_handler(monkeypatch)
     monkeypatch.setattr(handler.shot, "get_object", _AutoObjectRegistry())
     scene = _fake_scene(["Pour"])
-    with pytest.raises(ValueError, match="1-16"):
+    with pytest.raises(ValueError, match="at least one record"):
         handler.shot._resolve_sources(scene, [], 24.0, 1)
 
 

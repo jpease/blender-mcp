@@ -8,6 +8,7 @@ import types
 import pytest
 
 from conftest import load_addon
+from datablock_doubles import NO_RNA_SETTINGS
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 
@@ -805,7 +806,7 @@ def _cyclic_action(bone_names, extent=(1.0, 25.0)):
             f'pose.bones["{name}"].rotation_quaternion',
             index,
             [(extent[0], 0.0), (extent[1], 0.0)],
-            modifiers=[types.SimpleNamespace(type="CYCLES")],
+            modifiers=[types.SimpleNamespace(type="CYCLES", bl_rna=NO_RNA_SETTINGS)],
         )
         for name in bone_names
         for index in range(4)

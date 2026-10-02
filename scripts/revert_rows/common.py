@@ -58,6 +58,8 @@ SERVER_ANIMATION_TOOL = ROOT / "src/blender_mcp/server/tools/animation.py"
 # both key through: one ID holds one action, so both tools make the same mistake.
 ADDON_OBJECT_ANIMATION = ROOT / "src/blender_mcp/bundled/addon/handlers/object_animation.py"
 ADDON_ACTION_ASSIGNMENT = ROOT / "src/blender_mcp/bundled/addon/handlers/action_assignment.py"
+SERVER_OBJECT_ANIMATION_TOOL = ROOT / "src/blender_mcp/server/tools/object_animation.py"
+ADDON_CAMERA_ANIMATION = ROOT / "src/blender_mcp/bundled/addon/handlers/camera/animation.py"
 SERVER_ENVELOPE = ROOT / "src/blender_mcp/server/tools/envelope.py"
 # The lighting, posing and render-settings handlers the reply-shape work reshaped, and the
 # server-side wrappers that carry their `detail` flag across the socket.
@@ -208,6 +210,8 @@ CONNT = "tests/server/test_connection_framing.py"
 CONNFAILT = "tests/server/test_connection_failure_detection.py"
 CAPT = "tests/test_capability_introspection.py"
 KEYSTYLET = "tests/test_key_style.py"
+# Every list cap the server advertises against the add-on's own copy of it.
+CAPST = "tests/test_size_cap_parity.py"
 DISPT = "tests/server/tools/test_dispatch.py"
 RNAPT = "tests/test_rna_patch.py"
 LIQUIDT = "tests/server/tools/liquid/test_tools.py"

@@ -151,6 +151,225 @@ def _check_two_characters_keep_their_own_animation(server: BlenderMCPServer) -> 
     assert char1_values != char2_values, (char1_values, char2_values)
 
 
+def _action_channels(action: bpy.types.Action) -> set[tuple[str, int]]:
+    """
+    Every `(data_path, array_index)` an action keys, across its layers and slots.
+
+    Args:
+        action: The action to read.
+
+    Returns:
+        set: Its channels.
+
+    """
+    return {
+        (curve.data_path, curve.array_index)
+        for layer in action.layers
+        for strip in layer.strips
+        for bag in strip.channelbags
+        for curve in bag.fcurves
+    }
+
+
+def _hidden_strip_notices(reply: dict) -> list[str]:
+    """Pick the hidden-strip notices out of one reply, leaving the transaction's own notices behind."""
+    return [warning for warning in reply.get("warnings", ()) if "over the NLA at REPLACE" in warning]
+
+
+def _check_an_unassigned_clip_plays_from_its_strip(server: BlenderMCPServer) -> None:
+    """
+    Key clips without assigning them, put them in NLA strips, and see which ones the active action hides.
+
+    A Blender 5.x action holds one layer, so layered motion is NLA strips - and keying a clip
+    used to mean assigning it, which displaced the root motion every time. With
+    assign_action=False the clip takes the keys while the rig keeps its action, slot, pose and
+    transform. A clip keying the root's own channels is then overridden by the active action at
+    REPLACE, influence 1, and ADD_STRIP says so; one keying other channels plays and says nothing.
+
+    Args:
+        server: The server under test.
+
+    Raises:
+        AssertionError: When the rig was moved off its action, a clip missed its keys, or the
+            hidden-strip warning was wrong either way.
+
+    """
+    rig = _build_rig("CHAR3_rig", (0.0, 3.0, 0.0))
+    target = {"type": "OBJECT", "name": rig.name}
+    for frame, x in ((1, 0.0), (24, 4.0)):
+        _run(
+            server,
+            "keyframe_object_transform",
+            keyframes=[{"object_name": rig.name, "frame": frame, "space": "LOCAL", "location": [x, 3.0, 0.0]}],
+            action_name="CHAR3_root",
+        )
+    bpy.context.scene.frame_set(1)
+    root, root_slot = rig.animation_data.action, rig.animation_data.action_slot.identifier
+    location = tuple(rig.location)
+    head_basis = rig.pose.bones["head"].matrix_basis.copy()
+
+    waved = _run(
+        server,
+        "keyframe_character_pose",
+        armature_object_name=rig.name,
+        action_name="CHAR3_wave",
+        keys=[
+            {"frame": 1.0, "poses": [{"bone_name": "head", "rotate": {"axis": "Z", "degrees": 0.0}}]},
+            {"frame": 12.0, "poses": [{"bone_name": "head", "rotate": {"axis": "Z", "degrees": 40.0}}]},
+        ],
+        assign_action=False,
+    )
+    hopped = _run(
+        server,
+        "keyframe_object_transform",
+        keyframes=[{"object_name": rig.name, "frame": 6, "space": "LOCAL", "location": [9.0, 9.0, 9.0]}],
+        action_name="CHAR3_hop",
+        assign_action=False,
+    )
+    edited = _run(
+        server,
+        "edit_keyframes",
+        target=target,
+        edits=[{"data_path": "scale", "array_index": 2, "frame": 3, "value": 2.0}],
+        action_name="CHAR3_squash",
+        assign_action=False,
+    )
+
+    # The rig is exactly where, and on exactly what, it was.
+    assert rig.animation_data.action == root, rig.animation_data.action
+    assert rig.animation_data.action_slot.identifier == root_slot
+    assert tuple(rig.location) == location, (tuple(rig.location), location)
+    assert all(
+        abs(a - b) < 1e-9
+        for row_a, row_b in zip(rig.pose.bones["head"].matrix_basis, head_basis, strict=True)
+        for a, b in zip(row_a, row_b, strict=True)
+    )
+    for reply in (waved, hopped, edited):
+        assert reply["assigned_action"] == "CHAR3_root", reply
+        # Nothing uses a clip yet, and an unused action does not survive a save: the reply says so
+        # as data, and keeps its warnings for what is wrong.
+        assert reply["keyed_action_users"] == 0, reply
+        assert not any("ADD_STRIP" in warning for warning in reply["warnings"]), reply
+    assert {path for path, _index in _action_channels(bpy.data.actions["CHAR3_wave"])} == {
+        'pose.bones["head"].rotation_quaternion'
+    }
+    assert _action_channels(bpy.data.actions["CHAR3_hop"]) == {("location", index) for index in range(3)}
+    assert _action_channels(bpy.data.actions["CHAR3_squash"]) == {("scale", 2)}
+
+    # A rig that arrived with no animation data leaves without any.
+    prop = bpy.data.objects.new("CHAR3_prop", None)
+    bpy.context.scene.collection.objects.link(prop)
+    _run(
+        server,
+        "keyframe_object_transform",
+        keyframes=[{"object_name": prop.name, "frame": 1, "location": [1.0, 0.0, 0.0]}],
+        action_name="CHAR3_prop_clip",
+        assign_action=False,
+    )
+    assert prop.animation_data is None
+    assert _action_channels(bpy.data.actions["CHAR3_prop_clip"]) == {("location", index) for index in range(3)}
+
+    _run(server, "manage_nla_tracks", target=target, action="CREATE_TRACK", track_name="Gestures")
+    wave_strip = _run(
+        server,
+        "manage_nla_tracks",
+        target=target,
+        action="ADD_STRIP",
+        track_name="Gestures",
+        strip_name="wave",
+        action_name="CHAR3_wave",
+        frame_start=1,
+    )
+    # The transaction adds its own background-mode undo notice; only the NLA notice is in question.
+    assert not _hidden_strip_notices(wave_strip), wave_strip
+    hop_strip = _run(
+        server,
+        "manage_nla_tracks",
+        target=target,
+        action="ADD_STRIP",
+        track_name="Gestures",
+        strip_name="hop",
+        action_name="CHAR3_hop",
+        frame_start=30,
+    )
+    (hidden,) = _hidden_strip_notices(hop_strip)
+    assert "'CHAR3_root'" in hidden and "'hop'" in hidden and "overriding 3 channel(s)" in hidden, hidden
+    # Keying into the active action says the same, because those keys are what does the hiding.
+    rekeyed = _run(
+        server,
+        "keyframe_object_transform",
+        keyframes=[{"object_name": rig.name, "frame": 24, "space": "LOCAL", "location": [4.0, 3.0, 0.0]}],
+        action_name="CHAR3_root",
+    )
+    assert ["'hop'" in notice for notice in _hidden_strip_notices(rekeyed)] == [True], rekeyed
+
+    # And the wave really plays from its strip, under the root motion that kept driving the rig.
+    bpy.context.scene.frame_set(12)
+    turned = rig.pose.bones["head"].matrix_basis.to_quaternion().angle
+    assert abs(turned - 0.6981317) < 1e-4, turned
+    assert 0.0 < rig.location.x < 4.0 and abs(rig.location.y - 3.0) < 1e-6, tuple(rig.location)
+    print(f"unassigned clips: rig kept CHAR3_root, wave strip turned the head {turned:.6f} rad at frame 12")
+    print(f"hidden strip warning: {hidden}")
+    _check_extrapolation_decides_what_is_hidden(server, rig, target)
+
+
+def _check_extrapolation_decides_what_is_hidden(server: BlenderMCPServer, rig: bpy.types.Object, target: dict) -> None:
+    """
+    Measure what Blender plays where the notice says a strip is or is not hidden.
+
+    The root action is keyed over frames 1-24 and the 'hop' strip sits at 30. Held (Blender's
+    default) the root plays over the strip; at NOTHING it stops at 24 and the strip plays, and
+    the notice must agree. A strip on a higher track at REPLACE then hides 'hop' in turn.
+
+    Args:
+        server: The server under test.
+        rig: The rig `_check_an_unassigned_clip_plays_from_its_strip` built.
+        target: Its animation target.
+
+    Raises:
+        AssertionError: When Blender's evaluation and the notice disagree.
+
+    """
+    scene = bpy.context.scene
+    scene.frame_set(30)
+    assert abs(rig.location.x - 4.0) < 1e-6, ("HOLD: the root's last key plays over the strip", tuple(rig.location))
+
+    rig.animation_data.action_extrapolation = "NOTHING"
+    scene.frame_set(30)
+    assert abs(rig.location.x - 9.0) < 1e-6, ("NOTHING: the hop strip plays", tuple(rig.location))
+    rekeyed = _run(
+        server,
+        "keyframe_object_transform",
+        keyframes=[{"object_name": rig.name, "frame": 24, "space": "LOCAL", "location": [4.0, 3.0, 0.0]}],
+        action_name="CHAR3_root",
+    )
+    assert not _hidden_strip_notices(rekeyed), rekeyed
+
+    _run(
+        server,
+        "keyframe_object_transform",
+        keyframes=[{"object_name": rig.name, "frame": 30, "space": "LOCAL", "location": [-5.0, 3.0, 0.0]}],
+        action_name="CHAR3_slide",
+        assign_action=False,
+    )
+    _run(server, "manage_nla_tracks", target=target, action="CREATE_TRACK", track_name="Overlay")
+    slide_strip = _run(
+        server,
+        "manage_nla_tracks",
+        target=target,
+        action="ADD_STRIP",
+        track_name="Overlay",
+        strip_name="slide",
+        action_name="CHAR3_slide",
+        frame_start=30,
+    )
+    (over,) = _hidden_strip_notices(slide_strip)
+    assert "plays strip 'slide'" in over and "'hop'" in over and "manage_nla_tracks PATCH_STRIP" in over, over
+    scene.frame_set(30)
+    assert abs(rig.location.x + 5.0) < 1e-6, ("the upper strip replaces the hop", tuple(rig.location))
+    print(f"extrapolation: NOTHING lets the hop play at 30; strip over strip: {over}")
+
+
 def main() -> None:
     """Write animation, save, reopen, and read every part of it back."""
     server = BlenderMCPServer()
@@ -268,6 +487,7 @@ def main() -> None:
     assert delivery["provenance"]["valid"] is True, delivery["provenance"]
 
     _check_two_characters_keep_their_own_animation(server)
+    _check_an_unassigned_clip_plays_from_its_strip(server)
 
     print("ANIMATION_ROUNDTRIP_SMOKE_OK")
 

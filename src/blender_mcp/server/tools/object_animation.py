@@ -3,6 +3,7 @@
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
+from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field, model_validator
 
 from ..app import mcp
@@ -50,6 +51,7 @@ async def keyframe_object_transform(
     action_policy: Literal["ENSURE", "CREATE", "REUSE"] = "ENSURE",
     action_slot_identifier: str | None = None,
     confirm_displace_action: bool = False,
+    assign_action: bool = True,
 ) -> dict:
     """
     Keyframe one or more objects' location/rotation/scale, in local or world space, at a frame or seconds offset.
@@ -69,9 +71,7 @@ async def keyframe_object_transform(
     the shot's motion depends on call order. Name one and they are written there: action_policy="ENSURE"
     (default) creates it when missing and reuses it when present, "CREATE" requires it to be new, "REUSE"
     requires it to exist, and action_slot_identifier picks the slot when the action carries several. An
-    object holds one action, so a batch naming action_name may name only one object, and displacing a
-    different action that already holds keys is refused unless confirm_displace_action=True: those keys
-    would stop driving anything and Blender drops an unreferenced action at save. Give a character's root
+    object holds one action, so a batch naming action_name may name only one object. Give a character's root
     motion (here) and its pose (keyframe_character_pose) the same action_name and both play back together.
     """
     if action_name is not None and len({record.object_name for record in keyframes}) > 1:
@@ -79,6 +79,8 @@ async def keyframe_object_transform(
             f"action_name='{action_name}' names one action, but this batch keys several objects: an object "
             "holds one action, so call keyframe_object_transform once per object"
         )
+    if not assign_action and action_name is None:
+        raise ToolError("assign_action=False requires action_name")
     return await call_blender(
         "keyframe_object_transform",
         {
@@ -91,6 +93,7 @@ async def keyframe_object_transform(
             "action_policy": action_policy,
             "action_slot_identifier": action_slot_identifier,
             "confirm_displace_action": confirm_displace_action,
+            "assign_action": assign_action,
         },
         changed_resources=list(dict.fromkeys(record.object_name for record in keyframes)),
     )

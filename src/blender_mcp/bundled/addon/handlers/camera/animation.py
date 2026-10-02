@@ -501,8 +501,8 @@ class _AnimationMixin:
         handle_left="AUTO_CLAMPED",
         handle_right="AUTO_CLAMPED",
     ):
-        if not isinstance(keyframes, list) or not 1 <= len(keyframes) <= 500:
-            raise ValueError("keyframes must contain between 1 and 500 records")
+        if not isinstance(keyframes, list) or not keyframes:
+            raise ValueError("keyframes must contain at least one record")
         if policy not in {"REPLACE", "INSERT_ONLY"}:
             raise ValueError("policy must be REPLACE or INSERT_ONLY")
         style = KeyStyle(interpolation, handle_left, handle_right)

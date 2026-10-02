@@ -1,12 +1,192 @@
 """
-Rows guarding a cycle's period, a roll's travel, and the bone-axis probe.
+Rows guarding a cycle's period, a roll's travel, the bone-axis probe, and NLA strips a layer above hides.
 
 Label prefixes: `animation:`, `pose:`.
 """
 
-from .common import ADDON_ANIMATION, ADDON_POSING, ANIMT, POSET, SERVER_ANIMATION_TOOL, Revert
+from .common import ADDON_ACTION_ASSIGNMENT, ADDON_ANIMATION, ADDON_POSING, ANIMT, POSET, SERVER_ANIMATION_TOOL, Revert
+
+_QUIET = f"{ANIMT}::test_a_strip_the_active_action_does_not_fully_override_raises_nothing"
+_UPPER_QUIET = f"{ANIMT}::test_an_upper_strip_that_does_not_fully_replace_the_lower_one_raises_nothing"
+_EXTRAPOLATED = f"{ANIMT}::test_the_active_action_hides_a_strip_only_on_frames_its_extrapolation_plays"
+_HELD = f"{ANIMT}::test_an_upper_strip_hides_the_lower_one_on_the_frames_it_holds"
 
 ROWS: list[Revert] = [
+    # --- a strip a layer above fully overrides plays nothing, and the reply says so ---
+    Revert(
+        "animation: an active action hiding a strip's channels says nothing about it",
+        ADDON_ACTION_ASSIGNMENT,
+        "    if not hidden:\n        return []\n",
+        "    if True:\n        return []\n",
+        (
+            f"{ANIMT}::test_an_active_action_overriding_a_strip_names_the_strip_and_the_channels_it_hides",
+            f"{_EXTRAPOLATED}[hold]",
+            f"{_EXTRAPOLATED}[hold-forward-before]",
+            f"{_EXTRAPOLATED}[nothing-overlapping]",
+            f"{_EXTRAPOLATED}[touching]",
+            f"{_HELD}[hold-forward-past-its-end]",
+        ),
+    ),
+    Revert(
+        "animation: a strip warns about the active action even with NLA evaluation off",
+        ADDON_ACTION_ASSIGNMENT,
+        '    if animation is None or not getattr(animation, "use_nla", False):\n',
+        "    if animation is None:\n",
+        (f"{_QUIET}[nla-off]",),
+    ),
+    Revert(
+        "animation: an active action blended by COMBINE or below full influence is called a full override",
+        ADDON_ACTION_ASSIGNMENT,
+        '"overrides": animation.action_blend_type == "REPLACE" and animation.action_influence >= 1.0,',
+        '"overrides": True,',
+        (f"{_QUIET}[combine]", f"{_QUIET}[partial-influence]"),
+    ),
+    Revert(
+        "animation: a muted track is warned about as if it played",
+        ADDON_ACTION_ASSIGNMENT,
+        "        if track.mute or (solo and not track.is_solo):\n",
+        "        if solo and not track.is_solo:\n",
+        (f"{_QUIET}[track-muted]",),
+    ),
+    Revert(
+        "animation: a muted strip is warned about, or warned over, as if it played",
+        ADDON_ACTION_ASSIGNMENT,
+        "            if strip.mute:\n                continue\n",
+        "            if False:\n                continue\n",
+        (f"{_QUIET}[strip-muted]", f"{_UPPER_QUIET}[muted]"),
+    ),
+    Revert(
+        "animation: a strip on a track another track's solo silences is warned about",
+        ADDON_ACTION_ASSIGNMENT,
+        "        if track.mute or (solo and not track.is_solo):\n",
+        "        if track.mute:\n",
+        (f"{ANIMT}::test_a_strip_another_tracks_solo_silences_is_not_called_hidden",),
+    ),
+    Revert(
+        "animation: a solo track is ignored, so the tracks and active action it silences are warned about",
+        ADDON_ACTION_ASSIGNMENT,
+        "    solo = any(track.is_solo for track in tracks)\n",
+        "    solo = False\n",
+        (f"{_QUIET}[other-track-solo]", f"{_QUIET}[own-track-solo]"),
+    ),
+    Revert(
+        # Blender's own RNA description: a solo track disables the active action as well.
+        "animation: the active action a solo track silences is warned about as overriding it",
+        ADDON_ACTION_ASSIGNMENT,
+        "    if not solo and action is not None:\n",
+        "    if action is not None:\n",
+        (f"{_QUIET}[own-track-solo]",),
+    ),
+    Revert(
+        "animation: the strip being tweaked is warned about as hidden by its own tweak action",
+        ADDON_ACTION_ASSIGNMENT,
+        '    if getattr(animation, "use_tweak_mode", False):\n',
+        "    if False:\n",
+        (f"{_QUIET}[tweak-mode]",),
+    ),
+    Revert(
+        "animation: a strip keying other channels than the active action is warned about anyway",
+        ADDON_ACTION_ASSIGNMENT,
+        "                shared = {identity for identity in keyed if identity in channels}\n",
+        "                shared = set(keyed)\n",
+        (f"{ANIMT}::test_a_strip_keying_other_channels_than_the_active_action_raises_nothing",),
+    ),
+    Revert(
+        # The shortcut that keeps a twenty-strip stack off every curve once the count is complete.
+        "animation: a strip found after every overridden channel is counted is left out of the notice",
+        ADDON_ACTION_ASSIGNMENT,
+        "                hides = any(identity in channels for identity in keyed)\n",
+        "                hides = False\n",
+        (f"{ANIMT}::test_a_strip_whose_channels_are_already_counted_is_still_named_as_hidden",),
+    ),
+    Revert(
+        "animation: strips are only checked for a shared channel before any channel is counted",
+        ADDON_ACTION_ASSIGNMENT,
+        "            if channels <= overridden:\n",
+        "            if True:\n",
+        (f"{ANIMT}::test_an_active_action_overriding_a_strip_names_the_strip_and_the_channels_it_hides",),
+    ),
+    # --- an override counts only on frames the upper layer's extrapolation plays ---
+    Revert(
+        "animation: the active action is taken to hold over every frame, whatever its extrapolation",
+        ADDON_ACTION_ASSIGNMENT,
+        "    extrapolation = animation.action_extrapolation\n",
+        '    extrapolation = "HOLD"\n',
+        (f"{_EXTRAPOLATED}[hold-forward-after]", f"{_EXTRAPOLATED}[nothing-apart]"),
+    ),
+    Revert(
+        "animation: an active action at NOTHING is taken to play past its last key",
+        ADDON_ACTION_ASSIGNMENT,
+        "    return (first, last)\n",
+        "    return (first, math.inf)\n",
+        (f"{_EXTRAPOLATED}[nothing-apart]",),
+    ),
+    Revert(
+        "animation: a strip is called hidden on frames it only holds, not on frames it keys",
+        ADDON_ACTION_ASSIGNMENT,
+        '_overlaps(upper["frames"], lower["own_frames"])',
+        '_overlaps(upper["frames"], lower["frames"])',
+        (f"{_EXTRAPOLATED}[hold-forward-after]",),
+    ),
+    Revert(
+        "animation: a first strip at HOLD is taken not to hold before its start",
+        ADDON_ACTION_ASSIGNMENT,
+        '    start = -math.inf if extrapolation == "HOLD" and index == 0 else float(strip.frame_start)\n',
+        "    start = float(strip.frame_start)\n",
+        (f"{_HELD}[hold-before-the-first-strip]",),
+    ),
+    Revert(
+        # Blender holds before a strip only for HOLD on the track's first strip; HOLD_FORWARD never does.
+        "animation: a first strip at HOLD_FORWARD is taken to hold before its start",
+        ADDON_ACTION_ASSIGNMENT,
+        '    start = -math.inf if extrapolation == "HOLD" and index == 0 else float(strip.frame_start)\n',
+        '    start = -math.inf if extrapolation != "NOTHING" and index == 0 else float(strip.frame_start)\n',
+        (f"{_UPPER_QUIET}[hold-forward-after]",),
+    ),
+    Revert(
+        "animation: one frame shared by the overriding layer and the strip is called no overlap",
+        ADDON_ACTION_ASSIGNMENT,
+        "    return first[0] <= second[1] and second[0] <= first[1]\n",
+        "    return first[0] < second[1] and second[0] < first[1]\n",
+        (f"{_EXTRAPOLATED}[touching]",),
+    ),
+    Revert(
+        "animation: a strip at NOTHING is taken to hold past its end",
+        ADDON_ACTION_ASSIGNMENT,
+        '    if extrapolation == "NOTHING":\n        end = float(strip.frame_end)\n',
+        "    if False:\n        end = float(strip.frame_end)\n",
+        (f"{_UPPER_QUIET}[nothing-before]",),
+    ),
+    Revert(
+        "animation: a held strip is taken to hold through the next strip in its track",
+        ADDON_ACTION_ASSIGNMENT,
+        "    elif index + 1 < len(strips):\n",
+        "    elif False:\n",
+        (f"{ANIMT}::test_a_held_strip_stops_holding_at_the_next_strip_in_its_track",),
+    ),
+    # --- a strip on a higher track at REPLACE hides the strip under it ---
+    Revert(
+        "animation: a strip fully replacing the strip under it says nothing about it",
+        ADDON_ACTION_ASSIGNMENT,
+        '"overrides": strip.blend_type == "REPLACE" and not strip.use_animated_influence,',
+        '"overrides": False,',
+        (f"{ANIMT}::test_a_strip_added_over_a_strip_it_fully_replaces_says_which_it_hides",),
+    ),
+    Revert(
+        "animation: an upper strip blending or on animated influence is called a full override",
+        ADDON_ACTION_ASSIGNMENT,
+        '"overrides": strip.blend_type == "REPLACE" and not strip.use_animated_influence,',
+        '"overrides": True,',
+        (f"{_UPPER_QUIET}[add-blend]", f"{_UPPER_QUIET}[animated-influence]"),
+    ),
+    Revert(
+        # A keying call changes only the active action; a standing strip pair is not its news.
+        "animation: every keying call repeats a strip-over-strip override it did not cause",
+        ADDON_ACTION_ASSIGNMENT,
+        '        if strip is None and upper["strip"] is not None:\n            continue\n',
+        "        if False:\n            continue\n",
+        (f"{ANIMT}::test_a_strip_added_over_a_strip_it_fully_replaces_says_which_it_hides",),
+    ),
     # --- a cycle's period is readable without deleting the cycle to produce it ---
     Revert(
         # Before INSPECT existed the only reply carrying a period was the one that deleted the
@@ -94,8 +274,9 @@ ROWS: list[Revert] = [
         # both read as comfortably inside a cycle that did not exist when the call began.
         "animation: the cycle notice is measured after the batch has finished inserting",
         ADDON_ANIMATION,
-        '            "warnings": warnings,\n',
-        '            "warnings": _edit_cycle_warnings(bag, expanded),\n',
+        '            "warnings": warnings + (hidden_strip_warning(owner) if assign_action else []),\n',
+        '            "warnings": _edit_cycle_warnings(bag, expanded)'
+        " + (hidden_strip_warning(owner) if assign_action else []),\n",
         (f"{ANIMT}::test_the_cycle_notice_is_measured_before_the_batch_starts_inserting",),
     ),
     # --- a roll is judged by the travel it was measured to cause, not by the axis it names ---

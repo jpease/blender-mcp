@@ -30,8 +30,6 @@ VALIDATION_COLLECTION_SUFFIX = "Validation Volumes"
 
 _FLOW_BEHAVIORS = {"GEOMETRY", "INFLOW", "OUTFLOW"}
 _COLLISION_PROXIES = {"NONE", "HOLLOW_CONTAINER"}
-_MAX_CONTAINERS = 16
-_MAX_SOURCES = 16
 
 
 def _require_mapping(value, label):
@@ -50,8 +48,8 @@ def _require_positive(value, label):
 
 def _resolve_containers(scene, containers):
     """Validate the container records and resolve each to a mesh object linked to the scene."""
-    if not containers or len(containers) > _MAX_CONTAINERS:
-        raise ValueError(f"containers must contain 1-{_MAX_CONTAINERS} records")
+    if not containers:
+        raise ValueError("containers must contain at least one record")
     resolved = []
     for index, record in enumerate(containers):
         _require_mapping(record, f"containers[{index}]")
@@ -85,8 +83,8 @@ def _resolve_containers(scene, containers):
 
 def _resolve_sources(scene, sources, fps, frame_start):
     """Validate the source records, resolving enabled_seconds into the frames animate_liquid_flow keys."""
-    if not sources or len(sources) > _MAX_SOURCES:
-        raise ValueError(f"sources must contain 1-{_MAX_SOURCES} records")
+    if not sources:
+        raise ValueError("sources must contain at least one record")
     resolved = []
     for index, record in enumerate(sources):
         _require_mapping(record, f"sources[{index}]")

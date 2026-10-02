@@ -589,7 +589,30 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 #
 # Lowered from 277,769, measured at 277,754 - 15 bytes fewer: `get_addon_status` words its
 # `integrations_available` more tightly now that a disabled integration's tools are unlisted.
-SHOT_MODE_BYTE_CEILING = 277_754
+#
+# Raised from 277,754, measured at 278,889 - 1,135 bytes. `assign_action` on the four keying
+# tools (edit_keyframes, keyframe_object_transform, keyframe_character_pose, keyframe_bone_reach):
+# keying a clip meant assigning it, which displaced the active action, so NLA-layered motion
+# could not be authored without breaking the root motion. The rest is the core surface below.
+#
+# Raised from 278,889, measured at 279,690 - 801 bytes. `confirm_displace_action` is now the one
+# spelling, with one shared description, on every tool that assigns an action: edit_keyframes and
+# manage_animation_action carried their own synonyms (`replace_active_action`, `replace_active`)
+# behind a stricter guard, and bake_evaluated_animation displaced keyed motion unasked. The
+# `assign_action` description now says a clip has no user until a strip or assignment holds it -
+# the notice that used to fire on the first step of key-then-ADD_STRIP. The per-tool prose those
+# shared descriptions replace is gone. Paying the catalog back is a separate schema-compaction pass.
+#
+# Lowered from 279,690, measured at 209,149 - 70,541 bytes fewer, by that schema-compaction pass,
+# which changes the advertisement only (`_documentation._compact_schema`): no `title` keywords, an
+# omittable `X | None = None` field advertised as `X`, and a fixed-length uniform tuple as `items`
+# rather than repeated `prefixItems`. Each tool's fixed effects/envelope/errors sentences became
+# one bracketed effects tag, the shared rules now stated once in the server instructions.
+#
+# Raised from 209,149, measured at 209,364 - 215 bytes: an omittable model field keeps pydantic's
+# `anyOf: [$ref, null]` instead of collapsing to a `$ref` with its description beside it, which
+# draft-07 readers ignore and later ones only sometimes merge.
+SHOT_MODE_BYTE_CEILING = 209_364
 
 # The same rule as above, for the default, core-only surface.
 #
@@ -634,7 +657,19 @@ SHOT_MODE_BYTE_CEILING = 277_754
 # bare `confirm`, and `scene_name` replacing `scene_uid` on the two linking tools.
 #
 # Lowered from 92,624, measured at 92,609: the same `get_addon_status` wording as the shot ceiling.
-DEFAULT_MODE_BYTE_CEILING = 92_609
+#
+# Raised from 92,609, measured at 93,264 - 655 bytes: `assign_action` on edit_keyframes and
+# keyframe_object_transform (see the shot ceiling above), NlaStripPatch.blend_type's measured
+# COMBINE quaternion loss, and manage_animation_action's one-layer note.
+#
+# Raised from 93,264, measured at 94,016 - 752 bytes: the same `confirm_displace_action` and
+# `assign_action` descriptions as the shot ceiling above, on the four core tools that carry them.
+#
+# Lowered from 94,016, measured at 74,283 - 19,733 bytes fewer: the same schema-compaction pass
+# and effects tags as the shot ceiling above.
+#
+# Raised from 74,283, measured at 74,326 - 43 bytes: the same `$ref` rule as the shot ceiling above.
+DEFAULT_MODE_BYTE_CEILING = 74_326
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:
@@ -815,10 +850,12 @@ def test_file_lifecycle_tools_advertise_correct_hints() -> None:
         assert actual["open_world"] == open_world, f"{name}: expected open_world={open_world}"
 
 
-# Emitted for `_BLEND_FILE_TOOLS` in `_documentation.py`.
-_BLEND_FILE_EFFECTS_SENTENCE = "reads or writes a .blend file on disk"
-# Emitted for a tool in both `_BLEND_FILE_TOOLS` and the read-only prefix set.
-_READ_ONLY_BLEND_FILE_SENTENCE = "Read-only for Blender data, but reads .blend files from disk."
+# The effects tag `_documentation.py` gives `_BLEND_FILE_TOOLS`.
+_BLEND_FILE_EFFECTS_TAG = "[reads/writes .blend on disk]"
+# The tag for a tool in both `_BLEND_FILE_TOOLS` and the read-only prefix set.
+_READ_ONLY_BLEND_FILE_TAG = "[read-only; reads .blend files]"
+# The tag for `_FILE_TOOLS`, which write an output path rather than a .blend file.
+_OUTPUT_PATH_TAG = "[writes output path; never saves .blend]"
 
 _BLEND_FILE_TOOLS_UNDER_TEST = ("open_shot", "save_shot", "link_canon_library", "reload_library", "relocate_library")
 
@@ -846,21 +883,21 @@ def _tool_descriptions_for_toolsets(raw_value: str | None) -> dict[str, str]:
 
 def test_file_lifecycle_tools_blend_file_prose_is_correct() -> None:
     """
-    None of the eleven claims it skips saving the .blend file; those that touch one say so correctly.
+    None of the eleven carries the output-path tag; those that touch a .blend file say so correctly.
 
-    Merging `_BLEND_FILE_TOOLS` into `_FILE_TOOLS`, or dropping its branch in `_tool_contract`,
+    Merging `_BLEND_FILE_TOOLS` into `_FILE_TOOLS`, or dropping its branch in `_effects_tag`,
     passes every other file-lifecycle test. `inspect_delivery` is read-only for Blender data and
-    still reads `.blend` files from disk, so it gets its own accurate sentence rather than either
-    of the other two.
+    still reads `.blend` files from disk, so it gets its own accurate tag rather than either of
+    the other two.
     """
     descriptions = _tool_descriptions_for_toolsets("shot")
     for name in _FILE_LIFECYCLE_TOOLS:
-        assert "does not save the .blend file" not in descriptions[name], (
-            f"{name} carries the _FILE_TOOLS prose, which is false or misleading for it"
+        assert _OUTPUT_PATH_TAG not in descriptions[name], (
+            f"{name} carries the _FILE_TOOLS tag, which is false or misleading for it"
         )
     for name in _BLEND_FILE_TOOLS_UNDER_TEST:
-        assert _BLEND_FILE_EFFECTS_SENTENCE in descriptions[name], f"{name} is missing the .blend-file effects sentence"
-    assert _READ_ONLY_BLEND_FILE_SENTENCE in descriptions["inspect_delivery"]
+        assert _BLEND_FILE_EFFECTS_TAG in descriptions[name], f"{name} is missing the .blend-file effects tag"
+    assert _READ_ONLY_BLEND_FILE_TAG in descriptions["inspect_delivery"]
 
 
 def _parameter_descriptions_for_toolsets(raw_value: str | None) -> dict[str, str]:
@@ -927,3 +964,195 @@ def test_advertised_parameter_descriptions_contain_no_letter_split_words(raw_val
         if _SPLIT_ACRONYM_RE.search(description)
     }
     assert not offenders, f"parameter descriptions containing letter-split words: {offenders}"
+
+
+# Walks every advertised inputSchema in the child and reports, by JSON path, each `title` schema
+# keyword, each non-required property still advertised as `anyOf: [..., {"type": "null"}]` with
+# a null default whose other branch is not a `$ref`, and each non-required property advertised as a
+# `$ref` with sibling keywords. Only schema positions are walked: a key of a `properties` or `$defs`
+# map is a name, so `SafeAreasPatch`'s property called `title` is not a keyword and is not reported.
+_ADVERTISED_SCHEMA_PROBE = """
+import asyncio, json
+from blender_mcp.server import mcp
+
+SINGLE = ("items", "additionalProperties", "not", "if", "then", "else", "contains")
+LISTS = ("anyOf", "oneOf", "allOf", "prefixItems")
+MAPS = ("properties", "$defs", "definitions", "patternProperties", "dependentSchemas")
+report = {"titles": [], "nullable_optionals": [], "title_properties": [], "ref_siblings": []}
+
+def walk(schema, path):
+    if not isinstance(schema, dict):
+        return
+    if "title" in schema:
+        report["titles"].append(path)
+    required = set(schema.get("required", ()))
+    for name, prop in (schema.get("properties") or {}).items():
+        if name == "title":
+            report["title_properties"].append(path)
+        if not isinstance(prop, dict) or name in required:
+            continue
+        if "$ref" in prop and len(prop) > 1:
+            report["ref_siblings"].append(f"{path}.{name}")
+        branches = prop.get("anyOf") or []
+        if (
+            {"type": "null"} in branches
+            and "default" in prop
+            and prop["default"] is None
+            and len(branches) == 2
+            and not any("$ref" in branch for branch in branches)
+        ):
+            report["nullable_optionals"].append(f"{path}.{name}")
+    for key in SINGLE:
+        walk(schema.get(key), f"{path}.{key}")
+    for key in LISTS:
+        for index, item in enumerate(schema.get(key) or ()):
+            walk(item, f"{path}.{key}[{index}]")
+    for key in MAPS:
+        for name, item in (schema.get(key) or {}).items():
+            walk(item, f"{path}.{key}.{name}")
+
+for tool in asyncio.run(mcp.list_tools()):
+    walk(tool.inputSchema, tool.name)
+print(json.dumps(report))
+"""
+
+
+@functools.cache
+def _advertised_schema_report(raw_value: str | None) -> dict[str, list[str]]:
+    """
+    Run `_ADVERTISED_SCHEMA_PROBE` once per selection.
+
+    Args:
+        raw_value: The BLENDER_MCP_TOOLSETS value to set, or None to leave it unset.
+
+    Returns:
+        The probe's report: offending `title` keyword paths, offending nullable optionals, and
+        the paths of objects with a property named `title`.
+
+    """
+    return json.loads(_run_server_script(raw_value, _ADVERTISED_SCHEMA_PROBE))
+
+
+@pytest.mark.parametrize("raw_value", [None, "shot"])
+def test_advertised_input_schemas_carry_no_title_keywords(raw_value: str | None) -> None:
+    """
+    A `title` restates a property or model name in title case, in every session's catalog.
+
+    The property *named* `title` on `SafeAreasPatch` is a name, not the keyword, and must survive
+    in the shot surface: a pass that dropped every "title" key would delete a real parameter.
+    """
+    report = _advertised_schema_report(raw_value)
+    assert report["titles"] == []
+    if raw_value == "shot":
+        assert "configure_camera_render_gate.$defs.SafeAreasPatch" in report["title_properties"]
+
+
+@pytest.mark.parametrize("raw_value", [None, "shot"])
+def test_advertised_optional_fields_are_not_wrapped_in_a_null_branch(raw_value: str | None) -> None:
+    """
+    `X | None = None` is advertised as `X`: omitting the field and sending null forward alike.
+
+    The validating models are unchanged, so a client that still sends null is accepted; see
+    `test_an_explicit_null_is_accepted_and_forwarded_like_an_omission`.
+    """
+    report = _advertised_schema_report(raw_value)
+    assert report["nullable_optionals"] == []
+
+
+@pytest.mark.parametrize("raw_value", [None, "shot"])
+def test_an_optional_model_keeps_its_description_off_the_ref(raw_value: str | None) -> None:
+    """
+    An omittable model field stays `anyOf: [$ref, null]` rather than collapsing to a bare `$ref`.
+
+    Collapsed, its description lands beside the `$ref`, where draft-07 readers ignore it and
+    later ones only sometimes merge it: the field would reach those agents undescribed.
+    """
+    report = _advertised_schema_report(raw_value)
+    assert report["ref_siblings"] == []
+
+
+# Each named call run twice through the low-level CallToolRequest handler a client's request
+# reaches - the SDK's own input-schema check included, if a version ever turns it on - against a
+# recording connection: once with an optional field omitted and once with it set to explicit null.
+_EXPLICIT_NULL_PROBE = """
+import asyncio, json
+from mcp import types
+from blender_mcp.server import mcp
+from blender_mcp.server.tools import _dispatch
+
+sent = []
+
+class RecordingConnection:
+    def send_command(self, command, params):
+        sent.append([command, params])
+        return {}
+
+_dispatch.get_blender_connection = RecordingConnection
+handler = mcp._mcp_server.request_handlers[types.CallToolRequest]
+
+async def call(name, arguments):
+    sent.clear()
+    request = types.CallToolRequest(params=types.CallToolRequestParams(name=name, arguments=arguments))
+    result = (await handler(request)).root
+    return {"is_error": result.isError, "sent": list(sent)}
+
+POSE = {"bone_name": "hand.L", "rotation_euler": [0, 0, 0.5]}
+CALLS = {
+    "configure_render_settings": (
+        {"scene_name": "Scene", "patch": {"resolution_x": 1920}},
+        {"scene_name": "Scene", "patch": {"resolution_x": 1920, "engine": None}},
+    ),
+    "set_character_pose": (
+        {"armature_object_name": "Rig", "poses": [POSE]},
+        {"armature_object_name": "Rig", "poses": [{**POSE, "location": None}]},
+    ),
+}
+
+async def main():
+    return {name: [await call(name, omitted), await call(name, null)] for name, (omitted, null) in CALLS.items()}
+
+print(json.dumps(asyncio.run(main())))
+"""
+
+
+@pytest.mark.parametrize("tool_name", ["configure_render_settings", "set_character_pose"])
+def test_an_explicit_null_is_accepted_and_forwarded_like_an_omission(tool_name: str) -> None:
+    """
+    The advertised schema dropped the null branch; the validating models did not.
+
+    A client written against the old catalog still sends null for an unset optional field, and
+    must get today's outcome: the call is accepted and Blender receives exactly what omitting the
+    field sends. That equivalence is what made the null branch safe to stop advertising.
+    """
+    omitted, null = json.loads(_run_server_script("shot", _EXPLICIT_NULL_PROBE))[tool_name]
+    assert omitted["is_error"] is False, omitted
+    assert omitted["sent"], "the recording connection was never consulted"
+    assert null == omitted
+
+
+# The bracketed effects tag each description carries, by `_documentation._effects_tag`.
+_EFFECTS_TAGS = (
+    "[read-only]",
+    "[read-only; reads .blend files]",
+    "[read-only; external provider]",
+    "[mutates Blender; never saves .blend]",
+    "[writes output path; never saves .blend]",
+    "[reads/writes .blend on disk]",
+    "[external provider; may import or replace data]",
+)
+
+
+@pytest.mark.parametrize("raw_value", [None, "shot"])
+def test_every_description_carries_exactly_one_effects_tag_that_agrees_with_its_hint(raw_value: str | None) -> None:
+    """
+    The tag is the only effects statement a client that drops annotations still sees.
+
+    So it must be present once, and say read-only exactly when `readOnlyHint` does: a tool tagged
+    `[read-only]` that mutates is worse than an untagged one.
+    """
+    descriptions = _tool_descriptions_for_toolsets(raw_value)
+    annotations = _tool_annotations_for_toolsets(raw_value)
+    for name, description in descriptions.items():
+        tags = [tag for tag in _EFFECTS_TAGS if tag in description]
+        assert len(tags) == 1, f"{name} carries {tags}"
+        assert tags[0].startswith("[read-only") == annotations[name]["read_only"], f"{name}: {tags[0]}"

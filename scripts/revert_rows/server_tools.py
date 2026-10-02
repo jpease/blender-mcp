@@ -4,7 +4,8 @@ Rows guarding the server-side tools and the per-reply byte budget.
 The file-lifecycle and linking tools, the one dispatch every tool shares, the catalog, and
 the budget that bounds every reply.
 
-Label prefixes: `server tools:`, `animation:`, `pose:`, `pose control:`, `reply budget:`.
+Label prefixes: `server tools:`, `catalog compaction:`, `animation:`, `pose:`, `pose control:`,
+`reply budget:`.
 """
 
 from .common import (
@@ -21,6 +22,8 @@ from .common import (
     SERVER_DOCUMENTATION,
     SERVER_ENVELOPE,
     SERVER_FILE_LIFECYCLE_TOOL,
+    SERVER_POSING_TOOL,
+    SERVER_RENDERING_TOOL,
     SFLT,
     TDT,
     TEST_BUNDLES_FILE,
@@ -345,18 +348,18 @@ ROWS: list[Revert] = [
     Revert(
         "server tools: the shot ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "SHOT_MODE_BYTE_CEILING = 277_754",
-        # One byte below the *measured* payload (277,754). The ceiling sits exactly on it now, but
+        "SHOT_MODE_BYTE_CEILING = 209_364",
+        # One byte below the *measured* payload (209,364). The ceiling sits exactly on it now, but
         # a ceiling with headroom would let a revert to itself-minus-one pass and prove nothing.
-        "SHOT_MODE_BYTE_CEILING = 277_753",
+        "SHOT_MODE_BYTE_CEILING = 209_363",
         (f"{BUNT}::test_shot_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
         "server tools: the default ceiling reverted one byte below the measured payload",
         TEST_BUNDLES_FILE,
-        "DEFAULT_MODE_BYTE_CEILING = 92_609",
-        # Same rule: one byte below the measured core payload (92,609), not below the ceiling.
-        "DEFAULT_MODE_BYTE_CEILING = 92_608",
+        "DEFAULT_MODE_BYTE_CEILING = 74_326",
+        # Same rule: one byte below the measured core payload (74,326), not below the ceiling.
+        "DEFAULT_MODE_BYTE_CEILING = 74_325",
         (f"{BUNT}::test_default_mode_payload_stays_under_its_ceiling",),
     ),
     Revert(
@@ -516,11 +519,129 @@ ROWS: list[Revert] = [
     Revert(
         "server tools: the _BLEND_FILE_TOOLS effects-prose branch is deleted",
         SERVER_DOCUMENTATION,
-        "    elif name in _BLEND_FILE_TOOLS:\n"
-        '        effects = "Side effects: reads or writes a .blend file on disk."\n'
-        "    elif name in _EXTERNAL_TOOLS:",
-        "    elif name in _EXTERNAL_TOOLS:",
+        '    if name in _BLEND_FILE_TOOLS:\n        return "[reads/writes .blend on disk]"\n',
+        "",
         (f"{BUNT}::test_file_lifecycle_tools_blend_file_prose_is_correct",),
+    ),
+    # --- the advertised catalog is compacted without changing what any tool accepts ---
+    Revert(
+        "catalog compaction: every schema keeps its pydantic `title` keywords",
+        SERVER_DOCUMENTATION,
+        '    schema.pop("title", None)\n    _collapse_uniform_tuple(schema)\n',
+        "    _collapse_uniform_tuple(schema)\n",
+        (
+            f"{BUNT}::test_advertised_input_schemas_carry_no_title_keywords[None]",
+            f"{BUNT}::test_advertised_input_schemas_carry_no_title_keywords[shot]",
+            f"{TDT}::test_only_title_keywords_are_removed_never_a_property_or_a_value_named_title",
+        ),
+    ),
+    Revert(
+        "catalog compaction: a property named `title` is stripped as though it were the keyword",
+        SERVER_DOCUMENTATION,
+        '    required = set(schema.get("required", ()))\n',
+        '    (schema.get("properties") or {}).pop("title", None)\n    required = set(schema.get("required", ()))\n',
+        (
+            f"{BUNT}::test_advertised_input_schemas_carry_no_title_keywords[shot]",
+            f"{TDT}::test_only_title_keywords_are_removed_never_a_property_or_a_value_named_title",
+        ),
+    ),
+    Revert(
+        "catalog compaction: an omittable field is advertised with its null branch and null default again",
+        SERVER_DOCUMENTATION,
+        "            _collapse_optional(property_schema)\n",
+        "            pass\n",
+        (
+            f"{BUNT}::test_advertised_optional_fields_are_not_wrapped_in_a_null_branch[None]",
+            f"{BUNT}::test_advertised_optional_fields_are_not_wrapped_in_a_null_branch[shot]",
+            f"{TDT}::test_an_omittable_nullable_field_is_advertised_as_its_one_type",
+        ),
+    ),
+    Revert(
+        "catalog compaction: an omittable model field collapses to a `$ref` carrying its description beside it",
+        SERVER_DOCUMENTATION,
+        '    if "$ref" in others[0] and rest:\n        return\n',
+        "",
+        (
+            f"{BUNT}::test_an_optional_model_keeps_its_description_off_the_ref[None]",
+            f"{BUNT}::test_an_optional_model_keeps_its_description_off_the_ref[shot]",
+        ),
+    ),
+    Revert(
+        "catalog compaction: a required nullable field loses the null branch it must be able to send",
+        SERVER_DOCUMENTATION,
+        "        if isinstance(property_schema, dict) and name not in required:\n",
+        "        if isinstance(property_schema, dict):\n",
+        (f"{TDT}::test_a_null_branch_that_means_something_is_kept[required]",),
+    ),
+    Revert(
+        "catalog compaction: a nullable field with a non-null default loses its null branch",
+        SERVER_DOCUMENTATION,
+        '    if "default" not in schema or schema["default"] is not None or not isinstance(branches, list):\n',
+        "    if not isinstance(branches, list):\n",
+        (f"{TDT}::test_a_null_branch_that_means_something_is_kept[non-null-default]",),
+    ),
+    Revert(
+        "catalog compaction: a two-type nullable field is advertised as its first type only",
+        SERVER_DOCUMENTATION,
+        "    if branches.count(_NULL_BRANCH) != 1 or len(others) != 1 or not isinstance(others[0], dict):\n",
+        "    if not others or not isinstance(others[0], dict):\n",
+        (f"{TDT}::test_a_null_branch_that_means_something_is_kept[two-real-branches]",),
+    ),
+    Revert(
+        "catalog compaction: a uniform tuple is advertised as repeated prefixItems again",
+        SERVER_DOCUMENTATION,
+        '    schema.pop("title", None)\n    _collapse_uniform_tuple(schema)\n',
+        '    schema.pop("title", None)\n',
+        (f"{TDT}::test_only_a_bounded_uniform_tuple_is_advertised_with_items[uniform-and-bounded]",),
+    ),
+    Revert(
+        "catalog compaction: an unbounded tuple's prefixItems become items, constraining extra slots",
+        SERVER_DOCUMENTATION,
+        '    if schema.get("maxItems") != len(prefix) or any(item != prefix[0] for item in prefix):\n',
+        "    if any(item != prefix[0] for item in prefix):\n",
+        (f"{TDT}::test_only_a_bounded_uniform_tuple_is_advertised_with_items[unbounded]",),
+    ),
+    Revert(
+        "catalog compaction: a mixed tuple is advertised as its first slot's type throughout",
+        SERVER_DOCUMENTATION,
+        '    if schema.get("maxItems") != len(prefix) or any(item != prefix[0] for item in prefix):\n',
+        '    if schema.get("maxItems") != len(prefix):\n',
+        (f"{TDT}::test_only_a_bounded_uniform_tuple_is_advertised_with_items[mixed]",),
+    ),
+    Revert(
+        "catalog compaction: a mutating tool is tagged read-only",
+        SERVER_DOCUMENTATION,
+        '    return "[mutates Blender; never saves .blend]"\n',
+        '    return "[read-only]"\n',
+        (
+            f"{BUNT}::test_every_description_carries_exactly_one_effects_tag_that_agrees_with_its_hint[None]",
+            f"{BUNT}::test_every_description_carries_exactly_one_effects_tag_that_agrees_with_its_hint[shot]",
+        ),
+    ),
+    Revert(
+        "catalog compaction: the returns text is re-spaced again, which glues each tag's ' .blend' shut",
+        SERVER_DOCUMENTATION,
+        "        return f\"{tag} Data contains {returns.rstrip('.')}.\"\n",
+        '        return f"{tag} Data contains {returns.rstrip(\'.\')} .".replace("  ", " ").replace(" .", ".")\n',
+        (
+            f"{BUNT}::test_every_description_carries_exactly_one_effects_tag_that_agrees_with_its_hint[None]",
+            f"{BUNT}::test_every_description_carries_exactly_one_effects_tag_that_agrees_with_its_hint[shot]",
+            f"{BUNT}::test_file_lifecycle_tools_blend_file_prose_is_correct",
+        ),
+    ),
+    Revert(
+        "catalog compaction: configure_render_settings forwards an explicit null its omission does not",
+        SERVER_RENDERING_TOOL,
+        '{"scene_name": scene_name, "patch": patch.model_dump(exclude_none=True), "detail": detail},',
+        '{"scene_name": scene_name, "patch": patch.model_dump(exclude_unset=True), "detail": detail},',
+        (f"{BUNT}::test_an_explicit_null_is_accepted_and_forwarded_like_an_omission[configure_render_settings]",),
+    ),
+    Revert(
+        "catalog compaction: set_character_pose forwards an explicit null its omission does not",
+        SERVER_POSING_TOOL,
+        '"poses": [pose.model_dump(exclude_none=True, exclude_unset=True) for pose in poses],',
+        '"poses": [pose.model_dump(exclude_unset=True) for pose in poses],',
+        (f"{BUNT}::test_an_explicit_null_is_accepted_and_forwarded_like_an_omission[set_character_pose]",),
     ),
     # --- every reply is bounded by the per-reply byte budget ---
     Revert(
@@ -559,8 +680,8 @@ ROWS: list[Revert] = [
     Revert(
         "reply budget: a shortened page's warning carries another page's numbers",
         SERVER_ENVELOPE,
-        "else _NO_RESUME) for cut in cuts\n",
-        "else _NO_RESUME) for cut in reversed(cuts)\n",
+        "else _NO_RESUME) for cut in cuts)\n",
+        "else _NO_RESUME) for cut in reversed(cuts))\n",
         (f"{ENVT}::test_each_shortened_pages_warning_names_that_page_and_no_other",),
     ),
 ]
