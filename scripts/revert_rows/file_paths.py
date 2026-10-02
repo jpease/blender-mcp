@@ -181,7 +181,7 @@ ROWS: list[Revert] = [
         "file paths: no configured roots refuses everything instead of enforcing nothing",
         ADDON_FILE_PATHS,
         (
-            "    canonical_roots = [canonical_path(root) for root in roots]\n"
+            "    canonical_roots = [canonical_path(root) for root in written_roots]\n"
             "    if not canonical_roots:\n"
             "        return  # the permissive default costs no syscall\n"
             "    candidate = canonical_path(path)\n"
@@ -189,7 +189,7 @@ ROWS: list[Revert] = [
             "        return\n"
         ),
         (
-            "    canonical_roots = [canonical_path(root) for root in roots]\n"
+            "    canonical_roots = [canonical_path(root) for root in written_roots]\n"
             "    candidate = canonical_path(path)\n"
             "    if canonical_roots and inside_roots(candidate, canonical_roots):\n"
             "        return\n"
@@ -212,7 +212,47 @@ ROWS: list[Revert] = [
             f"{FPT}::test_the_containment_refusal_names_the_policy_not_a_path",
             f"{FPT}::test_a_sibling_directory_sharing_the_roots_prefix_is_refused",
             f"{FPT}::test_dotdot_traversal_is_normalised_before_the_containment_check",
+        ),
+    ),
+    Revert(
+        "file paths: the refusal a symbolic link caused echoes where the link led",
+        ADDON_FILE_PATHS,
+        '        raise PathOutsideRootsError(f"{ROOTS_REFUSAL}{_LINKED_ROOTS_REFUSAL}")',
+        '        raise PathOutsideRootsError(f"path {candidate} is outside the allowed file roots")',
+        (
             f"{FPT}::test_a_symlink_inside_a_root_pointing_outside_it_is_refused",
+            f"{FPT}::test_a_symlinked_parent_directory_is_refused",
+        ),
+    ),
+    Revert(
+        # The path was right and a link was the cause; the bare refusal sends the caller
+        # retrying spellings of a path that was never the problem.
+        "file paths: a refusal a symbolic link caused does not say so",
+        ADDON_FILE_PATHS,
+        "    if _linked_out_of_roots(path, written_roots, canonical_roots):\n",
+        "    if False:\n",
+        (
+            f"{FPT}::test_a_symlink_inside_a_root_pointing_outside_it_is_refused",
+            f"{FPT}::test_a_symlinked_parent_directory_is_refused",
+        ),
+    ),
+    Revert(
+        "file paths control: every refusal blames a symbolic link",
+        ADDON_FILE_PATHS,
+        "    if _linked_out_of_roots(path, written_roots, canonical_roots):\n",
+        "    if True:\n",
+        (f"{FPT}::test_a_sibling_directory_sharing_the_roots_prefix_is_refused",),
+    ),
+    Revert(
+        # Handed the canonical form, the roots check has nothing left to compare against:
+        # the link is already resolved before it could be noticed.
+        "file paths: resolve_blend_path checks the roots against the already-resolved path",
+        ADDON_FILE_PATHS,
+        "        enforce_roots(raw, roots)\n",
+        "        enforce_roots(resolved, roots)\n",
+        (
+            f"{FPT}::test_a_symlink_inside_a_root_pointing_outside_it_is_refused",
+            f"{FPT}::test_a_symlinked_parent_directory_is_refused",
         ),
     ),
     Revert(

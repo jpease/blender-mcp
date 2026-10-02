@@ -153,6 +153,14 @@ _RELATIVE_ROOTS_REFUSAL = (
     "; a bare relative path such as 'shots/x.blend' resolves against Blender's working directory, "
     "not against a file root"
 )
+# Added when the path as written lies inside a root and only resolving its symbolic links took
+# it out: the bare refusal reads as a wrong path when the path is right and a link is the cause.
+# It says that a link did it, never where the link leads.
+_LINKED_ROOTS_REFUSAL = (
+    "; as written the path is inside a file root, but a symbolic link along it leads outside every root, "
+    "and containment is decided where links lead: use a hard link or a copy instead, or add the directory "
+    "the link points into to BLENDERMCP_FILE_ROOTS"
+)
 
 
 def inside_roots(canonical_candidate: str, canonical_roots: Sequence[str]) -> bool:
@@ -322,6 +330,29 @@ def _require_save_target(path: str, *, create_directories: bool) -> None:
         raise ValueError(refusal)
 
 
+def _linked_out_of_roots(path: str, roots: Sequence[str], canonical_roots: Sequence[str]) -> bool:
+    """
+    Report whether a refused path was inside a root until its symbolic links were resolved.
+
+    `abspath` normalizes the spelling without following links, so where it lands inside a root
+    and `realpath` lands outside every one, a link along the path is the only difference left.
+    Each root is tried as written and canonical, since a root spelled through a link (macOS
+    `/tmp`) is matched by a path written through the same link.
+
+    Args:
+        path: The path the caller passed, before canonicalization.
+        roots: The configured roots as written.
+        canonical_roots: The same roots, canonical.
+
+    Returns:
+        bool: True when the written path lies inside a root.
+
+    """
+    written = os.path.abspath(os.path.expanduser(path))
+    written_roots = [os.path.abspath(os.path.expanduser(root)) for root in roots]
+    return inside_roots(written, [*written_roots, *canonical_roots])
+
+
 def enforce_roots(path: str, roots: Iterable[str]) -> None:
     """
     Refuse a path outside every configured root; with no roots, allow all.
@@ -332,16 +363,18 @@ def enforce_roots(path: str, roots: Iterable[str]) -> None:
     contains the path must not pay for.
 
     Args:
-        path: The path to check. Canonicalized here, so a caller that has not
-            resolved it cannot weaken the check; `canonical_path` is idempotent,
-            so passing an already-canonical path costs one `realpath`.
+        path: The path to check, as the caller wrote it. Canonicalized here, so a
+            caller that has not resolved it cannot weaken the check; the written
+            form is what tells a refusal that a symbolic link took it out of the
+            roots.
         roots: Configured roots; empty means the permissive default.
 
     Raises:
         PathOutsideRootsError: If roots are configured and none contains the path.
 
     """
-    canonical_roots = [canonical_path(root) for root in roots]
+    written_roots = list(roots)
+    canonical_roots = [canonical_path(root) for root in written_roots]
     if not canonical_roots:
         return  # the permissive default costs no syscall
     candidate = canonical_path(path)
@@ -351,6 +384,8 @@ def enforce_roots(path: str, roots: Iterable[str]) -> None:
     # ancestors with a `stat` each, and answers the case-insensitive volume.
     if any(_has_ancestor_directory(candidate, canonical_root) for canonical_root in canonical_roots):
         return
+    if _linked_out_of_roots(path, written_roots, canonical_roots):
+        raise PathOutsideRootsError(f"{ROOTS_REFUSAL}{_LINKED_ROOTS_REFUSAL}")
     raise PathOutsideRootsError(ROOTS_REFUSAL)
 
 
@@ -432,7 +467,7 @@ def resolve_blend_path(raw: object, *, roots: Iterable[str], must_exist: bool, c
         raise ValueError("a Blender-relative path must be expanded by the caller before it is resolved")
     resolved = canonical_path(raw)
     try:
-        enforce_roots(resolved, roots)
+        enforce_roots(raw, roots)
     except PathOutsideRootsError as refusal:
         if os.path.isabs(os.path.expanduser(raw)):
             raise

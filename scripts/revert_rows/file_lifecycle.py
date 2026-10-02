@@ -145,7 +145,7 @@ ROWS: list[Revert] = [
         (
             "    resolved = canonical_path(raw)\n"
             "    try:\n"
-            "        enforce_roots(resolved, roots)\n"
+            "        enforce_roots(raw, roots)\n"
             "    except PathOutsideRootsError as refusal:\n"
             "        if os.path.isabs(os.path.expanduser(raw)):\n"
             "            raise\n"
@@ -165,7 +165,7 @@ ROWS: list[Revert] = [
             "        _require_blend_file(resolved)\n"
             "    else:\n"
             "        _require_save_target(resolved, create_directories=create_directories)\n"
-            "    enforce_roots(resolved, roots)\n"
+            "    enforce_roots(raw, roots)\n"
         ),
         (f"{FLT}::test_open_shot_refuses_outside_the_roots_before_saying_whether_the_file_exists",),
     ),

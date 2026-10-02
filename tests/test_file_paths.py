@@ -296,6 +296,7 @@ def test_a_symlink_inside_a_root_pointing_outside_it_is_refused(tmp_path: Path) 
     assert resolved == os.path.realpath(target)
     with pytest.raises(ValueError, match="outside") as caught:
         module.resolve_blend_path(str(link), roots=[str(root)], must_exist=True)
+    assert "symbolic link" in str(caught.value)
     _assert_no_absolute_path(str(caught.value), str(tmp_path))
 
 
@@ -310,8 +311,9 @@ def test_a_symlinked_parent_directory_is_refused(tmp_path: Path) -> None:
     resolved = module.resolve_blend_path(str(root / "shots" / "new.blend"), roots=[], must_exist=False)
 
     assert resolved == os.path.join(os.path.realpath(tmp_path / "elsewhere"), "new.blend")
-    with pytest.raises(ValueError, match="outside"):
+    with pytest.raises(ValueError, match="symbolic link") as caught:
         module.resolve_blend_path(str(root / "shots" / "new.blend"), roots=[str(root)], must_exist=False)
+    _assert_no_absolute_path(str(caught.value), str(tmp_path))
 
 
 # ---------------------------------------------------------------------------
@@ -667,6 +669,7 @@ def test_a_sibling_directory_sharing_the_roots_prefix_is_refused(tmp_path: Path)
 
     with pytest.raises(ValueError, match="outside") as caught:
         module.enforce_roots(str(tmp_path / "output-evil" / "x.blend"), [str(tmp_path / "output")])
+    assert "symbolic link" not in str(caught.value)
     _assert_no_absolute_path(str(caught.value), str(tmp_path))
 
 
