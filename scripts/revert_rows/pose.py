@@ -133,7 +133,8 @@ ROWS: list[Revert] = [
     Revert(
         "pose: a keyed aim is spelled without regard to the previous key, so it spins between them",
         ADDON_POSING,
-        '                if "aim_at" in spec and path in _ROTATION_CHANNEL_WIDTH:\n'
+        '                derived = "aim_at" in spec and path in _ROTATION_CHANNEL_WIDTH\n'
+        '                if derived or (quaternion_continuity and path == "rotation_quaternion"):\n'
         "                    _match_previous_rotation(action, pose_bone, path, frame)\n",
         "",
         (

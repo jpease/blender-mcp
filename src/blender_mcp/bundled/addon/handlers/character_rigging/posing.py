@@ -803,7 +803,7 @@ def _previous_channel_values(action, pose_bone, path, frame):
 
 def _match_previous_rotation(action, pose_bone, path, frame):
     """
-    Re-spell a derived rotation so it interpolates from the previous key the short way round.
+    Re-spell a keyed rotation so it interpolates from the previous key the short way round.
 
     A quaternion and its negation are the same orientation but interpolate opposite ways, and an
     Euler triple has infinitely many equivalent spellings; both produce a spin in the graph
@@ -995,15 +995,20 @@ def _refuse_unkeyable_request(keying_policy, style, action_policy, action_name, 
             )
 
 
-def _write_pose_keys(action, prepared, frame, keying_policy):
+def _write_pose_keys(action, prepared, frame, keying_policy, *, quaternion_continuity=True):
     """
     Write one frame's keys for every prepared bone and report what changed.
 
     Args:
-        action: The action being authored, read for the previous rotation an aim must match.
+        action: The action being authored, read for the previous rotation a key must match.
         prepared: `_validate_pose_specs` output, already applied to the rig.
         frame: The frame to key, subframe included.
         keying_policy: INSERT adds, REPLACE deletes then adds, REMOVE only deletes.
+        quaternion_continuity: Re-sign every quaternion key to take the short way from the
+            action's previous key, not only aim-derived ones. Every rotation reaches the channel
+            through a matrix, whose decomposition lands on w >= 0, so a turn passing 180 degrees
+            between two keys is keyed on opposite branches and swings back the long way. A
+            quaternion and its negation are one orientation, so the flip changes no pose.
 
     Returns:
         list[dict]: One record per channel touched: bone, data_path and frame.
@@ -1021,7 +1026,10 @@ def _write_pose_keys(action, prepared, frame, keying_policy):
                 with contextlib.suppress(TypeError):
                     pose_bone.keyframe_delete(data_path=path, frame=frame)
             if keying_policy != "REMOVE":
-                if "aim_at" in spec and path in _ROTATION_CHANNEL_WIDTH:
+                # An Euler triple is only re-spelled when derived: a caller's own Euler may be a
+                # deliberate multi-turn spin, which its nearest equivalent would undo.
+                derived = "aim_at" in spec and path in _ROTATION_CHANNEL_WIDTH
+                if derived or (quaternion_continuity and path == "rotation_quaternion"):
                     _match_previous_rotation(action, pose_bone, path, frame)
                 if not pose_bone.keyframe_insert(data_path=path, frame=frame, group=pose_bone.name):
                     raise RuntimeError(f"Could not insert key for {pose_bone.name}.{path}")
@@ -1321,7 +1329,18 @@ def _bounded_frame_warnings(per_frame):
     return listed
 
 
-def _key_pose_frames(armature, action, prepared_frames, space, keying_policy, style, *, detail, report_frames):
+def _key_pose_frames(
+    armature,
+    action,
+    prepared_frames,
+    space,
+    keying_policy,
+    style,
+    *,
+    detail,
+    report_frames,
+    quaternion_continuity=True,
+):
     """
     Apply, key and style every requested frame, in ascending order.
 
@@ -1339,6 +1358,7 @@ def _key_pose_frames(armature, action, prepared_frames, space, keying_policy, st
         style: The `KeyStyle` every key this call writes is shaped with.
         detail: Whether to capture per-bone matrices at Blender's own precision.
         report_frames: Whether each per-bone record names the frame it describes.
+        quaternion_continuity: Passed through to `_write_pose_keys`.
 
     Returns:
         dict: frames (ascending), changed_keys, styled (how many points were styled), records
@@ -1365,7 +1385,7 @@ def _key_pose_frames(armature, action, prepared_frames, space, keying_policy, st
                 _cycle_extension_warnings(action, prepared, frame)
                 + _inert_rotation_warnings(prepared, space, witnesses)
             )
-        written = _write_pose_keys(action, prepared, frame, keying_policy)
+        written = _write_pose_keys(action, prepared, frame, keying_policy, quaternion_continuity=quaternion_continuity)
         if keying_policy != "REMOVE":
             styled += _style_written_keys(action, written, style)
         changed_keys.extend(written)
@@ -1943,6 +1963,7 @@ class PoseAnimationHandlersMixin:
         action_slot_identifier=None,
         detail=False,
         assign_action=True,
+        quaternion_continuity=True,
     ):
         """Pose and key one frame, or every frame of a stride, into one named action."""
         armature = _armature_object(armature_object_name)
@@ -1986,6 +2007,7 @@ class PoseAnimationHandlersMixin:
                     style,
                     detail=detail,
                     report_frames=batched,
+                    quaternion_continuity=quaternion_continuity,
                 )
             keyed_slot = assigned_slot_identifier(armature)
         return _keyframe_reply(

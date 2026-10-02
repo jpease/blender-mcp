@@ -789,6 +789,61 @@ refuses(
     "exactly one of frame with poses",
 )
 
+# --- 10b. Quaternion keys take the short way between keys, not only aimed ones ---------------
+#
+# q and -q are one orientation, but Blender interpolates the four channels component-wise, so a
+# key on the far branch from its neighbour swings the long way. Every rotation reaches the channel
+# through a matrix, whose decomposition always lands on w >= 0: a turn that passes 180 degrees
+# between two keys (170 -> 190 here) is therefore keyed on opposite branches unless re-signed.
+
+
+def z_turn(degrees):
+    half = math.radians(degrees) / 2.0
+    return (math.cos(half), 0.0, 0.0, math.sin(half))
+
+
+def quaternion_keys_by_frame(action_name):
+    keyed: dict[float, list[float]] = {}
+    for curve in action_fcurves(bpy.data.actions[action_name]):
+        if curve.data_path.endswith("rotation_quaternion"):
+            for point in curve.keyframe_points:
+                keyed.setdefault(point.co[0], [0.0] * 4)[curve.array_index] = point.co[1]
+    return [keyed[frame] for frame in sorted(keyed)]
+
+
+assert batch_rig.pose.bones["neck"].rotation_mode == "QUATERNION"
+for action_name, continuity in (("SMOKE_quat_short", True), ("SMOKE_quat_raw", False)):
+    handler.keyframe_character_pose(
+        batch_rig.name,
+        action_name,
+        keys=[
+            {"frame": 1.0, "poses": [{"bone_name": "neck", "rotation_quaternion": z_turn(170.0)}]},
+            {"frame": 3.0, "poses": [{"bone_name": "neck", "rotation_quaternion": z_turn(190.0)}]},
+        ],
+        action_policy="CREATE",
+        confirm_displace_action=True,
+        quaternion_continuity=continuity,
+    )
+    first, second = quaternion_keys_by_frame(action_name)
+    dot = sum(a * b for a, b in zip(first, second, strict=True))
+    bpy.context.scene.frame_set(2)
+    bpy.context.view_layer.update()
+    midway = batch_rig.pose.bones["neck"].rotation_quaternion.normalized()
+    midway_degrees = math.degrees(midway.angle)
+    print(f"quaternion continuity={continuity}: key dot {dot:+.6f}, frame 2 turned {midway_degrees:.3f} deg")
+    if continuity:
+        assert dot > 0.0, f"the second key was left on the far branch: {first} -> {second}"
+        # Halfway between a 170 and a 190 degree turn about one axis is 180, not back through 0.
+        assert abs(midway_degrees - 180.0) < 1.0, midway_degrees
+    else:
+        assert dot < 0.0, "quaternion_continuity=False still re-signed the key"
+        assert midway_degrees < 20.0, midway_degrees
+# Hand the rig back to the action the later sections expect, and drop the two this block made.
+batch_rig.animation_data.action = bpy.data.actions["SMOKE_batch"]
+for action_name in ("SMOKE_quat_short", "SMOKE_quat_raw"):
+    bpy.data.actions.remove(bpy.data.actions[action_name])
+bpy.context.scene.frame_set(playhead_before)
+
 # --- 11. The reply names the bone axis for each world direction, and an aim takes it ----------
 #
 # `length_axis` is `Y` on every bone Blender builds, and an upright bone's `up_axis` is `Y` too,

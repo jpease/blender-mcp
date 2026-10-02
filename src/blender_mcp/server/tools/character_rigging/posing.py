@@ -454,6 +454,7 @@ async def keyframe_character_pose(
     action_slot_identifier: str | None = None,
     detail: bool = False,
     assign_action: bool = True,
+    quaternion_continuity: bool = True,
 ) -> dict:
     """
     Apply a pose and insert, replace, or remove exact keys in a named action.
@@ -487,7 +488,9 @@ async def keyframe_character_pose(
     target_bone_name are read where they are at that frame, so aiming at an animated character keys
     a look that follows it. A keyed aim is also re-spelled to interpolate the short way from the
     previous key in this action: the quaternion sign is flipped when it would take the long
-    route, and an Euler triple is made compatible with the previous key.
+    route, and an Euler triple is made compatible with the previous key. Every key written to a
+    quaternion channel gets the same sign rule, so per-frame rotation_quaternion values need no
+    sign bookkeeping by the caller; a caller's own Euler values are keyed as written.
 
     Args:
         ctx: MCP request context.
@@ -500,6 +503,12 @@ async def keyframe_character_pose(
         detail: Also report, as "bones", the pose each bone was keyed at - its pre-call and
             keyed armature-space matrices, at Blender's own precision. Under keys each record
             also names its frame.
+        quaternion_continuity: Flip each keyed quaternion's sign, never its orientation, so it
+            interpolates the short way from the previous key in this action, including keys
+            written earlier in the same call. Every rotation reaches the channel through a matrix
+            whose decomposition lands on w >= 0, so without this a turn passing 180 degrees between
+            two keys swings back the long way. False keys that w >= 0 spelling; aim_at keys are
+            re-spelled either way.
 
     Returns:
         armature_object, action, action_slot, assigned_action (the action now driving the rig),
@@ -556,6 +565,7 @@ async def keyframe_character_pose(
             "action_slot_identifier": action_slot_identifier,
             "detail": detail,
             "assign_action": assign_action,
+            "quaternion_continuity": quaternion_continuity,
         },
         changed_objects=[armature_object_name],
     )
