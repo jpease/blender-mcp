@@ -11,6 +11,7 @@ from itertools import combinations
 import bpy
 import mathutils
 
+from ..animation import _continuous_rotation
 from ..rna_patch import get_object
 from .inspection_and_setup import (
     _BODY_FIELDS,
@@ -128,6 +129,31 @@ def _bone_depth(pose_bone):
         depth += 1
         parent = parent.parent
     return depth
+
+
+def _place_bone(armature, pose_bone, target, previous_rotations):
+    """
+    Pose one bone at a world-space target, spelled nearest its previous sampled frame.
+
+    The `pose_bone.matrix` setter spells each orientation with w >= 0, so a bone turning through
+    a half turn between two frames flipped hemisphere and its curve spun the long way round.
+    Every sampled frame passes through here, kept by key reduction or not, so the kept keys
+    share the one branch the whole sampled motion runs along.
+
+    Args:
+        armature: The armature object that owns the bone.
+        pose_bone: The bone to pose, after its parent.
+        target: The bone's world-space matrix at this frame.
+        previous_rotations: Each bone's quaternion at the previous sampled frame by name;
+            updated in place.
+
+    """
+    pose_bone.rotation_mode = "QUATERNION"
+    pose_bone.matrix = armature.convert_space(pose_bone=pose_bone, matrix=target, from_space="WORLD", to_space="POSE")
+    rotation = _continuous_rotation(
+        "QUATERNION", pose_bone.rotation_quaternion.copy(), previous_rotations.get(pose_bone.name)
+    )
+    pose_bone.rotation_quaternion = previous_rotations[pose_bone.name] = rotation
 
 
 class RigidBodyRagdollHandlers:
@@ -459,17 +485,11 @@ class RigidBodyRagdollHandlers:
             animation.action = action
             ordered_bones = sorted((armature.pose.bones[name] for name in bone_names), key=_bone_depth)
             keyed = {name: [] for name in bone_names}
+            previous_rotations = {}
             for index, frame in enumerate(frames):
                 scene.frame_set(frame)
                 for pose_bone in ordered_bones:
-                    pose_matrix = armature.convert_space(
-                        pose_bone=pose_bone,
-                        matrix=targets[pose_bone.name][index],
-                        from_space="WORLD",
-                        to_space="POSE",
-                    )
-                    pose_bone.rotation_mode = "QUATERNION"
-                    pose_bone.matrix = pose_matrix
+                    _place_bone(armature, pose_bone, targets[pose_bone.name][index], previous_rotations)
                     if index not in keep_by_bone[pose_bone.name]:
                         continue
                     for path in ("location", "rotation_quaternion"):

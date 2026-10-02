@@ -8,13 +8,16 @@ Run with::
 
 # Blender runtime types are dynamic in this executable harness.
 
+import itertools
 import json
+import math
 import sys
 import tempfile
 
 from pathlib import Path
 
 import bpy
+import mathutils
 
 sys.path.append(str(Path(__file__).resolve().parent))
 from smoke_addon import load_addon
@@ -23,6 +26,7 @@ package_name = "blender_mcp_rigid_body_character_scale_smoke"
 load_addon(package_name)
 
 RigidBodyHandlersMixin = sys.modules[f"{package_name}.handlers.rigid_body"].RigidBodyHandlersMixin
+_action_fcurves = sys.modules[f"{package_name}.handlers.object_animation"]._action_fcurves
 
 
 class Harness(RigidBodyHandlersMixin):
@@ -34,6 +38,71 @@ def add_cube(name, location):
     obj = bpy.context.object
     obj.name = name
     return obj
+
+
+def _channel_at(obj, data_path, frame):
+    _action, curves = _action_fcurves(obj)
+    by_index = {curve.array_index: curve for curve in curves if curve.data_path == data_path}
+    return tuple(by_index[index].evaluate(frame) for index in range(len(by_index)))
+
+
+def _arc(first, second):
+    """Measure the angle between two orientations, whichever hemisphere either is spelled in."""
+    return 2.0 * math.acos(min(1.0, abs(first.normalized().dot(second.normalized()))))
+
+
+def _test_ragdoll_bake_keys_a_turn_the_short_way(handler, scene):
+    """
+    Bake a bone onto a proxy turning 40 degrees a frame through +-180 and read the curve between keys.
+
+    The `pose_bone.matrix` setter spells each frame's orientation with w >= 0, so the frames
+    either side of the half turn (160 and 200 degrees) came back on opposite hemispheres and the
+    curve between two correct poses spun the long way. Key reduction keeps only some frames, so
+    the kept keys must share one branch however far apart they are.
+    """
+    frames = range(1, 11)
+    rig = bpy.data.objects.new("Turning Rig", bpy.data.armatures.new("Turning Armature"))
+    scene.collection.objects.link(rig)
+    bpy.context.view_layer.objects.active = rig
+    bpy.ops.object.mode_set(mode="EDIT")
+    bone = rig.data.edit_bones.new("turn")
+    bone.head = (0.0, 0.0, 0.0)
+    bone.tail = (0.0, 1.0, 0.0)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    proxy = add_cube("Turning Proxy", (50.0, 0.0, 0.0))
+    for frame in frames:
+        proxy.rotation_euler = (0.0, 0.0, math.radians(40.0 * (frame - 1)))
+        proxy.keyframe_insert(data_path="rotation_euler", index=2, frame=frame)
+    handler.add_rigid_bodies(scene.name, [proxy.name], "ACTIVE")
+    proxy.rigid_body.kinematic = True
+
+    path = 'pose.bones["turn"].rotation_quaternion'
+    for reduce_keys in (False, True):
+        bake = handler.bake_ragdoll_to_armature(
+            scene.name,
+            rig.name,
+            [{"bone_name": "turn", "proxy_object_name": proxy.name}],
+            frames[0],
+            frames[-1],
+            action_name=f"Turning Bake {reduce_keys}",
+            reduce_keys=reduce_keys,
+        )
+        keyed_frames = bake["keyed_frames_by_bone"]["turn"]
+        assert reduce_keys or keyed_frames == list(frames), keyed_frames
+        keyed = [mathutils.Quaternion(_channel_at(rig, path, frame)) for frame in keyed_frames]
+        for frame, value in zip(keyed_frames, keyed, strict=True):
+            asked = mathutils.Quaternion((0.0, 0.0, 1.0), math.radians(40.0 * (frame - 1)))
+            assert _arc(value, asked) < 1e-4, f"reduce={reduce_keys}: bone key at {frame} is not the proxy pose"
+        for (first_frame, first), (second_frame, second) in itertools.pairwise(zip(keyed_frames, keyed, strict=True)):
+            assert first.dot(second) >= 0.0, (
+                f"reduce={reduce_keys}: bone keys at {first_frame} and {second_frame} sit on opposite hemispheres"
+            )
+            midway = mathutils.Quaternion(_channel_at(rig, path, (first_frame + second_frame) / 2.0))
+            detour = _arc(first, midway) + _arc(midway, second) - _arc(first, second)
+            assert detour < 1e-3, (
+                f"reduce={reduce_keys}: the curve leaves the arc between {first_frame} and {second_frame} "
+                f"by {math.degrees(detour)} degrees"
+            )
 
 
 handler = Harness()
@@ -158,6 +227,7 @@ bake = handler.bake_ragdoll_to_armature(
 )
 assert bake["action"] == "Character Ragdoll Bake"
 assert all(bake["keyed_frames_by_bone"].values())
+_test_ragdoll_bake_keys_a_turn_the_short_way(handler, scene)
 
 analysis = handler.analyze_rigid_body_performance(
     scene.name,
