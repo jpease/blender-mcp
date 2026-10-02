@@ -16,8 +16,10 @@ properties of real Blender a fake `bpy` cannot show:
   ten-name sample and no uids.
 """
 
+import json
 import sys
 import tempfile
+import time
 
 from pathlib import Path
 
@@ -33,6 +35,9 @@ from blender_mcp_canon_override_smoke.handlers.character_rigging import (  # ruf
 )
 from blender_mcp_canon_override_smoke.handlers.linking import (  # ruff: ignore[module-import-not-at-top-of-file]
     LinkingHandlersMixin,
+)
+from blender_mcp_canon_override_smoke.handlers.scene_inspection import (  # ruff: ignore[module-import-not-at-top-of-file]
+    SceneInspectionHandlersMixin,
 )
 
 SLIDER = "expr_smile"
@@ -100,6 +105,11 @@ def _check_bounded_replies(tmp: Path) -> None:
     assert (instanced["total"], instanced["by_type"]) == (members, {"OBJECT": members}), instanced
     assert instanced["truncated"] and len(instanced["names"]) == NAME_SAMPLE, instanced
 
+    linked_summary = SceneInspectionHandlersMixin().list_scene_objects(summary=True)
+    # The linked collection sits in the scene itself, so its members count as linked objects.
+    assert (linked_summary["linked_count"], linked_summary["override_count"]) == (members, 0), linked_summary
+    assert linked_summary["max_depth"] == 2, linked_summary
+    assert linked_summary["roots"]["names"] == [SET_LAMP, SET_ROOT], linked_summary
     removed = LinkingHandlersMixin.unlink_libraries([linked["library"]["session_uid"]], confirm_unlink=True)
     assert not bpy.data.libraries, "the unlink left the library behind"
     assert "removed_uids" not in removed and "removed_uids_truncated" not in removed, sorted(removed)
@@ -119,9 +129,46 @@ def _check_bounded_replies(tmp: Path) -> None:
     assert len(override["objects"]["names"]) == NAME_SAMPLE, override["objects"]
     root = next(obj for obj in bpy.data.objects if obj.name == SET_ROOT and obj.override_library is not None)
     assert all(child.override_library is not None for child in root.children), "an override parents a linked prop"
+    _check_scene_overview()
     print(
         f"bounded replies: link and override named {overridden['changed_objects']} of {members} objects; "
         f"unlink counted {removed['removed_count']} datablocks beside {len(removed['removed_sample'])} names"
+    )
+
+
+def _check_scene_overview() -> None:
+    """Summarise and walk the overridden set: roots, depth, override count, children paged."""
+    inspection = SceneInspectionHandlersMixin()
+    summary = inspection.list_scene_objects(summary=True)
+    members = SET_PROPS + len((SET_ROOT, SET_LAMP))
+    assert summary["object_count"] == members, summary
+    assert (summary["override_count"], summary["linked_count"], summary["max_depth"]) == (members, 0, 2), summary
+    assert summary["roots"]["total"] == 2 and summary["roots"]["names"] == [SET_LAMP, SET_ROOT], summary
+    assert summary["by_collection"] == {SET_COLLECTION: members}, summary
+    page = inspection.list_scene_objects(limit=200)
+    counts = {record["name"]: record["child_count"] for record in page["objects"]}
+    assert counts[SET_ROOT] == SET_PROPS and counts[SET_LAMP] == 0, counts[SET_ROOT]
+    children = inspection.list_scene_objects(parent_name=SET_ROOT, limit=50)
+    assert (children["matched_count"], children["next_offset"]) == (SET_PROPS, 50), children["matched_count"]
+
+    bpy.ops.wm.read_homefile(use_empty=True)
+    collection = bpy.data.collections.new("Crowd")
+    bpy.context.scene.collection.children.link(collection)
+    parent = None
+    for index in range(2000):
+        obj = bpy.data.objects.new(f"Crowd{index:04d}", None)
+        obj.parent = parent if index % 10 else None
+        parent = obj if index % 10 == 0 else parent
+        collection.objects.link(obj)
+    started = time.perf_counter()
+    crowd = inspection.list_scene_objects(summary=True)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    size = len(json.dumps(crowd))
+    assert crowd["object_count"] == 2000 and crowd["roots"]["total"] == 200 and crowd["max_depth"] == 2, crowd
+    assert size < 1024, size
+    print(
+        f"scene overview: override set {members} objects, roots {summary['roots']['names']}, depth "
+        f"{summary['max_depth']}; 2,000-object SUMMARY {size} B in {elapsed_ms:.1f} ms"
     )
 
 

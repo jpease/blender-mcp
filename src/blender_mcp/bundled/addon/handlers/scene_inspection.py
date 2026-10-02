@@ -6,7 +6,7 @@ import logging
 import bpy
 import mathutils
 
-from ..helpers import get_mesh_object, page_records, paginate, sync_from_editmode
+from ..helpers import count_by_type, get_mesh_object, page_records, paginate, record_page, sync_from_editmode
 from ..object_lookup import find_object
 from ..text_hygiene import client_safe_name_leaf
 
@@ -17,8 +17,11 @@ class SceneInspectionHandlersMixin:
     """Read the scene, one object, or one mesh's elements, a bounded page at a time."""
 
     _SCENE_INFO_MAX_LIMIT = 200
+    # Roots and top-level collections a summary names; each carries its exact total beside it,
+    # and five of each keeps a summary near 1 KB with Blender's longest (63-byte) names.
+    _SUMMARY_SAMPLE = 5
 
-    def list_scene_objects(self, limit=25, offset=0, search=None):
+    def list_scene_objects(self, limit=25, offset=0, search=None, parent_name=None, summary=False):
         """
         Get information about the current Blender scene, paginated over its objects.
 
@@ -27,18 +30,96 @@ class SceneInspectionHandlersMixin:
             offset: Zero-based starting position.
             search: Case-insensitive substring an object's name must contain; None or empty
                 pages every object.
+            parent_name: Page only this object's direct children; None pages every object.
+            summary: Count the scene instead of paging records.
 
         Returns:
             Result produced by the operation.
 
         """
         try:
-            return self._scene_objects_page(limit, offset, search)
+            if summary:
+                return self._scene_summary(search, parent_name)
+            return self._scene_objects_page(limit, offset, search, parent_name)
         except Exception as e:
             logger.exception("list_scene_objects failed")
             return {"error": str(e)}
 
-    def _scene_objects_page(self, limit, offset, search):
+    @staticmethod
+    def _child_counts(every_object):
+        """
+        Count each object's direct children in the scene, in one pass over it.
+
+        `obj.children` rescans the whole file per call, so reading it per record made a page
+        cost O(N) per object.
+
+        Args:
+            every_object: The scene's objects.
+
+        Returns:
+            dict: Parent object -> how many scene objects it directly parents.
+
+        """
+        counts = {}
+        for obj in every_object:
+            parent = obj.parent
+            if parent is not None:
+                counts[parent] = counts.get(parent, 0) + 1
+        return counts
+
+    def _scene_summary(self, search, parent_name):
+        """
+        Count the scene by type, top-level collection, linkage and hierarchy, with no records.
+
+        Args:
+            search: Must be None; a summary describes the whole scene.
+            parent_name: Must be None, for the same reason.
+
+        Returns:
+            dict: Bounded counts and a sample of the root objects' names.
+
+        Raises:
+            ValueError: When a filter is passed beside the summary.
+
+        """
+        if search is not None or parent_name is not None:
+            raise ValueError("summary describes the whole scene; it takes no search or parent_name")
+        scene = bpy.context.scene
+        every_object = list(scene.objects)
+        in_scene = set(every_object)
+        depths = {}
+        for obj in every_object:
+            chain = []
+            node = obj
+            while node is not None and node not in depths:
+                chain.append(node)
+                parent = node.parent
+                node = parent if parent in in_scene else None
+            depth = depths[node] if node is not None else 0
+            for link in reversed(chain):
+                depth += 1
+                depths[link] = depth
+        roots = sorted(
+            (obj for obj in every_object if obj.parent not in in_scene), key=lambda item: item.name.casefold()
+        )
+        root_collection = scene.collection
+        collection_counts = [(root_collection.name, len(root_collection.objects))] if root_collection.objects else []
+        collection_counts += [(child.name, len(child.all_objects)) for child in root_collection.children]
+        collection_counts.sort(key=lambda item: (-item[1], item[0].casefold()))
+        listed = collection_counts[: self._SUMMARY_SAMPLE]
+        return {
+            "name": scene.name,
+            "object_count": len(every_object),
+            "by_type": count_by_type(obj.type for obj in every_object),
+            "by_collection": dict(listed),
+            "other_collection_count": len(collection_counts) - len(listed),
+            "linked_count": sum(1 for obj in every_object if getattr(obj, "library", None) is not None),
+            "override_count": sum(1 for obj in every_object if getattr(obj, "override_library", None) is not None),
+            "max_depth": max(depths.values(), default=0),
+            "roots": {"total": len(roots), **record_page("names", roots, lambda obj: obj.name, self._SUMMARY_SAMPLE)},
+        }
+
+    def _scene_objects_page(self, limit, offset, search, parent_name):
         """
         Build `list_scene_objects`' reply; reporting a failure is left to it.
 
@@ -47,20 +128,30 @@ class SceneInspectionHandlersMixin:
             offset: Zero-based starting position.
             search: Case-insensitive substring an object's name must contain; None or empty
                 pages every object.
+            parent_name: Page only this object's direct children; None pages every object.
 
         Returns:
             dict: The scene summary and one page of its objects.
 
         Raises:
-            ValueError: When `search` is not a string.
+            ValueError: When `search` is not a string, or `parent_name` is empty or names no object.
 
         """
         if search is not None and not isinstance(search, str):
             raise ValueError("search must be a string")
         query = (search or "").casefold()
         every_object = list(bpy.context.scene.objects)
+        child_counts = self._child_counts(every_object)
+        candidates = every_object
+        if parent_name is not None:
+            if not isinstance(parent_name, str) or not parent_name:
+                raise ValueError("parent_name must be a non-empty object name; omit it to page every object")
+            parent = find_object(bpy.data.objects, parent_name)
+            if parent is None:
+                raise ValueError(f"Object not found: {client_safe_name_leaf(parent_name)}")
+            candidates = [obj for obj in every_object if obj.parent is not None and obj.parent == parent]
         scene_objects = sorted(
-            (obj for obj in every_object if query in obj.name.casefold()), key=lambda item: item.name.casefold()
+            (obj for obj in candidates if query in obj.name.casefold()), key=lambda item: item.name.casefold()
         )
         total = len(scene_objects)
         start, end, truncated, next_offset = paginate(total, offset, limit, self._SCENE_INFO_MAX_LIMIT)
@@ -78,6 +169,7 @@ class SceneInspectionHandlersMixin:
                         float(obj.location.z),
                     ],
                     "parent": obj.parent.name if obj.parent else None,
+                    "child_count": child_counts.get(obj, 0),
                     "collections": sorted(collection.name for collection in obj.users_collection),
                     "selected": bool(obj.select_get()),
                     "visible": bool(obj.visible_get()),
@@ -91,6 +183,7 @@ class SceneInspectionHandlersMixin:
             "object_count": len(every_object),
             "matched_count": total,
             "search": search or None,
+            "parent_name": parent_name,
             "objects": objects,
             "materials_count": len(bpy.data.materials),
             "active_object": getattr(getattr(bpy.context, "view_layer", None), "objects", None).active.name

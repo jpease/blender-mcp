@@ -629,7 +629,10 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 #
 # Raised from 218,367, measured at 219,785 - 1,418 bytes: the core surface below, which this one
 # inherits.
-SHOT_MODE_BYTE_CEILING = 219_785
+#
+# Raised from 219,785, measured at 220,242 - 457 bytes: the core surface's `list_scene_objects`
+# (see the default ceiling below).
+SHOT_MODE_BYTE_CEILING = 220_242
 
 # The same rule as above, for the default, core-only surface.
 #
@@ -700,7 +703,12 @@ SHOT_MODE_BYTE_CEILING = 219_785
 # `all` and carry ~192k tokens of catalog every turn; now it enables the bundle for itself and the
 # rest of the catalog stays unlisted. `get_addon_status` gives back 8, its wording now describing
 # the calling session rather than the process.
-DEFAULT_MODE_BYTE_CEILING = 76_585
+#
+# Raised from 76,585, measured at 77,042 - 457 bytes, all of it `list_scene_objects`' `summary`
+# and `parent_name` (plan budget 700): orienting in a 600-object set meant paging a flat
+# name-sorted list, 25 records at a time, to learn its types, collections and roots; a summary
+# answers in under 1 KB and `parent_name` walks the hierarchy one level per call.
+DEFAULT_MODE_BYTE_CEILING = 77_042
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

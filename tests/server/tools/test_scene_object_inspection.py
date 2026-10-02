@@ -1,5 +1,6 @@
 """Regression coverage for list_scene_objects pagination and the new get_mesh_data tool."""
 
+import json
 import sys
 import types
 
@@ -92,12 +93,22 @@ class FakeMeshData:
         pass
 
 
+class FakeObject(types.SimpleNamespace):
+    """An object compared and hashed by identity, as a bpy struct is by its pointer."""
+
+    def __eq__(self, other: object) -> bool:
+        return self is other
+
+    def __hash__(self) -> int:
+        return id(self)
+
+
 class FakeObjectsCollection(dict):
     def get(self, name, default=None):
         return dict.get(self, name, default)
 
     def new(self, name, data):
-        obj = types.SimpleNamespace(
+        obj = FakeObject(
             name=name,
             type="MESH" if data is not None else "EMPTY",
             location=FakeVector(),
@@ -232,6 +243,120 @@ def test_list_scene_objects_search_pages_over_the_matches_only(monkeypatch) -> N
     assert second["truncated"] is False
     names = [record["name"] for page in (first, second) for record in page["objects"]]
     assert names == ["CHAR1_Body_geo", "CHAR1_Eye_geo", "char1_rig"]
+
+
+def _hierarchy_scene(bpy, scene):
+    """
+    Build three levels under one root, a parentless lamp, and the collections holding them.
+
+    Root -> (Mid1 -> Leaf1, Leaf2, Leaf3), (Mid2); Lamp has no parent. Leaf3 is linked and
+    Mid2 is an override, so the summary has one of each to count.
+    """
+    root = _new_empty_object(bpy, "Root")
+    mid1 = _new_mesh_object(bpy, "Mid1")
+    mid2 = _new_mesh_object(bpy, "Mid2")
+    leaves = [_new_mesh_object(bpy, f"Leaf{index}") for index in (1, 2, 3)]
+    lamp = _new_empty_object(bpy, "Lamp")
+    lamp.type = "LIGHT"
+    mid1.parent = root
+    mid2.parent = root
+    for leaf in leaves:
+        leaf.parent = mid1
+    leaves[2].library = types.SimpleNamespace(name="canon.blend")
+    mid2.override_library = types.SimpleNamespace(reference=None)
+    set_collection = types.SimpleNamespace(name="Set", all_objects=[root, mid1, mid2, *leaves])
+    scene.collection = types.SimpleNamespace(name="Scene Collection", objects=[lamp], children=[set_collection])
+
+
+def test_list_scene_objects_records_count_each_objects_direct_children(monkeypatch) -> None:
+    """`child_count` counts direct children only, from one pass rather than `obj.children` per record."""
+    addon, bpy, _objects, scene = _load_inspection_addon(monkeypatch)
+    _hierarchy_scene(bpy, scene)
+
+    result = addon.BlenderMCPServer().list_scene_objects(limit=10)
+
+    counts = {record["name"]: record["child_count"] for record in result["objects"]}
+    assert counts == {"Lamp": 0, "Leaf1": 0, "Leaf2": 0, "Leaf3": 0, "Mid1": 3, "Mid2": 0, "Root": 2}
+
+
+def test_list_scene_objects_pages_one_parents_direct_children(monkeypatch) -> None:
+    """`parent_name` pages that object's children, not its grandchildren, resuming at `next_offset`."""
+    addon, bpy, _objects, scene = _load_inspection_addon(monkeypatch)
+    _hierarchy_scene(bpy, scene)
+    server = addon.BlenderMCPServer()
+
+    first = server.list_scene_objects(limit=2, parent_name="Mid1")
+    second = server.list_scene_objects(limit=2, offset=first["next_offset"], parent_name="Mid1")
+    of_root = server.list_scene_objects(parent_name="Root")
+
+    assert (first["matched_count"], first["truncated"], first["next_offset"]) == (3, True, 2)
+    assert [record["name"] for record in first["objects"] + second["objects"]] == ["Leaf1", "Leaf2", "Leaf3"]
+    assert second["truncated"] is False
+    assert first["parent_name"] == "Mid1"
+    assert [record["name"] for record in of_root["objects"]] == ["Mid1", "Mid2"]
+
+
+@pytest.mark.parametrize(("parent_name", "message"), [("", "parent_name"), ("Nobody", "Nobody")])
+def test_list_scene_objects_refuses_an_empty_or_unknown_parent_name(monkeypatch, parent_name, message) -> None:
+    """An empty name is refused rather than read as "no filter", and an unknown one is named."""
+    addon, bpy, _objects, scene = _load_inspection_addon(monkeypatch)
+    _hierarchy_scene(bpy, scene)
+
+    result = addon.BlenderMCPServer().list_scene_objects(parent_name=parent_name)
+
+    assert set(result) == {"error"}
+    assert message in result["error"]
+
+
+def test_list_scene_objects_summary_counts_the_scene_without_records(monkeypatch) -> None:
+    addon, bpy, _objects, scene = _load_inspection_addon(monkeypatch)
+    _hierarchy_scene(bpy, scene)
+
+    result = addon.BlenderMCPServer().list_scene_objects(summary=True)
+
+    assert "objects" not in result
+    assert result["object_count"] == 7
+    assert result["by_type"] == {"EMPTY": 1, "LIGHT": 1, "MESH": 5}
+    assert result["by_collection"] == {"Scene Collection": 1, "Set": 6}
+    assert result["other_collection_count"] == 0
+    assert (result["linked_count"], result["override_count"], result["max_depth"]) == (1, 1, 3)
+    assert result["roots"]["total"] == 2
+    assert result["roots"]["names"] == ["Lamp", "Root"]
+    assert result["roots"]["truncated"] is False
+
+
+def test_list_scene_objects_summary_stays_bounded_however_many_roots_and_collections(monkeypatch) -> None:
+    """Roots and top-level collections are sampled with exact totals; the reply stays under 1 KB."""
+    addon, bpy, _objects, scene = _load_inspection_addon(monkeypatch)
+    roots = [_new_empty_object(bpy, f"{index:02d}".ljust(63, "r")) for index in range(40)]
+    collections = [
+        types.SimpleNamespace(name=f"{index:02d}".ljust(63, "c"), all_objects=roots[index : index + 1 + index % 3])
+        for index in range(12)
+    ]
+    scene.name = "s" * 63
+    scene.collection = types.SimpleNamespace(name="Scene Collection", objects=roots[12:], children=collections)
+
+    result = addon.BlenderMCPServer().list_scene_objects(summary=True)
+
+    assert result["roots"]["total"] == 40
+    assert result["roots"]["truncated"] is True
+    assert result["roots"]["names"] == sorted(obj.name for obj in roots)[: len(result["roots"]["names"])]
+    listed = len(result["by_collection"])
+    assert listed < 13
+    assert result["other_collection_count"] == 13 - listed
+    # The busiest collections are the ones listed.
+    assert result["by_collection"]["Scene Collection"] == 28
+    assert len(json.dumps(result)) < 1024
+
+
+def test_list_scene_objects_summary_takes_no_filter(monkeypatch) -> None:
+    """A summary describes the whole scene; a filter beside it would be silently ignored."""
+    addon, bpy, _objects, scene = _load_inspection_addon(monkeypatch)
+    _hierarchy_scene(bpy, scene)
+    server = addon.BlenderMCPServer()
+
+    assert set(server.list_scene_objects(summary=True, search="Leaf")) == {"error"}
+    assert set(server.list_scene_objects(summary=True, parent_name="Root")) == {"error"}
 
 
 # endregion

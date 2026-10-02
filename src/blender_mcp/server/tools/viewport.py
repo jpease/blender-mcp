@@ -19,6 +19,8 @@ async def list_scene_objects(
     limit: Annotated[int, Field(ge=1, le=200)] = 25,
     offset: Annotated[int, Field(ge=0)] = 0,
     search: Annotated[str | None, Field(min_length=1)] = None,
+    parent_name: Annotated[str | None, Field(min_length=1)] = None,
+    summary: bool = False,
 ) -> dict:
     """
     Inspect the current Blender scene and page through its objects.
@@ -29,11 +31,15 @@ async def list_scene_objects(
         offset: Index of the first object to return, for paging through a scene with more objects than fit in one page.
         search: Only objects whose name contains this, case-insensitively ("char1_" finds each CHAR1_).
             Paging then runs over the matches.
+        parent_name: Page only this object's direct children; combines with search.
+        summary: Return no records, only counts: "by_type", "by_collection" (busiest top-level
+            collections; "other_collection_count" the rest), "linked_count", "override_count",
+            "max_depth" and "roots" (total and sampled names). Takes no search or parent_name.
 
     Returns:
         "name" (scene name), active object, "selected_count", mode, unit settings, "materials_count", and
-        "objects" (stable name-sorted records with local location, parent, collections, selection and
-        visibility), "object_count" (the scene's true total), "matched_count" (how many match search; the
+        "objects" (stable name-sorted records with local location, parent, child_count, collections, selection
+        and visibility), "object_count" (the scene's true total), "matched_count" (how many match search; the
         total paging runs over), "search" (echoed, or None), "offset"/"limit" (the effective page bounds used),
         "returned_count" (length of this page), "truncated" (True if more matches remain), and "next_offset"
         (pass as offset to fetch the next page while truncated is True).
@@ -42,7 +48,10 @@ async def list_scene_objects(
         ToolError: If the operation cannot be completed.
 
     """
-    return await call_blender("list_scene_objects", {"limit": limit, "offset": offset, "search": search})
+    return await call_blender(
+        "list_scene_objects",
+        {"limit": limit, "offset": offset, "search": search, "parent_name": parent_name, "summary": summary},
+    )
 
 
 ViewportOverlay = Literal["CAVITY", "WIREFRAMES", "FACE_ORIENTATION"]

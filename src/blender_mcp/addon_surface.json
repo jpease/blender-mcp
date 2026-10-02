@@ -1746,7 +1746,9 @@
     "list_scene_objects": [
       "limit",
       "offset",
-      "search"
+      "parent_name",
+      "search",
+      "summary"
     ],
     "list_texture_images": [
       "include_unused",
@@ -2640,5 +2642,5 @@
       "scope"
     ]
   },
-  "protocol_version": 51
+  "protocol_version": 52
 }

@@ -281,6 +281,14 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{SOIT}::test_an_ambiguous_target_name_is_skipped_rather_than_raising_out_of_the_snapshot",
     f"{SOIT}::test_object_name_lookups_resolve_to_the_override_even_when_the_linked_original_is_listed_first",
     f"{SOIT}::test_get_object_info_says_whether_it_resolved_an_override_or_a_linked_object",
+    # --- the scene overview: child counts, children paging, and a bounded summary ---
+    f"{SOIT}::test_list_scene_objects_records_count_each_objects_direct_children",
+    f"{SOIT}::test_list_scene_objects_pages_one_parents_direct_children",
+    f"{SOIT}::test_list_scene_objects_refuses_an_empty_or_unknown_parent_name[-parent_name]",
+    f"{SOIT}::test_list_scene_objects_refuses_an_empty_or_unknown_parent_name[Nobody-Nobody]",
+    f"{SOIT}::test_list_scene_objects_summary_counts_the_scene_without_records",
+    f"{SOIT}::test_list_scene_objects_summary_stays_bounded_however_many_roots_and_collections",
+    f"{SOIT}::test_list_scene_objects_summary_takes_no_filter",
     # --- the handshake carries the writable output roots ---
     f"{AMT}::test_handshake_surfaces_writable_output_roots",
     f"{AMT}::test_handshake_defaults_writable_output_roots_when_the_addon_omits_them",
