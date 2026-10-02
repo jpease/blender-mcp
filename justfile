@@ -24,7 +24,7 @@ test:
 # carries an inherited ruff backlog (see `lint-all`), so whole-tree cleanliness is
 # not a hand-off precondition yet, but no line you write may add to it. Touching a
 # legacy file does not make you responsible for the findings already in it.
-lint base="origin/main":
+lint base="origin/next":
     {{PYTHON}} scripts/lint_changed.py --base "$@"
 
 # The whole inherited backlog, for tracking it down over time; not a gate

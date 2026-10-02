@@ -580,7 +580,7 @@ def main() -> int:
 
     """
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", default="origin/main", help="revision this branch is measured against")
+    parser.add_argument("--base", default="origin/next", help="revision this branch is measured against")
     arguments = parser.parse_args()
 
     base_commit = _merge_base(arguments.base)
