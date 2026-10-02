@@ -7,6 +7,7 @@ import math
 import bpy
 import mathutils
 
+from ..animation import _continuous_rotation
 from ..rna_patch import get_object
 from .inspection_and_setup import (
     _animation_info,
@@ -52,6 +53,38 @@ def _insert_transform_keys(obj, frame):
     for path in ("location", "rotation_quaternion", "scale"):
         if not obj.keyframe_insert(data_path=path, frame=frame, group="Rigid Body Handoff"):
             raise RuntimeError(f"Failed to key {obj.name}.{path} at frame {frame}")
+
+
+def _place_released(obj, transition_matrix, spin, seconds):
+    """
+    Place `obj` at the release pose, spelled as its prior key turned on by the caller's spin.
+
+    The `matrix_world` setter spells every orientation with w >= 0, so the prior and release
+    keys could land on opposite hemispheres: the kinematic pre-roll then turned the other way
+    and the body was released spinning backwards. The release key is the spelling the spin
+    reaches from the prior key, which `obj` still holds. Under half a turn of pre-roll that is
+    the short way `_continuous_rotation` takes from the prior key; between half a turn and a
+    whole one it is the long way, which is the turn asked for. Two keys cannot hold more than
+    one turn, so past a whole turn the pre-roll keeps the remainder in the spin's direction and
+    the release spin falls short by the whole turns dropped.
+
+    Args:
+        obj: The object whose prior key was just written, in QUATERNION mode.
+        transition_matrix: The release pose in world space.
+        spin: The world-space angular velocity in radians per second, or None.
+        seconds: The pre-roll duration.
+
+    """
+    carried = obj.rotation_quaternion.copy()
+    if spin is not None:
+        # The channel is spelled in the parent's space; the spin turns about a world axis. Built
+        # from its components because the axis-angle constructor folds angles past 180 degrees.
+        channel_space = (obj.matrix_world @ obj.matrix_basis.inverted()).to_quaternion()
+        half = math.fmod(spin.length * seconds, math.tau) / 2.0
+        turn = mathutils.Quaternion((math.cos(half), *(spin.normalized() * math.sin(half))))
+        carried = channel_space.inverted() @ turn @ channel_space @ carried
+    obj.matrix_world = transition_matrix
+    obj.rotation_quaternion = _continuous_rotation("QUATERNION", obj.rotation_quaternion.copy(), tuple(carried))
 
 
 def _ragdoll_pose_drivers(obj):
@@ -137,7 +170,7 @@ class RigidBodyAnimationHandlers:
                     raise RuntimeError("Failed to key rigid_body.kinematic before release")
                 _key_driver_influence(pose_drivers, frame, 0.0)
                 bpy.context.view_layer.update()
-                obj.matrix_world = transition_matrix
+                _place_released(obj, transition_matrix, spin, seconds)
                 _insert_transform_keys(obj, frame)
                 obj.rigid_body.kinematic = False
                 if not obj.keyframe_insert(data_path="rigid_body.kinematic", frame=frame, group="Rigid Body Handoff"):

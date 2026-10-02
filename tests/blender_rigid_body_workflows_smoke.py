@@ -83,6 +83,55 @@ def _test_bake_keys_a_turn_the_short_way(handler, scene):
     assert detour < 1e-3, f"the baked curve leaves the 40-degree arc between frames 5 and 6 by {math.degrees(detour)}"
 
 
+def _turn_about_z(degrees):
+    """Build a turn about Z from its components: the axis-angle constructor folds angles past 180 degrees."""
+    half = math.radians(degrees) / 2.0
+    return mathutils.Quaternion((math.cos(half), 0.0, 0.0, math.sin(half)))
+
+
+def _test_release_preroll_turns_the_way_of_the_spin(handler, scene):
+    """
+    Release a body at 185 degrees of yaw spinning about world Z and read its two keys.
+
+    The `matrix_world` setter spells each key with w >= 0: a 10-degree pre-roll from 175 to 185
+    degrees came back as q and -q, so the kinematic pre-roll turned 350 degrees the other way
+    and released the body spinning backwards. The release key must be the prior key turned by
+    the spin - the short way under a half turn, the long way past one, about world Z for a body
+    whose parent tilts its channel space, and by the remainder in the spin's direction past a
+    whole turn, which two keys cannot hold.
+    """
+    fps = scene.render.fps / scene.render.fps_base
+    yaw = mathutils.Quaternion((0.0, 0.0, 1.0), math.radians(185.0))
+    tilted = bpy.data.objects.new("Release Tilt", None)
+    # Tilted past 90 degrees, so the parent's Z leans against world Z: a spin turned about the
+    # channel's own axis instead of the world's would pick the other spelling.
+    tilted.rotation_euler = (math.radians(150.0), 0.0, math.radians(30.0))
+    tilted.location = (40.0, 0.0, 0.0)
+    scene.collection.objects.link(tilted)
+    bpy.context.view_layer.update()
+    cases = ((10.0, None), (200.0, None), (370.0, None), (200.0, tilted))
+    for index, (degrees, parent) in enumerate(cases):
+        body = add_cube(f"Spinning Release {index}", (30.0, 3.0 * index, 0.0))
+        body.parent = parent
+        body.matrix_world = mathutils.Matrix.LocRotScale(tuple(body.matrix_world.translation), yaw, None)
+        handler.add_rigid_bodies(scene.name, [body.name], "ACTIVE")
+        body.rigid_body.kinematic = True
+        handler.animate_rigid_body_release(
+            scene.name, body.name, "RELEASE", 3, angular_velocity=(0.0, 0.0, math.radians(degrees) * fps)
+        )
+        space = parent.matrix_world.to_quaternion() if parent else mathutils.Quaternion()
+        prior, release = (space @ mathutils.Quaternion(_channel_at(body, "rotation_quaternion", f)) for f in (2, 3))
+        assert _arc(release, yaw) < 1e-4, f"case {index}: the release key is not the transition pose"
+        kept = degrees % 360.0
+        turned = _turn_about_z(kept) @ prior
+        assert all(math.isclose(a, b, abs_tol=1e-5) for a, b in zip(release, turned, strict=True)), (
+            f"case {index}: release key {release} is not prior key {prior} turned {kept} degrees about Z"
+        )
+        midway = space @ mathutils.Quaternion(_channel_at(body, "rotation_quaternion", 2.5))
+        halfway = _turn_about_z(kept / 2.0) @ prior
+        assert _arc(midway, halfway) < 1e-3, f"case {index}: the pre-roll midway is not {kept / 2} degrees on"
+
+
 handler = Harness()
 scene = bpy.context.scene
 scene.name = "Rigid Body Workflows"
@@ -239,6 +288,7 @@ baked = handler.bake_rigid_bodies_to_keyframes(
 assert len(baked["created_duplicates"]) == 1
 assert baked["source_rigid_bodies_retained"] is True
 _test_bake_keys_a_turn_the_short_way(handler, scene)
+_test_release_preroll_turns_the_way_of_the_spin(handler, scene)
 
 constraint_name = network["edges"][0]["constraint"]
 removed_constraint = handler.remove_rigid_body_components(
