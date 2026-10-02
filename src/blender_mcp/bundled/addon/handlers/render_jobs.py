@@ -386,7 +386,7 @@ def _reconcile(job_id, path, record, now):
     if record.get("state") in job_file.TERMINAL_STATES:
         return record
     age = now - float(record.get("heartbeat_at") or record.get("created_at") or 0.0)
-    if age <= _STALE_HEARTBEAT_SECONDS or _pid_alive(record.get("pid")):
+    if age <= _STALE_HEARTBEAT_SECONDS or _pid_alive(record.get("pid")) is not False:
         return record
     error = f"the render process is gone: no heartbeat for {age:.0f} s and pid {record.get('pid')} is not running"
     return _finish(path, job_file.FAILED, error=error) or record
@@ -715,9 +715,17 @@ def _read(job_id, detail, limit, offset):
         age = now - float(record.get("heartbeat_at") or record.get("created_at") or now)
         reply["heartbeat_age_seconds"] = round(age, 3)
         if age > _STALE_HEARTBEAT_SECONDS and record.get("state") == job_file.RENDERING:
-            warnings.append(
-                f"No heartbeat for {age:.0f} s, but pid {record.get('pid')} is still running (or its pid was reused)"
-            )
+            pid = record.get("pid")
+            if job_id not in _OWNED_JOBS and _pid_alive(pid) is None:
+                # Reconciliation only fails a job whose process is confirmed gone, so on a platform
+                # that cannot ask, a crashed job stays RENDERING until somebody ends it.
+                status = (
+                    f"pid {pid} cannot be checked on this platform, so the render may have crashed; "
+                    "DELETE with confirm_delete=true ends the job either way"
+                )
+            else:
+                status = f"pid {pid} is still running (or its pid was reused)"
+            warnings.append(f"No heartbeat for {age:.0f} s, but {status}")
     if record.get("state") == job_file.FAILED:
         reply["log_tail"] = _log_tail(path)
     if detail:

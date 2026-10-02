@@ -649,6 +649,7 @@ def _posing_server(monkeypatch, pose_bones):
     addon, bpy = load_addon(monkeypatch, data={"objects": {"HeroRig": armature}, "actions": _FakeActions()})
     bpy.context.view_layer = types.SimpleNamespace(update=lambda: None)
     bpy.context.scene.frame_current = 1
+    bpy.context.scene.frame_subframe = 0.0
     bpy.context.scene.frame_set = lambda *_args, **_kwargs: None
     mathutils = sys.modules["mathutils"]
     monkeypatch.setattr(mathutils, "Matrix", _FakeMatrix, raising=False)

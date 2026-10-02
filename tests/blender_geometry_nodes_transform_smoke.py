@@ -18,6 +18,7 @@ import sys
 
 from pathlib import Path
 
+import bmesh
 import bpy
 
 addon_path = Path(__file__).resolve().parents[1] / "src" / "blender_mcp" / "bundled" / "addon" / "__init__.py"
@@ -196,6 +197,70 @@ def _check_proximity_push_measures_to_the_target_where_it_sits(handler) -> None:
     assert abs(_extent(far, 0) - 2.0) <= TOLERANCE, "a target 106 units away still pushed the host"
 
 
+def _data_cube(name: str, size: float, collection):
+    """Build a mesh cube linked only into `collection`, without operators that act on the active scene."""
+    mesh = bpy.data.meshes.new(name)
+    shape = bmesh.new()
+    bmesh.ops.create_cube(shape, size=size)
+    shape.to_mesh(mesh)
+    shape.free()
+    obj = bpy.data.objects.new(name, mesh)
+    collection.objects.link(obj)
+    return obj
+
+
+def _check_an_object_in_another_scene_is_evaluated_in_its_own(handler) -> None:
+    """
+    Build and inspect an array whose host lives only in a scene that is not the active one.
+
+    The context's graph evaluates the active view layer alone: read from it, the host comes back
+    as its base cube with no array, and a frame the inspection asks for moves the wrong scene's
+    playhead. A host in no view layer at all can still take a modifier, but nothing evaluates it.
+    """
+    active = bpy.context.scene
+    elsewhere = bpy.data.scenes.new("Elsewhere")
+    host = _data_cube("Elsewhere Host", 1.0, elsewhere.collection)
+    source = _data_cube("Elsewhere Source", 0.2, elsewhere.collection)
+    built = handler.create_procedural_array(
+        host.name,
+        "Elsewhere Array",
+        source_name=source.name,
+        layout="LINEAR",
+        count=5,
+        spacing=(1.0, 0.0, 0.0),
+        realize_instances=True,
+    )
+    counts = built["evaluated"]["mesh_counts"]
+    assert counts == {"vertices": 40, "edges": 60, "faces": 30}, f"the builder read the base cube: {counts}"
+
+    for frame, x in ((1, 0.0), (10, 10.0)):
+        host.location.x = x
+        host.keyframe_insert("location", frame=frame)
+    elsewhere.frame_set(1)
+    active_frame = active.frame_current
+    inspected = handler.inspect_evaluated_geometry(host.name, frame=10)
+    assert inspected["frame"] == 10, inspected["frame"]
+    assert inspected["mesh_counts"]["vertices"] == 40, inspected["mesh_counts"]
+    low_x = inspected["world_bounds"]["min"][0]
+    assert abs(low_x - 9.9) <= TOLERANCE, f"inspected at frame 10, the host's array starts at x={low_x}"
+    assert (active.frame_current, elsewhere.frame_current) == (active_frame, 1), "a playhead was left moved"
+
+    excluded = bpy.data.collections.new("Elsewhere Excluded")
+    elsewhere.collection.children.link(excluded)
+    elsewhere.view_layers[0].layer_collection.children[excluded.name].exclude = True
+    unseen = _data_cube("Elsewhere Unseen", 1.0, excluded)
+    attached = handler.create_procedural_array(
+        unseen.name, "Unseen Array", source_name=source.name, layout="LINEAR", count=2, spacing=(1.0, 0.0, 0.0)
+    )
+    assert "in no view layer" in attached["evaluated"]["evaluation_unavailable"], attached["evaluated"]
+    try:
+        handler.inspect_evaluated_geometry(unseen.name)
+    except ValueError as refusal:
+        assert "in no view layer" in str(refusal), refusal
+    else:
+        raise AssertionError("an object no view layer evaluates was inspected as if it were evaluated")
+
+
 def main() -> None:
     """Check each builder against world placement, then the curve radius."""
     handler = GeometryNodesSmokeHarness()
@@ -205,6 +270,7 @@ def main() -> None:
     _check_curve_generator_follows_a_moved_curve(handler)
     _check_curve_radius_scales_the_profile(handler)
     _check_proximity_push_measures_to_the_target_where_it_sits(handler)
+    _check_an_object_in_another_scene_is_evaluated_in_its_own(handler)
     print("GEOMETRY_NODES_TRANSFORM_SMOKE_OK")
 
 

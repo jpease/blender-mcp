@@ -14,6 +14,7 @@ from .common import (
     ADDON_FILE_LIFECYCLE,
     ADDON_LIBRARY_DIGEST,
     ADDON_PROVENANCE,
+    ADDON_RENDER_JOBS,
     ADDON_RENDERING,
     ADDON_SCENE,
     ADDON_SESSION,
@@ -22,6 +23,7 @@ from .common import (
     FLT,
     MUTT,
     RENDT,
+    RJOBT,
     SCENETOOLT,
     SERVER_FILE_LIFECYCLE_TOOL,
     SERVER_RENDERING_TOOL,
@@ -528,5 +530,26 @@ ROWS: list[Revert] = [
         "            or (spec.non_undo_when is not None and spec.non_undo_when(params))",
         '            or cmd_type in {"render_scene"}',
         (f"{DRT}::test_a_render_that_persists_its_output_template_is_transacted",),
+    ),
+    # --- an inherited render job is failed only once its process is confirmed gone ---
+    Revert(
+        "rendering: an unknown liveness answer (every Windows pid) fails an inherited job as if it were dead",
+        ADDON_RENDER_JOBS,
+        '    if age <= _STALE_HEARTBEAT_SECONDS or _pid_alive(record.get("pid")) is not False:',
+        '    if age <= _STALE_HEARTBEAT_SECONDS or _pid_alive(record.get("pid")):',
+        (
+            f"{RJOBT}::test_a_job_from_an_earlier_session_fails_only_when_silent_and_gone"
+            "[60-None-RENDERING-cannot be checked on this platform]",
+        ),
+    ),
+    Revert(
+        "rendering: a job whose pid cannot be checked is reported as still running",
+        ADDON_RENDER_JOBS,
+        "            if job_id not in _OWNED_JOBS and _pid_alive(pid) is None:",
+        "            if False:",
+        (
+            f"{RJOBT}::test_a_job_from_an_earlier_session_fails_only_when_silent_and_gone"
+            "[60-None-RENDERING-cannot be checked on this platform]",
+        ),
     ),
 ]

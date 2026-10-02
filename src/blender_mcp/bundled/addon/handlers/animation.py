@@ -6,7 +6,9 @@ import math
 import re
 
 import bpy
+import mathutils
 
+from ..helpers import get_rotation_quaternion
 from .action_assignment import (
     assigned_action_name,
     cycled_curve_extent,
@@ -408,35 +410,78 @@ def _reduce_samples(samples, tolerance):
     return reduced, maximum_error
 
 
-def _matrix_channels(matrix, rotation_mode):
-    location, quaternion, scale = matrix.decompose()
+_ROTATION_PATHS = {"QUATERNION": "rotation_quaternion", "AXIS_ANGLE": "rotation_axis_angle"}
+# Every channel the `matrix_world` setter may write; read back, then put back, by the bake.
+_OBJECT_TRANSFORM_CHANNELS = ("location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle", "scale")
+# Parent types whose parent matrix Blender builds from the parent's evaluated mesh, which the
+# original object the setter runs on does not carry: inverting through it keys the wrong place.
+_UNCONVERTIBLE_PARENT_TYPES = frozenset({"VERTEX", "VERTEX_3"})
+
+
+def _continuous_rotation(rotation_mode, quaternion, previous):
+    """
+    Spell one sampled orientation as the channel value nearest the previous sample's.
+
+    A decomposed matrix picks one branch per sample: a quaternion or its negation, an Euler
+    triple wrapped to +-180 degrees. Two neighbouring samples on opposite branches are the same
+    pose, but the curve between them spins the long way round. This is the rule
+    `keyframe_character_pose` applies to the keys it writes; an axis-angle pair follows the
+    quaternion's hemisphere, which keeps its angle running past 180 degrees rather than folding.
+
+    Args:
+        rotation_mode: The channel owner's rotation_mode.
+        quaternion: The sampled orientation.
+        previous: The value this channel took at the previous sample, or None.
+
+    Returns:
+        tuple: The channel value, in rotation_mode's own spelling.
+
+    """
+    if rotation_mode not in _ROTATION_PATHS:
+        if previous is None:
+            return tuple(quaternion.to_euler(rotation_mode))
+        return tuple(quaternion.to_euler(rotation_mode, mathutils.Euler(previous, rotation_mode)))
+    if previous is not None:
+        before = (
+            mathutils.Quaternion(previous)
+            if rotation_mode == "QUATERNION"
+            else mathutils.Quaternion(previous[1:], previous[0])
+        )
+        if quaternion.dot(before) < 0.0:
+            quaternion = -quaternion
     if rotation_mode == "QUATERNION":
-        rotation_path = "rotation_quaternion"
-        rotation = tuple(quaternion)
-    elif rotation_mode == "AXIS_ANGLE":
-        axis, angle = quaternion.to_axis_angle()
-        rotation_path = "rotation_axis_angle"
-        rotation = (angle, *axis)
-    else:
-        rotation_path = "rotation_euler"
-        rotation = tuple(quaternion.to_euler(rotation_mode))
-    return {"location": tuple(location), rotation_path: rotation, "scale": tuple(scale)}
+        return tuple(quaternion)
+    axis, angle = quaternion.to_axis_angle()
+    return (angle, *axis)
 
 
-def _append_transform_samples(channels, owner, matrix, transforms, frame, prefix=""):
-    values = _matrix_channels(matrix, owner.rotation_mode)
-    selected = set(transforms)
-    paths = []
-    if "LOCATION" in selected:
-        paths.append("location")
-    if "ROTATION" in selected:
-        paths.append(next(name for name in values if name.startswith("rotation_")))
-    if "SCALE" in selected:
-        paths.append("scale")
-    for path in paths:
-        data_path = f"{prefix}{path}"
-        for index, value in enumerate(values[path]):
-            channels.setdefault((data_path, index), []).append((frame, float(value)))
+def _append_transform_samples(channels, previous_rotations, owner, transform, transforms, frame, prefix=""):
+    """
+    Record one frame's channel values for the transforms the bake keys.
+
+    Args:
+        channels: The samples so far, keyed `(data_path, array_index)`.
+        previous_rotations: Each owner's last rotation sample, keyed by prefix, for continuity.
+        owner: The object or pose bone whose channels these are, read for rotation_mode.
+        transform: `(location, quaternion, scale)` in owner's channel space.
+        transforms: LOCATION/ROTATION/SCALE to record.
+        frame: The sampled frame.
+        prefix: The data_path prefix that addresses owner from the animated ID.
+
+    """
+    location, quaternion, scale = transform
+    values = {}
+    if "LOCATION" in transforms:
+        values["location"] = tuple(location)
+    if "ROTATION" in transforms:
+        rotation = _continuous_rotation(owner.rotation_mode, quaternion, previous_rotations.get(prefix))
+        previous_rotations[prefix] = rotation
+        values[_ROTATION_PATHS.get(owner.rotation_mode, "rotation_euler")] = rotation
+    if "SCALE" in transforms:
+        values["scale"] = tuple(scale)
+    for path, components in values.items():
+        for index, value in enumerate(components):
+            channels.setdefault((f"{prefix}{path}", index), []).append((frame, float(value)))
 
 
 def _path_tail(data_path):
@@ -839,16 +884,43 @@ def _patch_nla(owner, patch, mapping=None):
     return previous
 
 
+def _object_channel_transform(obj, world):
+    """
+    Read the channel values that hold obj at `world` once its constraints stop acting.
+
+    Blender's own `matrix_world` setter does the inversion: it divides out the parent matrix of
+    every parent type it can read on the original object - object, bone, armature, lattice - the
+    parent inverse and the delta transforms. It writes the result onto obj, so the channels are
+    read and then put straight back.
+
+    Args:
+        obj: The original object.
+        world: Its evaluated world matrix at the sampled frame.
+
+    Returns:
+        tuple: Location, rotation as a quaternion, and scale, in obj's channel space.
+
+    """
+    saved = {name: tuple(getattr(obj, name)) for name in _OBJECT_TRANSFORM_CHANNELS}
+    try:
+        obj.matrix_world = world
+        return obj.location.copy(), get_rotation_quaternion(obj), obj.scale.copy()
+    finally:
+        for name, value in saved.items():
+            setattr(obj, name, value)
+
+
 def _sampled_bake_channels(obj, target, frames, transforms, bone_names):
     """
-    Walk the frame range once, reading the evaluated values the bake will key.
+    Walk the frame range once, reading the channel values that reproduce the evaluated motion.
 
-    Every sample comes from the dependency graph, so constraints, drivers and parenting are
-    already resolved into the numbers recorded here.
+    Every transform sample is the evaluated pose - constraints, drivers, parenting and NLA
+    resolved - converted back into the channel space the keys are written in, so muting the
+    constraints afterwards leaves the motion where it was.
 
     Args:
         obj: The object being baked.
-        target: The bake target record, read for `space` and `properties`.
+        target: The bake target record, read for `properties`.
         frames: The frames to sample, in order.
         transforms: LOCATION/ROTATION/SCALE channels to record, if any.
         bone_names: Pose bones to record instead of the object itself, if any.
@@ -864,17 +936,30 @@ def _sampled_bake_channels(obj, target, frames, transforms, bone_names):
     scene = bpy.context.scene
     channels = {}
     channel_tolerances = {}
+    previous_rotations = {}
     for frame in frames:
         scene.frame_set(frame)
         evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
         if transforms and not bone_names:
-            matrix = evaluated.matrix_world if target.get("space") == "WORLD" else evaluated.matrix_basis
-            _append_transform_samples(channels, obj, matrix, transforms, frame)
+            transform = _object_channel_transform(obj, evaluated.matrix_world.copy())
+            _append_transform_samples(channels, previous_rotations, obj, transform, transforms, frame)
         for bone_name in bone_names:
             evaluated_bone = evaluated.pose.bones[bone_name]
-            matrix = evaluated_bone.matrix if target.get("space") in {"WORLD", "POSE"} else evaluated_bone.matrix_basis
+            # POSE to LOCAL honours each bone's inherit-rotation, inherit-scale and local-location
+            # flags, which a product of parent and rest matrices does not.
+            basis = evaluated.convert_space(
+                pose_bone=evaluated_bone, matrix=evaluated_bone.matrix, from_space="POSE", to_space="LOCAL"
+            )
             pose_bone = obj.pose.bones[bone_name]
-            _append_transform_samples(channels, pose_bone, matrix, transforms, frame, f"{pose_bone.path_from_id()}.")
+            _append_transform_samples(
+                channels,
+                previous_rotations,
+                pose_bone,
+                basis.decompose(),
+                transforms,
+                frame,
+                f"{pose_bone.path_from_id()}.",
+            )
         for channel in target.get("properties", []):
             array_length, value = _resolve_property(evaluated, channel["data_path"])
             indices = channel.get("array_indices")
@@ -1729,6 +1814,12 @@ class AnimationHandlersMixin:
         missing_bones = [name for name in bone_names if obj.pose.bones.get(name) is None]
         if missing_bones:
             raise ValueError(f"Pose bones not found: {missing_bones}")
+        if transforms and not bone_names and obj.parent is not None and obj.parent_type in _UNCONVERTIBLE_PARENT_TYPES:
+            raise ValueError(
+                f"'{obj.name}' is parented to vertices of '{obj.parent.name}' (parent_type {obj.parent_type}); its "
+                "evaluated transform cannot be converted back into channel values. Parent it to the object instead, "
+                "or bake an unparented copy"
+            )
         for channel in target.get("properties", []):
             _resolve_property(obj, channel["data_path"])
 
@@ -1761,10 +1852,10 @@ class AnimationHandlersMixin:
             "key_count": written["key_count"],
             "curves": written["curves"],
             "max_reconstruction_error": written["max_reconstruction_error"],
-            "sample_space": target.get("space", "LOCAL"),
             "new_non_shared_action": action.users <= 1,
             "warnings": [
-                "Constraints remain live; mute or remove them before using baked transforms as final unconstrained motion."
+                "The baked keys already include every constraint's effect, and the constraints remain live on top "
+                "of them; mute or remove them, or playback applies them twice."
             ]
             if transforms
             else [],

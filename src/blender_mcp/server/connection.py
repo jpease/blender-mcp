@@ -488,7 +488,7 @@ def _log_handshake(handshake: AddonHandshake) -> None:
 
 def _run_addon_handshake(blender: BlenderConnection) -> AddonHandshake | None:
     """
-    Run the once-per-process handshake and publish what the addon said.
+    Run the addon handshake unless one is in flight or already published, and publish it.
 
     Args:
         blender: The connection to handshake over.
@@ -500,8 +500,10 @@ def _run_addon_handshake(blender: BlenderConnection) -> AddonHandshake | None:
     Raises:
         BlenderTransportError: If the round trip never completed. Nothing is published
             in that case: `_addon_handshake` gates every command in `send_command`, so it
-            must only ever hold something Blender actually said. A caller that can report
-            the fault honestly (`force_addon_handshake`) needs to see it.
+            must only ever hold something Blender actually said. The latch is released, so
+            the next `get_blender_connection` retries rather than leaving the gate unset for
+            the life of the process. A caller that can report the fault honestly
+            (`force_addon_handshake`) needs to see it.
         ConnectionError: If there is no socket and one cannot be opened.
 
     """
@@ -514,7 +516,12 @@ def _run_addon_handshake(blender: BlenderConnection) -> AddonHandshake | None:
         if _addon_handshake_checked:
             return _addon_handshake
         _addon_handshake_checked = True
-    handshake = handshake_addon(blender)
+    try:
+        handshake = handshake_addon(blender)
+    except BaseException:
+        with _addon_handshake_lock:
+            _addon_handshake_checked = False
+        raise
     with _addon_handshake_lock:
         _addon_handshake = handshake
     _log_handshake(handshake)
@@ -616,35 +623,25 @@ def connect_with_retry(
     return False
 
 
-def get_blender_connection():
+def _tracked_connection() -> BlenderConnection:
     """
-    Get or create a persistent Blender connection.
+    Build, connect and publish the module's one connection, or return the one already tracked.
+
+    A connection whose socket died is handed back as-is: the next command reconnects it, and
+    a fresh object would strand the send lock serializing whatever is still in flight.
 
     Returns:
-        Result produced by the operation.
+        BlenderConnection: The tracked connection.
 
     Raises:
-        Exception: If the operation cannot be completed.
+        Exception: If no connection is tracked and none can be opened.
 
     """
     global _blender_connection
-
-    # Reuse the existing connection. We deliberately do NOT probe it with a
-    # command here: that put two commands on the wire for every tool call, and
-    # any overlap desynced the response stream until the socket timeout fired.
-    # A dead socket is detected by the next real command and reconnected then.
-    existing = _blender_connection
-    if existing is not None and existing.sock is not None:
-        return existing
-
     with _connection_lock:
-        # Re-read under the lock, because the check above is deliberately
-        # unlocked: another thread may have built the connection in between. A
-        # connection whose socket died is still handed back as-is, for the
-        # reason above.
+        # Re-read under the lock: another thread may have built it since the caller looked.
         if _blender_connection is not None:
             return _blender_connection
-
         host = os.getenv("BLENDER_HOST", DEFAULT_HOST)
         port = int(os.getenv("BLENDER_PORT", DEFAULT_PORT))
         blender = BlenderConnection(host=host, port=port)
@@ -659,11 +656,33 @@ def get_blender_connection():
         # out a connection whose socket is still None.
         _blender_connection = blender
         logger.info("Created new persistent connection to Blender")
+        return blender
 
-    # Outside the lock: the handshake is a full socket round trip, latched once
-    # per process by `_addon_handshake_lock`, and only the thread that built the
-    # connection gets here.
-    _maybe_handshake_addon(blender)
+
+def get_blender_connection() -> BlenderConnection:
+    """
+    Get or create a persistent Blender connection, handshaking it until one handshake lands.
+
+    Returns:
+        BlenderConnection: The tracked connection.
+
+    Raises:
+        Exception: If no connection is tracked and none can be opened.
+
+    """
+    # Reuse the existing connection. We deliberately do NOT probe it with a
+    # command here: that put two commands on the wire for every tool call, and
+    # any overlap desynced the response stream until the socket timeout fired.
+    # A dead socket is detected by the next real command and reconnected then.
+    blender = _blender_connection
+    if blender is None or blender.sock is None:
+        blender = _tracked_connection()
+    if _addon_handshake is None:
+        # Retried on every call until one lands: a transient fault on the first round trip
+        # would otherwise leave the capability gate and the integration tool list unset for
+        # the life of the process. Outside the connection lock, because it is a full round
+        # trip, and latched by `_addon_handshake_lock`, so concurrent callers send one.
+        _maybe_handshake_addon(blender)
     return blender
 
 

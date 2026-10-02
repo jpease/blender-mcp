@@ -8,7 +8,16 @@ from typing import Any
 import bpy
 
 from ...helpers import apply_modifier
-from ._shared import OWNERSHIP_KEY, ROLE_KEY, SOURCE_KEY, evaluated_summary, require_nodes_modifier, require_object
+from ._shared import (
+    OWNERSHIP_KEY,
+    ROLE_KEY,
+    SOURCE_KEY,
+    evaluated_depsgraph,
+    evaluated_summary,
+    evaluation_layer,
+    require_nodes_modifier,
+    require_object,
+)
 
 
 def _unique_object_name(requested: str) -> str:
@@ -31,9 +40,8 @@ def _require_output_collection(name: str):
     return collection
 
 
-def _instance_summary(source, limit: int = 10_000) -> dict[str, Any]:
+def _instance_summary(source, depsgraph, limit: int = 10_000) -> dict[str, Any]:
     """Count evaluated instances attributable to the source object."""
-    depsgraph = bpy.context.evaluated_depsgraph_get()
     items = []
     total = 0
     for instance in depsgraph.object_instances:
@@ -122,7 +130,7 @@ class GeometryNodesDeliveryHandlersMixin:
             if not confirm_destructive:
                 raise ValueError("confirm_destructive=True is required for APPLIED_MODIFIER_COPY")
 
-        scene = bpy.context.scene
+        scene, view_layer = evaluation_layer(source)
         previous_frame = scene.frame_current
         previous_subframe = scene.frame_subframe
         output = None
@@ -130,18 +138,17 @@ class GeometryNodesDeliveryHandlersMixin:
         try:
             if frame is not None:
                 scene.frame_set(int(frame))
-                bpy.context.view_layer.update()
+            depsgraph = evaluated_depsgraph(view_layer)
             delivery_frame = scene.frame_current
             base = {
                 "type": source.type,
                 "mesh": _mesh_schema(source.data) if source.type == "MESH" else None,
                 "vertex_groups": [group.name for group in source.vertex_groups],
             }
-            instances = _instance_summary(source)
+            instances = _instance_summary(source, depsgraph)
             warnings = []
 
             if delivery_mode == "REALIZED_MESH":
-                depsgraph = bpy.context.evaluated_depsgraph_get()
                 evaluated = source.evaluated_get(depsgraph)
                 try:
                     created_mesh = bpy.data.meshes.new_from_object(
@@ -222,4 +229,4 @@ class GeometryNodesDeliveryHandlersMixin:
         finally:
             if scene.frame_current != previous_frame or scene.frame_subframe != previous_subframe:
                 scene.frame_set(previous_frame, subframe=previous_subframe)
-                bpy.context.view_layer.update()
+                view_layer.update()

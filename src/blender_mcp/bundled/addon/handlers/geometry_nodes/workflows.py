@@ -14,7 +14,9 @@ from ._shared import (
     BUILDER_KEY,
     ROLE_KEY,
     add_interface_socket,
+    evaluated_depsgraph,
     evaluated_summary,
+    evaluation_layer,
     group_dependencies,
     initialize_group,
     link,
@@ -269,7 +271,7 @@ def _mesh_level_set_grid(obj, voxel_size):
         import openvdb
     except ImportError as exc:
         raise ValueError("OPENVDB delivery requires Blender's bundled openvdb and numpy modules") from exc
-    depsgraph = bpy.context.evaluated_depsgraph_get()
+    depsgraph = evaluated_depsgraph(evaluation_layer(obj)[1])
     evaluated = obj.evaluated_get(depsgraph)
     mesh = evaluated.to_mesh()
     try:

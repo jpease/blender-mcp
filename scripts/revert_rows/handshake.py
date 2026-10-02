@@ -4,7 +4,17 @@ Rows guarding every handshake field's refusal of a hostile value, and `load_pre`
 Label prefixes: `handshake:`, `session:`, `barrier:`.
 """
 
-from .common import ADDON_MANAGER, ADDON_SERVER_CORE, ADDON_SESSION, AMT, LIST_SCALAR, THREADT, Revert
+from .common import (
+    ADDON_MANAGER,
+    ADDON_SERVER_CORE,
+    ADDON_SESSION,
+    AMT,
+    CONNRETRYT,
+    LIST_SCALAR,
+    SERVER_CONNECTION,
+    THREADT,
+    Revert,
+)
 
 ROWS: list[Revert] = [
     # --- every handshake field refuses a hostile value, and load_pre ---
@@ -121,5 +131,22 @@ ROWS: list[Revert] = [
         "        if receipt is not None:\n            receipt.answered = True\n\n",
         "",
         (f"{THREADT}::test_a_swap_that_answers_normally_is_not_answered_a_second_time_by_the_guard",),
+    ),
+    # --- a handshake that never completed is retried, not latched as done ---
+    Revert(
+        "handshake: a failed round trip keeps the latch, so the capability gate stays unset for the process",
+        SERVER_CONNECTION,
+        "    except BaseException:\n"
+        "        with _addon_handshake_lock:\n"
+        "            _addon_handshake_checked = False\n",
+        "    except BaseException:\n",
+        (f"{CONNRETRYT}::test_handshake_failure_resets_latch_and_retries_on_subsequent_connection",),
+    ),
+    Revert(
+        "handshake: only the call that built the connection handshakes, so a recovered socket never retries",
+        SERVER_CONNECTION,
+        "        blender = _tracked_connection()\n    if _addon_handshake is None:",
+        "        blender = _tracked_connection()\n        _maybe_handshake_addon(blender)\n    if False:",
+        (f"{CONNRETRYT}::test_handshake_failure_resets_latch_and_retries_on_subsequent_connection",),
     ),
 ]

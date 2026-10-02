@@ -1454,14 +1454,15 @@ def restored_playhead(scene):
     Put the playhead back where the call found it, and re-evaluate the scene on the way out.
 
     Args:
-        scene: The scene whose `frame_current` is borrowed.
+        scene: The scene whose `frame_current` and `frame_subframe` are borrowed.
 
     """
     previous_frame = scene.frame_current
+    previous_subframe = scene.frame_subframe
     try:
         yield
     finally:
-        scene.frame_set(previous_frame)
+        scene.frame_set(previous_frame, subframe=previous_subframe)
         bpy.context.view_layer.update()
 
 

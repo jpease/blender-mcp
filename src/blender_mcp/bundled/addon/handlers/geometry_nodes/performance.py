@@ -12,7 +12,7 @@ from typing import Any
 
 import bpy
 
-from ._shared import evaluated_summary, require_nodes_modifier, require_object
+from ._shared import evaluated_depsgraph, evaluated_summary, evaluation_layer, require_nodes_modifier, require_object
 
 HEAVY_NODE_TYPES = {
     "GeometryNodeRealizeInstances",
@@ -257,10 +257,10 @@ def _graph_heuristics(group, modifier, topology_warning_threshold: int) -> tuple
     return findings, nested
 
 
-def _bounded_instance_count(obj, limit: int) -> dict[str, Any]:
+def _bounded_instance_count(obj, depsgraph, limit: int) -> dict[str, Any]:
     """Count only up to the caller's dependency-graph instance budget."""
     count = 0
-    for instance in bpy.context.evaluated_depsgraph_get().object_instances:
+    for instance in depsgraph.object_instances:
         if instance.parent is None or instance.parent.original != obj:
             continue
         count += 1
@@ -295,7 +295,7 @@ class GeometryNodesPerformanceHandlersMixin:
             raise ValueError("time and count limits must be positive")
 
         findings, nested = _graph_heuristics(group, modifier, int(topology_warning_threshold))
-        scene = bpy.context.scene
+        scene, view_layer = evaluation_layer(obj)
         original_frame = scene.frame_current
         original_subframe = scene.frame_subframe
         deadline = time.monotonic() + float(time_limit_seconds)
@@ -309,9 +309,9 @@ class GeometryNodesPerformanceHandlersMixin:
                         break
                     started = time.perf_counter()
                     scene.frame_set(int(frame))
-                    bpy.context.view_layer.update()
-                    summary = evaluated_summary(obj)
-                    instances = _bounded_instance_count(obj, int(instance_limit))
+                    depsgraph = evaluated_depsgraph(view_layer)
+                    summary = evaluated_summary(obj, depsgraph)
+                    instances = _bounded_instance_count(obj, depsgraph, int(instance_limit))
                     elapsed = time.perf_counter() - started
                     counts = summary.get("mesh_counts", {})
                     samples.append(
@@ -352,7 +352,7 @@ class GeometryNodesPerformanceHandlersMixin:
                     break
         finally:
             scene.frame_set(original_frame, subframe=original_subframe)
-            bpy.context.view_layer.update()
+            view_layer.update()
 
         elapsed_values = [sample["elapsed_seconds"] for sample in samples]
         modifier_times = [sample["modifier_execution_seconds"] for sample in samples]

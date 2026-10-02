@@ -14,7 +14,9 @@ from ._shared import (
     PURPOSE_KEY,
     SCHEMA_KEY,
     applicable_to_object,
+    evaluated_depsgraph,
     evaluated_summary,
+    evaluation_layer,
     find_group,
     finite_bounds,
     group_dependencies,
@@ -348,13 +350,14 @@ class GeometryNodesInspectionHandlersMixin:
     def inspect_evaluated_geometry(self, object_name, frame=None, instance_limit=500):
         """Read any object's evaluated result at a frame, restoring the playhead afterwards."""
         obj = require_object(object_name)
-        scene = bpy.context.scene
+        scene, view_layer = evaluation_layer(obj)
         previous_frame = scene.frame_current
         try:
             if frame is not None:
                 scene.frame_set(frame)
-            data = evaluated_summary(obj)
-            evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+            depsgraph = evaluated_depsgraph(view_layer)
+            data = evaluated_summary(obj, depsgraph)
+            evaluated = obj.evaluated_get(depsgraph)
             data.update(
                 {
                     "object": obj.name,
@@ -378,7 +381,7 @@ class GeometryNodesInspectionHandlersMixin:
                     evaluated.to_mesh_clear()
             instances = []
             total_instances = 0
-            for instance in bpy.context.evaluated_depsgraph_get().object_instances:
+            for instance in depsgraph.object_instances:
                 if instance.parent is None or instance.parent.original != obj:
                     continue
                 total_instances += 1
@@ -471,7 +474,9 @@ class GeometryNodesInspectionHandlersMixin:
                     affected_user=obj.name,
                 )
             try:
-                summary = evaluated_summary(obj)
+                # Resolved here so an object no view layer evaluates lands in EVALUATION_FAILED
+                # below, rather than as empty output and non-finite bounds it does not have.
+                summary = evaluated_summary(obj, evaluated_depsgraph(evaluation_layer(obj)[1]))
                 counts = summary.get("mesh_counts", {})
                 if counts.get("vertices", 0) == 0:
                     finding(

@@ -98,7 +98,7 @@ class BakePropertyChannel(StrictModel):
 
 
 class EvaluatedBakeTarget(StrictModel):
-    """One object or armature and the evaluated channels to bake."""
+    """One object or armature, keyed with channel values that hold its evaluated pose once constraints are muted."""
 
     object_name: Annotated[str, Field(min_length=1)]
     transforms: Annotated[list[Literal["LOCATION", "ROTATION", "SCALE"]], Field(max_length=3)] = Field(
@@ -106,7 +106,6 @@ class EvaluatedBakeTarget(StrictModel):
     )
     bone_names: Annotated[list[str], Field(max_length=10_000)] = Field(default_factory=list)
     properties: Annotated[list[BakePropertyChannel], Field(max_length=1_000)] = Field(default_factory=list)
-    space: Literal["LOCAL", "WORLD", "POSE"] = "LOCAL"
 
     @model_validator(mode="after")
     def require_channels(self) -> "EvaluatedBakeTarget":

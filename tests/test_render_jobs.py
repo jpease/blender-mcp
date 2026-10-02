@@ -387,24 +387,29 @@ def test_a_job_never_renders_over_a_frame_that_appeared_after_it_was_created(job
 
 
 @pytest.mark.parametrize(
-    ("heartbeat_age", "pid_alive", "state", "warned"),
+    ("heartbeat_age", "pid_alive", "state", "warning"),
     [
-        (60, False, "FAILED", False),
-        (2, False, "RENDERING", False),
-        (60, True, "RENDERING", True),
+        (60, False, "FAILED", None),
+        (2, False, "RENDERING", None),
+        (60, True, "RENDERING", "is still running"),
+        # Windows: liveness cannot be asked, so the job is neither failed nor claimed alive.
+        (60, None, "RENDERING", "cannot be checked on this platform"),
     ],
 )
 def test_a_job_from_an_earlier_session_fails_only_when_silent_and_gone(
-    jobs, monkeypatch, heartbeat_age, pid_alive, state, warned
+    jobs, monkeypatch, heartbeat_age, pid_alive, state, warning
 ) -> None:
-    """A stale heartbeat alone is not death: the pid must be gone too, or it may still be loading."""
+    """A stale heartbeat alone is not death: the pid must be confirmed gone, or it may still be loading."""
     monkeypatch.setattr(jobs.module, "_pid_alive", lambda _pid: pid_alive)
     _unowned_job(jobs, "0123456789ab", heartbeat_at=time.time() - heartbeat_age)
 
     read = jobs.handler.manage_render_job("READ", job_id="0123456789ab")
 
     assert read["state"] == state
-    assert ("warnings" in read) is warned
+    if warning is None:
+        assert "warnings" not in read
+    else:
+        assert [warning in text for text in read["warnings"]] == [True], read["warnings"]
 
 
 def test_delete_refuses_a_running_job_without_confirm_delete(jobs) -> None:

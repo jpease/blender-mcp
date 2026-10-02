@@ -136,3 +136,46 @@ def test_get_blender_connection_still_raises_when_every_attempt_fails(monkeypatc
         assert blender.attempts == 2
     finally:
         connection_module._blender_connection = None
+
+
+def test_handshake_failure_resets_latch_and_retries_on_subsequent_connection(monkeypatch) -> None:
+    handshake_attempts = 0
+
+    class _MockHandshake:
+        up_to_date = True
+
+    def _failing_handshake(blender):
+        nonlocal handshake_attempts
+        handshake_attempts += 1
+        if handshake_attempts == 1:
+            raise connection_module.BlenderTransportError("transient initial drop")
+        return _MockHandshake()
+
+    blender = _Connection(fail_times=0)
+    blender.sock = object()
+    monkeypatch.setattr(connection_module, "_blender_connection", None)
+    monkeypatch.setattr(connection_module, "BlenderConnection", lambda host, port: blender)
+    monkeypatch.setattr(connection_module, "handshake_addon", _failing_handshake)
+    monkeypatch.setattr(connection_module, "_addon_handshake", None)
+    monkeypatch.setattr(connection_module, "_addon_handshake_checked", False)
+
+    try:
+        conn1 = connection_module.get_blender_connection()
+        assert conn1 is blender
+        assert handshake_attempts == 1
+        assert connection_module.get_last_handshake() is None
+        assert connection_module._addon_handshake_checked is False
+
+        conn2 = connection_module.get_blender_connection()
+        assert conn2 is blender
+        assert handshake_attempts == 2
+        assert connection_module.get_last_handshake() is not None
+        assert connection_module._addon_handshake_checked is True
+
+        conn3 = connection_module.get_blender_connection()
+        assert conn3 is blender
+        assert handshake_attempts == 2
+    finally:
+        connection_module._blender_connection = None
+        connection_module._addon_handshake = None
+        connection_module._addon_handshake_checked = False

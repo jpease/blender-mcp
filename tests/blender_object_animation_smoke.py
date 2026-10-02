@@ -58,6 +58,24 @@ def _test_world_and_local_space(handler, cube, rig, child) -> None:
     assert all(math.isclose(a, b, abs_tol=1e-6) for a, b in zip(rig.location, _RIG_LOCATION, strict=True)), (
         "the parent itself should be untouched by keying its child"
     )
+    # A WORLD key solves through the parent as it sits at the key's frame, not where the playhead
+    # is: the parent travels 0 -> 10 over frames 1-10, so solved at frame 1 the child would land
+    # at x=30 instead of x=20. The playhead, subframe included, goes back where it was.
+    bpy.context.scene.frame_set(1)
+    rig.location = (0.0, 0.0, 0.0)
+    rig.keyframe_insert(data_path="location", frame=1)
+    rig.location = (10.0, 0.0, 0.0)
+    rig.keyframe_insert(data_path="location", frame=10)
+    bpy.context.scene.frame_set(1, subframe=0.25)
+    handler.keyframe_object_transform(
+        keyframes=[{"object_name": "AnimChild", "frame": 10, "space": "WORLD", "location": (20.0, 3.0, 0.0)}]
+    )
+    playhead = (bpy.context.scene.frame_current, bpy.context.scene.frame_subframe)
+    assert playhead == (1, 0.25), f"the playhead was left at {playhead}"
+    bpy.context.scene.frame_set(10)
+    world_10 = child.evaluated_get(bpy.context.evaluated_depsgraph_get()).matrix_world.translation
+    assert math.isclose(world_10[0], 20.0, abs_tol=1e-4), f"a WORLD key at frame 10 plays at x={world_10[0]}"
+    bpy.context.scene.frame_set(1)
 
     handler.keyframe_object_transform(
         keyframes=[

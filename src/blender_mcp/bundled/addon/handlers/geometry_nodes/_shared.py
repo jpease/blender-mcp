@@ -336,9 +336,95 @@ def group_dependencies(group) -> list[dict[str, str]]:
     return list(found.values())
 
 
-def evaluated_summary(obj) -> dict[str, Any]:
-    """Return bounded evaluated counts and world-space bounds without applying modifiers."""
-    depsgraph = bpy.context.evaluated_depsgraph_get()
+def _layer_includes(layer_collection, obj) -> bool:
+    """
+    Report whether a view layer's collection tree includes obj, without waiting for a resync.
+
+    `ViewLayer.objects` lags a link made earlier in the same command until the layer updates,
+    and updating every layer of every scene to ask is a full evaluation each.
+
+    Args:
+        layer_collection: A view layer's layer collection, the root to start from.
+        obj: The object to find.
+
+    Returns:
+        bool: Whether an included collection under this one holds obj.
+
+    """
+    if layer_collection.exclude:
+        return False
+    if layer_collection.collection.objects.get(obj.name) == obj:
+        return True
+    return any(_layer_includes(child, obj) for child in layer_collection.children)
+
+
+def evaluation_layer(obj):
+    """
+    Name the scene and view layer whose dependency graph evaluates obj, preferring the context's.
+
+    The context's graph evaluates the context view layer only: an object in another scene, or in
+    collections that layer excludes, comes back from it as its base data with no modifier applied.
+
+    Args:
+        obj: The object to evaluate.
+
+    Returns:
+        tuple: The scene, whose playhead is the one that moves obj, and the view layer.
+
+    Raises:
+        ValueError: If no view layer of any scene includes obj.
+
+    """
+    context_layer = bpy.context.view_layer
+    candidates = [(bpy.context.scene, context_layer)]
+    candidates += [(scene, layer) for scene in obj.users_scene for layer in scene.view_layers if layer != context_layer]
+    for scene, layer in candidates:
+        if _layer_includes(layer.layer_collection, obj):
+            return scene, layer
+    raise ValueError(
+        f"Object '{obj.name}' is in no view layer, so Blender evaluates none of its modifiers; link it into a "
+        "collection that a view layer includes"
+    )
+
+
+def evaluated_depsgraph(view_layer):
+    """
+    Return a view layer's dependency graph, evaluated at its scene's current frame.
+
+    Args:
+        view_layer: A layer from `evaluation_layer`.
+
+    Returns:
+        bpy.types.Depsgraph: The evaluated graph.
+
+    """
+    if view_layer == bpy.context.view_layer:
+        return bpy.context.evaluated_depsgraph_get()
+    view_layer.update()
+    return view_layer.depsgraph
+
+
+def evaluated_summary(obj, depsgraph=None) -> dict[str, Any]:
+    """
+    Return bounded evaluated counts and world-space bounds without applying modifiers.
+
+    Args:
+        obj: The object to read.
+        depsgraph: The graph to read it from, already at the caller's frame; resolved from the
+            view layer that evaluates obj when omitted.
+
+    Returns:
+        dict: world_bounds and mesh_counts (or mesh_unavailable), or only evaluation_unavailable
+        when no view layer evaluates obj - an object outside every view layer is still a valid
+        modifier host, so a builder that just attached one must not fail for it.
+
+    """
+    if depsgraph is None:
+        try:
+            _scene, view_layer = evaluation_layer(obj)
+        except ValueError as exc:
+            return {"evaluation_unavailable": str(exc)}
+        depsgraph = evaluated_depsgraph(view_layer)
     evaluated = obj.evaluated_get(depsgraph)
     bounds = [evaluated.matrix_world @ mathutils.Vector(corner) for corner in evaluated.bound_box]
     summary: dict[str, Any] = {

@@ -19,6 +19,7 @@ from .action_assignment import (
     restored_action_assignment,
     restored_keys_on_error,
 )
+from .character_rigging.posing import _place_playhead, restored_playhead
 from .key_style import KeyStyle, style_point
 from .scene import _object, _required_name
 from .scene_physics import _scene, _scene_fps
@@ -234,9 +235,10 @@ def _cycle_extension_warnings(prepared):
 
 def _apply_and_key(obj, frame, space, channels):
     if space == "WORLD":
-        # obj.matrix_world (and its parent chain) is only refreshed by a depsgraph
-        # evaluation, so a parent reassigned or moved earlier in this same command
-        # (or an earlier command in the same batch) can still read as stale here.
+        # The parent chain sits where it does at the key's own frame, not wherever the playhead
+        # arrived: solved against another frame's parent, the local values key a world pose
+        # nobody asked for. The update also catches a parent moved earlier in this batch.
+        _place_playhead(bpy.context.scene, frame)
         bpy.context.view_layer.update()
         current_location, current_rotation, current_scale = obj.matrix_world.decompose()
         location = mathutils.Vector(channels["location"]) if "location" in channels else current_location
@@ -386,6 +388,42 @@ def _refuse_existing_keys(prepared):
             raise ValueError(f"A key already exists at {entry['label']} for {existing}; INSERT_ONLY made no changes")
 
 
+def _prepare_records(keyframes):
+    prepared = []
+    seen = set()
+    scene_cache = {}
+    for index, source in enumerate(keyframes):
+        if not isinstance(source, dict):
+            raise ValueError(f"keyframes[{index}] must be an object")
+        record = dict(source)
+        label = f"keyframes[{index}]"
+        object_name = _required_name(record.get("object_name"), f"{label}.object_name")
+        obj = _object(object_name)
+        frame = _resolve_frame(record, label, scene_cache)
+        space = record.get("space", "WORLD")
+        if space not in _SPACES:
+            raise ValueError(f"{label}.space must be one of {sorted(_SPACES)}")
+        channels = _resolve_channels(record, label, obj)
+        identity = (object_name, frame)
+        if identity in seen:
+            raise ValueError(
+                f"Duplicate keyframe destination at {label}: combine every channel for one object at "
+                "one frame into a single record instead of separate records"
+            )
+        seen.add(identity)
+        prepared.append(
+            {
+                "object": obj,
+                "object_name": object_name,
+                "label": label,
+                "frame": frame,
+                "space": space,
+                "channels": channels,
+            }
+        )
+    return prepared
+
+
 class ObjectAnimationHandlersMixin:
     """Keyframe an object's location/rotation/scale, in local or world space, across a scene."""
 
@@ -413,38 +451,7 @@ class ObjectAnimationHandlersMixin:
         if not assign_action and action_name is None:
             raise ValueError("assign_action=False keys a named clip and requires action_name")
 
-        prepared = []
-        seen = set()
-        scene_cache = {}
-        for index, source in enumerate(keyframes):
-            if not isinstance(source, dict):
-                raise ValueError(f"keyframes[{index}] must be an object")
-            record = dict(source)
-            label = f"keyframes[{index}]"
-            object_name = _required_name(record.get("object_name"), f"{label}.object_name")
-            obj = _object(object_name)
-            frame = _resolve_frame(record, label, scene_cache)
-            space = record.get("space", "WORLD")
-            if space not in _SPACES:
-                raise ValueError(f"{label}.space must be one of {sorted(_SPACES)}")
-            channels = _resolve_channels(record, label, obj)
-            identity = (object_name, frame)
-            if identity in seen:
-                raise ValueError(
-                    f"Duplicate keyframe destination at {label}: combine every channel for one object at "
-                    "one frame into a single record instead of separate records"
-                )
-            seen.add(identity)
-            prepared.append(
-                {
-                    "object": obj,
-                    "object_name": object_name,
-                    "label": label,
-                    "frame": frame,
-                    "space": space,
-                    "channels": channels,
-                }
-            )
+        prepared = _prepare_records(keyframes)
 
         keyed_action = None
         restore_warnings = []
@@ -476,6 +483,8 @@ class ObjectAnimationHandlersMixin:
             # Measured before a key is written: inserting one moves the extent it is measured
             # against, and the question is which cycle the call arrived to.
             warnings = _cycle_extension_warnings(prepared)
+            if any(entry["space"] == "WORLD" for entry in prepared):
+                borrowed.enter_context(restored_playhead(bpy.context.scene))
             changed_keys = []
             for entry in prepared:
                 inserted = _apply_and_key(entry["object"], entry["frame"], entry["space"], entry["channels"])

@@ -706,6 +706,7 @@ def _posing(monkeypatch, bones, *, matrix_world=None, objects=None):
     addon, bpy = load_addon(monkeypatch, data={"objects": scene_objects, "actions": _Actions()})
     bpy.context.view_layer = types.SimpleNamespace(update=lambda: None)
     bpy.context.scene.frame_current = 1
+    bpy.context.scene.frame_subframe = 0.0
     bpy.context.scene.frame_set = lambda *_args, **_kwargs: None
     mathutils = sys.modules["mathutils"]
     for name, value in (("Matrix", _Matrix), ("Vector", _Vector), ("Quaternion", _Quaternion), ("Euler", _Euler)):

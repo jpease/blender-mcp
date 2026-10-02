@@ -58,10 +58,10 @@ async def keyframe_object_transform(
 
     Combine every channel for one object at one frame into a single record (location, rotation, and/or scale
     together) rather than separate records - each (object_name, frame) pair may appear only once per call.
-    WORLD space solves the requested location/rotation/scale through the object's current parent chain by
-    assigning matrix_world directly (Blender resolves the parent inverse), then keys the resulting local
+    WORLD space solves the requested location/rotation/scale through the object's parent chain at the key's
+    frame by assigning matrix_world directly (Blender resolves the parent inverse), then keys the resulting local
     values, so a child of an animated rig can be keyed at an absolute world pose without solving parenting
-    yourself; omitted channels keep their current world value. LOCAL space sets the given channels directly.
+    yourself; omitted channels keep their world value at that frame. LOCAL space sets the given channels directly.
     Rotation must match the object's current rotation_mode - rotation_quaternion when rotation_mode is
     QUATERNION, otherwise rotation_euler; AXIS_ANGLE objects are rejected (use edit_keyframes instead).
     rotation_mode itself is never changed. Convert seconds to a frame via at_seconds using the target scene's
