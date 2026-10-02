@@ -152,6 +152,27 @@ def _handler_counts(bpy: ModuleType) -> dict[str, int]:
     }
 
 
+def _binding_counts(bpy: ModuleType, bindings: tuple[tuple[str, object], ...]) -> dict[str, int]:
+    """
+    Count how often each bound callback sits in its handler list.
+
+    By identity, because other modules' callbacks share the lists: the add-on's
+    `scene_watch` is on `load_post` too.
+
+    Args:
+        bpy: The `bpy` stub whose handler lists to measure.
+        bindings: `(list name, callback)` pairs, as a module's `_HANDLER_BINDINGS` holds them.
+
+    Returns:
+        dict[str, int]: `"<list>:<callback>"` mapped to how many times that callback is attached.
+
+    """
+    return {
+        f"{name}:{getattr(handler, '__name__', handler)}": getattr(bpy.app.handlers, name).count(handler)
+        for name, handler in bindings
+    }
+
+
 def _fire(bpy: ModuleType, list_name: str, file_path: str) -> None:
     """
     Drive one handler list the way Blender drives it.
@@ -714,11 +735,13 @@ def test_the_addon_registers_and_unregisters_the_session_handlers(monkeypatch: p
     bpy.app.handlers.render_init = []
 
     addon.register()
-    registered = _handler_counts(bpy)
+    registered = _binding_counts(bpy, addon.session._HANDLER_BINDINGS)
     addon.unregister()
 
     assert registered == dict.fromkeys(registered, 1), "register() does not attach each session handler once"
-    assert _handler_counts(bpy) == dict.fromkeys(registered, 0), "unregister() leaves session handlers attached"
+    assert _binding_counts(bpy, addon.session._HANDLER_BINDINGS) == dict.fromkeys(registered, 0), (
+        "unregister() leaves session handlers attached"
+    )
 
 
 # ---------------------------------------------------------------------------

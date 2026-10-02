@@ -62,13 +62,23 @@ async def get_polyhaven_categories(ctx: Context, asset_type: AssetType = "hdris"
     try:
         status = await send_blender_command("get_polyhaven_status")
         if not status.get("enabled", False):
+            # The status probe's reply may carry the add-on's notice, which this refusal must not drop.
             raise ToolError(
-                "PolyHaven integration is disabled. Select it in the sidebar in BlenderMCP, then run it again."
+                " ".join(
+                    [
+                        "PolyHaven integration is disabled. Select it in the sidebar in BlenderMCP, then run it again.",
+                        *status.get("warnings", []),
+                    ]
+                )
             )
         result = await send_blender_command("get_polyhaven_categories", {"asset_type": asset_type})
         if "error" in result:
             raise ToolError(result["error"])
-        return ok({"asset_type": asset_type, "categories": result["categories"]})
+        # As above: the notice may be on either reply.
+        return ok(
+            {"asset_type": asset_type, "categories": result["categories"]},
+            warnings=[*status.get("warnings", []), *result.get("warnings", [])],
+        )
     except ToolError:
         raise
     except Exception as e:
@@ -121,7 +131,8 @@ async def list_polyhaven_assets(
                 "limit": result["limit"],
                 "truncated": result["truncated"],
                 "next_offset": result["next_offset"],
-            }
+            },
+            warnings=result.get("warnings", []),
         )
     except ToolError:
         raise

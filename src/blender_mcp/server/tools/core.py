@@ -509,7 +509,15 @@ async def get_integration_status(ctx: Context, provider: Provider | None = None)
         ToolError: If the operation cannot be completed.
 
     """
-    return ok(await _collect_integration_status(provider))
+    status = await _collect_integration_status(provider)
+    if provider is not None:
+        return ok(status)
+    # Each provider's reply may carry the add-on's notice; nested a level down, `ok()` would not lift it.
+    notices = [warning for reply in status.values() for warning in reply.get("warnings", [])]
+    return ok(
+        {name: {key: value for key, value in reply.items() if key != "warnings"} for name, reply in status.items()},
+        warnings=notices,
+    )
 
 
 @mcp.tool()

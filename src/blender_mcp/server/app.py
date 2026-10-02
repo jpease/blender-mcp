@@ -89,6 +89,9 @@ Every tool below returns one of two shapes:
    - "warnings" carries non-fatal notices, most commonly that a topology-changing
      operation invalidated vertex/edge/face indices returned by an earlier
      get_mesh_data call - call get_mesh_data again before reusing indices.
+   - A warning also flags an undo, redo or outside edit since the last command any session sent
+     (one signal per add-on; an edit within 0.5 s of a command, or a scene setting such as the
+     frame range, can go unflagged) - re-read anything you rely on before trusting earlier reads.
    - A tool-specific failure Blender rejects (bad name, invalid input) raises an MCP
      tool error instead of returning ok:false - stop and fix the input rather than retrying
      the same call. Arguments that fail schema validation raise one too, before Blender is

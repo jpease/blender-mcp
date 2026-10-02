@@ -149,6 +149,12 @@ ADDON_GN_AUTHORING = ROOT / "src/blender_mcp/bundled/addon/handlers/geometry_nod
 ADDON_ND = ROOT / "src/blender_mcp/bundled/addon/handlers/nd.py"
 SERVER_ND_TOOL = ROOT / "src/blender_mcp/server/tools/nd.py"
 SERVER_POLYHAVEN_TOOL = ROOT / "src/blender_mcp/server/tools/polyhaven.py"
+# The undo/redo and outside-edit notice: the add-on module that keeps it, the liquid bake whose
+# pending-bake record is its job marker, and the server tools that lift a reply's warnings by hand.
+ADDON_SCENE_WATCH = ROOT / "src/blender_mcp/bundled/addon/scene_watch.py"
+ADDON_LIQUID_SIMULATION = ROOT / "src/blender_mcp/bundled/addon/handlers/liquid/simulation.py"
+SERVER_SKETCHFAB_TOOL = ROOT / "src/blender_mcp/server/tools/sketchfab.py"
+SERVER_IMAGE_CAPTURE = ROOT / "src/blender_mcp/server/tools/image_capture.py"
 
 # Short names for the test files rows cite. Node ids carry parameter text
 # verbatim, so the rows would otherwise be unreadably long lines.
@@ -231,6 +237,8 @@ GNSPACET = "tests/test_geometry_nodes_builder_spaces.py"
 INTEGT = "tests/server/test_integration_gating.py"
 TOOLSETST = "tests/server/test_toolsets_runtime.py"
 CATSIZET = "tests/server/test_catalog_sizes.py"
+SWT = "tests/test_scene_watch.py"
+RNT = "tests/server/tools/test_reply_notices.py"
 HOSTILE_LIB = f"{SESSIONT}::test_a_hostile_library_path_is_reduced_the_same_way_a_failure_note_is"
 # The `name` half of the same table, with short ids so a row can list its nodes; the
 # `filepath` half's ids run to hundreds of characters.

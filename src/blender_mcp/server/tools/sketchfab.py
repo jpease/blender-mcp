@@ -93,7 +93,8 @@ async def search_sketchfab_models(
                 "results": models,
                 "next_cursor": result.get("next"),
                 "previous_cursor": result.get("previous"),
-            }
+            },
+            warnings=result.get("warnings", []),
         )
     except ToolError:
         raise
@@ -143,7 +144,7 @@ async def get_sketchfab_model_preview(ctx: Context, uid: Annotated[str, Field(mi
         metadata = _preview_metadata(result, uid)
         logger.info(f"Preview retrieved for '{metadata['model_name']}' by {metadata['author']}")
 
-        return [Image(data=image_data, format=img_format), ok(metadata)]
+        return [Image(data=image_data, format=img_format), ok(metadata, warnings=result.get("warnings", []))]
 
     except Exception as e:
         logger.error(f"Error getting Sketchfab preview: {e!s}")

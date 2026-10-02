@@ -1137,6 +1137,43 @@ def test_orchestrated_animation_calls_plan_then_one_still_per_frame_then_persist
     assert [entry["frame"] for entry in envelope["data"]["files"]] == [1, 2, 3]
 
 
+def test_orchestrated_animation_reports_every_replys_warnings_once(monkeypatch) -> None:
+    """
+    The add-on's undo/outside-edit notice rides whichever reply it sends next, then is forgotten.
+
+    So the plan's, any frame's and the persist call's warnings must all reach the summary; a
+    warning every frame repeats is reported once.
+    """
+
+    class _NoticeConnection(_AnimationConnection):
+        def send_command(self, command, params):
+            reply = super().send_command(command, params)
+            notices = {"plan_render_animation": ["plan notice"], "configure_render_settings": ["persist notice"]}
+            frame_notice = ["frame 2 notice"] if command == "render_scene" and params["frame"] == 2 else []
+            every_frame = ["per-frame notice"] if command == "render_scene" else []
+            return {
+                **reply,
+                "warnings": [*reply.get("warnings", []), *notices.get(command, []), *frame_notice, *every_frame],
+            }
+
+    connection = _NoticeConnection(frame_count=3)
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+
+    envelope = asyncio.run(
+        rendering.render_scene(
+            ctx=_FakeReportProgressContext(),
+            scene_name="Scene",
+            filepath="//renders/beat_",
+            mode="ANIMATION",
+            confirm_render=True,
+            persist_output=True,
+        )
+    )
+
+    assert envelope["warnings"] == ["plan notice", "per-frame notice", "frame 2 notice", "persist notice"]
+    assert "warnings" not in envelope["data"]
+
+
 def test_orchestrated_animation_rejects_frame_with_animation_mode(monkeypatch) -> None:
     connection = _AnimationConnection()
     monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)

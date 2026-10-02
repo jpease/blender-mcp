@@ -20,7 +20,7 @@ substring, so the prefix is how a group of rows is selected: `session:`, `barrie
 `entrypoint:`, `quiet box:`, `reply budget:`, `lighting:`, `pose:`,
 `render settings:`, `strict args:`, `addon surface:`, `action assignment:`, `size caps:`,
 `camera:`, `pagination:`, `simulation:`, `data users:`, `counted replies:`, `lint gate:`,
-`geometry nodes:`, `integrations:` and `boundary:`. A `... control:` row is the deliberate
+`geometry nodes:`, `integrations:`, `scene watch:` and `boundary:`. A `... control:` row is the deliberate
 opposite of its neighbour: it proves that over-enforcing the same line is caught too,
 either by the same node or by the sibling node that exists to say the guard can be passed.
 
@@ -89,6 +89,7 @@ from revert_rows import (
     render_coverage,
     reply_shape,
     rig,
+    scene_watch,
     server_tools,
     session,
     session_boundary,
@@ -152,6 +153,7 @@ from revert_rows.common import (
     RIGT,
     RJOBT,
     RNAPT,
+    RNT,
     ROOT,
     ROOTST,
     SCENETOOLT,
@@ -163,6 +165,7 @@ from revert_rows.common import (
     STRICTT,
     SURFT,
     SVT,
+    SWT,
     TDT,
     THREADT,
     TOOLSETST,
@@ -190,6 +193,8 @@ from revert_rows.common import (
 # because every node in it is a claim about which tools one client session is offered and may
 # call, which another session's request must never change. CATSIZET joins it on the SURFT rule:
 # it is the freshness gate for the committed catalog sizes, so every node is a claim about them.
+# SWT and RNT join it because every node in them is a claim about whether a client hears that the
+# scene changed under it, a notice the add-on gives once and then forgets.
 NEW_TEST_FILES = (
     RIGT,
     DOCKT,
@@ -220,6 +225,8 @@ NEW_TEST_FILES = (
     CAPST,
     TOOLSETST,
     CATSIZET,
+    SWT,
+    RNT,
 )
 # Nodes in files the matrix does not own. `coverage_gaps()` sees only these and the nodes
 # collected from NEW_TEST_FILES, so a node left off this list is never checked.
@@ -743,6 +750,8 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{ANIMT}::test_a_slot_refused_while_unwinding_an_error_travels_with_that_error",
     # --- a keying call that fails part way hands a reused action back its keys ---
     f"{OANIMT}::test_a_batch_failing_part_way_hands_a_reused_action_back_its_keys",
+    # --- an orchestrated render keeps every reply's warnings, the add-on's change notice among them ---
+    f"{RENDT}::test_orchestrated_animation_reports_every_replys_warnings_once",
 )
 
 # Nodes no single revert can break, each with the reason, so the gap check skips them.
@@ -934,6 +943,7 @@ REVERTS: list[Revert] = [
     *geometry_nodes.ROWS,
     *integrations.ROWS,
     *toolsets.ROWS,
+    *scene_watch.ROWS,
 ]
 
 

@@ -11,6 +11,10 @@ import os
 import bpy
 
 from ...helpers import preserve_mode_and_selection, set_active
+
+# The pending-bake record doubles as `scene_watch`'s job marker: while it is set, the domain's
+# updates are the bake's own, not an outside edit.
+from ...scene_watch import JOB_MARKER_KEY as _PENDING_BAKE_KEY
 from ..rna_patch import patch_rna, restore_rna
 from ..simulation_cache import mantaflow_cache_info, require_cache_confirmation
 from ._frame_evaluation import _evaluate_frames, _plan_frame_evaluation
@@ -25,8 +29,6 @@ from .inspection_and_setup import (
 )
 from .manifest import read_manifest as _read_manifest
 from .manifest import write_stage_entry as _write_manifest_entry
-
-_PENDING_BAKE_KEY = "blendermcp_liquid_pending_bake"
 
 _BAKE_STAGES = {
     "DATA": {

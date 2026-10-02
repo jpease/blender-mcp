@@ -38,7 +38,8 @@ def capture_png(
         missing_file: Error text for a command that reported success but wrote nothing.
 
     Returns:
-        list[Image | dict]: The image, then the envelope carrying its metadata.
+        list[Image | dict]: The image, then the envelope carrying its metadata and the reply's
+        own warnings, which `metadata` need not copy.
 
     Raises:
         ToolError: If Blender refused the command or the round trip failed (`send`'s own
@@ -48,4 +49,4 @@ def capture_png(
     image_bytes, result = request_image(
         send, command, {**params, "format": "png"}, prefix=prefix, missing_file=missing_file
     )
-    return [Image(data=image_bytes, format="png"), ok(metadata(result))]
+    return [Image(data=image_bytes, format="png"), ok(metadata(result), warnings=list(result.get("warnings") or []))]

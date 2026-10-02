@@ -27,7 +27,7 @@ bl_info = {
 # addon that omits writable_output_roots gets an empty list.
 ADDON_PROTOCOL_VERSION = 52
 
-from . import render_result_record, session  # ruff: ignore[module-import-not-at-top-of-file]
+from . import render_result_record, scene_watch, session  # ruff: ignore[module-import-not-at-top-of-file]
 from .handlers import render_jobs  # ruff: ignore[module-import-not-at-top-of-file]
 from .server_core import BlenderMCPServer  # ruff: ignore[module-import-not-at-top-of-file]
 from .ui import (  # ruff: ignore[module-import-not-at-top-of-file]
@@ -89,6 +89,8 @@ def register() -> None:
     # So a render this add-on did not record - one started from the UI - clears
     # render_scene's record of what Render Result holds.
     render_result_record.register_handlers()
+    # So each reply says when the scene was undone, redone or edited outside between commands.
+    scene_watch.register_handlers()
 
     # Register preferences class
     bpy.utils.register_class(BLENDERMCP_AddonPreferences)
@@ -125,6 +127,7 @@ def unregister() -> None:
 
     session.unregister_handlers()
     render_result_record.unregister_handlers()
+    scene_watch.unregister_handlers()
     # After the server stops, so no job can start behind it. There is no register half: the
     # watchdog registers itself when a job starts, and a reload must not leave the old one firing.
     render_jobs.unregister_handlers()

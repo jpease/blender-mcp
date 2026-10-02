@@ -443,7 +443,7 @@ class _AnimationOutcome:
     cancellation_reason: str | None
     duration_seconds: float
     persisted: bool
-    # The run's own notices, such as a duration bound it overran, after the last frame's.
+    # The run's own notices - the persist call's reply, a duration bound it overran - after the frames'.
     warnings: tuple[str, ...] = ()
 
 
@@ -548,8 +548,10 @@ def _aggregate_animation_summary(plan: dict, replies: list[dict], outcome: _Anim
     """
     Combine N per-frame STILL replies into the exact summary shape a single ANIMATION call returns.
 
-    passes/pass_verification, engine/effective_cycles_device and warnings come from the LAST
-    completed frame, matching the single-call path reading them once, after its whole loop. An
+    passes/pass_verification and engine/effective_cycles_device come from the LAST completed
+    frame, matching the single-call path reading them once, after its whole loop. Warnings are
+    every reply's, the plan's first, each reported once: the add-on puts its undo/outside-edit
+    notice on whichever reply it sends next, so a notice on any one of them must not be lost. An
     empty `replies` (cancelled before any frame rendered) reports first_file/last_file, engine and
     effective_cycles_device as None, bytes_written as 0, and passes as empty, because there is no
     render to report on, rather than the single-call path's own quirk of reading whatever Render
@@ -580,7 +582,15 @@ def _aggregate_animation_summary(plan: dict, replies: list[dict], outcome: _Anim
         frame=plan["frame_current"],
         engine=last.get("engine") if last else None,
         effective_cycles_device=last.get("effective_cycles_device") if last else None,
-        warnings=[*((last.get("warnings") or []) if last else []), *outcome.warnings],
+        warnings=list(
+            dict.fromkeys(
+                [
+                    *plan.get("warnings", []),
+                    *(warning for reply in replies for warning in reply.get("warnings") or []),
+                    *outcome.warnings,
+                ]
+            )
+        ),
         files=[reply["files"][0] for reply in replies],
         frame_total=len(plan["frames"]),
         # The last completed frame's operator result, ["FINISHED"] when none completed: the
@@ -664,11 +674,13 @@ async def _render_animation_orchestrated(ctx: Context, request: _RenderRequest) 
 
     cancelled = len(replies) < len(frames)
     persisted = bool(request.persist_output) and not cancelled
+    persist_warnings: list[str] = []
     if persisted:
-        await send_blender_command(
+        persist_reply = await send_blender_command(
             "configure_render_settings",
             {"scene_name": request.scene_name, "patch": {"output": {"filepath": plan["requested_filepath"]}}},
         )
+        persist_warnings = list(persist_reply.get("warnings") or [])
     duration_seconds = time.monotonic() - started
     outcome = _AnimationOutcome(
         request=request,
@@ -676,7 +688,7 @@ async def _render_animation_orchestrated(ctx: Context, request: _RenderRequest) 
         cancellation_reason="max_duration_seconds exceeded" if cancelled else None,
         duration_seconds=duration_seconds,
         persisted=persisted,
-        warnings=tuple(_duration_overrun_warnings(duration_seconds, request.max_duration_seconds)),
+        warnings=(*persist_warnings, *_duration_overrun_warnings(duration_seconds, request.max_duration_seconds)),
     )
     return envelope_for(_aggregate_animation_summary(plan, replies, outcome), changed_resources=[request.scene_name])
 
@@ -783,10 +795,10 @@ def _render_output_metadata(result: dict) -> dict:
 
     Returns:
         dict: "width", "height", "native_width", "native_height", "source" ("output_path" or "render_result"),
-        "source_path", "scene", and "frame", plus the handler's "warnings" for the envelope to lift.
+        "source_path", "scene", and "frame". `capture_png` carries the handler's warnings itself.
 
     """
-    metadata = {
+    return {
         "width": result.get("width"),
         "height": result.get("height"),
         "native_width": result.get("native_width"),
@@ -796,9 +808,6 @@ def _render_output_metadata(result: dict) -> dict:
         "scene": result.get("scene"),
         "frame": result.get("frame"),
     }
-    if result.get("warnings"):
-        metadata["warnings"] = list(result["warnings"])
-    return metadata
 
 
 @mcp.tool(structured_output=False)

@@ -49,3 +49,9 @@ def test_the_instructions_point_a_held_contact_at_the_ik_tool() -> None:
     """The reported failure was a sliding foot authored with repeated FK rotation."""
     assert "`keyframe_bone_reach`" in _PROSE
     assert "repeated FK rotation slides it" in _PROSE
+
+
+def test_the_instructions_say_an_outside_change_is_one_coarse_signal() -> None:
+    """The add-on's notice is per add-on and misses some edits; an agent must not read it as per-session or exact."""
+    assert "undo, redo or outside edit since the last command any session sent" in _PROSE
+    assert "an edit within 0.5 s of a command" in _PROSE

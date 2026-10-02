@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import bpy
 
-from . import ADDON_PROTOCOL_VERSION, authored, bl_info
+from . import ADDON_PROTOCOL_VERSION, authored, bl_info, scene_watch
 from .capability_introspection import capability_params
 from .command_registry import CommandRegistryMixin, target_names
 from .file_paths import canonical_path
@@ -794,7 +794,10 @@ class BlenderMCPServer(
 
     def execute_command_internal(self, command):
         """
-        Internal command execution with proper context.
+        Run one command and shape its response, whatever its handler did.
+
+        Every reply passes through `scene_watch`, transacted or not, so each one says whether
+        the scene was undone, redone or edited outside since the last command was answered.
 
         Args:
             command: Command requested by the client.
@@ -804,8 +807,25 @@ class BlenderMCPServer(
 
         """
         cmd_type = command.get("type")
-        params = command.get("params", {})
+        scene_watch.command_started()
+        try:
+            response = self._dispatch_command(cmd_type, command.get("params", {}))
+        finally:
+            scene_watch.command_finished()
+        return scene_watch.annotated_response(cmd_type, response, session_swap=self.command_spec(cmd_type).session_swap)
 
+    def _dispatch_command(self, cmd_type, params):
+        """
+        Run one command's handler and shape its outcome as a response.
+
+        Args:
+            cmd_type: The command type.
+            params: Its parameters.
+
+        Returns:
+            dict: `{"status": "success", "result": ...}` or `{"status": "error", "message": ...}`.
+
+        """
         handler = self._build_command_handlers().get(cmd_type)
         if handler is None:
             return {"status": "error", "message": f"Unknown command type: {cmd_type}"}
