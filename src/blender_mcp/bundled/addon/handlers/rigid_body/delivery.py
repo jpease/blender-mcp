@@ -140,6 +140,9 @@ class RigidBodyDeliveryHandlers:
             "actions": action_names,
             "channels": ["location", "rotation_quaternion", *(["scale"] if key_scale else [])],
             "frames": frames,
+            # Declares `frames` a page to the reply budget: up to 10,000 keyed frames, while the same
+            # key is a `[start, end]` interval in other replies. The budget sets it when it cuts.
+            "frames_truncated": False,
             "source_rigid_bodies_retained": True,
             "timeline_restored": {"frame": scene.frame_current, "subframe": scene.frame_subframe},
         }

@@ -224,6 +224,139 @@ ROWS: list[Revert] = [
         '    for prefix in ("",):\n',
         (f"{ENVT}::test_a_page_paged_under_a_prefixed_name_is_still_marked_truncated",),
     ),
+    # --- only a declared page is shortened; every other list is one value ---
+    Revert(
+        # The bug a rig session hit: a one-bone get_character_rig_info reply had its matrices
+        # cut row by row, so the bone head's world position never reached the caller.
+        "reply budget: every list is a page, so a vector, a matrix, a vertex loop or a name list is cut",
+        SERVER_ENVELOPE,
+        "    return (\n        key in _UNPAGINATED_PAGES\n",
+        "    return True or (\n        key in _UNPAGINATED_PAGES\n",
+        (
+            f"{ENVT}::test_a_vector_or_matrix_is_never_cut_as_if_it_were_a_page",
+            f"{ENVT}::test_a_numeric_value_is_never_cut_however_long_it_is",
+            f"{ENVT}::test_an_undeclared_frames_list_is_one_value",
+            f"{ENVT}::test_an_undeclared_list_of_names_is_one_value",
+            f"{ENVT}::test_a_complete_value_list_is_never_cut_to_make_room",
+        ),
+    ),
+    Revert(
+        # The old content heuristic: a rigid-body bake's `channels` was cut to `["location"]`.
+        "reply budget: a list holding names is a page for holding them, so a bake's channels are cut",
+        SERVER_ENVELOPE,
+        "        key in _UNPAGINATED_PAGES\n        or any(",
+        "        key in _UNPAGINATED_PAGES\n"
+        "        or any(isinstance(item, str) for item in owner[key])\n"
+        "        or any(",
+        (
+            f"{ENVT}::test_an_undeclared_list_of_names_is_one_value",
+            f"{ENVT}::test_a_complete_value_list_is_never_cut_to_make_room",
+        ),
+    ),
+    Revert(
+        "reply budget control: no list is declared by name, so an unpaginated page is never cut",
+        SERVER_ENVELOPE,
+        "        key in _UNPAGINATED_PAGES\n        or any(",
+        "        False\n        or any(",
+        (
+            f"{ENVT}::test_the_largest_list_is_the_one_cut",
+            f"{ENVT}::test_an_unpaginated_oversized_list_is_cut_and_says_to_narrow_the_scope",
+            f"{ENVT}::test_an_index_list_is_a_page",
+            f"{ENVT}::test_a_list_of_index_pairs_is_a_page",
+            f"{ENVT}::test_a_list_of_name_pairs_is_a_page",
+            f"{ENVT}::test_cutting_an_unpaged_sibling_leaves_the_real_pages_resume_point_alone",
+            f"{ENVT}::test_pages_inside_an_undeclared_list_are_found_and_its_records_kept",
+        ),
+    ),
+    Revert(
+        "reply budget: created_vertex_indices is undeclared, so a retopology bridge's index page is never cut",
+        SERVER_ENVELOPE,
+        '"created_face_indices", "created_vertex_indices",\n',
+        '"created_face_indices",\n',
+        (f"{ENVT}::test_an_index_list_is_a_page",),
+    ),
+    Revert(
+        "reply budget: overlap_face_pairs is undeclared, so a mesh's overlap pairs are never cut",
+        SERVER_ENVELOPE,
+        '"initial_aabb_overlap_candidates", "overlap_face_pairs",\n',
+        '"initial_aabb_overlap_candidates",\n',
+        (f"{ENVT}::test_a_list_of_index_pairs_is_a_page",),
+    ),
+    Revert(
+        "reply budget: an assembly's overlap candidates are undeclared, so the name pairs are never cut",
+        SERVER_ENVELOPE,
+        '"duplicate_vertex_pairs", "initial_aabb_overlap_candidates", ',
+        '"duplicate_vertex_pairs", ',
+        (f"{ENVT}::test_a_list_of_name_pairs_is_a_page",),
+    ),
+    Revert(
+        "reply budget: emissive_materials is undeclared, so a lighting snapshot's material list is never cut",
+        SERVER_ENVELOPE,
+        '"drivers", "emissive_materials", ',
+        '"drivers", ',
+        (f"{ENVT}::test_cutting_an_unpaged_sibling_leaves_the_real_pages_resume_point_alone",),
+    ),
+    Revert(
+        "reply budget: a list's own <key>_truncated/_offset does not declare it, so a bake's frames are never cut",
+        SERVER_ENVELOPE,
+        '        or any(f"{key}_{name}" in owner for name in _PAGINATION_KEYS)\n        or _bare_page',
+        "        or _bare_page",
+        (
+            f"{ENVT}::test_a_page_paged_under_a_prefixed_name_is_still_marked_truncated",
+            f"{ENVT}::test_a_camera_rig_page_resumes_from_the_offset_it_was_requested_at",
+            f"{ENVT}::test_a_frame_list_is_a_page",
+        ),
+    ),
+    Revert(
+        "reply budget: the bare pagination keys declare nothing, so a tool's primary page is never cut",
+        SERVER_ENVELOPE,
+        "        or _bare_page(owner) == key\n    )\n",
+        "    )\n",
+        (f"{ENVT}::test_bare_pagination_declares_the_list_returned_count_counts",),
+    ),
+    Revert(
+        "reply budget: returned_count does not pick the page, so a primary page beside another list is never cut",
+        SERVER_ENVELOPE,
+        "        lists = [key for key in lists if len(owner[key]) == count]\n",
+        "        pass\n",
+        (f"{ENVT}::test_bare_pagination_declares_the_list_returned_count_counts",),
+    ),
+    Revert(
+        "reply budget: cutting an unpaged sibling rewrites the primary page's returned_count and next_offset",
+        SERVER_ENVELOPE,
+        "        if not prefix and _bare_page(owner) != key:\n            return None\n",
+        "",
+        (f"{ENVT}::test_cutting_an_unpaged_sibling_leaves_the_real_pages_resume_point_alone",),
+    ),
+    Revert(
+        "reply budget: the walk stops at an undeclared list, so the pages its records own are never cut",
+        SERVER_ENVELOPE,
+        "                if not _is_page(current, key):\n                    pending.extend(value)\n",
+        "                if not _is_page(current, key):\n",
+        (f"{ENVT}::test_pages_inside_an_undeclared_list_are_found_and_its_records_kept",),
+    ),
+    # --- a bone-to-frames map is a page of whole entries ---
+    Revert(
+        "reply budget: keyed_frames_by_bone is no page, so a ragdoll bake's reply stays over the budget",
+        SERVER_ENVELOPE,
+        '_ENTRY_PAGES = frozenset({"keyed_frames_by_bone"})\n',
+        "_ENTRY_PAGES = frozenset()\n",
+        (f"{ENVT}::test_a_map_of_frame_lists_is_shortened_by_whole_entries",),
+    ),
+    Revert(
+        "reply budget: a dict page is never actually shortened, so the cut leaves every entry on the wire",
+        SERVER_ENVELOPE,
+        "        return dict(islice(page.items(), count))\n",
+        "        return page\n",
+        (f"{ENVT}::test_a_map_of_frame_lists_is_shortened_by_whole_entries",),
+    ),
+    Revert(
+        "reply budget: a dict page's warning counts records, not the entries it dropped",
+        SERVER_ENVELOPE,
+        '    noun = "entries" if isinstance(page, dict) else "records"\n',
+        '    noun = "records"\n',
+        (f"{ENVT}::test_a_map_of_frame_lists_is_shortened_by_whole_entries",),
+    ),
     Revert(
         "reply budget: a page whose tool takes no offset for it is handed one to resume from",
         SERVER_ENVELOPE,

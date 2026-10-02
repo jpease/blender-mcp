@@ -45,14 +45,21 @@ is true, call again with `offset=next_offset` to continue.
 Every reply is bounded by `REPLY_BYTE_BUDGET`. A reply stays in the agent's context for the
 rest of the session, so `ok()` shortens the pages of records in `data`, longest first and on
 into the next until the encoded reply fits, marks each shortened page `truncated`, and says so
-in `warnings`. A page the tool itself pages - one carrying its own `offset` or `next_offset` -
-also gets the `next_offset` to resume from; any other page's warning says to narrow the scope,
-because an offset it invented would name a parameter the tool does not take, or page a different
-list. Identifiers are never dropped to make room: a page keeps at least one record, a payload with
-no record list to shorten is sent whole with a warning, and a reply still over the budget with
-every page down to its last record says so instead of offering an offset. Tools return what
-changed plus the identifiers to find the rest; full state is a `detail=True` request, not the
-default.
+in `warnings`. Only a declared page is ever shortened, because no content tells a page from a
+value: a list of names can be one complete value (`channels`), and a list of numbers can be a
+page (`created_vertex_indices`) or one value (a face's vertex loop, a matrix). A list is declared
+a page by pagination keys beside it - its own `<key>_truncated`/`<key>_offset`/`<key>_next_offset`,
+or the bare `truncated`/`offset`/`next_offset` of an owner whose `returned_count` counts it or
+which holds no other list - or by name, in `_UNPAGINATED_PAGES`; a dict whose entries are the
+page, one per named element, is declared in `_ENTRY_PAGES` and is shortened by entry count.
+Anything else is one value and is never cut. A page the tool itself pages - one carrying its own
+`offset` or `next_offset` - also gets the `next_offset` to resume from; any other page's warning
+says to narrow the scope, because an offset it invented would name a parameter the tool does not
+take, or page a different list. Identifiers are never dropped to make room: a page keeps at least
+one record, a payload with no record list to shorten is sent whole with a warning, and a reply
+still over the budget with every page down to its last record says so instead of offering an
+offset. Tools return what changed plus the identifiers to find the rest; full state is a
+`detail=True` request, not the default.
 
 `envelope_for` is the shared path: it lifts `changed_objects` and `changed_resources` out of an
 addon reply, bounds each at `CHANGE_LIST_LIMIT`, and calls `ok()`. A tool reaches it
@@ -72,6 +79,7 @@ the `CHANGE_LIST_LIMIT` bound and the lift of the addon's own change keys.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import islice
 from typing import Any
 
 from pydantic_core import to_json
@@ -103,18 +111,133 @@ def _wire_bytes(reply: dict) -> int:
     return len(to_json(reply, fallback=str, indent=2))
 
 
+# The pagination keys that declare a list a page: under the list's own name as a prefix
+# (`children_truncated`, `animation_next_offset`), or bare for the owner's primary page.
+_PAGINATION_KEYS = ("truncated", "offset", "next_offset")
+
+# Lists the budget may shorten though nothing beside them pages them. A name is one namespace
+# across every add-on reply, so each one here was checked against every handler reply that uses
+# it and is a page - records, names or element numbers that grow with the scene - in all of them.
+# A name that is a page in one reply and a value in another does not belong here: `frames` is a
+# rigid-body bake's up-to-10,000 keyed frames and an NLA layer's `[start, end]` interval, so the
+# bake declares its page with `frames_truncated` instead. A page missing from this set is not cut:
+# its reply goes out whole with the budget's warning, which is loud, where a value cut short would
+# be silently wrong.
+_UNPAGINATED_PAGES = frozenset(
+    {
+        # Records and names.
+        "actions", "affected_cloth_caches", "armature_modifiers", "assets", "bakes", "bodies",
+        "bone_names", "bones", "boundary_loops", "capabilities", "changed_bones", "changed_keys",
+        "colliders", "constraints", "created_duplicates", "created_objects", "data_users", "datablocks",
+        "dependencies", "details", "drivers", "emissive_materials", "entries", "fcurves", "files",
+        "findings", "framed_objects", "imported_objects", "issues", "keyframes", "keys", "layers",
+        "lights", "links", "mappings", "materials", "members", "modifiers", "names", "nodes", "objects",
+        "output_objects", "ownership", "pose_bones", "reaches", "records", "registrations",
+        "residual_unweighted_vertices", "samples", "source_objects", "strips", "vertex_groups",
+        "volume_materials", "worst", "worst_vertices",
+        # Frame numbers.
+        "evaluated_frames", "frames_sampled", "keyed_frames", "requested_frames", "sampled_frames",
+        "tested_frames",
+        # Element indices.
+        "adjacent_vertex_indices", "changed_edge_indices", "collinear_face_indices",
+        "concave_face_indices", "created_edge_indices", "created_face_indices", "created_vertex_indices",
+        "detected_candidate_edge_indices", "edge_indices", "element_indices", "explicit_edge_indices",
+        "face_indices", "failed_projection_vertex_indices", "failed_vertex_indices",
+        "flipped_face_indices", "locked_vertex_indices", "material_index_face_indices",
+        "missed_vertex_indices", "moved_vertex_indices", "new_boundary_vertex_indices",
+        "non_manifold_edge_indices", "normal_ray_miss_vertex_indices", "out_of_range_face_indices",
+        "preserved_corner_vertex_indices", "preserved_vertex_indices", "projected_vertex_indices",
+        "redistributed_vertex_indices", "removed_input_edge_indices", "removed_input_vertex_indices",
+        "source_vertex_indices", "unmatched_vertex_indices", "warning_edge_indices",
+        "warning_face_indices", "zero_area_face_indices",
+        # Pairs of elements or of objects.
+        "aabb_overlap_candidates", "direction_reversal_pair_indices", "disconnected_target_pairs",
+        "duplicate_vertex_pairs", "initial_aabb_overlap_candidates", "overlap_face_pairs",
+        "overlap_pairs", "pairs", "self_intersection_face_pairs", "unconnected_overlap_candidates",
+    }
+)  # fmt: skip
+
+# Dicts whose entries are the page: one entry per named element, each entry's value whole. Cut by
+# entry count, so every entry that stays is complete - `bake_ragdoll_to_armature` keys every bone
+# at every sampled frame, and a frame list cut short would claim keys that were never written.
+_ENTRY_PAGES = frozenset({"keyed_frames_by_bone"})
+
+
+def _bare_page(owner: dict) -> str | None:
+    """
+    Name the list the owner's bare pagination keys describe, if they name exactly one.
+
+    Bare `truncated`/`offset`/`next_offset` describe the owner's primary page, not every list beside
+    it: `list_scene_objects` returns its `objects` page beside other lists, and cutting one of those
+    as if it were the page rewrote the page's `next_offset` - a page of two handed back
+    `next_offset=234`, and the next call skipped 232 objects. `returned_count` says which list is
+    counted; without it, only an owner holding one list (not counting lists paged under their own
+    prefix) says which. An owner that leaves it ambiguous declares nothing.
+
+    Args:
+        owner: A dict from the payload.
+
+    Returns:
+        The key of the list the bare keys page, or None.
+
+    """
+    if not any(name in owner for name in _PAGINATION_KEYS):
+        return None
+    lists = [
+        key
+        for key, value in owner.items()
+        if isinstance(value, list) and not any(f"{key}_{name}" in owner for name in _PAGINATION_KEYS)
+    ]
+    count = owner.get("returned_count")
+    if isinstance(count, int):
+        lists = [key for key in lists if len(owner[key]) == count]
+    return lists[0] if len(lists) == 1 else None
+
+
+def _is_page(owner: dict, key: str) -> bool:
+    """
+    Report whether `owner[key]` is a declared page the budget may shorten, rather than one value.
+
+    No content tells the two apart, so none is consulted. Names are not a page by being names:
+    `bake_rigid_bodies_to_keyframes` reports the `channels` it keyed, and cutting
+    `["location", "rotation_quaternion"]` to its first name said rotation was never keyed. Numbers
+    are not a value by being numbers: `created_vertex_indices` grows with the mesh, while an n-gon's
+    `vertices` loop, a `matrix_world` and a `lock_rotation` of three booleans are each one value at
+    any length. So a page is what the reply declares (see the module docstring), and an undeclared
+    list is sent whole - with the budget's warning, which is loud, where a value cut short would be
+    silently wrong.
+
+    Args:
+        owner: The dict holding the value.
+        key: The key the value sits under.
+
+    Returns:
+        bool: True for a declared list page or a declared entry page.
+
+    """
+    if isinstance(owner[key], dict):
+        return key in _ENTRY_PAGES
+    return (
+        key in _UNPAGINATED_PAGES
+        or any(f"{key}_{name}" in owner for name in _PAGINATION_KEYS)
+        or _bare_page(owner) == key
+    )
+
+
 def _record_pages(data: object) -> list[tuple[dict, str]]:
     """
-    Find the lists of records in a payload that shortening could bound.
+    Find the declared pages in a payload that shortening could bound.
 
-    Descends through dicts and through list entries, because the heaviest lists are nested:
-    `list_libraries` returns one library record whose own `datablocks` list is the payload.
+    Descends through dicts and through every list's entries, because the heaviest pages are nested:
+    `list_libraries` returns one library record whose own `datablocks` list is the payload. A list
+    that is no page is walked too - it is never cut, but its records may hold pages.
 
     Args:
         data: A tool's `data` payload.
 
     Returns:
-        Each (owning dict, key) whose value is a list of two or more records, outermost first.
+        Each (owning dict, key) whose value is a page (`_is_page`) of two or more entries, outermost
+        first.
 
     """
     pages: list[tuple[dict, str]] = []
@@ -128,21 +251,36 @@ def _record_pages(data: object) -> list[tuple[dict, str]]:
             continue
         for key, value in current.items():
             if isinstance(value, list):
+                if not _is_page(current, key):
+                    pending.extend(value)
+                    continue
                 # A one-entry list is no page to shorten, but its entry may own the heavy one:
                 # `list_libraries` returns a single library record holding every linked datablock.
                 if len(value) > 1:
                     pages.append((current, key))
                 pending.extend(value)
             elif isinstance(value, dict):
+                if len(value) > 1 and _is_page(current, key):
+                    pages.append((current, key))
                 pending.append(value)
     return pages
 
 
-def _shortening_warning(key: str, kept: int, total: int, resume: str) -> str:
-    return (
-        f"{key} was shortened to {kept} of {total} records to stay within the {REPLY_BYTE_BUDGET}-byte reply "
-        f"budget; {resume}."
-    )
+def _prefix(page: list | dict, count: int) -> list | dict:
+    """
+    Keep a page's first `count` records: list items, or a dict page's entries in reply order.
+
+    Args:
+        page: A declared page.
+        count: How many records to keep.
+
+    Returns:
+        A new page of the same type holding those records.
+
+    """
+    if isinstance(page, dict):
+        return dict(islice(page.items(), count))
+    return page[:count]
 
 
 def _pagination_names(owner: dict, key: str) -> dict[str, str] | None:
@@ -155,10 +293,8 @@ def _pagination_names(owner: dict, key: str) -> dict[str, str] | None:
     pages through `children_offset`. Without both spellings the shortening would leave a reply
     saying `truncated: false` about a page it had just cut.
 
-    A list's own prefixed names win over bare ones, and bare names describe one list only: when
-    `returned_count` identifies a sibling as the page, this list is not it. Otherwise cutting an
-    unpaginated sibling rewrote the page's `next_offset` - `list_scene_objects` handed back
-    `next_offset=234` for a page of two, and the next call skipped 232 objects.
+    A list's own prefixed names win over bare ones, and bare names describe one list only - the one
+    `_bare_page` names - so cutting a sibling never rewrites the primary page's `next_offset`.
 
     Only a page its owner shows the tool can resume - one carrying its own `offset` or
     `next_offset` - gets a resume point. A bounded sub-list is marked `truncated` and nothing more:
@@ -178,32 +314,13 @@ def _pagination_names(owner: dict, key: str) -> dict[str, str] | None:
     for prefix in (f"{key}_", ""):
         if f"{prefix}truncated" not in owner:
             continue
-        if not prefix and not _bare_page_is(owner, key):
+        if not prefix and _bare_page(owner) != key:
             return None
         names = {"truncated": f"{prefix}truncated", "returned_count": f"{prefix}returned_count"}
         if f"{prefix}offset" in owner or f"{prefix}next_offset" in owner:
             names |= {"offset": f"{prefix}offset", "next_offset": f"{prefix}next_offset"}
         return names
     return None
-
-
-def _bare_page_is(owner: dict, key: str) -> bool:
-    """
-    Whether the bare pagination keys in `owner` describe `owner[key]` rather than a sibling list.
-
-    Args:
-        owner: The dict holding the page and its bare pagination keys.
-        key: The key whose value is the list of records.
-
-    Returns:
-        False only when `returned_count` matches another list's length and not this one's; a
-        payload that gives no way to tell keeps the bare keys, as it always has.
-
-    """
-    count = owner.get("returned_count")
-    if not isinstance(count, int) or len(owner[key]) == count:
-        return True
-    return not any(isinstance(value, list) and len(value) == count for name, value in owner.items() if name != key)
 
 
 # What a shortened page's warning says instead of a resume point once every page is down to its
@@ -237,9 +354,10 @@ class PageCut:
     One page of records shortened to fit the budget.
 
     Attributes:
-        key: The key whose list was cut.
+        key: The key whose page was cut.
         kept: Records left on the wire.
         total: Records the page held before the cut.
+        noun: What the page's records are called: list items are records, a dict page's are entries.
         resume: How to read the rest, in the page's own terms.
 
     """
@@ -247,7 +365,24 @@ class PageCut:
     key: str
     kept: int
     total: int
+    noun: str
     resume: str
+
+    def warning(self, resume: str | None = None) -> str:
+        """
+        Render the warning this cut adds to the reply.
+
+        Args:
+            resume: What to say about the dropped records instead of the cut's own resume hint.
+
+        Returns:
+            The warning text.
+
+        """
+        return (
+            f"{self.key} was shortened to {self.kept} of {self.total} {self.noun} to stay within the "
+            f"{REPLY_BYTE_BUDGET}-byte reply budget; {self.resume if resume is None else resume}."
+        )
 
 
 def _page_offset(owner: dict, names: dict[str, str]) -> int:
@@ -331,7 +466,7 @@ def _staged(reply: dict, cuts: Sequence[PageCut], pending: str | None = None) ->
 
     """
     warnings = [*reply["warnings"]]
-    warnings.extend(_shortening_warning(cut.key, cut.kept, cut.total, cut.resume) for cut in cuts)
+    warnings.extend(cut.warning() for cut in cuts)
     if pending is not None:
         warnings.append(pending)
     return {**reply, "warnings": warnings}
@@ -353,8 +488,25 @@ def _widest_warning(owner: dict, key: str) -> str:
         The warning text at its widest.
 
     """
-    total = len(owner[key])
-    return _shortening_warning(key, total, total, _resume_hint(owner, key, total))
+    return _planned_cut(owner, key, len(owner[key])).warning()
+
+
+def _planned_cut(owner: dict, key: str, kept: int) -> PageCut:
+    """
+    Describe cutting the page to its first `kept` records, without cutting it.
+
+    Args:
+        owner: The dict holding the page.
+        key: The key whose value is the page.
+        kept: How many records the cut keeps.
+
+    Returns:
+        The cut, with the resume hint the page's own pagination gives it.
+
+    """
+    page = owner[key]
+    noun = "entries" if isinstance(page, dict) else "records"
+    return PageCut(key=key, kept=kept, total=len(page), noun=noun, resume=_resume_hint(owner, key, kept))
 
 
 def _shortening_helps(reply: dict, owner: dict, key: str, current_bytes: int) -> bool:
@@ -376,7 +528,7 @@ def _shortening_helps(reply: dict, owner: dict, key: str, current_bytes: int) ->
 
     """
     records = owner[key]
-    owner[key] = records[:1]
+    owner[key] = _prefix(records, 1)
     try:
         return _wire_bytes(reply) < current_bytes
     finally:
@@ -416,7 +568,7 @@ def _largest_fitting_prefix(reply: dict, owner: dict, key: str) -> int:
         low, high = 1, len(records)
         while low < high:
             middle = (low + high + 1) // 2
-            owner[key] = records[:middle]
+            owner[key] = _prefix(records, middle)
             if _wire_bytes(reply) <= REPLY_BYTE_BUDGET:
                 low = middle
             else:
@@ -442,9 +594,10 @@ def _cut_page(owner: dict, key: str, kept: int) -> PageCut:
         What this cut did, for the warning the caller renders once every page has been sized.
 
     """
-    cut = PageCut(key=key, kept=kept, total=len(owner[key]), resume=_resume_hint(owner, key, kept))
+    page = owner[key]
+    cut = _planned_cut(owner, key, kept)
     owner.update(_pagination_updates(owner, key, kept))
-    owner[key] = owner[key][:kept]
+    owner[key] = _prefix(page, kept)
     return cut
 
 
@@ -489,9 +642,7 @@ def _fit_budget(reply: dict) -> None:
     # do, once even that is over the budget, is hand back an offset, which would send the agent
     # round a loop of replies every one of which is over the budget.
     resumable = _wire_bytes(_staged(reply, cuts)) <= REPLY_BYTE_BUDGET
-    reply["warnings"].extend(
-        _shortening_warning(cut.key, cut.kept, cut.total, cut.resume if resumable else _NO_RESUME) for cut in cuts
-    )
+    reply["warnings"].extend(cut.warning(cut.resume if resumable else _NO_RESUME) for cut in cuts)
 
 
 def ok(

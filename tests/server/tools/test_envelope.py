@@ -234,11 +234,12 @@ def test_cutting_an_unpaged_sibling_leaves_the_real_pages_resume_point_alone() -
 
     `list_scene_objects` returned a two-record `objects` page beside every selected object's name;
     cutting that list rewrote the page's `next_offset` to 234, and paging on skipped 232 objects.
+    `inspect_lighting_setup` has the same shape: a `lights` page beside every emissive material.
     """
-    names = [f"Set_part_{index:04d}_geo" for index in range(_OVER_BUDGET * 2)]
+    names = [f"Set_part_{index:04d}_mat" for index in range(_OVER_BUDGET * 2)]
     data = {
-        "objects": [{"name": "A"}, {"name": "B"}],
-        "selected_objects": names,
+        "lights": [{"name": "Key"}, {"name": "Fill"}],
+        "emissive_materials": names,
         "offset": _RESUMED_OFFSET,
         "limit": 2,
         "returned_count": 2,
@@ -249,22 +250,21 @@ def test_cutting_an_unpaged_sibling_leaves_the_real_pages_resume_point_alone() -
     result = ok(data)
 
     assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
-    assert len(result["data"]["selected_objects"]) < len(names)
+    assert len(result["data"]["emissive_materials"]) < len(names)
     assert result["data"]["returned_count"] == 2
     assert result["data"]["next_offset"] == _RESUMED_OFFSET + 2
 
 
 def test_the_largest_list_is_the_one_cut() -> None:
-    """Cutting a short sibling list would not bring the reply under budget."""
-    data = {
-        "lights": {"items": _records(_OVER_BUDGET)},
-        "domains_checked": ["lighting", "cameras", "geometry"],
-    }
+    """Cutting a short sibling page would not bring the reply under budget, so it is left whole."""
+    findings = [{"code": "NO_CAMERA"}, {"code": "NO_WORLD"}, {"code": "NO_LIGHTS"}]
+    data = {"lights": _records(_OVER_BUDGET), "findings": list(findings)}
 
     result = ok(data)
 
     assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
-    assert result["data"]["domains_checked"] == ["lighting", "cameras", "geometry"]
+    assert 0 < len(result["data"]["lights"]) < _OVER_BUDGET
+    assert result["data"]["findings"] == findings
 
 
 def test_a_second_page_is_shortened_when_cutting_the_first_one_is_not_enough() -> None:
@@ -393,16 +393,18 @@ def test_a_page_inside_a_dropped_record_is_not_reported_as_shortened() -> None:
     would name a total the client never had a single record of.
     """
     data = {
-        "groups": [
-            {"name": "kept", "items": _records(_OVER_BUDGET // 2)},
-            {"name": "dropped", "items": _records(_OVER_BUDGET)},
-        ]
+        "libraries": [
+            {"name": "kept", "records": _records(_OVER_BUDGET // 2)},
+            {"name": "dropped", "records": _records(_OVER_BUDGET)},
+        ],
+        "offset": 0,
+        "truncated": False,
     }
 
     result = ok(data)
 
     assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
-    assert [group["name"] for group in result["data"]["groups"]] == ["kept"]
+    assert [library["name"] for library in result["data"]["libraries"]] == ["kept"]
     assert not any(f"of {_OVER_BUDGET} records" in warning for warning in result["warnings"])
 
 
@@ -458,6 +460,194 @@ def test_the_budget_leaves_a_flat_oversized_reply_alone() -> None:
 
     assert len(result["data"]["note"]) == REPLY_BYTE_BUDGET * 2
     assert any("budget" in warning for warning in result["warnings"])
+
+
+def test_a_vector_or_matrix_is_never_cut_as_if_it_were_a_page() -> None:
+    """
+    `get_character_rig_info` for one bone: once its record lists are spent, the matrix is all that is left.
+
+    Cut to its first row, `matrix_world` no longer holds the bone head's world position, `head` cut
+    to one float is not a point, and `lock_rotation` cut to one flag says nothing about Y and Z; the
+    reply has to arrive whole and over budget, with the warning.
+    """
+    matrix = [[1.0, 0.0, 0.0, 0.25], [0.0, 1.0, 0.0, -0.5], [0.0, 0.0, 1.0, 1.75], [0.0, 0.0, 0.0, 1.0]]
+    bone = {
+        "name": "head",
+        "head": [0.25, -0.5, 1.75],
+        "matrix_world": matrix,
+        "lock_rotation": [True, False, True],
+        "note": "z" * REPLY_BYTE_BUDGET,
+    }
+
+    result = ok({"pose_bones": [bone]})
+
+    sent = result["data"]["pose_bones"][0]
+    assert sent["matrix_world"] == matrix
+    assert sent["head"] == [0.25, -0.5, 1.75]
+    assert sent["lock_rotation"] == [True, False, True]
+    assert any("no page of records" in warning for warning in result["warnings"])
+
+
+def test_a_numeric_value_is_never_cut_however_long_it_is() -> None:
+    """
+    Length does not tell a value from a page: an n-gon's vertex loop is one value at any size.
+
+    `get_mesh_data` returns a face's `vertices` whole; cut to a prefix it names a different face,
+    one the mesh does not have.
+    """
+    loop = list(range(REPLY_BYTE_BUDGET // 2))
+
+    result = ok({"faces": [{"index": 0, "vertices": loop, "normal": [0.0, 0.0, 1.0]}]})
+
+    assert result["data"]["faces"][0]["vertices"] == loop
+    assert any("no page of records" in warning for warning in result["warnings"])
+
+
+def test_a_frame_list_is_a_page() -> None:
+    """A rigid-body bake keys up to 10,000 frames, and its `frames_truncated` declares the list a page."""
+    result = ok({"frames": list(range(REPLY_BYTE_BUDGET)), "frames_truncated": False})
+
+    assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
+    assert len(result["data"]["frames"]) < REPLY_BYTE_BUDGET
+    assert result["data"]["frames_truncated"] is True
+    assert any("frames was shortened" in warning for warning in result["warnings"])
+
+
+def test_an_undeclared_frames_list_is_one_value() -> None:
+    """
+    `frames` is a page in a bake and an NLA layer's `[start, end]` interval elsewhere.
+
+    The key alone cannot say which, so only a list its reply declares is cut; the interval cut to
+    its start would claim a layer that never ends.
+    """
+    result = ok({"strip": "Walk", "frames": [1.0, 250.0], "note": "z" * REPLY_BYTE_BUDGET})
+
+    assert result["data"]["frames"] == [1.0, 250.0]
+    assert any("no page of records" in warning for warning in result["warnings"])
+
+
+def test_an_undeclared_list_of_names_is_one_value() -> None:
+    """Names are no page by being names: an undeclared list goes out whole, over the budget, with the warning."""
+    names = [f"Piece_{index:04d}" for index in range(_OVER_BUDGET * 2)]
+
+    result = ok({"source_object_names": names})
+
+    assert result["data"]["source_object_names"] == names
+    assert any("no page of records" in warning for warning in result["warnings"])
+
+
+def test_a_complete_value_list_is_never_cut_to_make_room() -> None:
+    """
+    `bake_rigid_bodies_to_keyframes` reports the `channels` it keyed; a list of names is no page.
+
+    With nothing the budget could shorten, the walk used to go on into every list of names, and
+    `["location", "rotation_quaternion"]` cut to `["location"]` said rotation was never keyed.
+    """
+    channels = ["location", "rotation_quaternion"]
+
+    result = ok({"channels": list(channels), "note": "z" * REPLY_BYTE_BUDGET})
+
+    assert result["data"]["channels"] == channels
+    assert any("no page of records" in warning for warning in result["warnings"])
+
+
+def test_a_map_of_frame_lists_is_shortened_by_whole_entries() -> None:
+    """
+    `bake_ragdoll_to_armature` keys every bone at every sampled frame and reports them per bone.
+
+    The map used to be no page at all, so the walk cut the small `channels` beside it instead and
+    the reply stayed over the budget. It is cut by entry count: every bone that stays keeps its
+    whole frame list, because a list cut short would claim keys that were never written, and the
+    warning counts entries and says to narrow the scope.
+    """
+    frames = list(range(1, 60))
+    keyed = {f"b{index:03d}": list(frames) for index in range(60)}
+    channels = ["location", "rotation_quaternion"]
+
+    result = ok({"channels": list(channels), "keyed_frames_by_bone": keyed})
+    sent = result["data"]["keyed_frames_by_bone"]
+
+    assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
+    assert result["data"]["channels"] == channels
+    assert 0 < len(sent) < len(keyed)
+    assert list(sent) == list(keyed)[: len(sent)]
+    assert all(value == frames for value in sent.values())
+    assert [warning for warning in result["warnings"] if "was shortened" in warning] == [
+        f"keyed_frames_by_bone was shortened to {len(sent)} of 60 entries to stay within the "
+        f"{REPLY_BYTE_BUDGET}-byte reply budget; rerun with a narrower scope to see the rest."
+    ]
+
+
+def test_bare_pagination_declares_the_list_returned_count_counts() -> None:
+    """
+    A tool's primary page is declared by the bare keys beside it, whatever it is called.
+
+    `returned_count` says which list they page when the owner holds another list as well; the
+    other list is a value, and stays whole.
+    """
+    data = {
+        "libraries": _records(_OVER_BUDGET),
+        "domains_checked": ["linking", "overrides"],
+        "offset": 0,
+        "returned_count": _OVER_BUDGET,
+        "truncated": False,
+        "next_offset": None,
+    }
+
+    result = ok(data)
+    payload = result["data"]
+
+    assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
+    assert 0 < len(payload["libraries"]) < _OVER_BUDGET
+    assert (payload["truncated"], payload["next_offset"]) == (True, len(payload["libraries"]))
+    assert payload["domains_checked"] == ["linking", "overrides"]
+
+
+def test_pages_inside_an_undeclared_list_are_found_and_its_records_kept() -> None:
+    """An undeclared list of records is never cut, but the pages its records own still are."""
+    data = {
+        "domains": [
+            {"name": "Liquid", "findings": _records(_OVER_BUDGET // 2)},
+            {"name": "Smoke", "findings": _records(_OVER_BUDGET // 2)},
+        ]
+    }
+
+    result = ok(data)
+    domains = result["data"]["domains"]
+
+    assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
+    assert [domain["name"] for domain in domains] == ["Liquid", "Smoke"]
+    assert len(domains[0]["findings"]) + len(domains[1]["findings"]) < _OVER_BUDGET
+
+
+def test_an_index_list_is_a_page() -> None:
+    """A retopology bridge's `created_vertex_indices` grows with the mesh; it lists elements, it is no value."""
+    result = ok({"created_vertex_indices": list(range(REPLY_BYTE_BUDGET))})
+
+    assert len(result["data"]["created_vertex_indices"]) < REPLY_BYTE_BUDGET
+    assert any("created_vertex_indices was shortened" in warning for warning in result["warnings"])
+
+
+def test_a_list_of_index_pairs_is_a_page() -> None:
+    """`overlap_face_pairs` is one record per overlapping pair of faces, however many the mesh has."""
+    pairs = [[index, index + 1] for index in range(REPLY_BYTE_BUDGET)]
+
+    result = ok({"overlap_face_pairs": pairs})
+
+    assert len(result["data"]["overlap_face_pairs"]) < len(pairs)
+    assert any("overlap_face_pairs was shortened" in warning for warning in result["warnings"])
+
+
+def test_a_list_of_name_pairs_is_a_page() -> None:
+    """A rigid-body assembly's `initial_aabb_overlap_candidates` names each overlapping pair of pieces."""
+    pairs = [[f"Piece_{index:04d}", f"Piece_{index + 1:04d}"] for index in range(_OVER_BUDGET)]
+
+    result = ok({"initial_aabb_overlap_candidates": pairs})
+    sent = result["data"]["initial_aabb_overlap_candidates"]
+
+    assert _wire_bytes(result) <= REPLY_BYTE_BUDGET
+    assert 0 < len(sent) < len(pairs)
+    assert all(len(pair) == 2 for pair in sent)
 
 
 def test_an_addon_change_list_replaces_the_tools_own_guess() -> None:
