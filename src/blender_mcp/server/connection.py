@@ -68,8 +68,10 @@ class BlenderTransportError(Exception):
 
     Timeout, lost connection, undecodable response, a frame answering another
     request, or any other socket fault. Every path that raises it has already
-    dropped the socket, so the next command reconnects; the tool layer says so
-    instead of blaming a request Blender may never have seen.
+    dropped the socket, so the next command reconnects. Unless it is a
+    `BlenderCommandNotSentError`, the whole command was written first, so Blender
+    may have run it, may still be running it, or may never have read it: the tool
+    layer says so instead of recommending a retry that could repeat the work.
     """
 
     # Read by `addon_manager._is_transport_failure` across a boundary it cannot
@@ -90,6 +92,17 @@ class BlenderPeerClosedError(BlenderTransportError):
     a side-effect-free command safe to resend once; see
     `_SIDE_EFFECT_FREE_COMMANDS`. Bytes arriving and then stopping is not this -
     that is a command Blender may well have run, and stays a plain transport error.
+    """
+
+
+class BlenderCommandNotSentError(BlenderTransportError):
+    """
+    Raised when the command failed before its whole frame was written to the socket.
+
+    The add-on dispatches a frame only once its closing newline arrives, and that
+    newline is the last byte written, so a failure while encoding or sending means
+    Blender never read a complete command and cannot have run it. This is the one
+    transport fault after which retrying the same request is known to be safe.
     """
 
 
@@ -401,6 +414,8 @@ class BlenderConnection:
             BlenderOperationError: If Blender answered that the operation failed.
             BlenderTransportError: If the round trip never completed. Every path
                 through it invalidates the socket, so the next command reconnects.
+                A failure before the whole frame was written raises
+                `BlenderCommandNotSentError`; any later one means the outcome is unknown.
 
         """
         try:
@@ -408,8 +423,14 @@ class BlenderConnection:
             logger.info(f"Sending command: {command_type} (request {command_id}, {len(command['params'])} params)")
 
             # Send the command. Newline-terminated - see receive_full_response
-            # for why this protocol needs explicit framing.
-            self.sock.sendall(json.dumps(command).encode("utf-8") + b"\n")
+            # for why this protocol needs explicit framing. A failure here is typed
+            # apart from every later one: the newline is the last byte written, so
+            # Blender never read a complete frame and cannot have run the command.
+            try:
+                self.sock.sendall(json.dumps(command).encode("utf-8") + b"\n")
+            except Exception as exc:
+                logger.error(f"Could not send {command_type}: {exc!s}")
+                raise BlenderCommandNotSentError(f"Could not send the command to Blender: {exc!s}") from exc
             logger.info("Command sent, waiting for response...")
 
             # Set a timeout for receiving - use the same timeout as in receive_full_response

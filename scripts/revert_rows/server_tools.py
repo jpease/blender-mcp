@@ -4,8 +4,8 @@ Rows guarding the server-side tools and the per-reply byte budget.
 The file-lifecycle and linking tools, the one dispatch every tool shares, the catalog, and
 the budget that bounds every reply.
 
-Label prefixes: `server tools:`, `catalog compaction:`, `animation:`, `pose:`, `pose control:`,
-`reply budget:`.
+Label prefixes: `server tools:`, `transport:`, `transport control:`, `catalog compaction:`,
+`animation:`, `pose:`, `pose control:`, `reply budget:`.
 """
 
 from .common import (
@@ -18,6 +18,7 @@ from .common import (
     POSET,
     SERVER_ANIMATION_TOOL,
     SERVER_BUNDLES,
+    SERVER_CONNECTION,
     SERVER_DISPATCH,
     SERVER_DOCUMENTATION,
     SERVER_ENVELOPE,
@@ -310,12 +311,46 @@ ROWS: list[Revert] = [
         '        raise ToolError(f"{exc} {_RETRY_HINT}") from exc\n',
         "        raise ToolError(str(exc)) from exc\n",
         (
-            f"{DISPT}::test_a_transport_failure_says_the_connection_was_dropped_and_is_worth_a_retry",
+            f"{DISPT}::test_a_command_that_never_left_the_socket_is_worth_one_retry",
             *(
-                f"{DISPT}::test_a_tool_keeps_the_retry_hint_on_a_dropped_connection[{tool}]"
+                f"{DISPT}::test_a_tool_keeps_the_retry_hint_when_the_command_was_never_sent[{tool}]"
                 for tool in _WRAPPER_FREE_TOOLS
             ),
         ),
+    ),
+    Revert(
+        # The defect a studio integration review found: a timeout after a long bake was sent told
+        # the agent to retry once, which runs the bake - or creates the objects, or inserts the
+        # INSERT_ONLY keys - a second time.
+        "server tools: a command that was already sent is told to retry once again",
+        SERVER_DISPATCH,
+        '        raise ToolError(f"{exc} {_OUTCOME_UNKNOWN_HINT}") from exc\n',
+        '        raise ToolError(f"{exc} {_RETRY_HINT}") from exc\n',
+        (
+            *(
+                f"{DISPT}::test_a_command_sent_but_never_answered_is_inspected_before_any_retry[{case}]"
+                for case in ("timeout", "reset", "closed-without-a-byte", "unreadable-reply")
+            ),
+            *(
+                f"{DISPT}::test_a_tool_warns_against_a_blind_retry_once_the_command_was_sent[{tool}]"
+                for tool in _WRAPPER_FREE_TOOLS
+            ),
+        ),
+    ),
+    Revert(
+        "transport: a send that failed before its newline is no longer typed apart",
+        SERVER_CONNECTION,
+        '                raise BlenderCommandNotSentError(f"Could not send the command to Blender: {exc!s}") from exc',
+        '                raise BlenderTransportError(f"Could not send the command to Blender: {exc!s}") from exc',
+        (f"{DISPT}::test_a_command_that_never_left_the_socket_is_worth_one_retry",),
+    ),
+    Revert(
+        # The opposite direction: a connection lost while waiting for the reply is claimed unsent.
+        "transport control: a connection lost after the send is typed as never sent",
+        SERVER_CONNECTION,
+        '            raise BlenderTransportError(f"Connection to Blender lost: {e!s}") from e',
+        '            raise BlenderCommandNotSentError(f"Connection to Blender lost: {e!s}") from e',
+        (f"{DISPT}::test_a_command_sent_but_never_answered_is_inspected_before_any_retry[reset]",),
     ),
     Revert(
         "server tools: the shared dispatch relabels every other failure as its own again",
@@ -323,12 +358,12 @@ ROWS: list[Revert] = [
         (
             "    except BlenderTransportError as exc:\n"
             '        logger.error("Transport failure running %s: %s", command, exc)\n'
-            '        raise ToolError(f"{exc} {_RETRY_HINT}") from exc\n'
+            '        raise ToolError(f"{exc} {_OUTCOME_UNKNOWN_HINT}") from exc\n'
         ),
         (
             "    except BlenderTransportError as exc:\n"
             '        logger.error("Transport failure running %s: %s", command, exc)\n'
-            '        raise ToolError(f"{exc} {_RETRY_HINT}") from exc\n'
+            '        raise ToolError(f"{exc} {_OUTCOME_UNKNOWN_HINT}") from exc\n'
             "    except Exception as exc:\n"
             '        raise ToolError(f"Error running {command}: {exc}") from exc\n'
         ),

@@ -16,8 +16,11 @@ function. There is no per-package hook.
 Blender's two failure modes stay apart all the way to the client. A `BlenderOperationError` means
 the addon read the request and refused it, so its message is reported verbatim: it already names
 the bone, object or argument at fault. A `BlenderTransportError` means the command was never
-answered, so the message says the connection was dropped and that retrying reconnects. Both reach
-the MCP client as `ToolError`; the distinction is for the prose, not for the wire.
+answered, and the prose depends on when the connection failed. Before the whole command was
+written (`BlenderCommandNotSentError`) Blender cannot have run it, so the message says retrying
+reconnects; after, Blender may have run it, so the message says to inspect the scene before any
+retry. All of these reach the MCP client as `ToolError`; the distinction is for the prose, not
+for the wire.
 """
 
 import asyncio
@@ -28,16 +31,29 @@ from typing import Any
 
 from mcp.server.fastmcp.exceptions import ToolError
 
-from ..connection import BlenderOperationError, BlenderTransportError, get_blender_connection
+from ..connection import (
+    BlenderCommandNotSentError,
+    BlenderOperationError,
+    BlenderTransportError,
+    get_blender_connection,
+)
 from .envelope import envelope_for
 
 logger = logging.getLogger("BlenderMCPServer")
 
-# Said after a transport failure's own message. The socket is already dropped by the time the
-# error arrives, so the next command reconnects, and a command that was never answered is worth
+# Said after a transport failure that happened before the whole command was written. The socket
+# is already dropped, so the next command reconnects, and a command Blender never read is worth
 # one retry before the request itself is blamed.
 _RETRY_HINT = (
     "The connection to Blender was dropped and the next command reconnects, so retry once before changing the request."
+)
+# Said after a transport failure once the whole command was written. Blender runs commands on its
+# main thread and may still be in a long bake, render or import, or may have finished and lost only
+# the reply; a blind retry of a non-idempotent command would create objects or insert keys twice.
+_OUTCOME_UNKNOWN_HINT = (
+    "The command was sent before the connection failed, so Blender may have run it, may still be running it, "
+    "or may never have read it: inspect the scene for its effect before retrying, since a blind retry can do "
+    "the work twice. The next command reconnects."
 )
 
 
@@ -64,9 +80,12 @@ def send_command(command: str, params: dict[str, Any] | None = None) -> dict[str
     except BlenderOperationError as exc:
         logger.error("Blender refused %s: %s", command, exc)
         raise ToolError(str(exc)) from exc
+    except BlenderCommandNotSentError as exc:
+        logger.error("Transport failure before sending %s: %s", command, exc)
+        raise ToolError(f"{exc} {_RETRY_HINT}") from exc
     except BlenderTransportError as exc:
         logger.error("Transport failure running %s: %s", command, exc)
-        raise ToolError(f"{exc} {_RETRY_HINT}") from exc
+        raise ToolError(f"{exc} {_OUTCOME_UNKNOWN_HINT}") from exc
 
 
 async def send_blender_command(command: str, params: dict[str, Any] | None = None) -> dict[str, Any]:

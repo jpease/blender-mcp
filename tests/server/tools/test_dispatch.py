@@ -12,7 +12,13 @@ import pytest
 
 from mcp.server.fastmcp.exceptions import ToolError
 
-from blender_mcp.server.connection import BlenderOperationError, BlenderTransportError
+from blender_mcp.server import connection as connection_module
+from blender_mcp.server.connection import (
+    BlenderCommandNotSentError,
+    BlenderConnection,
+    BlenderOperationError,
+    BlenderTransportError,
+)
 from blender_mcp.server.tools import _dispatch, core, mesh, model, nd, viewport
 
 
@@ -31,6 +37,43 @@ class _Connection:
         if self._error is not None:
             raise self._error
         return self._reply
+
+
+class _Socket:
+    """
+    A socket that fails where the test says: while sending, or after the frame was written.
+
+    `recv` hands out its scripted replies in order; an exception among them is raised instead.
+    """
+
+    def __init__(self, *, send_error=None, replies=()) -> None:
+        self.sent = []
+        self._send_error = send_error
+        self._replies = list(replies)
+
+    def sendall(self, data) -> None:
+        if self._send_error is not None:
+            raise self._send_error
+        self.sent.append(data)
+
+    def settimeout(self, _value) -> None:
+        pass
+
+    def recv(self, _size):
+        reply = self._replies.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+
+def _install_socket(monkeypatch, sock):
+    """Route dispatch through a real `BlenderConnection` over `sock`, with no handshake gating it."""
+    monkeypatch.setattr(connection_module, "_addon_handshake", None)
+    monkeypatch.setattr(connection_module, "_session_marker_stale", threading.Event())
+    blender = BlenderConnection(host="localhost", port=0)
+    blender.sock = sock
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: blender)
+    return blender
 
 
 def _install(monkeypatch, connection):
@@ -73,15 +116,48 @@ def test_an_operation_failure_reaches_the_client_as_blenders_own_message(monkeyp
     assert str(failure.value) == "Object 'Cube' has no cloth modifier"
 
 
-def test_a_transport_failure_says_the_connection_was_dropped_and_is_worth_a_retry(monkeypatch) -> None:
-    _install(monkeypatch, _Connection(error=BlenderTransportError("Connection to Blender lost: [Errno 32]")))
+def test_a_command_that_never_left_the_socket_is_worth_one_retry(monkeypatch) -> None:
+    """The closing newline is the last byte written, so a failed send never handed Blender a command."""
+    sock = _Socket(send_error=BrokenPipeError(32, "Broken pipe"))
+    _install_socket(monkeypatch, sock)
 
     with pytest.raises(ToolError) as failure:
-        asyncio.run(_dispatch.call_blender("configure_cloth", {}))
+        asyncio.run(_dispatch.call_blender("create_primitive_object", {"primitive_type": "CUBE"}))
 
     message = str(failure.value)
-    assert message.startswith("Connection to Blender lost: [Errno 32]")
+    assert "Broken pipe" in message
     assert "retry once" in message
+    assert sock.sent == []
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        TimeoutError("timed out"),
+        ConnectionResetError(54, "Connection reset by peer"),
+        b"",
+        b"not json\n",
+    ],
+    ids=["timeout", "reset", "closed-without-a-byte", "unreadable-reply"],
+)
+def test_a_command_sent_but_never_answered_is_inspected_before_any_retry(monkeypatch, reply) -> None:
+    """
+    Once the frame is written Blender may run it, finish it, or still be running it.
+
+    A blind retry of `create_primitive_object` there makes a second cube; of an `INSERT_ONLY`
+    keyframe call, a refusal for the keys the first one wrote.
+    """
+    sock = _Socket(replies=[reply])
+    _install_socket(monkeypatch, sock)
+
+    with pytest.raises(ToolError) as failure:
+        asyncio.run(_dispatch.call_blender("create_primitive_object", {"primitive_type": "CUBE"}))
+
+    message = str(failure.value)
+    assert len(sock.sent) == 1, "the command must have been written for this case to mean anything"
+    assert "retry once" not in message
+    assert "may have run it" in message
+    assert "before retrying" in message
 
 
 def test_a_failure_the_taxonomy_does_not_claim_is_left_alone(monkeypatch) -> None:
@@ -121,11 +197,22 @@ def test_a_tool_reports_blenders_refusal_as_blender_worded_it(stub_blender_conne
 
 
 @pytest.mark.parametrize("call", _TOOL_CALLS.values(), ids=_TOOL_CALLS.keys())
-def test_a_tool_keeps_the_retry_hint_on_a_dropped_connection(stub_blender_connection, call) -> None:
-    lost = BlenderTransportError("Connection to Blender lost: [Errno 32]")
+def test_a_tool_keeps_the_retry_hint_when_the_command_was_never_sent(stub_blender_connection, call) -> None:
+    unsent = BlenderCommandNotSentError("Could not send the command to Blender: [Errno 32] Broken pipe")
+    stub_blender_connection(error=unsent)
+
+    with pytest.raises(ToolError) as failure:
+        asyncio.run(call())
+
+    assert str(failure.value) == f"{unsent} {_dispatch._RETRY_HINT}"
+
+
+@pytest.mark.parametrize("call", _TOOL_CALLS.values(), ids=_TOOL_CALLS.keys())
+def test_a_tool_warns_against_a_blind_retry_once_the_command_was_sent(stub_blender_connection, call) -> None:
+    lost = BlenderTransportError("Connection to Blender lost: [Errno 54] Connection reset by peer")
     stub_blender_connection(error=lost)
 
     with pytest.raises(ToolError) as failure:
         asyncio.run(call())
 
-    assert str(failure.value) == f"{lost} {_dispatch._RETRY_HINT}"
+    assert str(failure.value) == f"{lost} {_dispatch._OUTCOME_UNKNOWN_HINT}"
