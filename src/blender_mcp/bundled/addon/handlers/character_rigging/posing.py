@@ -1026,9 +1026,11 @@ def _write_pose_keys(action, prepared, frame, keying_policy, *, quaternion_conti
                 with contextlib.suppress(TypeError):
                     pose_bone.keyframe_delete(data_path=path, frame=frame)
             if keying_policy != "REMOVE":
-                # An Euler triple is only re-spelled when derived: a caller's own Euler may be a
-                # deliberate multi-turn spin, which its nearest equivalent would undo.
-                derived = "aim_at" in spec and path in _ROTATION_CHANNEL_WIDTH
+                # An Euler triple is only re-spelled when derived - from an aim, or from a matrix
+                # (every keyframe_bone_reach key is one), whose decomposition wraps to +-180
+                # whatever the previous key holds. A caller's own Euler may be a deliberate
+                # multi-turn spin, which its nearest equivalent would undo.
+                derived = ("aim_at" in spec or "matrix" in spec) and path in _ROTATION_CHANNEL_WIDTH
                 if derived or (quaternion_continuity and path == "rotation_quaternion"):
                     _match_previous_rotation(action, pose_bone, path, frame)
                 if not pose_bone.keyframe_insert(data_path=path, frame=frame, group=pose_bone.name):

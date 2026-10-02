@@ -14,6 +14,7 @@ Run with::
 # Blender runtime types are dynamic in this executable harness.
 
 import importlib
+import itertools
 import json
 import math
 import shutil
@@ -24,7 +25,7 @@ from pathlib import Path
 
 import bpy
 
-from mathutils import Vector
+from mathutils import Euler, Matrix, Vector
 
 sys.path.append(str(Path(__file__).resolve().parent))
 from smoke_addon import load_addon
@@ -842,6 +843,129 @@ for action_name, continuity in (("SMOKE_quat_short", True), ("SMOKE_quat_raw", F
 batch_rig.animation_data.action = bpy.data.actions["SMOKE_batch"]
 for action_name in ("SMOKE_quat_short", "SMOKE_quat_raw"):
     bpy.data.actions.remove(bpy.data.actions[action_name])
+bpy.context.scene.frame_set(playhead_before)
+
+# --- 10c. A matrix-derived Euler key takes the short way; a caller's own Euler is kept -------
+#
+# A matrix entry - and every keyframe_bone_reach key, which is one - reaches an Euler channel
+# through the pose-bone matrix setter, which decomposes onto +-180 degrees whatever the previous
+# key holds. A turn passing 180 between keys (170 -> 190 -> 200 here) was keyed 170, -170, -160,
+# and the curve from frame 1 to 10 swung back through 0 instead of across 180.
+
+SPIN_TURNS = ((1.0, 170.0), (10.0, 190.0), (20.0, 200.0))
+SPIN_MIDWAY = 5.5
+spin_rig = build_rig("SpinRig", (0.0, 0.0, 0.0), 0.0)
+spin_rig.pose.bones["spine"].rotation_mode = "XYZ"
+
+
+def x_turn(degrees):
+    """Build a turn about the spine's local X, which at rest is also the rig's X."""
+    return Matrix.Rotation(math.radians(degrees), 4, "X")
+
+
+def spine_euler_curves(action_name):
+    curves = {}
+    for curve in action_fcurves(bpy.data.actions[action_name]):
+        if curve.data_path == 'pose.bones["spine"].rotation_euler':
+            curves[curve.array_index] = curve
+    assert sorted(curves) == [0, 1, 2], f"{action_name} keyed {sorted(curves)} Euler components"
+    return [curves[index] for index in range(3)]
+
+
+def spine_euler_keys(action_name):
+    keyed: dict[float, list[float]] = {}
+    for index, curve in enumerate(spine_euler_curves(action_name)):
+        for point in curve.keyframe_points:
+            keyed.setdefault(point.co[0], [0.0] * 3)[index] = point.co[1]
+    return keyed
+
+
+def check_euler_keys_take_the_short_way(action_name, pose_tolerance):
+    keyed = spine_euler_keys(action_name)
+    assert sorted(keyed) == [frame for frame, _degrees in SPIN_TURNS], f"{action_name} keyed frames {sorted(keyed)}"
+    spelled = {frame: [round(math.degrees(value), 3) for value in keyed[frame]] for frame in sorted(keyed)}
+    print(f"{action_name}: Euler keys (deg) {spelled}")
+    for frame, degrees in SPIN_TURNS:
+        # Re-spelling changes the numbers, never the orientation each key holds.
+        keyed_matrix, asked_matrix = Euler(keyed[frame], "XYZ").to_matrix(), x_turn(degrees).to_3x3()
+        error = max(abs(keyed_matrix[row][col] - asked_matrix[row][col]) for row in range(3) for col in range(3))
+        assert error < pose_tolerance, f"{action_name} frame {frame} keyed {spelled[frame]}, not {degrees} about X"
+    for (left, _), (right, _) in itertools.pairwise(SPIN_TURNS):
+        jump = abs(keyed[right][0] - keyed[left][0])
+        assert jump < math.pi, f"{action_name}: X jumped {math.degrees(jump):.1f} deg from frame {left} to {right}"
+    # Halfway between 170 and 190 lies on the arc across 180, not back through 0.
+    midway = math.degrees(spine_euler_curves(action_name)[0].evaluate(SPIN_MIDWAY)) % 360.0
+    print(f"{action_name}: frame {SPIN_MIDWAY} turned {midway:.3f} deg about X")
+    assert 170.0 <= midway <= 190.0, f"{action_name} swung the long way: {midway} deg at frame {SPIN_MIDWAY}"
+
+
+def check_matrix_euler_keys_take_the_short_way():
+    handler.keyframe_character_pose(
+        spin_rig.name,
+        "SMOKE_spin_matrix",
+        keys=[
+            {"frame": frame, "poses": [{"bone_name": "spine", "matrix": [list(row) for row in x_turn(degrees)]}]}
+            for frame, degrees in SPIN_TURNS
+        ],
+        action_policy="CREATE",
+        confirm_displace_action=True,
+    )
+    check_euler_keys_take_the_short_way("SMOKE_spin_matrix", 1e-5)
+
+
+def check_reach_euler_keys_take_the_short_way():
+    rest_pose(spin_rig)
+    spine_length = spin_rig.data.bones["spine"].length
+    reply = handler.keyframe_bone_reach(
+        spin_rig.name,
+        "SMOKE_spin_reach",
+        [
+            {
+                "tip_bone": "spine",
+                "chain_length": 1,
+                # Square to the plane the tail sweeps, so the solve never twists the bone.
+                "pole_target_point": [1.0, 0.0, 0.0],
+                "keys": [
+                    {"frame": frame, "target_point": list(x_turn(degrees) @ Vector((0.0, 0.0, spine_length)))}
+                    for frame, degrees in SPIN_TURNS
+                ],
+            }
+        ],
+        tolerance_m=REACH_TOLERANCE_M,
+        action_policy="CREATE",
+        confirm_displace_action=True,
+    )
+    assert all(record["converged"] for record in reply["reaches"][0]["keys"]), reply["reaches"][0]["keys"]
+    # The solve stops at its own convergence threshold, so the keyed turn is that close, not exact.
+    check_euler_keys_take_the_short_way("SMOKE_spin_reach", REACH_TOLERANCE_M / spine_length * 10.0)
+
+
+def check_caller_euler_is_keyed_as_given():
+    # 170 then -170 is a deliberate turn back through 0; the nearest spelling would undo it.
+    asked = ((1.0, 170.0), (10.0, -170.0))
+    handler.keyframe_character_pose(
+        spin_rig.name,
+        "SMOKE_spin_euler",
+        keys=[
+            {"frame": frame, "poses": [{"bone_name": "spine", "rotation_euler": (math.radians(degrees), 0.0, 0.0)}]}
+            for frame, degrees in asked
+        ],
+        action_policy="CREATE",
+        confirm_displace_action=True,
+    )
+    keyed = spine_euler_keys("SMOKE_spin_euler")
+    for frame, degrees in asked:
+        assert abs(math.degrees(keyed[frame][0]) - degrees) < 1e-4, (
+            f"frame {frame}: keyed {keyed[frame]}, asked {degrees}"
+        )
+
+
+check_matrix_euler_keys_take_the_short_way()
+check_reach_euler_keys_take_the_short_way()
+check_caller_euler_is_keyed_as_given()
+for action_name in ("SMOKE_spin_matrix", "SMOKE_spin_reach", "SMOKE_spin_euler"):
+    bpy.data.actions.remove(bpy.data.actions[action_name])
+bpy.data.objects.remove(spin_rig)
 bpy.context.scene.frame_set(playhead_before)
 
 # --- 11. The reply names the bone axis for each world direction, and an aim takes it ----------
