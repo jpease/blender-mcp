@@ -487,7 +487,7 @@ def test_the_command_gate_reads_the_refreshed_capability_set(monkeypatch: pytest
     )
     conn = BlenderConnection(host="localhost", port=0)
     conn.sock = ScriptedSocket([json.dumps({"id": "x", "status": "success", "result": {}}).encode() + b"\n"])
-    conn.send_command_locked = lambda command_type, _params=None: {"ok": command_type}  # pyright: ignore[reportAttributeAccessIssue]
+    conn.send_command_locked = lambda command_type, _params=None, **_: {"ok": command_type}  # pyright: ignore[reportAttributeAccessIssue]
 
     assert conn.send_command("import_polyhaven_asset") == {"ok": "import_polyhaven_asset"}
 
@@ -524,7 +524,7 @@ def test_the_command_gate_does_not_filter_when_the_addon_omits_capability_params
     _reset_handshake_state(monkeypatch, _cached(capabilities=["set_object_transform"]))
     conn = BlenderConnection(host="localhost", port=0)
     calls: list[str] = []
-    conn.send_command_locked = lambda command_type, params=None: calls.append(command_type) or {"ok": True}  # pyright: ignore[reportAttributeAccessIssue]
+    conn.send_command_locked = lambda command_type, params=None, **_: calls.append(command_type) or {"ok": True}  # pyright: ignore[reportAttributeAccessIssue]
 
     conn.send_command("set_object_transform", {"object_name": "Cube", "patch": {}, "space": "WORLD"})
 
@@ -540,7 +540,7 @@ def test_the_command_gate_never_filters_a_command_marked_as_accepting_anything(
     )
     conn = BlenderConnection(host="localhost", port=0)
     calls: list[str] = []
-    conn.send_command_locked = lambda command_type, params=None: calls.append(command_type) or {"ok": True}  # pyright: ignore[reportAttributeAccessIssue]
+    conn.send_command_locked = lambda command_type, params=None, **_: calls.append(command_type) or {"ok": True}  # pyright: ignore[reportAttributeAccessIssue]
 
     conn.send_command("run_geometry_nodes_tool", {"anything": 1, "goes": 2})
 

@@ -380,7 +380,7 @@ class SocketTransportMixin:
         """
         return json.dumps(response).encode("utf-8") + b"\n"
 
-    def _encode_response(self, response: dict, request_id: str | None) -> bytes:
+    def _encode_response(self, response: dict, request_id: str | None) -> tuple[bytes, bool]:
         """
         Turn a handler's response into a frame that is always sendable.
 
@@ -396,19 +396,20 @@ class SocketTransportMixin:
                 matchable to the command that produced it.
 
         Returns:
-            bytes: The encoded frame, or an error frame if `response` could not
-            be serialized or exceeds `_MAX_MESSAGE_BYTES`.
+            tuple[bytes, bool]: The encoded frame, or an error frame if `response`
+            could not be serialized or exceeds `_MAX_MESSAGE_BYTES`; and whether
+            the frame is `response` itself rather than that error.
 
         """
         try:
             payload = self._encode_frame(response)
         except (TypeError, ValueError):
             logger.exception("A response could not be serialized to JSON - sending an error frame instead")
-            return self._error_frame(request_id, "Response could not be serialized to JSON")
+            return self._error_frame(request_id, "Response could not be serialized to JSON"), False
 
         if len(payload) > self._MAX_MESSAGE_BYTES:
-            return self._error_frame(request_id, "Response exceeded the configured message-size limit")
-        return payload
+            return self._error_frame(request_id, "Response exceeded the configured message-size limit"), False
+        return payload, True
 
     def _error_frame(self, request_id: str | None, message: str) -> bytes:
         """

@@ -20,9 +20,10 @@ substring, so the prefix is how a group of rows is selected: `session:`, `barrie
 `entrypoint:`, `quiet box:`, `reply budget:`, `lighting:`, `pose:`,
 `render settings:`, `strict args:`, `addon surface:`, `action assignment:`, `size caps:`,
 `camera:`, `pagination:`, `simulation:`, `data users:`, `counted replies:`, `lint gate:`,
-`geometry nodes:`, `integrations:`, `scene watch:`, `pick:` and `boundary:`. A `... control:` row is the deliberate
-opposite of its neighbour: it proves that over-enforcing the same line is caught too,
-either by the same node or by the sibling node that exists to say the guard can be passed.
+`geometry nodes:`, `integrations:`, `scene watch:`, `pick:`, `reply cache:` and `boundary:`. A
+`... control:` row is the deliberate opposite of its neighbour: it proves that over-enforcing
+the same line is caught too, either by the same node or by the sibling node that exists to say
+the guard can be passed.
 
 The rows live in `revert_rows/`, one module per stretch of the table, named for the area
 most of its rows guard and listing every prefix it holds; `REVERTS` below joins them in the
@@ -88,6 +89,7 @@ from revert_rows import (
     pose,
     registry,
     render_coverage,
+    reply_cache,
     reply_shape,
     rig,
     scene_watch,
@@ -153,6 +155,7 @@ from revert_rows.common import (
     REACHT,
     REGT,
     RENDT,
+    REPLYCACHET,
     RIGT,
     RJOBT,
     RNAPT,
@@ -197,7 +200,8 @@ from revert_rows.common import (
 # call, which another session's request must never change. CATSIZET joins it on the SURFT rule:
 # it is the freshness gate for the committed catalog sizes, so every node is a claim about them.
 # SWT and RNT join it because every node in them is a claim about whether a client hears that the
-# scene changed under it, a notice the add-on gives once and then forgets.
+# scene changed under it, a notice the add-on gives once and then forgets. REPLYCACHET joins it
+# because every node in it is a claim about whether a resent command runs a second time.
 NEW_TEST_FILES = (
     RIGT,
     DOCKT,
@@ -230,6 +234,7 @@ NEW_TEST_FILES = (
     CATSIZET,
     SWT,
     RNT,
+    REPLYCACHET,
 )
 # Nodes in files the matrix does not own. `coverage_gaps()` sees only these and the nodes
 # collected from NEW_TEST_FILES, so a node left off this list is never checked.
@@ -776,6 +781,8 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{OANIMT}::test_a_batch_failing_part_way_hands_a_reused_action_back_its_keys",
     # --- an orchestrated render keeps every reply's warnings, the add-on's change notice among them ---
     f"{RENDT}::test_orchestrated_animation_reports_every_replys_warnings_once",
+    # --- the handshake field that lets the dispatch resend under a command's first id ---
+    f"{AMT}::test_the_handshake_advertises_idempotent_resend_only_when_the_addon_says_true",
 )
 
 # Nodes no single revert can break, each with the reason, so the gap check skips them.
@@ -925,6 +932,13 @@ NOT_INDIVIDUALLY_FALSIFIABLE: dict[str, str] = {
         "under `python -O`, so that the -O test cannot pass because the flag silently stopped applying. "
         "Nothing in cli.py can make it fail."
     ),
+    f"{DISPT}::test_a_replayed_reply_is_enveloped_like_any_other": (
+        "it pins an absence: no server line reads the add-on's `replayed` flag, so a replayed frame is "
+        "decoded and enveloped by exactly the code an ordinary one is, and there is no line to revert. It "
+        "exists to catch a future change that treats the flag as a desync, a failure or a field to publish. "
+        "The resend itself is falsifiable through "
+        "`test_an_identical_call_after_an_unknown_outcome_resends_under_the_same_id`."
+    ),
 }
 
 
@@ -969,6 +983,7 @@ REVERTS: list[Revert] = [
     *toolsets.ROWS,
     *scene_watch.ROWS,
     *pick.ROWS,
+    *reply_cache.ROWS,
 ]
 
 

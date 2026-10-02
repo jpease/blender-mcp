@@ -1,4 +1,5 @@
 import functools
+import json
 import logging
 import os
 import queue
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 
 import bpy
 
-from . import ADDON_PROTOCOL_VERSION, authored, bl_info, scene_watch
+from . import ADDON_PROTOCOL_VERSION, authored, bl_info, reply_cache, scene_watch
 from .capability_introspection import capability_params
 from .command_registry import CommandRegistryMixin, target_names
 from .file_paths import canonical_path
@@ -374,6 +375,11 @@ class BlenderMCPServer(
                 processed += 1
                 continue
 
+            # Before the swap check, so a resent swap is answered without discarding the queue.
+            if self._replay_cached_reply(command, client):
+                processed += 1
+                continue
+
             # Only a swap the addon can run may discard the queue, which holds
             # other server processes' commands; any other name falls through and
             # is answered "Unknown command type". The command is already off the
@@ -504,9 +510,57 @@ class BlenderMCPServer(
             )
             raise
 
-        self._answer(command, client, response, receipt=receipt)
+        self._answer(command, client, response, receipt=receipt, cache=self._caches_reply(command))
 
-    def _answer(self, command: dict, client: object, response: dict, *, receipt: "AnswerReceipt | None" = None) -> None:
+    def _caches_reply(self, command: dict) -> bool:
+        """
+        Say whether this command's reply is kept for a resend of its id.
+
+        A mutating command's is, so a resend after a lost reply is answered rather than run
+        twice. A read's is not: running it again is safe, and answers with the scene as it is.
+
+        Args:
+            command: The command just run.
+
+        Returns:
+            bool: True for a mutating call, by the registry's per-call classification.
+
+        """
+        return not self.is_read_only_command(command.get("type"), command.get("params", {}))
+
+    def _replay_cached_reply(self, command: dict, client: object) -> bool:
+        """
+        Answer a request id that already ran from `reply_cache`, without dispatching it.
+
+        The frame is the one first sent, marked `"replayed": true`. Nothing runs, so
+        `scene_watch` is not consulted: a notice pending since then waits for the next
+        command that actually runs, and the notice the first reply carried, which its client
+        never read, is in the replay unchanged.
+
+        Args:
+            command: The dequeued command, its stamp already popped off.
+            client: The socket its response belongs on.
+
+        Returns:
+            bool: True when the command was answered from the cache.
+
+        """
+        cached = reply_cache.lookup(command.get("id"), self._session_marker())
+        if cached is None:
+            return False
+        logger.info("Answering resent request %s from the reply cache", command.get("id"))
+        self._answer(command, client, {**json.loads(cached), "replayed": True})
+        return True
+
+    def _answer(
+        self,
+        command: dict,
+        client: object,
+        response: dict,
+        *,
+        receipt: "AnswerReceipt | None" = None,
+        cache: bool = False,
+    ) -> None:
         """
         Write one response frame, whatever the handler did or did not produce.
 
@@ -524,6 +578,9 @@ class BlenderMCPServer(
             client: The socket the frame belongs on.
             response: The response body.
             receipt: Optional receipt to record the answer in; see above.
+            cache: Keep the frame in `reply_cache` for a resend of this id, unless it is
+                the size-limit or serialization error rather than `response`, or carries
+                an inline image.
 
         """
         if receipt is not None:
@@ -534,7 +591,10 @@ class BlenderMCPServer(
         response["session_id"], response["session_epoch"] = self._session_marker()
 
         # Outside the try, so an encoding failure is never reported as a disconnect.
-        payload = self._encode_response(response, command.get("id"))
+        payload, faithful = self._encode_response(response, command.get("id"))
+        if cache and faithful and reply_cache.caches_result(response.get("result")):
+            marker = (response["session_id"], response["session_epoch"])
+            reply_cache.store(command.get("id"), marker, payload, self._MAX_MESSAGE_BYTES)
         try:
             self._send_frame(client, payload)
         except Exception:
@@ -967,6 +1027,9 @@ class BlenderMCPServer(
             "current_filepath": session["current_filepath"],
             # Also here, so a re-handshaking client learns why it is refused.
             "session_indeterminate": session["session_indeterminate"],
+            # A resent request id is answered from `reply_cache` instead of run again, so the
+            # server may resend a command whose first attempt's outcome it never learned.
+            "idempotent_resend": True,
         }
 
     @staticmethod

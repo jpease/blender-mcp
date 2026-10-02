@@ -696,6 +696,19 @@ def test_the_handshake_reports_an_indeterminate_session_only_when_the_addon_says
     assert _hostile_handshake(session_indeterminate=1).session_indeterminate is False
 
 
+def test_the_handshake_advertises_idempotent_resend_only_when_the_addon_says_true() -> None:
+    """
+    The server resends an unknown-outcome command under its first id only to an add-on that dedupes it.
+
+    An add-on without the reply cache would run the resent id a second time, so an omitted or
+    merely truthy field must read as no.
+    """
+    assert _hostile_handshake().idempotent_resend is False
+    assert _hostile_handshake(idempotent_resend=True).idempotent_resend is True
+    assert _hostile_handshake(idempotent_resend="yes").idempotent_resend is False
+    assert _hostile_handshake(idempotent_resend=1).idempotent_resend is False
+
+
 def test_both_sides_of_the_socket_hold_the_same_control_character_block() -> None:
     """
     The duplication is forced, so the copies are compared.

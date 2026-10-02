@@ -175,6 +175,23 @@ BlenderMCPServer = _server_core.BlenderMCPServer
 COMMANDS = sys.modules[f"{_server_core.__package__}.command_registry"].COMMANDS
 
 
+@pytest.fixture(autouse=True)
+def _fresh_reply_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Start every test with no cached reply.
+
+    The add-on is loaded once for this module, and its reply cache is module state that
+    outlives a server. These tests reuse short request ids such as "s" that a client's
+    uuids never would, so one test's cached reply would answer another's command.
+
+    Args:
+        monkeypatch: Puts the cache back afterwards.
+
+    """
+    reply_cache = _server_core.reply_cache
+    monkeypatch.setattr(reply_cache, "_CACHE", reply_cache._Cache())
+
+
 def _free_port():
     with socket.socket() as s:
         s.bind(("localhost", 0))
@@ -850,7 +867,8 @@ def test_the_barrier_message_names_the_epoch_without_claiming_it_moved() -> None
     for label, filepath in (("ok", "/shots/sq010.blend"), ("fail", "/shots/gone.missing.blend")):
         server, _executed = _make_swap_server()
         client = _RecordingClient()
-        _queue(server, client, "open_shot", "swap", filepath=filepath)
+        # A distinct id per swap: a client never reuses one, and the reply cache answers a reused id.
+        _queue(server, client, "open_shot", f"swap-{label}", filepath=filepath)
         _queue(server, client, "cmd_b", "b")
 
         server.drain_command_queue()

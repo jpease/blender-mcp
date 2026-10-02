@@ -30,7 +30,7 @@ from .text_hygiene import strip_unsafe
 logger = logging.getLogger("BlenderMCPServer")
 
 # Must match ADDON_PROTOCOL_VERSION in bundled/addon/__init__.py
-EXPECTED_ADDON_PROTOCOL_VERSION = 53
+EXPECTED_ADDON_PROTOCOL_VERSION = 54
 
 _ADDON_MARKER = 'bl_info = {\n    "name": "Blender MCP"'
 _INSTALLED_DIRNAME = "blender_mcp"
@@ -266,6 +266,10 @@ class AddonHandshake:
     # "enabled_devices", "available_devices". None for an older add-on that does not report
     # it, rather than a guessed CPU-only machine.
     render_devices: dict[str, object] | None = None
+    # Whether the addon answers a resent request id from its reply cache instead of running
+    # the command again. Only then does the dispatch resend a command whose outcome is unknown
+    # under its first id. Older addons omit it, and would run the resend a second time.
+    idempotent_resend: bool = False
 
     def session_marker(self) -> tuple[str | None, int | None]:
         """
@@ -1167,6 +1171,8 @@ def handshake_addon(blender_connection) -> AddonHandshake:
             capability_params=capability_params,
             missing_commands=missing_commands,
             missing_parameters=missing_parameters,
+            # `is True`, like `session_indeterminate`: a truthy string is not a yes.
+            idempotent_resend=info.get("idempotent_resend") is True,
         )
     except Exception as e:
         if _is_transport_failure(e):

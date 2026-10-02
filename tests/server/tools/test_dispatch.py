@@ -6,12 +6,16 @@ blocking socket call runs on, and how Blender's two failure kinds reach the clie
 """
 
 import asyncio
+import json
 import threading
+
+from contextlib import suppress
 
 import pytest
 
 from mcp.server.fastmcp.exceptions import ToolError
 
+from blender_mcp.addon_manager import AddonHandshake
 from blender_mcp.server import connection as connection_module
 from blender_mcp.server.connection import (
     BlenderCommandNotSentError,
@@ -216,3 +220,236 @@ def test_a_tool_warns_against_a_blind_retry_once_the_command_was_sent(stub_blend
         asyncio.run(call())
 
     assert str(failure.value) == f"{lost} {_dispatch._OUTCOME_UNKNOWN_HINT}"
+
+
+# --- an identical call after an unknown outcome resends under the first call's id ---
+
+
+class _AnsweringSocket:
+    """
+    A socket whose replies answer whatever was last written, so the test need not know the id.
+
+    Each scripted reply is consumed by one `recv`: an exception is raised, and a dict becomes a
+    frame echoing the id of the last frame written, its keys laid over a success envelope. A
+    `send_error` fails exactly one `sendall` before any later one succeeds.
+    """
+
+    def __init__(self, replies=(), send_errors=()) -> None:
+        self.sent = []
+        self._replies = list(replies)
+        self.send_errors = list(send_errors)
+
+    def sendall(self, data) -> None:
+        if self.send_errors:
+            raise self.send_errors.pop(0)
+        self.sent.append(data)
+
+    def settimeout(self, _value) -> None:
+        pass
+
+    def recv(self, _size):
+        reply = self._replies.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        frame = {"id": self.sent_ids()[-1], "status": "success", **reply}
+        return json.dumps(frame).encode("utf-8") + b"\n"
+
+    def sent_ids(self) -> list[str]:
+        return [json.loads(data)["id"] for data in self.sent]
+
+
+def _reset() -> ConnectionResetError:
+    return ConnectionResetError(54, "Connection reset by peer")
+
+
+def _install_resending(monkeypatch, sock, *, capable=True, now=None):
+    """
+    Route dispatch over `sock` behind a handshake that does or does not advertise resend.
+
+    A dropped socket reconnects to the same scripted one. `now` is a one-element list the
+    ledger's clock reads, so expiry is crossed by moving a number.
+    """
+    _install_socket(monkeypatch, sock)
+    blender = _dispatch.get_blender_connection()
+
+    def reconnect() -> bool:
+        blender.sock = sock
+        return True
+
+    monkeypatch.setattr(blender, "connect", reconnect)
+    handshake = AddonHandshake(
+        up_to_date=True,
+        protocol_version=None,
+        addon_version=None,
+        capabilities=[],
+        blender_version=None,
+        source="native",
+        idempotent_resend=capable,
+    )
+    monkeypatch.setattr(connection_module, "_addon_handshake", handshake)
+    clock = now if now is not None else [0.0]
+    monkeypatch.setattr(_dispatch, "_resend_ids", _dispatch._ResendIds(clock=lambda: clock[0]))
+    return blender
+
+
+def _call(command="create_primitive_object", **params):
+    return asyncio.run(_dispatch.call_blender(command, params or {"primitive_type": "CUBE"}))
+
+
+def _fails(command="create_primitive_object", **params) -> str:
+    with pytest.raises(ToolError) as failure:
+        _call(command, **params)
+    return str(failure.value)
+
+
+def test_a_transport_error_names_the_request_it_was_sent_under_and_whether_it_left() -> None:
+    lost = _AnsweringSocket(replies=[_reset()])
+    unsent = _AnsweringSocket(send_errors=[BrokenPipeError(32, "Broken pipe")])
+
+    for sock, sent in ((lost, True), (unsent, False)):
+        blender = BlenderConnection(host="localhost", port=0)
+        blender.sock = sock
+        with pytest.raises(BlenderTransportError) as failure:
+            blender.send_command_locked("create_primitive_object", {}, request_id="feed")
+        assert failure.value.request_id == "feed"
+        assert failure.value.sent is sent
+    assert lost.sent_ids() == ["feed"]
+
+
+def test_an_identical_call_after_an_unknown_outcome_resends_under_the_same_id(monkeypatch) -> None:
+    """The add-on answers an id it already ran from its reply cache, so the work is not done twice."""
+    sock = _AnsweringSocket(replies=[_reset(), {"result": {"name": "Cube"}}])
+    _install_resending(monkeypatch, sock)
+
+    _fails()
+    envelope = _call()
+
+    first, resent = sock.sent_ids()
+    assert resent == first
+    assert envelope["data"] == {"name": "Cube"}
+
+
+def test_the_outcome_unknown_hint_says_an_identical_retry_is_safe_when_the_addon_dedupes(monkeypatch) -> None:
+    _install_resending(monkeypatch, _AnsweringSocket(replies=[_reset()]))
+
+    message = _fails()
+
+    assert message == f"Connection to Blender lost: [Errno 54] Connection reset by peer {_dispatch._RESEND_HINT}"
+    assert "inspect the scene" not in message
+
+
+def test_a_call_with_other_params_after_an_unknown_outcome_gets_a_new_id(monkeypatch) -> None:
+    sock = _AnsweringSocket(replies=[_reset(), {"result": {}}])
+    _install_resending(monkeypatch, sock)
+
+    _fails(primitive_type="CUBE")
+    _call(primitive_type="SPHERE")
+
+    first, second = sock.sent_ids()
+    assert second != first
+
+
+def test_the_same_params_in_another_key_order_are_the_same_call(monkeypatch) -> None:
+    sock = _AnsweringSocket(replies=[_reset(), {"result": {}}])
+    _install_resending(monkeypatch, sock)
+
+    _fails(primitive_type="CUBE", name="Box")
+    _call(name="Box", primitive_type="CUBE")
+
+    first, resent = sock.sent_ids()
+    assert resent == first
+
+
+def test_without_the_capability_an_identical_call_gets_a_new_id_and_the_old_hint(monkeypatch) -> None:
+    """An add-on with no reply cache would run a resent id again, so nothing changes for it."""
+    sock = _AnsweringSocket(replies=[_reset(), {"result": {}}])
+    _install_resending(monkeypatch, sock, capable=False)
+
+    message = _fails()
+    _call()
+
+    first, second = sock.sent_ids()
+    assert second != first
+    assert message.endswith(_dispatch._OUTCOME_UNKNOWN_HINT)
+
+
+def test_a_remembered_id_expires_ten_minutes_after_its_last_unknown_outcome(monkeypatch) -> None:
+    now = [0.0]
+    sock = _AnsweringSocket(replies=[_reset(), _reset(), _reset(), {"result": {}}])
+    _install_resending(monkeypatch, sock, now=now)
+
+    _fails()
+    now[0] = 599.0
+    _fails()
+    now[0] = 1_100.0
+    _fails()
+    now[0] = 1_100.0 + 600.001
+    _call()
+
+    first, within, restarted, after = sock.sent_ids()
+    assert within == first, "an identical call inside the window resends"
+    assert restarted == first, "each unknown outcome restarts the window"
+    assert after != first, "ten minutes after the last unknown outcome the id is forgotten"
+
+
+def test_the_remembered_ids_are_evicted_least_recently_used_first_past_sixty_four(monkeypatch) -> None:
+    sock = _AnsweringSocket(replies=[_reset()] * 65 + [{"result": {}}, {"result": {}}])
+    _install_resending(monkeypatch, sock)
+
+    for index in range(65):
+        _fails(name=f"Box{index}")
+    _call(name="Box0")
+    _call(name="Box64")
+
+    ids = sock.sent_ids()
+    assert ids[65] not in ids[:65], "the 65th entry pushed out the oldest"
+    assert ids[66] == ids[64]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [{"result": {"name": "Cube"}}, {"status": "error", "message": "Object 'Cube' already exists"}],
+    ids=["reply", "refusal"],
+)
+def test_an_answer_forgets_the_id_so_a_later_identical_call_runs_anew(monkeypatch, answer) -> None:
+    """A deliberate repeat after the outcome is known is a new request, not a resend."""
+    sock = _AnsweringSocket(replies=[_reset(), answer, {"result": {}}])
+    _install_resending(monkeypatch, sock)
+
+    _fails()
+    with suppress(ToolError):
+        _call()
+    _call()
+
+    first, resent, fresh = sock.sent_ids()
+    assert resent == first
+    assert fresh != first
+
+
+def test_a_resend_that_never_left_the_socket_keeps_the_id(monkeypatch) -> None:
+    """The first send may still have run, so a resend that failed to go out must not lose its id."""
+    sock = _AnsweringSocket(replies=[_reset(), {"result": {}}])
+    _install_resending(monkeypatch, sock)
+
+    _fails()
+    sock.send_errors.append(BrokenPipeError(32, "Broken pipe"))
+    unsent = _fails()
+    _call()
+
+    first, resent = sock.sent_ids()
+    assert resent == first
+    assert unsent.endswith(_dispatch._RETRY_HINT)
+
+
+def test_a_replayed_reply_is_enveloped_like_any_other(monkeypatch) -> None:
+    result = {"name": "Cube", "changed_objects": ["Cube"], "warnings": ["Scale is not applied"]}
+    sock = _AnsweringSocket(replies=[_reset(), {"result": result, "replayed": True}, {"result": result}])
+    _install_resending(monkeypatch, sock)
+
+    _fails()
+    replayed = _call()
+    ordinary = _call()
+
+    assert replayed == ordinary
+    assert replayed["data"] == {"name": "Cube"}
+    assert replayed["changed_objects"] == ["Cube"]

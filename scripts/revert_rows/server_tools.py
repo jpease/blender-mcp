@@ -356,13 +356,11 @@ ROWS: list[Revert] = [
         "server tools: the shared dispatch relabels every other failure as its own again",
         SERVER_DISPATCH,
         (
-            "    except BlenderTransportError as exc:\n"
-            '        logger.error("Transport failure running %s: %s", command, exc)\n'
+            '            raise ToolError(f"{exc} {_RESEND_HINT}") from exc\n'
             '        raise ToolError(f"{exc} {_OUTCOME_UNKNOWN_HINT}") from exc\n'
         ),
         (
-            "    except BlenderTransportError as exc:\n"
-            '        logger.error("Transport failure running %s: %s", command, exc)\n'
+            '            raise ToolError(f"{exc} {_RESEND_HINT}") from exc\n'
             '        raise ToolError(f"{exc} {_OUTCOME_UNKNOWN_HINT}") from exc\n'
             "    except Exception as exc:\n"
             '        raise ToolError(f"Error running {command}: {exc}") from exc\n'

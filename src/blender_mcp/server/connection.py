@@ -80,6 +80,11 @@ class BlenderTransportError(Exception):
     # so the handshake can tell "Blender answered and refused" (a real finding about
     # the installed addon) from "nothing came back" (a finding about the socket).
     is_transport_failure = True
+    # The id the command was sent under, set by `send_command_locked` on its way out, so the
+    # dispatch can resend it under the same id; None when it was raised elsewhere.
+    request_id: str | None = None
+    # Whether the whole frame was written, so Blender may have run the command.
+    sent: bool = True
 
 
 class BlenderPeerClosedError(BlenderTransportError):
@@ -104,6 +109,8 @@ class BlenderCommandNotSentError(BlenderTransportError):
     Blender never read a complete command and cannot have run it. This is the one
     transport fault after which retrying the same request is known to be safe.
     """
+
+    sent = False
 
 
 def ad_hoc_failure_message(result: object) -> str | None:
@@ -311,13 +318,17 @@ class BlenderConnection:
         logger.info(f"Received complete response ({len(line)} bytes)")
         return line
 
-    def send_command(self, command_type: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def send_command(
+        self, command_type: str, params: dict[str, Any] | None = None, *, request_id: str | None = None
+    ) -> dict[str, Any]:
         """
         Send a command to Blender and return the response.
 
         Args:
             command_type: Value for command type.
             params: Value for params.
+            request_id: The id to send it under, to resend a command whose outcome is
+                unknown; None mints a new one.
 
         Returns:
             dict[str, Any]: Result produced by the operation.
@@ -354,23 +365,30 @@ class BlenderConnection:
         # check below), so overlapping calls would hand each other's
         # responses back.
         with self._lock:
-            return self.send_command_locked(command_type, params)
+            return self.send_command_locked(command_type, params, request_id=request_id)
 
-    def send_command_locked(self, command_type: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def send_command_locked(
+        self, command_type: str, params: dict[str, Any] | None = None, *, request_id: str | None = None
+    ) -> dict[str, Any]:
         """
         Run one command on this socket, resending it once if the peer was already gone.
 
         Args:
             command_type: The addon command to run.
             params: Its parameters, or None.
+            request_id: The id to send it under; None mints a new one. A resend of a
+                command whose outcome is unknown passes the id it was first sent under,
+                so an addon that advertises `idempotent_resend` answers it from its reply
+                cache instead of running it again.
 
         Returns:
             dict[str, Any]: The unwrapped `result` from Blender's response.
 
         Raises:
             BlenderOperationError: If Blender answered that the operation failed.
-            BlenderTransportError: If the round trip never completed. A peer that
-                closed before answering raises `BlenderPeerClosedError`, either
+            BlenderTransportError: If the round trip never completed, carrying the id the
+                command was sent under and whether the whole frame was written. A peer
+                that closed before answering raises `BlenderPeerClosedError`, either
                 immediately for a mutating command or after one failed retry.
             ConnectionError: If there is no socket and one cannot be opened.
 
@@ -380,9 +398,34 @@ class BlenderConnection:
 
         # Bound to a name so the id stays a plain `str`: read back out of the
         # command dict it would widen to the dict's union value type.
-        command_id = uuid.uuid4().hex
+        command_id = request_id or uuid.uuid4().hex
         command = {"id": command_id, "type": command_type, "params": params or {}}
 
+        try:
+            return self._round_trip_once_more_if_retired(command_type, command, command_id)
+        except BlenderTransportError as exc:
+            exc.request_id = command_id
+            raise
+
+    def _round_trip_once_more_if_retired(
+        self, command_type: str, command: dict[str, Any], command_id: str
+    ) -> dict[str, Any]:
+        """
+        Run one round trip, and a second only for a side-effect-free command the peer never read.
+
+        Args:
+            command_type: The command name.
+            command: The full frame to send, id included.
+            command_id: The id the response must echo back.
+
+        Returns:
+            dict[str, Any]: The unwrapped `result` from Blender's response.
+
+        Raises:
+            BlenderPeerClosedError: If the peer closed before answering a mutating
+                command, or closed again on the one retry.
+
+        """
         try:
             return self._round_trip(command_type, command, command_id)
         except BlenderPeerClosedError:
