@@ -393,6 +393,7 @@ POSING_TOOLS = frozenset(
         "solve_bone_reach",
         "keyframe_bone_reach",
         "sample_deformed_geometry",
+        "sample_evaluated_range",
     }
 )
 
@@ -410,9 +411,9 @@ def test_character_posing_bundle_adds_only_the_posing_tools() -> None:
 
 
 def test_character_rigging_bundle_keeps_every_rigging_tool_after_the_split() -> None:
-    """Existing `character-rigging` configs lose nothing: all 27 tools, posing included."""
+    """Existing `character-rigging` configs lose nothing: all 28 tools, posing included."""
     rigging = _tool_names_for_toolsets("character-rigging") - _tool_names_for_toolsets(None)
-    assert len(rigging) == 27
+    assert len(rigging) == 28
     assert rigging >= POSING_TOOLS | {"create_armature", "bind_mesh_to_armature", "add_pose_bone_constraint"}
 
 

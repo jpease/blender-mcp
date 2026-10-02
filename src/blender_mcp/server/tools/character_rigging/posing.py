@@ -927,3 +927,83 @@ async def sample_deformed_geometry(
             "vertex_offset": vertex_offset,
         },
     )
+
+
+class BonePoint(StrictModel):
+    """One pose bone whose evaluated world head and tail are read at every sampled frame."""
+
+    armature_object_name: Annotated[str, Field(min_length=1, max_length=63)]
+    bone_name: Annotated[str, Field(min_length=1, max_length=63)]
+
+
+class MeshMetrics(StrictModel):
+    """
+    Meshes measured at every sampled frame, and optionally the closed meshes they must not enter.
+
+    Each of object_names reports its evaluated world bounds; with against_object_names, each
+    also reports, per against mesh, how many of its evaluated vertices are inside that mesh's
+    evaluated surface and the deepest one's distance to it. A mesh is never measured against
+    itself.
+    """
+
+    object_names: Annotated[list[str], Field(min_length=1, max_length=16)]
+    against_object_names: Annotated[list[str], Field(min_length=1, max_length=16)] | None = None
+
+
+@mcp.tool()
+async def sample_evaluated_range(
+    ctx: Context,
+    frames: Annotated[list[int], Field(min_length=1, max_length=250)] | None = None,
+    frame_start: int | None = None,
+    frame_end: int | None = None,
+    frame_step: Annotated[int, Field(ge=1, le=10_000)] = 1,
+    bone_points: Annotated[list[BonePoint], Field(min_length=1, max_length=32)] | None = None,
+    mesh_metrics: MeshMetrics | None = None,
+    limit: Annotated[int, Field(ge=1, le=250)] = 10,
+    offset: Annotated[int, Field(ge=0, le=249)] = 0,
+) -> dict:
+    """
+    Verify a performance across frames without rendering: bone positions, mesh bounds, contact.
+
+    Evaluates the dependency graph at each frame - actions, NLA, constraints, drivers and
+    modifiers included - and puts the playhead's frame and subframe back. Use it after keying
+    to check a foot plants, a hand reaches, or a body never sinks into the floor across a shot.
+    The inside test casts rays and counts surface crossings, so it holds for any closed mesh
+    whatever way its normals face; an against mesh with open edges is named in a warning.
+    Every name is checked before the playhead moves.
+
+    Args:
+        ctx: MCP request context.
+        frames: Exact frames, sampled in this order. Give this or frame_start/frame_end.
+        frame_start: First frame of a range, instead of frames.
+        frame_end: Last frame of the range, inclusive. A selection names at most 250 frames
+            either way; raise frame_step or split the range beyond that.
+        frame_step: Step through the range.
+        bone_points: Pose bones to read head_world and tail_world for.
+        mesh_metrics: Meshes to measure, and the meshes to test them for penetration against.
+        limit: Frames of the selection this call evaluates and returns. Each costs a full
+            evaluation, and a bone and a mesh fill the reply budget in about ten.
+        offset: Index in the selection of this call's first frame; pass samples.next_offset.
+
+    Returns:
+        coordinate_space (WORLD), bone_points (echoed, the order of each sample's bones),
+        inside_test, timeline_restored, and a samples page of {frame, bones: [{head_world,
+        tail_world}], meshes: [{object_name, world_bounds {minimum, maximum} -
+        minimum[2] is the lowest evaluated vertex, penetration: [{against_object_name,
+        inside_vertices, max_depth_m}]}]}. Values are rounded to 0.1 mm; a vertex within
+        0.01 mm of the surface counts as touching, not inside.
+
+    """
+    return await call_blender(
+        "sample_evaluated_range",
+        {
+            "frames": frames,
+            "frame_start": frame_start,
+            "frame_end": frame_end,
+            "frame_step": frame_step,
+            "bone_points": dump_inputs(bone_points) if bone_points is not None else None,
+            "mesh_metrics": mesh_metrics.model_dump(exclude_none=True) if mesh_metrics is not None else None,
+            "limit": limit,
+            "offset": offset,
+        },
+    )

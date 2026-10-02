@@ -146,6 +146,7 @@ def test_character_dispatch_and_read_only_contract(monkeypatch) -> None:
         "get_character_rig_info",
         "get_skinning_info",
         "sample_deformed_geometry",
+        "sample_evaluated_range",
         "create_armature",
         "patch_armature_bones",
         "mirror_armature_bones",
@@ -165,6 +166,7 @@ def test_character_dispatch_and_read_only_contract(monkeypatch) -> None:
             "get_character_rig_info",
             "get_skinning_info",
             "sample_deformed_geometry",
+            "sample_evaluated_range",
             "validate_character_rig",
         )
     )
@@ -172,6 +174,7 @@ def test_character_dispatch_and_read_only_contract(monkeypatch) -> None:
         "get_character_rig_info",
         "get_skinning_info",
         "sample_deformed_geometry",
+        "sample_evaluated_range",
         "validate_character_rig",
     }
 

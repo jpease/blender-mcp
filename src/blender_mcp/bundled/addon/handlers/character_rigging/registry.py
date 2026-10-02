@@ -3,6 +3,7 @@
 from .constraints import PoseConstraintHandlersMixin
 from .controls import ControlRigHandlersMixin
 from .deformation import DeformationHandlersMixin
+from .evaluated_range import EvaluatedRangeHandlersMixin
 from .inspection import RigInspectionHandlersMixin
 from .posing import PoseAnimationHandlersMixin
 from .reach import BoneReachHandlersMixin
@@ -12,6 +13,7 @@ from .structure import ArmatureStructureHandlersMixin
 
 class CharacterRiggingHandlersMixin(
     RigInspectionHandlersMixin,
+    EvaluatedRangeHandlersMixin,
     ArmatureStructureHandlersMixin,
     SkinningHandlersMixin,
     PoseConstraintHandlersMixin,

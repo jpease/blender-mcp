@@ -12,7 +12,7 @@ from collections import Counter
 import bpy
 import mathutils
 
-from ...helpers import deforming_meshes, render_exclusion_reason
+from ...helpers import deforming_meshes, evaluated_bone_world_points, render_exclusion_reason
 from ._shared import (
     _CONSTRAINT_TYPES,
     _TARGETED_CONSTRAINTS,
@@ -158,11 +158,7 @@ def _bone_target_points(specs, depsgraph):
     """
     points, sources, records = [], [], []
     for obj, bone_name, radius in specs:
-        evaluated = obj.evaluated_get(depsgraph)
-        bone = evaluated.pose.bones[bone_name]
-        matrix = evaluated.matrix_world
-        head = matrix @ bone.head
-        tail = matrix @ bone.tail
+        head, tail = evaluated_bone_world_points(obj.evaluated_get(depsgraph), bone_name)
         segment = [*_padded_points(head, radius), *_padded_points(tail, radius)]
         points.extend(segment)
         sources.extend([obj.name] * len(segment))

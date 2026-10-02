@@ -258,6 +258,9 @@ COMMANDS: Mapping[str, CommandSpec] = MappingProxyType(
         # Read-only like `validate_character_rig`: it moves the playhead to the requested
         # frame and puts it back, and `to_mesh()` output is released before it returns.
         "sample_deformed_geometry": CommandSpec(read_only=True),
+        # Read-only for the same reason: it steps the playhead through its frames, puts the frame
+        # and subframe back, and releases every evaluated mesh it reads.
+        "sample_evaluated_range": CommandSpec(read_only=True),
         "create_armature": CommandSpec(),
         "patch_armature_bones": CommandSpec(),
         "mirror_armature_bones": CommandSpec(),

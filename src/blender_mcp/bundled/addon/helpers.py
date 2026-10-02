@@ -772,6 +772,28 @@ def evaluated_world_bounds(evaluated_obj):
     }
 
 
+def evaluated_bone_world_points(evaluated_armature, bone_name):
+    """
+    World head and tail of one pose bone as the depsgraph evaluated it.
+
+    Read from the evaluated armature, so a bone driven by constraints, drivers or an action
+    reports where it is at the current frame rather than where its rest pose would put it.
+    Shared by camera framing and the evaluated-range sampler so the two cannot disagree on
+    where a bone is.
+
+    Args:
+        evaluated_armature: An armature object from `evaluated_get`.
+        bone_name: A pose bone that armature carries.
+
+    Returns:
+        tuple: The head and tail, each a `mathutils.Vector` in world space.
+
+    """
+    bone = evaluated_armature.pose.bones[bone_name]
+    matrix = evaluated_armature.matrix_world
+    return matrix @ bone.head, matrix @ bone.tail
+
+
 def modifier_result(obj, modifier, applied):
     """
     Report base-mesh counts plus modifier-evaluated counts/name/bounds.

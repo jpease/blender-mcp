@@ -142,6 +142,10 @@ LIST_CAPS: dict[tuple[str, str], int] = {
     ("keyframe_bone_reach", "reaches"): 8,
     ("keyframe_bone_reach", "reaches.keys"): 250,
     ("sample_deformed_geometry", "vertex_indices"): 1_000,
+    ("sample_evaluated_range", "frames"): 250,
+    ("sample_evaluated_range", "bone_points"): 32,
+    ("sample_evaluated_range", "mesh_metrics.object_names"): 16,
+    ("sample_evaluated_range", "mesh_metrics.against_object_names"): 16,
     ("validate_lighting_setup", "subject_object_names"): 100,
     ("patch_shader_graph", "operations"): 500,
 }

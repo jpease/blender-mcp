@@ -563,6 +563,11 @@ _MESH_ELEMENT_PAGE = 100  # `tools/viewport.py get_mesh_data` default limit
 # `tools/character_rigging/posing.py sample_deformed_geometry` default limit. Smaller than
 # get_mesh_data's because each record adds a displacement to a position and a normal.
 _DEFORMED_VERTEX_PAGE = 50
+# `tools/character_rigging/posing.py sample_evaluated_range` default limit, sampled here for the
+# representative call: three bones and one mesh tested against one floor, rounded as published.
+_EVALUATED_RANGE_PAGE = 10
+_EVALUATED_RANGE_BONES = 3
+_EVALUATED_RANGE_DECIMALS = 4
 _SCENE_OBJECT_PAGE = 25  # `tools/scene.py list_scene_objects` default limit
 _VALIDATE_SCENE_PAGE = 300  # `tools/scene.py validate_scene` default max_findings
 _LIGHT_PAGE = 50  # `handlers/lighting/inspection.py:204 list_lights` default limit
@@ -1896,6 +1901,49 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
             "armature_object": "Hero_Rig",
             "bone": _bone_name(3),
             "space": "LOCAL",
+        # `handlers/character_rigging/evaluated_range.py sample_evaluated_range`: one page of frames,
+        # each the bones' world head and tail and one mesh's bounds and penetration of a floor.
+        "sample_evaluated_range": lambda _scale: {
+            "coordinate_space": "WORLD",
+            "bone_points": [
+                {"armature_object_name": "Rig", "bone_name": _bone_name(index)}
+                for index in range(_EVALUATED_RANGE_BONES)
+            ],
+            "samples": {
+                "items": [
+                    {
+                        "frame": frame,
+                        "bones": [
+                            {
+                                "head_world": _floats(3, frame + index, decimals=_EVALUATED_RANGE_DECIMALS),
+                                "tail_world": _floats(3, frame + index + 3, decimals=_EVALUATED_RANGE_DECIMALS),
+                            }
+                            for index in range(_EVALUATED_RANGE_BONES)
+                        ],
+                        "meshes": [
+                            {
+                                "object_name": "Body",
+                                "world_bounds": {
+                                    "minimum": _floats(3, frame, decimals=_EVALUATED_RANGE_DECIMALS),
+                                    "maximum": _floats(3, frame + 4, decimals=_EVALUATED_RANGE_DECIMALS),
+                                },
+                                "penetration": [
+                                    {"against_object_name": "Floor", "inside_vertices": 12, "max_depth_m": 0.0137}
+                                ],
+                            }
+                        ],
+                    }
+                    for frame in range(1, _EVALUATED_RANGE_PAGE + 1)
+                ],
+                "total": 120,
+                "offset": 0,
+                "limit": _EVALUATED_RANGE_PAGE,
+                "truncated": True,
+                "next_offset": _EVALUATED_RANGE_PAGE,
+            },
+            "timeline_restored": {"frame": 1, "subframe": 0.0},
+            "inside_test": "RAY_PARITY",
+        },
             "degrees": 15.0,
             "bone_length_m": 0.284531,
             "witness_bone": _bone_name(9),
@@ -2382,6 +2430,12 @@ _ARGUMENTS: Mapping[str, Mapping[str, object]] = MappingProxyType(
         "manage_nla_tracks": {
             "target": {"type": "OBJECT", "name": "Hero_Rig"},
             "action": "CREATE_TRACK",
+        "sample_evaluated_range": {
+            "frame_start": 1,
+            "frame_end": 120,
+            "bone_points": [{"armature_object_name": "Rig", "bone_name": _bone_name(index)} for index in range(3)],
+            "mesh_metrics": {"object_names": ["Body"], "against_object_names": ["Floor"]},
+        },
             "track_name": "Base",
         },
         "manage_object_constraints": {
