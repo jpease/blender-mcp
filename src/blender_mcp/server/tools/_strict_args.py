@@ -34,21 +34,23 @@ fail a test, not quietly restore the bug - and why a missing attribute raises he
 being skipped, since skipping every tool would harden nothing while still reporting success.
 """
 
+from collections.abc import Iterable
+
 from mcp.server.fastmcp import FastMCP
 
 from ._inputs import StrictModel
 
 
-def harden_tool_arguments(server: FastMCP) -> int:
+def harden_tool_arguments(server: FastMCP, names: Iterable[str]) -> int:
     """
-    Give every currently registered tool's generated argument model `StrictModel`'s config.
+    Give the named registered tools' generated argument models `StrictModel`'s config.
 
     That refuses an unknown key and a non-finite float in a top-level argument, as `StrictModel`
     already refuses both inside every payload model.
 
     Args:
-        server: The FastMCP app to harden. Only tools registered by the time of the call are
-            covered, so this belongs after the registration imports.
+        server: The FastMCP app to harden.
+        names: The registered tools to harden, so this belongs after the imports registering them.
 
     Returns:
         int: How many argument models this call changed. Models already carrying the config are
@@ -62,7 +64,8 @@ def harden_tool_arguments(server: FastMCP) -> int:
     """
     strict = StrictModel.model_config
     hardened = 0
-    for tool in server._tool_manager.list_tools():
+    registered = server._tool_manager._tools
+    for tool in (registered[name] for name in names):
         if not hasattr(tool, "fn_metadata"):
             raise RuntimeError(
                 f"Tool {tool.name!r} has no 'fn_metadata': the MCP SDK's argument-model layout has changed, "

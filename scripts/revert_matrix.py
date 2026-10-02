@@ -95,6 +95,7 @@ from revert_rows import (
     simulation,
     status_and_sampling,
     teardown,
+    toolsets,
     transaction,
     transport,
 )
@@ -163,6 +164,7 @@ from revert_rows.common import (
     SVT,
     TDT,
     THREADT,
+    TOOLSETST,
     TSWAPT,
     VIEWT,
     Revert,
@@ -183,7 +185,9 @@ from revert_rows.common import (
 # not about a feature either, it is the dispatch-and-classification gate itself, and every node
 # in it is a claim about which command the add-on runs and what protection it runs under. AUTHT
 # joins it because every node in it is a claim the add-on writes into a shipped `.blend`'s
-# provenance block, which a recipient cannot check against anything else.
+# provenance block, which a recipient cannot check against anything else. TOOLSETST joins it
+# because every node in it is a claim about which tools one client session is offered and may
+# call, which another session's request must never change.
 NEW_TEST_FILES = (
     RIGT,
     DOCKT,
@@ -212,6 +216,7 @@ NEW_TEST_FILES = (
     GNSPACET,
     INTEGT,
     CAPST,
+    TOOLSETST,
 )
 # Nodes in files the matrix does not own. `coverage_gaps()` sees only these and the nodes
 # collected from NEW_TEST_FILES, so a node left off this list is never checked.
@@ -917,6 +922,7 @@ REVERTS: list[Revert] = [
     *lint_gate.ROWS,
     *geometry_nodes.ROWS,
     *integrations.ROWS,
+    *toolsets.ROWS,
 ]
 
 

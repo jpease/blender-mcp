@@ -21,7 +21,7 @@ from .common import (
     SERVER_LIGHTING_CONSTRUCTION_TOOL,
     SERVER_LIGHTING_RENDERING_TOOL,
     SERVER_STRICT_ARGS,
-    SERVER_TOOLS_INIT,
+    SERVER_TOOLSETS_RUNTIME,
     STRICTT,
     SURFT,
     TEST_ADDON_SURFACE_FILE,
@@ -110,9 +110,9 @@ ROWS: list[Revert] = [
         # was being written - neutralise the call and every node in the file but its two guards
         # goes red, the non-finite ones included; these four are the unknown-key half.
         "strict args: the hardening pass never runs, so an unknown top-level argument is dropped again",
-        SERVER_TOOLS_INIT,
-        "\nharden_tool_arguments(mcp)\n",
-        "\nif False:\n    harden_tool_arguments(mcp)\n",
+        SERVER_TOOLSETS_RUNTIME,
+        "\n    harden_tool_arguments(mcp, added)\n",
+        "\n",
         (
             f"{STRICTT}::test_a_misspelled_argument_is_refused_instead_of_dropped",
             f"{STRICTT}::test_the_wrongly_nested_patch_from_the_incident_is_refused",

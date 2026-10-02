@@ -2,8 +2,8 @@
 Measure the `tools/list` payload a server process advertises.
 
 See `bundles.py` for why that payload matters. The helpers are pure, so they test without a
-FastMCP app or Blender. Only `scripts/measure_catalog.py` uses this at runtime; it lives in the
-package because `scripts/` is not importable.
+FastMCP app or Blender. `scripts/measure_catalog.py` and `manage_toolsets`
+(`toolsets_runtime.bundle_catalog`) use them, so the two report the same numbers.
 """
 
 import json

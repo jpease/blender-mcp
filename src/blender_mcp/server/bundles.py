@@ -4,8 +4,9 @@ Tool bundles: which domain modules a server process registers.
 A client carries every advertised tool definition in the model's context on every turn, so
 each tool costs context for the whole session, not once at startup. With every bundle
 registered (305 tools, per `scripts/measure_catalog.py all`) that alone can fill a client's
-context. `BLENDER_MCP_TOOLSETS` selects a subset per process. A test parses the tool count
-above; get byte figures from `scripts/measure_catalog.py` instead, since they go stale.
+context. `BLENDER_MCP_TOOLSETS` selects a subset per process, and `manage_toolsets` adds bundles
+for one session (`toolsets_runtime.py`). A test parses the tool count above; get byte figures
+from `scripts/measure_catalog.py` instead, since they go stale.
 
 A module belongs in `CORE_MODULES` only if nearly every workflow needs it or a client cannot
 inspect the scene without it. `file_lifecycle` is core because `shot` and `asset` both need
@@ -64,11 +65,11 @@ BUNDLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
 TOOLSETS_ENV_VAR = "BLENDER_MCP_TOOLSETS"
 ALL_SENTINEL = "all"
 
-# Artist-facing presets, chosen once per MCP client entry before the process starts. `shot`
-# assembles, poses, lights and renders; `asset` authors or revises canon. The modes must not
-# overlap outside core: assembling a shot authors no materials, and authoring canon lights no
-# shot. Placing lights is shot work, since an interior has no usable light without it; camera-rig
-# construction stays opt-in, e.g. `shot,camera-rigs`.
+# Artist-facing presets, chosen per MCP client entry before the process starts, or per session
+# with `manage_toolsets`. `shot` assembles, poses, lights and renders; `asset` authors or revises
+# canon. The modes must not overlap outside core: assembling a shot authors no materials, and
+# authoring canon lights no shot. Placing lights is shot work, since an interior has no usable
+# light without it; camera-rig construction stays opt-in, e.g. `shot,camera-rigs`.
 MODES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "shot": ("camera", "lighting", "lighting-construction", "rendering", "character-posing"),

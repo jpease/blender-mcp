@@ -626,7 +626,10 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # WORLD rotation key turns the short way from the channel's previous key, and LOCAL keys as given.
 # Without it a caller keying a 270-degree WORLD step gets a 90-degree turn the other way and
 # cannot tell why; with it, the step is split up front.
-SHOT_MODE_BYTE_CEILING = 218_367
+#
+# Raised from 218,367, measured at 219,785 - 1,418 bytes: the core surface below, which this one
+# inherits.
+SHOT_MODE_BYTE_CEILING = 219_785
 
 # The same rule as above, for the default, core-only surface.
 #
@@ -691,7 +694,13 @@ SHOT_MODE_BYTE_CEILING = 218_367
 #
 # Raised from 75,045, measured at 75,167 - 122 bytes: the same keyframe_object_transform rotation
 # continuity note as the shot ceiling above.
-DEFAULT_MODE_BYTE_CEILING = 75_167
+#
+# Raised from 75,167, measured at 76,585 - 1,418 bytes. 1,426 is `manage_toolsets`: a session that
+# needed one more bundle had to restart its client with a different BLENDER_MCP_TOOLSETS, or run
+# `all` and carry ~192k tokens of catalog every turn; now it enables the bundle for itself and the
+# rest of the catalog stays unlisted. `get_addon_status` gives back 8, its wording now describing
+# the calling session rather than the process.
+DEFAULT_MODE_BYTE_CEILING = 76_585
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:
@@ -1161,6 +1170,7 @@ _EFFECTS_TAGS = (
     "[writes output path; never saves .blend]",
     "[reads/writes .blend on disk]",
     "[external provider; may import or replace data]",
+    "[changes this session's tool list; never contacts Blender]",
 )
 
 

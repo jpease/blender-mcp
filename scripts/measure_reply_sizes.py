@@ -2469,6 +2469,7 @@ _ARGUMENTS: Mapping[str, Mapping[str, object]] = MappingProxyType(
         "manage_object_hierarchy": {"assignments": [{"child_object_name": "set_001", "parent_object_name": "Hero"}]},
         "manage_render_job": {"action": "READ", "job_id": "3f9a1c07b2e4"},
         "manage_scene_collections": {"action": "CREATE", "collection_name": "Receivers"},
+        "manage_toolsets": {"action": "LIST"},
         "manage_view_layers": {"scene_name": "Scene", "action": "CREATE", "view_layer_name": "Beauty"},
         "open_shot": {"filepath": "/shots/hero/shot.blend"},
         "point_camera_at": {"scene_name": "Scene", "camera_name": "Camera_Hero", "target_object_name": "Hero"},

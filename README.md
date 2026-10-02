@@ -274,20 +274,32 @@ for fine-grained control. Modes are curated presets over bundles and compose wit
 | `rendering` | render, background render jobs (`manage_render_job`), inspect render output |
 | `assets` | Poly Haven, Sketchfab |
 
-A tool outside the selected bundles is not advertised at all, so a client reports a call to it
+A tool outside the session's bundles is not advertised at all, so a client reports a call to it
 exactly as it reports a typo. That is worth knowing before it costs an afternoon: a tool missing
-from the session may be one env var away rather than unimplemented. `get_addon_status` answers
-both halves — its `toolsets` field names the bundles this process mounted and counts what each
-unmounted bundle holds, and `get_addon_status(tool_name="create_dolly_camera_rig")` returns a
-`tool_lookup` verdict saying whether that name is mounted here, implemented but unmounted (with
-the `BLENDER_MCP_TOOLSETS` value that would mount it), served by a newer add-on than this server,
-or unknown to both. `get_addon_status(tool_names=[...])` preflights every tool a request needs in
-one call and returns a single `BLENDER_MCP_TOOLSETS` value that mounts all the missing ones.
+from the session may be one call away rather than unimplemented. `manage_toolsets` changes the
+bundles one client session lists without restarting anything: `manage_toolsets(action="LIST")`
+names every bundle with its tool count and the bytes it adds to `tools/list`, `ENABLE` lists the
+named modes or bundles in the calling session at once (the server sends
+`notifications/tools/list_changed`), and `DISABLE` removes them again; core cannot be disabled.
+Other sessions of the same server are unaffected, and a call to a tool the calling session has not
+enabled is refused naming its bundle. A bundle's modules are imported the first time any session
+enables it, so an unused bundle costs neither import time nor context.
 
-The variable is read once, when the server process starts, from the env of that server's entry
-in the MCP client's config. Change it there and have the client reload its MCP configuration: a
-client that respawns a killed server from a config it cached keeps the old value, and restarting
-Blender changes nothing, because the server decides what is mounted, not the add-on.
+`get_addon_status` answers for the calling session — its `toolsets` field names the bundles that
+session lists and counts what each other bundle holds, and
+`get_addon_status(tool_name="create_dolly_camera_rig")` returns a `tool_lookup` verdict saying
+whether that name is listed here, implemented but not enabled (with the `manage_toolsets` call
+that enables it and the `BLENDER_MCP_TOOLSETS` value that would mount it at startup), served by a
+newer add-on than this server, or unknown to both. `get_addon_status(tool_names=[...])` preflights
+every tool a request needs in one call and returns a single `BLENDER_MCP_TOOLSETS` value that
+mounts all the missing ones.
+
+`BLENDER_MCP_TOOLSETS` sets what every session starts with, and is the only way for a client that
+ignores `notifications/tools/list_changed`. The variable is read once, when the server process
+starts, from the env of that server's entry in the MCP client's config. Change it there and have
+the client reload its MCP configuration: a client that respawns a killed server from a config it
+cached keeps the old value, and restarting Blender changes nothing, because the server decides
+what is mounted, not the add-on.
 
 Toolsets shape what an MCP client is offered; they are not access control. The add-on executes
 any command it implements for whoever reaches its socket, whatever the connected server mounted,

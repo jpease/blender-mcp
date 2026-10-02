@@ -20,6 +20,7 @@ from .. import __version__
 from ..addon_manager import check_addon_status_on_startup, format_handshake_log
 from .connection import disconnect_blender, get_blender_connection, get_last_handshake
 from .integrations import integration_refusal, provider_of, withheld_tools
+from .mount_map import CORE_BUNDLE, bundle_tool_names, bundles_providing
 
 logger = logging.getLogger("BlenderMCPServer")
 
@@ -134,6 +135,10 @@ carries whole records. "changed_objects"/"changed_resources" name the items you 
 roots of a linked hierarchy, not its every member, which the tool counts in "data" - so they stay
 short; past 50 names a list is cut and a warning states the total.
 
+The tool list starts as core plus this server's startup selection, so a tool you cannot see may be
+in another bundle: manage_toolsets(action="LIST") names each bundle with its catalog cost, and
+ENABLE lists one in this session at once.
+
 Before editing, inspect the scene (list_scene_objects, get_object_info, get_mesh_data)
 rather than assuming which object is active or selected. Prefer non-destructive tools
 (live modifiers, ND) over apply=True/cleanup tools, which are irreversible from this
@@ -172,13 +177,18 @@ its field list before calling.
 
 class BlenderFastMCP(FastMCP):
     """
-    FastMCP whose tool list follows which optional integrations the open .blend enables.
+    FastMCP whose tool list follows the session's toolsets and the open .blend's integrations.
 
-    `BLENDER_MCP_TOOLSETS` decides what a process mounts; the handshake decides which mounted
-    integration tools can do anything. tools/list omits the tools of an integration the latest
-    handshake shows disabled (`integrations.py`), a call to one is refused before dispatch, and a
-    session that has listed tools is sent notifications/tools/list_changed once a later handshake
-    - a (re)connect, a file swap, get_addon_status - changes that set.
+    `BLENDER_MCP_TOOLSETS` decides what a process registers at start, and a session lists exactly
+    that until it calls `manage_toolsets`, which registers a bundle on first demand
+    (`toolsets_runtime.py`) and lists it to that session only. A registered tool outside the
+    calling session's set is refused before dispatch, naming the bundle that lists it.
+
+    The handshake decides which listed integration tools can do anything. tools/list omits the
+    tools of an integration the latest handshake shows disabled (`integrations.py`), a call to one
+    is refused before dispatch, and a session that has listed tools is sent
+    notifications/tools/list_changed once a later handshake - a (re)connect, a file swap,
+    get_addon_status - changes that set.
     """
 
     def __init__(
@@ -200,6 +210,11 @@ class BlenderFastMCP(FastMCP):
         super().__init__(name, lifespan=lifespan, instructions=instructions)
         # What each session was last shown as withheld, so a change is announced once.
         self._withheld_shown: weakref.WeakKeyDictionary[ServerSession, frozenset[str]] = weakref.WeakKeyDictionary()
+        # The bundles each session chose through manage_toolsets. Absent: the startup selection.
+        self._enabled_bundles: weakref.WeakKeyDictionary[ServerSession, frozenset[str]] = weakref.WeakKeyDictionary()
+        # Tools registered after startup because some session enabled their bundle. A session
+        # that has not chosen its own bundles never lists them.
+        self._registered_on_demand: set[str] = set()
         create_options = self._mcp_server.create_initialization_options
 
         def advertising_tool_list_changes(
@@ -221,17 +236,115 @@ class BlenderFastMCP(FastMCP):
         except LookupError:
             return None
 
+    def record_registered_on_demand(self, names: frozenset[str]) -> None:
+        """
+        Note tools registered after startup, which only the sessions enabling them may list.
+
+        Args:
+            names: The tool names a bundle registration added.
+
+        """
+        self._registered_on_demand |= names
+
+    def enabled_bundles(self, session: ServerSession | None) -> frozenset[str] | None:
+        """
+        Read the bundles a session chose, or None while it lists the startup selection.
+
+        Args:
+            session: The session asking, or None outside a request.
+
+        Returns:
+            frozenset[str] | None: Bundle names, core excluded.
+
+        """
+        return None if session is None else self._enabled_bundles.get(session)
+
+    def session_tool_names(self, session: ServerSession | None) -> frozenset[str]:
+        """
+        Name the registered tools a session lists, before any integration withholds some.
+
+        Args:
+            session: The session asking, or None outside a request, which sees the startup selection.
+
+        Returns:
+            frozenset[str]: Every registered tool the session's bundles, or the startup selection, include.
+
+        """
+        registered = frozenset(self._tool_manager._tools)
+        enabled = self.enabled_bundles(session)
+        if enabled is None:
+            return registered - self._registered_on_demand
+        by_bundle = bundle_tool_names()
+        return registered & by_bundle[CORE_BUNDLE].union(*(by_bundle[bundle] for bundle in enabled))
+
+    async def choose_bundles(self, session: ServerSession, bundles: frozenset[str]) -> bool:
+        """
+        Set the bundles one session lists, and tell it when its tool list changed.
+
+        Args:
+            session: The session choosing.
+            bundles: Every bundle it now lists besides core; register them first.
+
+        Returns:
+            bool: Whether the session's tool list changed.
+
+        """
+        before = self.session_tool_names(session)
+        self._enabled_bundles[session] = bundles
+        changed = self.session_tool_names(session) != before
+        if changed:
+            await session.send_tool_list_changed()
+        return changed
+
+    async def registered_tools(self) -> list[MCPTool]:
+        """
+        List every registered tool, whichever session enabled it and whatever is withheld.
+
+        Returns:
+            list[MCPTool]: The `tools/list` entries.
+
+        """
+        return await super().list_tools()
+
     async def list_tools(self) -> list[MCPTool]:
-        """List the mounted tools, less those a disabled integration withholds."""
+        """List the session's tools, less those a disabled integration withholds."""
         withheld = withheld_tools(get_last_handshake())
         session = self._session()
         if session is not None:
             self._withheld_shown[session] = withheld
-        return [tool for tool in await super().list_tools() if tool.name not in withheld]
+        listed = self.session_tool_names(session)
+        return [tool for tool in await super().list_tools() if tool.name in listed and tool.name not in withheld]
+
+    def _toolset_refusal(self, name: str) -> str | None:
+        """
+        Say why the calling session may not call a tool, or None when it may.
+
+        Args:
+            name: The tool called.
+
+        Returns:
+            str | None: The refusal, naming where to look next.
+
+        """
+        if name not in self._tool_manager._tools:
+            return (
+                f'Unknown tool: {name}. Call get_addon_status(tool_name="{name}") to learn whether this '
+                "server implements it and which toolset lists it."
+            )
+        if name in self.session_tool_names(self._session()):
+            return None
+        bundles = bundles_providing(name)
+        first = "".join(f'"{bundle}"' for bundle in bundles[:1])
+        return (
+            f"'{name}' is not enabled in this session; it belongs to {', '.join(bundles)}. Call "
+            f'manage_toolsets(action="ENABLE", toolsets=[{first}]) first.'
+        )
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Sequence[ContentBlock] | dict[str, Any]:
-        """Refuse a withheld tool before dispatch, and announce a tool list the call changed."""
+        """Refuse a tool outside the session's toolsets or withheld, and announce a tool list the call changed."""
         try:
+            if (toolset_refusal := self._toolset_refusal(name)) is not None:
+                raise ToolError(toolset_refusal)
             provider = provider_of(name)
             refusal = None if provider is None else await asyncio.to_thread(integration_refusal, name, provider)
             if refusal is not None:

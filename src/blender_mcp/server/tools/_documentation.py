@@ -6,10 +6,10 @@ copy Google-style ``Args`` entries into JSON Schema property descriptions.  The
 tool surface in this package also contains many nested Pydantic patch models,
 whose constraints are useful to agents only when their purpose is explicit.
 
-This module performs one final documentation pass after all tool modules have
-registered.  It deliberately changes metadata only: call signatures, dispatch,
-validation, and Blender behavior remain untouched.  That includes the advertised
-schema compaction, which edits `tool.parameters` and never the models that validate.
+This module performs the documentation pass over the tools each registration adds
+(`toolsets_runtime.register_tool_modules`).  It deliberately changes metadata only: call
+signatures, dispatch, validation, and Blender behavior remain untouched.  That includes the
+advertised schema compaction, which edits `tool.parameters` and never the models that validate.
 """
 
 # The schema vocabulary is intentionally an explicit decision table.
@@ -18,13 +18,11 @@ schema compaction, which edits `tool.parameters` and never the models that valid
 import inspect
 import re
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
-
-from ..app import mcp
 
 _SECTION_RE = re.compile(r"^([A-Z][A-Za-z ]+):(?:\s+(.*))?$")
 _ARG_RE = re.compile(r"^\s{4}([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$")
@@ -81,6 +79,8 @@ _IMAGE_TOOLS = {
     "render_pbr_material_preview",
     "inspect_render_output",
 }
+# Tools that change only what this server shows the calling session; Blender is never contacted.
+_SESSION_TOOLS = {"manage_toolsets"}
 _DESTRUCTIVE_PREFIXES = (
     "aim_",
     "animate_",
@@ -608,7 +608,7 @@ def _is_destructive(name: str, schema: Mapping[str, Any]) -> bool:
         "overwrite",
         "replace_existing",
     }
-    return (
+    return name not in _SESSION_TOOLS and (
         name.startswith(_DESTRUCTIVE_PREFIXES)
         or name in _DESTRUCTIVE_TOOLS
         or bool(conditional_flags.intersection(schema.get("properties", {})))
@@ -617,8 +617,10 @@ def _is_destructive(name: str, schema: Mapping[str, Any]) -> bool:
 
 def _is_idempotent(name: str, read_only: bool) -> bool:
     non_idempotent_setters = {"set_cloth_vertex_weights", "set_skin_weights"}
-    return read_only or (
-        name not in non_idempotent_setters and name.startswith(("configure_", "set_", "aim_", "frame_", "sync_"))
+    return (
+        read_only
+        or name in _SESSION_TOOLS
+        or (name not in non_idempotent_setters and name.startswith(("configure_", "set_", "aim_", "frame_", "sync_")))
     )
 
 
@@ -650,6 +652,8 @@ def _effects_tag(name: str, *, read_only: bool) -> str:
         return "[reads/writes .blend on disk]"
     if name in _EXTERNAL_TOOLS:
         return "[external provider; may import or replace data]"
+    if name in _SESSION_TOOLS:
+        return "[changes this session's tool list; never contacts Blender]"
     return "[mutates Blender; never saves .blend]"
 
 
@@ -663,9 +667,28 @@ def _tool_contract(name: str, *, read_only: bool, returns: str | None) -> str:
     return tag
 
 
-def finalize_tool_documentation(mcp: FastMCP) -> None:
-    """Enrich all currently registered tools with MCP-visible documentation metadata."""
-    for tool in mcp._tool_manager._tools.values():
+# Every tool name the pass below has rewritten, process-wide. The pass is not reversible: a second
+# run over a tool reads the rewritten description, which has lost its `Returns:` section, and
+# appends the effects tag again. `lighting` and `lighting-construction` share a module, so a tool
+# can be registered by one bundle and asked for again by the other.
+_finalized: set[str] = set()
+
+
+def finalize_tool_documentation(mcp: FastMCP, names: Iterable[str]) -> None:
+    """
+    Enrich the named registered tools with MCP-visible documentation metadata, once each.
+
+    Args:
+        mcp: The app the tools are registered on.
+        names: The tools to document; one already documented by an earlier call is skipped.
+
+    """
+    tools = mcp._tool_manager._tools
+    for name in names:
+        if name in _finalized:
+            continue
+        _finalized.add(name)
+        tool = tools[name]
         body, explicit_parameters, returns = _parse_docstring(tool.description)
         read_only = _is_read_only(tool.name)
         _describe_schema(tool.parameters, explicit=explicit_parameters)
@@ -680,8 +703,3 @@ def finalize_tool_documentation(mcp: FastMCP) -> None:
             idempotentHint=_is_idempotent(tool.name, read_only),
             openWorldHint=(tool.name in _EXTERNAL_TOOLS or tool.name in _FILE_TOOLS or tool.name in _BLEND_FILE_TOOLS),
         )
-
-
-# Imported after every registration module by tools.__init__, so this covers the
-# complete exposed surface while keeping the package initializer declarative.
-finalize_tool_documentation(mcp)

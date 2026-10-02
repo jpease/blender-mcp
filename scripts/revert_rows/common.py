@@ -99,9 +99,9 @@ SERVER_INTEGRATIONS = ROOT / "src/blender_mcp/server/integrations.py"
 RENDER_COVERAGE_SCRIPT = ROOT / "scripts/render_coverage.py"
 SERVER_RENDERING_TOOL = ROOT / "src/blender_mcp/server/tools/rendering.py"
 SERVER_DOCUMENTATION = ROOT / "src/blender_mcp/server/tools/_documentation.py"
-# Where the tool catalog is registered, and where the hardening pass that follows the
-# registration imports is called from.
-SERVER_TOOLS_INIT = ROOT / "src/blender_mcp/server/tools/__init__.py"
+# Where tool modules are imported, at startup and when a session enables a bundle, and where the
+# hardening and documentation passes that follow each registration are called from.
+SERVER_TOOLSETS_RUNTIME = ROOT / "src/blender_mcp/server/toolsets_runtime.py"
 # The hardening pass itself: which config every generated argument model is given.
 SERVER_STRICT_ARGS = ROOT / "src/blender_mcp/server/tools/_strict_args.py"
 SERVER_BUNDLES = ROOT / "src/blender_mcp/server/bundles.py"
@@ -225,6 +225,7 @@ NDOUTT = "tests/server/tools/test_nd_outcome.py"
 SRVPHT = "tests/server/tools/test_polyhaven.py"
 GNSPACET = "tests/test_geometry_nodes_builder_spaces.py"
 INTEGT = "tests/server/test_integration_gating.py"
+TOOLSETST = "tests/server/test_toolsets_runtime.py"
 HOSTILE_LIB = f"{SESSIONT}::test_a_hostile_library_path_is_reduced_the_same_way_a_failure_note_is"
 # The `name` half of the same table, with short ids so a row can list its nodes; the
 # `filepath` half's ids run to hundreds of characters.

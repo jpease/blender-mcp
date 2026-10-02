@@ -413,7 +413,7 @@ def _names_page(monkeypatch: pytest.MonkeyPatch, **paging: int) -> dict:
 
     """
     _install_handshake(monkeypatch, _handshake())
-    monkeypatch.setattr(core, "_mounted_tool_names", lambda: _REGISTERED)
+    monkeypatch.setattr(core, "_mounted_tool_names", lambda _session=None: _REGISTERED)
     payload = asyncio.run(
         core.get_addon_status(ctx=None, mounted_tools=True, **paging)  # pyright: ignore[reportArgumentType]
     )["data"]

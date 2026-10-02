@@ -13,8 +13,8 @@ ROWS: list[Revert] = [
     Revert(
         "integrations: a disabled integration's tools stay in the tool list",
         SERVER_APP,
-        "        return [tool for tool in await super().list_tools() if tool.name not in withheld]",
-        "        return await super().list_tools()",
+        " if tool.name in listed and tool.name not in withheld]",
+        " if tool.name in listed]",
         (f"{_LISTED}[disabled]", _ANNOUNCED),
     ),
     Revert(
@@ -41,8 +41,8 @@ ROWS: list[Revert] = [
     Revert(
         "integrations: a session is never told its tool list changed",
         SERVER_APP,
-        "            await session.send_tool_list_changed()",
-        "            pass",
+        "            self._withheld_shown[session] = withheld\n            await session.send_tool_list_changed()",
+        "            self._withheld_shown[session] = withheld\n            pass",
         (_ANNOUNCED,),
     ),
     Revert(
