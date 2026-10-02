@@ -281,7 +281,18 @@ both halves — its `toolsets` field names the bundles this process mounted and 
 unmounted bundle holds, and `get_addon_status(tool_name="create_dolly_camera_rig")` returns a
 `tool_lookup` verdict saying whether that name is mounted here, implemented but unmounted (with
 the `BLENDER_MCP_TOOLSETS` value that would mount it), served by a newer add-on than this server,
-or unknown to both.
+or unknown to both. `get_addon_status(tool_names=[...])` preflights every tool a request needs in
+one call and returns a single `BLENDER_MCP_TOOLSETS` value that mounts all the missing ones.
+
+The variable is read once, when the server process starts, from the env of that server's entry
+in the MCP client's config. Change it there and have the client reload its MCP configuration: a
+client that respawns a killed server from a config it cached keeps the old value, and restarting
+Blender changes nothing, because the server decides what is mounted, not the add-on.
+
+Toolsets shape what an MCP client is offered; they are not access control. The add-on executes
+any command it implements for whoever reaches its socket, whatever the connected server mounted,
+and a command sent to the socket directly skips the server's argument validation and defaults.
+The socket is unauthenticated (see [Live Blender rig](#live-blender-rig)), so keep it on loopback.
 
 Mounting a bundle is not the same as the integration behind it being usable. Poly Haven,
 Sketchfab and ND tools do something only while the open `.blend` ticks that integration's checkbox

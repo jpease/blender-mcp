@@ -187,7 +187,14 @@ async def add_camera_shake(
     depth: Annotated[int, Field(ge=0, le=8)] = 1,
     influence: Annotated[float, Field(ge=0, le=1)] = 1.0,
 ) -> dict:
-    """Add deterministic procedural shake on a new parent control, preserving authored camera curves."""
+    """
+    Add deterministic procedural shake on a new parent control, preserving authored camera curves.
+
+    The control is keyed at its neutral (identity) transform at frame_start and frame_end only,
+    and its Noise modifiers are restricted to that range. Outside it the control holds identity,
+    so the camera is unshaken there; a checker reading the control's first key as "held for the
+    whole shot" sees that neutral, not shake. Mute the control's action to disable the shake.
+    """
     if (frame_start is None) == (frame_start_at_seconds is None):
         raise ToolError("supply exactly one of frame_start or frame_start_at_seconds")
     if (frame_end is None) == (frame_end_at_seconds is None):
