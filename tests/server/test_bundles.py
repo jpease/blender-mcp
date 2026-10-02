@@ -621,7 +621,12 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # The rest is `get_addon_status`' `tool_names` batch preflight (see the default ceiling below),
 # `keyframe_character_pose`'s `quaternion_continuity`, and `add_camera_shake` stating that its
 # control holds identity outside the shaken range.
-SHOT_MODE_BYTE_CEILING = 218_245
+#
+# Raised from 218,245, measured at 218,367 - 122 bytes: keyframe_object_transform stating that a
+# WORLD rotation key turns the short way from the channel's previous key, and LOCAL keys as given.
+# Without it a caller keying a 270-degree WORLD step gets a 90-degree turn the other way and
+# cannot tell why; with it, the step is split up front.
+SHOT_MODE_BYTE_CEILING = 218_367
 
 # The same rule as above, for the default, core-only surface.
 #
@@ -683,7 +688,10 @@ SHOT_MODE_BYTE_CEILING = 218_245
 # preflighting every tool a request needs with one combined BLENDER_MCP_TOOLSETS value, and the
 # remount note saying where that value is read (a client respawning the server from cached config
 # kept the old one, and restarting Blender cannot change it).
-DEFAULT_MODE_BYTE_CEILING = 75_045
+#
+# Raised from 75,045, measured at 75,167 - 122 bytes: the same keyframe_object_transform rotation
+# continuity note as the shot ceiling above.
+DEFAULT_MODE_BYTE_CEILING = 75_167
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

@@ -19,6 +19,7 @@ from .action_assignment import (
     restored_action_assignment,
     restored_keys_on_error,
 )
+from .animation import _continuous_rotation
 from .character_rigging.posing import _place_playhead, restored_playhead
 from .key_style import KeyStyle, style_point
 from .scene import _object, _required_name
@@ -128,6 +129,64 @@ def _has_key_at(obj, data_path, frame):
         ):
             return True
     return False
+
+
+def _previous_key_value(obj, data_path, frame):
+    """
+    Read what one channel holds at its last key before `frame`, in the object's own slot.
+
+    Args:
+        obj: The object being keyed.
+        data_path: A key of `_CHANNEL_LENGTHS`.
+        frame: The frame about to be keyed.
+
+    Returns:
+        tuple | None: One value per array index, or None when the channel is not fully
+        animated yet or has no key before `frame`.
+
+    """
+    width = _CHANNEL_LENGTHS[data_path]
+    _action, curves = _action_fcurves(obj)
+    by_index = {
+        curve.array_index: curve for curve in curves if curve.data_path == data_path and 0 <= curve.array_index < width
+    }
+    if len(by_index) != width:
+        return None
+    earlier = [
+        float(point.co[0])
+        for curve in by_index.values()
+        for point in curve.keyframe_points
+        if point.co[0] < frame - _KEYFRAME_MATCH_TOLERANCE
+    ]
+    if not earlier:
+        return None
+    previous = max(earlier)
+    return tuple(by_index[index].evaluate(previous) for index in range(width))
+
+
+def _match_previous_world_rotation(obj, data_path, frame):
+    """
+    Re-spell the rotation `matrix_world` just decomposed onto the branch of the channel's previous key.
+
+    The setter picks one branch per key - w >= 0 for a quaternion, +-180 degrees for an Euler -
+    so two correct neighbouring poses on opposite branches made the curve between them spin the
+    long way. Only WORLD keys come through here: a LOCAL value is the caller's own spelling, and a
+    deliberate step past 180 degrees between two keys has no other way to be asked for.
+
+    Args:
+        obj: The object whose channel `matrix_world` was just assigned through.
+        data_path: rotation_euler or rotation_quaternion, whichever is about to be keyed.
+        frame: The frame about to be keyed.
+
+    """
+    previous = _previous_key_value(obj, data_path, frame)
+    if previous is None:
+        return
+    if data_path == "rotation_quaternion":
+        orientation = mathutils.Quaternion(obj.rotation_quaternion)
+    else:
+        orientation = mathutils.Euler(obj.rotation_euler, obj.rotation_mode).to_quaternion()
+    setattr(obj, data_path, _continuous_rotation(obj.rotation_mode, orientation, previous))
 
 
 def _style_inserted_keys(obj, data_path, frame, style):
@@ -250,6 +309,9 @@ def _apply_and_key(obj, frame, space, channels):
             rotation = current_rotation
         scale = mathutils.Vector(channels["scale"]) if "scale" in channels else current_scale
         obj.matrix_world = mathutils.Matrix.LocRotScale(location, rotation, scale)
+        for data_path in ("rotation_euler", "rotation_quaternion"):
+            if data_path in channels:
+                _match_previous_world_rotation(obj, data_path, frame)
     else:
         if "location" in channels:
             obj.location = channels["location"]

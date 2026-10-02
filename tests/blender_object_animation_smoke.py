@@ -1,12 +1,14 @@
 # ruff: file-ignore[module-import-not-at-top-of-file]
 """Run with Blender 5.1+ to smoke-test generic object transform keyframing."""
 
+import itertools
 import math
 import sys
 
 from pathlib import Path
 
 import bpy
+import mathutils
 
 sys.path.append(str(Path(__file__).resolve().parent))
 from smoke_addon import load_addon
@@ -39,6 +41,98 @@ def _point_at(curve, frame: float):
     matches = [point for point in curve.keyframe_points if math.isclose(point.co[0], frame, abs_tol=1e-4)]
     assert matches, f"no keyframe at frame {frame} on {curve.data_path}"
     return matches[0]
+
+
+def _channel_at(obj, data_path: str, frame: float) -> tuple[float, ...]:
+    _action, curves = _action_fcurves(obj)
+    by_index = {curve.array_index: curve for curve in curves if curve.data_path == data_path}
+    return tuple(by_index[index].evaluate(frame) for index in range(len(by_index)))
+
+
+def _orientation(value) -> mathutils.Quaternion:
+    """Read a keyed rotation_quaternion (four values) or XYZ rotation_euler (three) as an orientation."""
+    if len(value) == 4:
+        return mathutils.Quaternion(value).normalized()
+    return mathutils.Euler(value, "XYZ").to_quaternion()
+
+
+def _arc(first: mathutils.Quaternion, second: mathutils.Quaternion) -> float:
+    """Measure the angle between two orientations, whichever hemisphere either is spelled in."""
+    return 2.0 * math.acos(min(1.0, abs(first.normalized().dot(second.normalized()))))
+
+
+def _yaw_records(obj, path: str, yaws) -> list[dict]:
+    records = []
+    for frame, degrees in yaws:
+        euler = mathutils.Euler((0.0, 0.0, math.radians(degrees)), "XYZ")
+        value = tuple(euler.to_quaternion()) if path == "rotation_quaternion" else tuple(euler)
+        records.append({"object_name": obj.name, "frame": frame, "space": "WORLD", path: value})
+    return records
+
+
+def _test_world_rotation_keys_take_the_short_way(handler) -> None:
+    """
+    Key a WORLD yaw across +-180 degrees and read the curve between the keys.
+
+    `matrix_world` decomposes each key onto one branch - w >= 0 for a quaternion, +-180 degrees
+    for an Euler - so 170 then 190 degrees came back as two spellings on opposite branches, and
+    the curve between two correct poses spun 340 degrees the wrong way.
+    """
+    yaws = ((1.0, 170.0), (10.0, 190.0), (20.0, 200.0))
+    for mode, path in (("QUATERNION", "rotation_quaternion"), ("XYZ", "rotation_euler")):
+        obj = _new_object(f"AnimYaw{mode}")
+        obj.rotation_mode = mode
+        handler.keyframe_object_transform(keyframes=_yaw_records(obj, path, yaws))
+
+        keyed = [_channel_at(obj, path, frame) for frame, _degrees in yaws]
+        for (frame, degrees), value in zip(yaws, keyed, strict=True):
+            asked = mathutils.Euler((0.0, 0.0, math.radians(degrees)), "XYZ").to_quaternion()
+            assert _arc(_orientation(value), asked) < 1e-4, f"{mode} key at {frame} is not the pose asked for"
+        for before, after in itertools.pairwise(keyed):
+            if mode == "QUATERNION":
+                dot = mathutils.Quaternion(before).dot(mathutils.Quaternion(after))
+                assert dot >= 0.0, f"adjacent quaternion keys {before} and {after} sit on opposite hemispheres"
+            else:
+                assert abs(after[2] - before[2]) < math.pi, f"adjacent Euler Z keys {before[2]} and {after[2]} wrap"
+
+        first, second = (_orientation(value) for value in keyed[:2])
+        midway = _orientation(_channel_at(obj, path, 5.5))
+        detour = _arc(first, midway) + _arc(midway, second) - _arc(first, second)
+        assert detour < 1e-3, f"{mode}: the curve leaves the 20-degree arc between its keys by {math.degrees(detour)}"
+
+
+def _test_world_rotation_keeps_a_deliberate_turn(handler) -> None:
+    """Accumulate a turn of under 180 degrees per key past a full revolution instead of folding it back."""
+    obj = _new_object("AnimSpin")
+    yaws = ((1.0, 0.0), (10.0, 170.0), (20.0, 340.0), (30.0, 510.0))
+    handler.keyframe_object_transform(keyframes=_yaw_records(obj, "rotation_euler", yaws))
+    keyed = [math.degrees(_channel_at(obj, "rotation_euler", frame)[2]) for frame, _degrees in yaws]
+    for (_frame, degrees), value in zip(yaws, keyed, strict=True):
+        assert math.isclose(value, degrees, abs_tol=1e-3), f"WORLD turn keyed as {keyed}, not {[d for _f, d in yaws]}"
+
+
+def _test_local_rotation_is_keyed_verbatim(handler) -> None:
+    """LOCAL writes the caller's own spelling, so a single step past 180 degrees stays the step asked for."""
+    euler_obj = _new_object("AnimLocalEuler")
+    handler.keyframe_object_transform(
+        keyframes=[
+            {"object_name": euler_obj.name, "frame": 1.0, "space": "LOCAL", "rotation_euler": (0.0, 0.0, 0.0)},
+            {"object_name": euler_obj.name, "frame": 10.0, "space": "LOCAL", "rotation_euler": (0.0, 0.0, 4.7)},
+        ]
+    )
+    assert math.isclose(_channel_at(euler_obj, "rotation_euler", 10.0)[2], 4.7, abs_tol=1e-6)
+
+    quat_obj = _new_object("AnimLocalQuat")
+    quat_obj.rotation_mode = "QUATERNION"
+    far_side = tuple(-component for component in mathutils.Euler((0.0, 0.0, 0.5)).to_quaternion())
+    handler.keyframe_object_transform(
+        keyframes=[
+            {"object_name": quat_obj.name, "frame": 1.0, "space": "LOCAL", "rotation_quaternion": (1.0, 0.0, 0.0, 0.0)},
+            {"object_name": quat_obj.name, "frame": 10.0, "space": "LOCAL", "rotation_quaternion": far_side},
+        ]
+    )
+    keyed = _channel_at(quat_obj, "rotation_quaternion", 10.0)
+    assert all(math.isclose(a, b, abs_tol=1e-6) for a, b in zip(keyed, far_side, strict=True)), keyed
 
 
 def _test_world_and_local_space(handler, cube, rig, child) -> None:
@@ -261,6 +355,9 @@ def main() -> None:
     _test_insert_only_and_replace_existing(handler, cube)
     _test_interpolation_and_handle_styling(handler, cube)
     _test_batch_validation(handler)
+    _test_world_rotation_keys_take_the_short_way(handler)
+    _test_world_rotation_keeps_a_deliberate_turn(handler)
+    _test_local_rotation_is_keyed_verbatim(handler)
     _test_a_key_outside_a_travelling_cycle_is_reported(handler, _new_object("AnimRoot"))
 
     print("OBJECT_ANIMATION_SMOKE_OK")

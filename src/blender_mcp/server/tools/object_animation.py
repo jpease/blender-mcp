@@ -61,7 +61,9 @@ async def keyframe_object_transform(
     WORLD space solves the requested location/rotation/scale through the object's parent chain at the key's
     frame by assigning matrix_world directly (Blender resolves the parent inverse), then keys the resulting local
     values, so a child of an animated rig can be keyed at an absolute world pose without solving parenting
-    yourself; omitted channels keep their world value at that frame. LOCAL space sets the given channels directly.
+    yourself; omitted channels keep their world value at that frame. A WORLD rotation key takes the short way from
+    the channel's previous key, so key a turn past 180 degrees in steps. LOCAL space sets the given channels
+    directly, keyed as given.
     Rotation must match the object's current rotation_mode - rotation_quaternion when rotation_mode is
     QUATERNION, otherwise rotation_euler; AXIS_ANGLE objects are rejected (use edit_keyframes instead).
     rotation_mode itself is never changed. Convert seconds to a frame via at_seconds using the target scene's
