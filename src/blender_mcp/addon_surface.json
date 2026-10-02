@@ -1686,6 +1686,7 @@
       "keying_policy",
       "keys",
       "poses",
+      "quaternion_continuity",
       "space"
     ],
     "keyframe_object_transform": [
@@ -2202,6 +2203,17 @@
       "managed_rig",
       "object_names"
     ],
+    "render_contact_sheet": [
+      "cell_height",
+      "cell_width",
+      "cells",
+      "columns",
+      "confirm_overwrite",
+      "output_path",
+      "samples",
+      "scene_name",
+      "target_engine"
+    ],
     "render_lighting_preview": [
       "camera_name",
       "confirm_overwrite",
@@ -2281,6 +2293,16 @@
       "vertex_indices",
       "vertex_limit",
       "vertex_offset"
+    ],
+    "sample_evaluated_range": [
+      "bone_points",
+      "frame_end",
+      "frame_start",
+      "frame_step",
+      "frames",
+      "limit",
+      "mesh_metrics",
+      "offset"
     ],
     "sample_liquid_simulation": [
       "boundary_tolerance_cells",
@@ -2618,5 +2640,5 @@
       "scope"
     ]
   },
-  "protocol_version": 50
+  "protocol_version": 51
 }

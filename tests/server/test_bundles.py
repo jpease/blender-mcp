@@ -613,7 +613,15 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # Raised from 209,149, measured at 209,364 - 215 bytes: an omittable model field keeps pydantic's
 # `anyOf: [$ref, null]` instead of collapsing to a `$ref` with its description beside it, which
 # draft-07 readers ignore and later ones only sometimes merge.
-SHOT_MODE_BYTE_CEILING = 209_364
+#
+# Raised from 209,364, measured at 218,245 - 8,881 bytes. 4,017 is `sample_evaluated_range`, the
+# only multi-frame evaluated readback (bone heads/tails, mesh bounds and penetration per frame) -
+# without it verifying a performance meant a separate headless Blender script. 3,072 is
+# `render_contact_sheet`: a review took one `render_lighting_preview` call per (camera, frame).
+# The rest is `get_addon_status`' `tool_names` batch preflight (see the default ceiling below),
+# `keyframe_character_pose`'s `quaternion_continuity`, and `add_camera_shake` stating that its
+# control holds identity outside the shaken range.
+SHOT_MODE_BYTE_CEILING = 218_245
 
 # The same rule as above, for the default, core-only surface.
 #
@@ -670,7 +678,12 @@ SHOT_MODE_BYTE_CEILING = 209_364
 # and effects tags as the shot ceiling above.
 #
 # Raised from 74,283, measured at 74,326 - 43 bytes: the same `$ref` rule as the shot ceiling above.
-DEFAULT_MODE_BYTE_CEILING = 74_326
+#
+# Raised from 74,326, measured at 75,045 - 719 bytes: `get_addon_status`' `tool_names`, one call
+# preflighting every tool a request needs with one combined BLENDER_MCP_TOOLSETS value, and the
+# remount note saying where that value is read (a client respawning the server from cached config
+# kept the old one, and restarting Blender cannot change it).
+DEFAULT_MODE_BYTE_CEILING = 75_045
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:
