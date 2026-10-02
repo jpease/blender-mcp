@@ -34,6 +34,9 @@ _STATUS_COMMANDS: dict[Provider, str] = {
     "nd": "get_nd_status",
 }
 
+# How many names one `get_addon_status(tool_names=...)` resolves; the reply stays inside its budget.
+_MAX_TOOL_NAMES = 50
+
 
 def _mounted_tool_names() -> frozenset[str]:
     """
@@ -81,19 +84,31 @@ def _mounted_tools_page(mounted: frozenset[str], *, limit: int, offset: int) -> 
     }
 
 
-def _suggested_toolsets(bundle: str) -> str:
+# Where the selection is read, said once. "Restart the server" was the old remedy, and it fails
+# under a client that respawns a killed server from the env it cached at load: the process came
+# back with the old selection, and restarting Blender changed nothing either.
+_REMOUNT_NOTE = (
+    f"{TOOLSETS_ENV_VAR} is read once, when the MCP server process starts, from the env of this "
+    "server's entry in the MCP client's config. Set it there and have the client reload its MCP "
+    "configuration; a client that respawns the server from a cached config keeps the old value. "
+    "Restarting Blender changes nothing: the server, not the add-on, decides what is mounted."
+)
+
+
+def _suggested_toolsets(bundles: Sequence[str]) -> str:
     """
-    Spell the `BLENDER_MCP_TOOLSETS` value that adds one bundle to this process's selection.
+    Spell the `BLENDER_MCP_TOOLSETS` value that adds bundles to this process's selection.
 
     Args:
-        bundle: The bundle to add.
+        bundles: The bundles to add, in order; one already selected is not repeated.
 
     Returns:
         The full replacement value, since the variable is set whole, not appended to.
 
     """
-    current = (os.getenv(TOOLSETS_ENV_VAR) or "").strip().strip(",")
-    return f"{current},{bundle}" if current else bundle
+    current = [name.strip() for name in (os.getenv(TOOLSETS_ENV_VAR) or "").split(",") if name.strip()]
+    added = [bundle for bundle in dict.fromkeys(bundles) if bundle not in current]
+    return ",".join([*current, *added])
 
 
 def _toolset_payload(mounted: frozenset[str]) -> dict[str, object]:
@@ -135,14 +150,14 @@ def _toolset_payload(mounted: frozenset[str]) -> dict[str, object]:
     }
 
 
-def _tool_lookup(
+def _lookup_status(
     tool_name: str,
     capabilities: Sequence[str],
     mounted: frozenset[str],
-    withheld: frozenset[Provider] = frozenset(),
-) -> dict[str, object]:
+    withheld: frozenset[Provider],
+) -> str:
     """
-    Answer, for one tool name, which of five different situations the caller is in.
+    Classify one tool name into which of five different situations the caller is in.
 
     Mounted; mounted but withheld because its integration is disabled; implemented but not
     mounted here; absent from this server build while the connected add-on still serves the
@@ -157,22 +172,48 @@ def _tool_lookup(
         withheld: The integrations the handshake shows disabled.
 
     Returns:
+        str: MOUNTED, WITHHELD, UNMOUNTED, NEWER_ADDON or UNKNOWN.
+
+    """
+    if tool_name in mounted:
+        return "WITHHELD" if provider_of(tool_name) in withheld else "MOUNTED"
+    if bundles_providing(tool_name):
+        return "UNMOUNTED"
+    return "NEWER_ADDON" if tool_name in capabilities else "UNKNOWN"
+
+
+def _tool_lookup(
+    tool_name: str,
+    capabilities: Sequence[str],
+    mounted: frozenset[str],
+    withheld: frozenset[Provider] = frozenset(),
+) -> dict[str, object]:
+    """
+    Answer, for one tool name, which situation the caller is in and what remedies it.
+
+    Args:
+        tool_name: The name asked about.
+        capabilities: The command names the connected add-on advertises.
+        mounted: The tool names registered in this process.
+        withheld: The integrations the handshake shows disabled.
+
+    Returns:
         dict[str, object]: The verdict and the evidence behind it.
 
     """
     providers = bundles_providing(tool_name)
-    addon_command = tool_name in capabilities
     integration = provider_of(tool_name)
-    if tool_name in mounted and integration in withheld:
+    status = _lookup_status(tool_name, capabilities, mounted, withheld)
+    if status == "WITHHELD" and integration is not None:
         verdict = f"Mounted, but withheld from the tool list and refused. {disabled_note(integration)}"
-    elif tool_name in mounted:
+    elif status == "MOUNTED":
         verdict = "Mounted: callable in this session."
-    elif providers:
+    elif status == "UNMOUNTED":
         verdict = (
-            f"Implemented in this server build but not mounted by this process. Restart the MCP server with "
-            f"{TOOLSETS_ENV_VAR}={_suggested_toolsets(providers[0])} to mount it."
+            "Implemented in this server build but not mounted by this process. Mount it with "
+            f"{TOOLSETS_ENV_VAR}={_suggested_toolsets(providers[:1])}. {_REMOUNT_NOTE}"
         )
-    elif addon_command:
+    elif status == "NEWER_ADDON":
         verdict = (
             "This server build registers no such tool, but the connected add-on serves a command by that "
             "name: the add-on is newer than the server package. Upgrade the server rather than the add-on."
@@ -184,8 +225,53 @@ def _tool_lookup(
         "mounted": tool_name in mounted,
         "in_this_build": bool(providers),
         "bundles": list(providers),
-        "addon_command": addon_command,
+        "addon_command": tool_name in capabilities,
         "verdict": verdict,
+    }
+
+
+def _tool_lookups(
+    tool_names: Sequence[str],
+    capabilities: Sequence[str],
+    mounted: frozenset[str],
+    withheld: frozenset[Provider] = frozenset(),
+) -> dict[str, object]:
+    """
+    Preflight every tool a request needs in one reply, with one combined remedy.
+
+    Each name gets a status code rather than `_tool_lookup`'s prose, which repeated per name
+    would not fit the reply budget; the remedies are stated once for the whole batch.
+
+    Args:
+        tool_names: The names asked about, in the caller's order; duplicates collapse.
+        capabilities: The command names the connected add-on advertises.
+        mounted: The tool names registered in this process.
+        withheld: The integrations the handshake shows disabled.
+
+    Returns:
+        dict[str, object]: `items` ({name, status, bundles} per name), `all_callable`,
+        `toolsets_value` (the whole BLENDER_MCP_TOOLSETS value mounting every UNMOUNTED name, or
+        None), `remount_note` (None when nothing is unmounted) and `withheld_notes`
+        (integration to the checkbox that releases it).
+
+    """
+    items: list[dict[str, object]] = []
+    needed_bundles: list[str] = []
+    withheld_notes: dict[str, str] = {}
+    for name in dict.fromkeys(tool_names):
+        providers = bundles_providing(name)
+        status = _lookup_status(name, capabilities, mounted, withheld)
+        if status == "UNMOUNTED":
+            needed_bundles.append(providers[0])
+        elif status == "WITHHELD" and (integration := provider_of(name)) is not None:
+            withheld_notes[integration] = disabled_note(integration)
+        items.append({"name": name, "status": status, "bundles": list(providers)})
+    return {
+        "items": items,
+        "all_callable": all(item["status"] == "MOUNTED" for item in items),
+        "toolsets_value": _suggested_toolsets(needed_bundles) if needed_bundles else None,
+        "remount_note": _REMOUNT_NOTE if needed_bundles else None,
+        "withheld_notes": withheld_notes,
     }
 
 
@@ -194,6 +280,7 @@ def _status_payload(
     *,
     detail: bool,
     tool_name: str | None,
+    tool_names: Sequence[str] | None,
     mounted_tools: bool,
     tool_limit: int,
     tool_offset: int,
@@ -209,6 +296,7 @@ def _status_payload(
         result: The handshake, already refreshed.
         detail: Also carry the command names themselves.
         tool_name: A tool to resolve against this process's mount state, or None.
+        tool_names: Tools to preflight together, or None.
         mounted_tools: Also carry a page of the tool names this process registered.
         tool_limit: How many names that page carries.
         tool_offset: Index of the first name on that page.
@@ -264,10 +352,11 @@ def _status_payload(
         # tool question gets answered with an add-on fact.
         "toolsets": _toolset_payload(mounted),
     }
+    withheld = withheld_providers(result)
     if tool_name is not None:
-        payload["tool_lookup"] = _tool_lookup(
-            tool_name, result.capabilities, mounted, withheld=withheld_providers(result)
-        )
+        payload["tool_lookup"] = _tool_lookup(tool_name, result.capabilities, mounted, withheld=withheld)
+    if tool_names is not None:
+        payload["tool_lookups"] = _tool_lookups(tool_names, result.capabilities, mounted, withheld=withheld)
     if mounted_tools:
         payload["mounted_tools"] = _mounted_tools_page(mounted, limit=tool_limit, offset=tool_offset)
     if detail:
@@ -293,7 +382,13 @@ async def _collect_integration_status(provider: Provider | None) -> dict:
 
 
 def _collect_addon_status(
-    *, detail: bool, tool_name: str | None, mounted_tools: bool, tool_limit: int, tool_offset: int
+    *,
+    detail: bool,
+    tool_name: str | None,
+    tool_names: Sequence[str] | None,
+    mounted_tools: bool,
+    tool_limit: int,
+    tool_offset: int,
 ) -> dict[str, object]:
     """
     Force a fresh handshake and render it as the status payload.
@@ -303,6 +398,7 @@ def _collect_addon_status(
     Args:
         detail: Include every advertised command name.
         tool_name: A tool to resolve against this process's mount state, or None.
+        tool_names: Tools to preflight together, or None.
         mounted_tools: List the tool names this process registered.
         tool_limit: How many names that page carries.
         tool_offset: Index of the first name on that page.
@@ -336,6 +432,7 @@ def _collect_addon_status(
         result,
         detail=detail,
         tool_name=tool_name,
+        tool_names=tool_names,
         mounted_tools=mounted_tools,
         tool_limit=tool_limit,
         tool_offset=tool_offset,
@@ -369,6 +466,7 @@ async def get_addon_status(
     ctx: Context,
     detail: bool = False,
     tool_name: str | None = None,
+    tool_names: Annotated[list[Annotated[str, Field(min_length=1)]], Field(min_length=1)] | None = None,
     mounted_tools: bool = False,
     tool_limit: Annotated[int, Field(ge=1, le=300)] = 100,
     tool_offset: Annotated[int, Field(ge=0, le=9999)] = 0,
@@ -383,6 +481,8 @@ async def get_addon_status(
             advertise, so the names only explain such a refusal.
         tool_name: Resolve one tool name against this process. Use it before concluding a tool
             you cannot call does not exist.
+        tool_names: Preflight every tool a request needs in one call (up to 50): one status per
+            name and one combined BLENDER_MCP_TOOLSETS value that mounts all the unmounted ones.
         mounted_tools: Also list the tool names this process registered, paged. The counts say how
             many tools are mounted, never which, so a documented tool absent from a build is
             otherwise found only by calling it.
@@ -415,19 +515,30 @@ async def get_addon_status(
         "offset", "limit", "returned_count", "truncated", "next_offset" (null on the last page).
         "tool_lookup" (only with tool_name): "mounted", "in_this_build", "bundles", "addon_command",
         and a "verdict" naming the remedy.
+        "tool_lookups" (only with tool_names): "items" ({"name", "status": MOUNTED, WITHHELD (its
+        integration is disabled), UNMOUNTED (implemented, not mounted here), NEWER_ADDON (upgrade the
+        server) or UNKNOWN, "bundles"}), "all_callable", "toolsets_value" (the whole
+        BLENDER_MCP_TOOLSETS value mounting every UNMOUNTED name, else null), "remount_note" (where
+        that value must be set, and why restarting Blender does not help) and "withheld_notes".
 
     Raises:
         ToolError: If Blender never answered the handshake, which is a transport failure and
             says nothing about which add-on version is installed - retry rather than reinstall.
-            Also if the status could not be determined for any other reason.
+            Also if the status could not be determined for any other reason, or if tool_names
+            carries more than 50 names.
 
     """
+    # Bounded here, not by a schema `max_length`: every advertised list cap is mirrored by an
+    # add-on dispatch row (`list_caps.py`), and this tool never reaches the add-on.
+    if tool_names is not None and len(tool_names) > _MAX_TOOL_NAMES:
+        raise ToolError(f"tool_names carries {len(tool_names)} names; one call resolves at most {_MAX_TOOL_NAMES}")
     try:
         return ok(
             await asyncio.to_thread(
                 _collect_addon_status,
                 detail=detail,
                 tool_name=tool_name,
+                tool_names=tool_names,
                 mounted_tools=mounted_tools,
                 tool_limit=tool_limit,
                 tool_offset=tool_offset,

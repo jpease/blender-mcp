@@ -55,8 +55,8 @@ ROWS: list[Revert] = [
     Revert(
         "integrations: a tool lookup calls a withheld tool plainly callable",
         SERVER_CORE_TOOL,
-        "    if tool_name in mounted and integration in withheld:",
-        "    if False:",
+        '        return "WITHHELD" if provider_of(tool_name) in withheld else "MOUNTED"\n',
+        '        return "MOUNTED"\n',
         (f"{INTEGT}::test_a_tool_lookup_names_the_checkbox_a_withheld_tool_is_waiting_on[disabled]",),
     ),
     Revert(

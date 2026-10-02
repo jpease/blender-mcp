@@ -2,6 +2,8 @@
 
 import asyncio
 
+from typing import cast
+
 import pytest
 
 from mcp.server.fastmcp.exceptions import ToolError
@@ -303,6 +305,49 @@ def test_tool_lookup_appends_the_missing_bundle_to_the_selection_already_in_forc
     verdict = str(core._tool_lookup(_UNMOUNTED_TOOL, (), frozenset())["verdict"])
 
     assert "BLENDER_MCP_TOOLSETS=shot,camera-rigs" in verdict
+
+
+def test_tool_lookups_combine_every_unmounted_bundle_into_one_toolsets_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A batch preflight must yield one value that mounts everything missing, not one per name.
+
+    Applying per-name suggestions one after another would each replace the whole variable, so
+    the last one applied would unmount what the earlier ones added.
+    """
+    monkeypatch.setenv("BLENDER_MCP_TOOLSETS", "shot")
+    other_bundle_tool = next(
+        name
+        for bundle, names in sorted(bundle_tool_names().items())
+        if bundle not in {CORE_BUNDLE, "camera-rigs", "shot"}
+        for name in sorted(names)
+        if "camera-rigs" not in core.bundles_providing(name)
+    )
+    other_bundle = core.bundles_providing(other_bundle_tool)[0]
+    mounted = frozenset({"get_addon_status"})
+
+    lookups = core._tool_lookups(
+        [_UNMOUNTED_TOOL, other_bundle_tool, "get_addon_status", "create_teapot", _UNMOUNTED_TOOL],
+        ("create_teapot",),
+        mounted,
+    )
+
+    items = cast("list[dict[str, object]]", lookups["items"])
+    statuses = {item["name"]: item["status"] for item in items}
+    assert statuses == {
+        _UNMOUNTED_TOOL: "UNMOUNTED",
+        other_bundle_tool: "UNMOUNTED",
+        "get_addon_status": "MOUNTED",
+        "create_teapot": "NEWER_ADDON",
+    }, "duplicates must collapse and each name keep its own status"
+    assert lookups["toolsets_value"] == f"shot,camera-rigs,{other_bundle}"
+    assert lookups["all_callable"] is False
+    assert "reload its MCP configuration" in str(lookups["remount_note"])
+
+    nothing_missing = core._tool_lookups(["get_addon_status"], (), mounted)
+    assert (nothing_missing["toolsets_value"], nothing_missing["remount_note"]) == (None, None)
+    assert nothing_missing["all_callable"] is True
 
 
 def test_toolset_payload_counts_what_a_selection_left_out() -> None:

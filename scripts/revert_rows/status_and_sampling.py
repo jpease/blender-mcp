@@ -106,12 +106,12 @@ ROWS: list[Revert] = [
         # on `detail` leaves the explanation behind the same flag as the thing it explains.
         "get_addon_status: the mount state is withheld unless the caller asks for detail",
         SERVER_CORE_TOOL,
-        '        "toolsets": _toolset_payload(mounted),\n    }\n    if tool_name is not None:\n',
+        '        "toolsets": _toolset_payload(mounted),\n    }\n    withheld = withheld_providers(result)\n',
         (
             "    }\n"
             "    if detail:\n"
             '        payload["toolsets"] = _toolset_payload(mounted)\n'
-            "    if tool_name is not None:\n"
+            "    withheld = withheld_providers(result)\n"
         ),
         (f"{CORET}::test_get_addon_status_reports_the_mount_state_without_being_asked",),
     ),
@@ -121,9 +121,18 @@ ROWS: list[Revert] = [
         # the agent every other tool it was using.
         "get_addon_status: the suggested toolset drops the selection already in force",
         SERVER_CORE_TOOL,
-        '    return f"{current},{bundle}" if current else bundle\n',
-        "    return bundle\n",
+        '    return ",".join([*current, *added])\n',
+        '    return ",".join(added)\n',
         (f"{CORET}::test_tool_lookup_appends_the_missing_bundle_to_the_selection_already_in_force",),
+    ),
+    Revert(
+        # Each suggested value replaces the whole variable, so a batch that offered one per name
+        # would have the last one applied unmount what the earlier ones added.
+        "get_addon_status: a batch preflight suggests one bundle rather than every missing one",
+        SERVER_CORE_TOOL,
+        '        "toolsets_value": _suggested_toolsets(needed_bundles) if needed_bundles else None,\n',
+        '        "toolsets_value": _suggested_toolsets(needed_bundles[:1]) if needed_bundles else None,\n',
+        (f"{CORET}::test_tool_lookups_combine_every_unmounted_bundle_into_one_toolsets_value",),
     ),
     Revert(
         # Four situations hide behind one "unknown tool" error - mounted, unmounted, server
@@ -131,8 +140,8 @@ ROWS: list[Revert] = [
         # stale-server case into the unknown one tells the caller to fix a spelling that is right.
         "get_addon_status: a server older than its add-on is reported as an unknown name",
         SERVER_CORE_TOOL,
-        "    elif addon_command:\n",
-        "    elif False:\n",
+        '    return "NEWER_ADDON" if tool_name in capabilities else "UNKNOWN"\n',
+        '    return "UNKNOWN"\n',
         (f"{CORET}::test_tool_lookup_separates_an_unmounted_tool_from_an_unknown_one",),
     ),
     Revert(
