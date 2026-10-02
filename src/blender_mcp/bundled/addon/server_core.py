@@ -29,6 +29,7 @@ from .handlers.mesh import MeshHandlersMixin
 from .handlers.model import ModelHandlersMixin
 from .handlers.nd import NDHandlersMixin
 from .handlers.object_animation import ObjectAnimationHandlersMixin
+from .handlers.pick import PickHandlersMixin
 from .handlers.polyhaven import PolyhavenHandlersMixin
 from .handlers.render_jobs import RenderJobHandlersMixin
 from .handlers.rendering import RenderingHandlersMixin
@@ -162,6 +163,7 @@ class BlenderMCPServer(
     CommandRegistryMixin,
     SceneInspectionHandlersMixin,
     ViewportHandlersMixin,
+    PickHandlersMixin,
     AnimationHandlersMixin,
     CameraHandlersMixin,
     LightingHandlers,

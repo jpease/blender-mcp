@@ -39,6 +39,8 @@ _READ_ONLY_PREFIXES = (
     "search_",
 )
 _MUTATING_READ_PREFIXES = ("sample_",)
+# Read-only tools whose verb is none of the prefixes above.
+_READ_ONLY_TOOLS = {"pick_from_camera"}
 _EXTERNAL_TOOLS = {
     "get_polyhaven_categories",
     "list_polyhaven_assets",
@@ -593,7 +595,9 @@ def _compact_schema(schema: dict[str, Any]) -> None:
 
 
 def _is_read_only(name: str) -> bool:
-    return name.startswith(_READ_ONLY_PREFIXES) and not name.startswith(_MUTATING_READ_PREFIXES)
+    return name in _READ_ONLY_TOOLS or (
+        name.startswith(_READ_ONLY_PREFIXES) and not name.startswith(_MUTATING_READ_PREFIXES)
+    )
 
 
 def _is_destructive(name: str, schema: Mapping[str, Any]) -> bool:

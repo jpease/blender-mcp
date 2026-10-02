@@ -569,6 +569,7 @@ _EVALUATED_RANGE_PAGE = 10
 _EVALUATED_RANGE_BONES = 3
 _EVALUATED_RANGE_DECIMALS = 4
 _SCENE_OBJECT_PAGE = 25  # `tools/scene.py list_scene_objects` default limit
+_PICK_POINTS = 16  # `tools/viewport.py pick_from_camera` points max_length
 _VALIDATE_SCENE_PAGE = 300  # `tools/scene.py validate_scene` default max_findings
 _LIGHT_PAGE = 50  # `handlers/lighting/inspection.py:204 list_lights` default limit
 _BONE_PAGE = 100  # `tools/character_rigging/posing.py:58 list_character_bones` default limit
@@ -1060,6 +1061,30 @@ def _payloads() -> dict[str, Callable[[SceneScale], object]]:
                 {"index": index, "co": _floats(3, index), "normal": _floats(3, index + 3), "select": True}
                 for index in range(min(scale.mesh_vertices, _MESH_ELEMENT_PAGE))
             ],
+        },
+        # `handlers/pick.py pick_from_camera`: the most points one call accepts, every one landing on
+        # an object, rounded as published.
+        "pick_from_camera": lambda _scale: {
+            "camera_name": "Camera_Hero",
+            "frame": 1.0,
+            "visibility": "RENDER",
+            "projection": "PERSP",
+            "points": [
+                {
+                    "u": round((index + 0.5) / _PICK_POINTS, 6),
+                    "v": 0.437086,
+                    "hit": "OBJECT",
+                    "object_name": "Hero_Body_Mesh",
+                    "target_point": _floats(3, index, decimals=6),
+                    "normal": _floats(3, index + 3, decimals=6),
+                    "distance": _floats(1, index + 6, decimals=6)[0],
+                    "face_index": 1204 + index,
+                }
+                for index in range(_PICK_POINTS)
+            ],
+            "skipped_hit_count": 2,
+            "skipped_objects": [{"object_name": "Hero_Collision_Cage", "reason": "HIDE_RENDER"}],
+            "hidden_in_viewport_count": 0,
         },
         "list_scene_objects": lambda scale: {
             "name": "Scene",
@@ -2406,6 +2431,10 @@ _ARGUMENTS: Mapping[str, Mapping[str, object]] = MappingProxyType(
         "get_camera_rig_info": {"scene_name": "Scene", "object_name": "Camera_Hero"},
         "get_integration_status": {},
         "get_mesh_data": {"object_name": "Hero"},
+        "pick_from_camera": {
+            "camera_name": "Camera_Hero",
+            "points": [[(index + 0.5) / _PICK_POINTS, 0.437086] for index in range(_PICK_POINTS)],
+        },
         "get_object_info": {"object_name": "Hero"},
         "get_session_info": {},
         "get_viewport_screenshot": {},

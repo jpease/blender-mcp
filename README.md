@@ -256,7 +256,7 @@ for fine-grained control. Modes are curated presets over bundles and compose wit
 
 | Bundle | Adds |
 |---|---|
-| *(default, always on)* | scene inspection, object editing, object removal, viewport, animation, file lifecycle (open/save/reset a shot, link/override/list/reload/relocate/unlink canon libraries) |
+| *(default, always on)* | scene inspection, picking world points through a camera (`pick_from_camera`), object editing, object removal, viewport, animation, file lifecycle (open/save/reset a shot, link/override/list/reload/relocate/unlink canon libraries) |
 | `core-authoring` | mesh and model creation/editing |
 | `camera` | camera placement, framing, shots (rig construction is separate, see `camera-rigs`) |
 | `camera-rigs` | orbit/dolly/crane/path rig construction |

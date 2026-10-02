@@ -129,6 +129,9 @@ COMMANDS: Mapping[str, CommandSpec] = MappingProxyType(
         "unlink_libraries": CommandSpec(datablock_replacing=True),
         "get_object_info": CommandSpec(read_only=True),
         "get_mesh_data": CommandSpec(read_only=True),
+        # Read-only like `sample_evaluated_range`: a `frame` borrows the playhead and puts the frame
+        # and subframe back; `scene.ray_cast` writes nothing.
+        "pick_from_camera": CommandSpec(read_only=True),
         "inspect_animation": CommandSpec(read_only=True),
         "manage_animation_action": CommandSpec(),
         "edit_keyframes": CommandSpec(),

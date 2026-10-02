@@ -9,7 +9,7 @@ from pydantic import Field, model_validator
 
 from ..app import mcp
 from ._dispatch import call_blender, send_command
-from ._inputs import StrictModel, dump_input
+from ._inputs import MAX_FRAME, MIN_FRAME, StrictModel, dump_input
 from .image_capture import capture_png
 
 
@@ -188,6 +188,71 @@ async def get_mesh_data(
             "limit": limit,
             "offset": offset,
             "selected_only": selected_only,
+        },
+    )
+
+
+UnitInterval = Annotated[float, Field(ge=0.0, le=1.0)]
+
+
+class PickRegion(StrictModel):
+    """A frame rectangle, 0..1 like points."""
+
+    u_min: UnitInterval
+    v_min: UnitInterval
+    u_max: UnitInterval
+    v_max: UnitInterval
+
+    @model_validator(mode="after")
+    def _positive_area(self) -> "PickRegion":
+        if not (self.u_min < self.u_max and self.v_min < self.v_max):
+            raise ValueError("region must have u_min < u_max and v_min < v_max")
+        return self
+
+
+@mcp.tool()
+async def pick_from_camera(
+    ctx: Context,
+    camera_name: Annotated[str, Field(min_length=1)],
+    points: Annotated[list[tuple[UnitInterval, UnitInterval]], Field(min_length=1, max_length=16)] | None = None,
+    region: PickRegion | None = None,
+    frame: Annotated[float | None, Field(ge=MIN_FRAME, le=MAX_FRAME)] = None,
+    visibility: Literal["RENDER", "VIEWPORT"] = "RENDER",
+) -> dict:
+    """
+    Find the world point, object and face a camera sees at spots of its render frame.
+
+    u and v run 0..1 over the render frame, (0, 0) bottom-left; lens shift, sensor fit and aspect
+    are honoured. A ray that hits nothing lands on the z=0 ground plane. ORTHO casts parallel
+    rays; a panoramic camera is refused.
+
+    Args:
+        ctx: MCP request context.
+        camera_name: The camera to look through.
+        points: [u, v] frame points. Give this or region.
+        region: Sample a 16x16 grid and rank what fills it by area.
+        frame: Evaluate here, subframe included, putting the playhead back. Omit for the current
+            frame.
+        visibility: RENDER passes through what the render hides (hide_render, holdout, camera
+            rays off, wire/bounds display, render-disabled collections) and cannot hit what the
+            viewport hides (hidden_in_viewport_count); VIEWPORT stops at what the viewport shows.
+
+    Returns:
+        camera_name, frame, visibility, projection; points [{u, v, hit (OBJECT, GROUND_PLANE,
+        NONE: rises from the ground, UNRESOLVED), object_name, target_point, normal, distance,
+        face_index (evaluated mesh)}], or region, sample_count, objects [{object_name, coverage,
+        centroid (a point record on it)}] (top 6, under 4% dropped), dropped_object_count,
+        background_fraction; skipped_hit_count, skipped_objects [{object_name, reason}].
+
+    """
+    return await call_blender(
+        "pick_from_camera",
+        {
+            "camera_name": camera_name,
+            "points": None if points is None else [list(point) for point in points],
+            "region": None if region is None else region.model_dump(),
+            "frame": frame,
+            "visibility": visibility,
         },
     )
 

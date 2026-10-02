@@ -2047,6 +2047,13 @@
       "operations",
       "target"
     ],
+    "pick_from_camera": [
+      "camera_name",
+      "frame",
+      "points",
+      "region",
+      "visibility"
+    ],
     "ping": [],
     "plan_render_animation": [
       "confirm_frame_range",
@@ -2642,5 +2649,5 @@
       "scope"
     ]
   },
-  "protocol_version": 52
+  "protocol_version": 53
 }

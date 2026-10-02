@@ -20,7 +20,7 @@ substring, so the prefix is how a group of rows is selected: `session:`, `barrie
 `entrypoint:`, `quiet box:`, `reply budget:`, `lighting:`, `pose:`,
 `render settings:`, `strict args:`, `addon surface:`, `action assignment:`, `size caps:`,
 `camera:`, `pagination:`, `simulation:`, `data users:`, `counted replies:`, `lint gate:`,
-`geometry nodes:`, `integrations:`, `scene watch:` and `boundary:`. A `... control:` row is the deliberate
+`geometry nodes:`, `integrations:`, `scene watch:`, `pick:` and `boundary:`. A `... control:` row is the deliberate
 opposite of its neighbour: it proves that over-enforcing the same line is caught too,
 either by the same node or by the sibling node that exists to say the guard can be passed.
 
@@ -84,6 +84,7 @@ from revert_rows import (
     object_lookup,
     output_roots,
     pagination,
+    pick,
     pose,
     registry,
     render_coverage,
@@ -143,6 +144,8 @@ from revert_rows.common import (
     OANIMT,
     OLT,
     PHT,
+    PICKT,
+    PICKTOOLT,
     POSET,
     QBT,
     RBWT,
@@ -296,6 +299,27 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{SOIT}::test_list_scene_objects_summary_counts_the_scene_without_records",
     f"{SOIT}::test_list_scene_objects_summary_stays_bounded_however_many_roots_and_collections",
     f"{SOIT}::test_list_scene_objects_summary_takes_no_filter",
+    # --- pick_from_camera: frame point to ray, the ground plane, region ranking, the server half ---
+    f"{PICKT}::test_the_frame_centre_ray_leaves_the_eye_along_the_view_axis",
+    f"{PICKT}::test_the_frame_corners_map_to_the_view_frame_corners_whatever_their_order[order0]",
+    f"{PICKT}::test_the_frame_corners_map_to_the_view_frame_corners_whatever_their_order[order1]",
+    f"{PICKT}::test_a_shifted_frame_moves_the_centre_ray_off_the_view_axis",
+    f"{PICKT}::test_an_ortho_camera_casts_parallel_rays_from_across_the_frame",
+    f"{PICKT}::test_the_camera_objects_scale_does_not_change_the_ray[True]",
+    f"{PICKT}::test_the_camera_objects_scale_does_not_change_the_ray[False]",
+    f"{PICKT}::test_clip_start_and_clip_end_bound_the_ray_by_depth_not_by_length",
+    f"{PICKT}::test_an_ortho_ray_is_clipped_along_its_own_length",
+    f"{PICKT}::test_a_ray_falling_toward_the_ground_meets_it_at_z_zero",
+    f"{PICKT}::test_a_ray_level_with_or_rising_from_the_ground_never_meets_it[direction0]",
+    f"{PICKT}::test_a_ray_level_with_or_rising_from_the_ground_never_meets_it[direction1]",
+    f"{PICKT}::test_region_samples_are_the_cell_centres_of_a_bounded_grid",
+    f"{PICKT}::test_region_ranking_orders_objects_by_coverage_and_drops_the_slivers",
+    f"{PICKT}::test_region_ranking_keeps_at_most_six_objects",
+    f"{PICKT}::test_the_centroid_hit_is_the_objects_own_sample_nearest_its_mean_position",
+    f"{PICKTOOLT}::test_a_region_must_span_a_positive_area_of_the_frame[zero-width]",
+    f"{PICKTOOLT}::test_a_region_must_span_a_positive_area_of_the_frame[inverted-height]",
+    f"{PICKTOOLT}::test_a_region_stays_inside_the_frame",
+    f"{PICKTOOLT}::test_pick_from_camera_is_advertised_read_only",
     # --- the handshake carries the writable output roots ---
     f"{AMT}::test_handshake_surfaces_writable_output_roots",
     f"{AMT}::test_handshake_defaults_writable_output_roots_when_the_addon_omits_them",
@@ -944,6 +968,7 @@ REVERTS: list[Revert] = [
     *integrations.ROWS,
     *toolsets.ROWS,
     *scene_watch.ROWS,
+    *pick.ROWS,
 ]
 
 

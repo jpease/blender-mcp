@@ -632,7 +632,10 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 #
 # Raised from 219,785, measured at 220,242 - 457 bytes: the core surface's `list_scene_objects`
 # (see the default ceiling below).
-SHOT_MODE_BYTE_CEILING = 220_242
+#
+# Raised from 220,242, measured at 222,671 - 2,429 bytes: the core surface's `pick_from_camera`
+# (see the default ceiling below).
+SHOT_MODE_BYTE_CEILING = 222_671
 
 # The same rule as above, for the default, core-only surface.
 #
@@ -708,7 +711,13 @@ SHOT_MODE_BYTE_CEILING = 220_242
 # and `parent_name` (plan budget 700): orienting in a 600-object set meant paging a flat
 # name-sorted list, 25 records at a time, to learn its types, collections and roots; a summary
 # answers in under 1 KB and `parent_name` walks the hierarchy one level per call.
-DEFAULT_MODE_BYTE_CEILING = 77_042
+#
+# Raised from 77,042, measured at 79,471 - 2,429 bytes, all of it the new `pick_from_camera`:
+# "move it to that spot on the table" needed a world point, and the agent guessed one from a
+# screenshot. One call now returns the object, world point, normal and face under up to 16 frame
+# points, or ranks what fills a frame region; its two modes, frame, visibility and the
+# returned-field contract are the cost.
+DEFAULT_MODE_BYTE_CEILING = 79_471
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

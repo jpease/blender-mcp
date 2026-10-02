@@ -155,6 +155,10 @@ ADDON_SCENE_WATCH = ROOT / "src/blender_mcp/bundled/addon/scene_watch.py"
 ADDON_LIQUID_SIMULATION = ROOT / "src/blender_mcp/bundled/addon/handlers/liquid/simulation.py"
 SERVER_SKETCHFAB_TOOL = ROOT / "src/blender_mcp/server/tools/sketchfab.py"
 SERVER_IMAGE_CAPTURE = ROOT / "src/blender_mcp/server/tools/image_capture.py"
+# `pick_from_camera`: the bpy-free frame-point-to-ray maths, the server tool's region model, and
+# the documentation pass that advertises it read-only.
+ADDON_PICK_RAYS = ROOT / "src/blender_mcp/bundled/addon/pick_rays.py"
+SERVER_VIEWPORT_TOOL = ROOT / "src/blender_mcp/server/tools/viewport.py"
 
 # Short names for the test files rows cite. Node ids carry parameter text
 # verbatim, so the rows would otherwise be unreadably long lines.
@@ -239,6 +243,8 @@ TOOLSETST = "tests/server/test_toolsets_runtime.py"
 CATSIZET = "tests/server/test_catalog_sizes.py"
 SWT = "tests/test_scene_watch.py"
 RNT = "tests/server/tools/test_reply_notices.py"
+PICKT = "tests/test_pick_rays.py"
+PICKTOOLT = "tests/server/tools/test_pick_from_camera.py"
 HOSTILE_LIB = f"{SESSIONT}::test_a_hostile_library_path_is_reduced_the_same_way_a_failure_note_is"
 # The `name` half of the same table, with short ids so a row can list its nodes; the
 # `filepath` half's ids run to hundreds of characters.

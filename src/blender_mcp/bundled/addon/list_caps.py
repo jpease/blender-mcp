@@ -149,6 +149,10 @@ LIST_CAPS: dict[tuple[str, str], int] = {
     ("render_contact_sheet", "cells"): 30,
     ("validate_lighting_setup", "subject_object_names"): 100,
     ("patch_shader_graph", "operations"): 500,
+    # 16 point records with full-width floats fit the 8 KB reply budget on the wire (each costs
+    # ~370 bytes there); past it the envelope can only warn, since the answers have no offset to
+    # page from.
+    ("pick_from_camera", "points"): 16,
 }
 
 
