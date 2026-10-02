@@ -1,10 +1,22 @@
 """
-Rows guarding which tool bundles a session lists, and what enabling one registers.
+Rows guarding which tool bundles a session lists, and the catalog sizes `manage_toolsets` reports.
+
+Also what enabling a bundle registers, and the committed snapshot those sizes are read from.
 
 Label prefixes: `toolsets:`.
 """
 
-from .common import SERVER_APP, SERVER_CORE_TOOL, SERVER_DOCUMENTATION, SERVER_TOOLSETS_RUNTIME, TOOLSETST, Revert
+from .common import (
+    CATALOG_SIZES_FILE,
+    CATSIZET,
+    SERVER_APP,
+    SERVER_CORE_TOOL,
+    SERVER_DOCUMENTATION,
+    SERVER_TOOLSETS_RUNTIME,
+    TEST_CATALOG_SIZES_FILE,
+    TOOLSETST,
+    Revert,
+)
 
 _FRESH = f"{TOOLSETST}::test_a_fresh_session_lists_the_env_selection"
 _ENABLE = f"{TOOLSETST}::test_enabling_a_bundle_lists_its_tools_and_announces_the_change"
@@ -16,6 +28,8 @@ _STATUS = f"{TOOLSETST}::test_get_addon_status_reports_per_session"
 _TWICE = f"{TOOLSETST}::test_enabling_twice_registers_once_and_advertises_what_a_started_process_does"
 _LIST = f"{TOOLSETST}::test_list_reports_each_bundles_tool_count_and_catalog_bytes"
 _ONCE = f"{TOOLSETST}::test_the_documentation_pass_rewrites_a_tool_once_however_often_it_is_asked"
+_SIZES_MATCH = f"{CATSIZET}::test_committed_catalog_sizes_match_a_process_started_with_every_bundle"
+_SIZES_SERIALIZED = f"{CATSIZET}::test_committed_catalog_sizes_are_serialized_the_way_the_generator_writes_them"
 
 ROWS: list[Revert] = [
     Revert(
@@ -103,10 +117,25 @@ ROWS: list[Revert] = [
         (_ONCE,),
     ),
     Revert(
-        "toolsets: an unregistered bundle's bytes are measured in a core-only process",
+        "toolsets: LIST reads the snapshot's top level as though it were the bundle table",
         SERVER_TOOLSETS_RUNTIME,
-        "    env = {**os.environ, TOOLSETS_ENV_VAR: ALL_SENTINEL}\n",
-        "    env = {**os.environ, TOOLSETS_ENV_VAR: ''}\n",
+        '    bundles = json.loads(CATALOG_SIZES_PATH.read_text(encoding="utf-8"))["bundles"]\n',
+        '    bundles = json.loads(CATALOG_SIZES_PATH.read_text(encoding="utf-8"))\n',
         (_LIST,),
+    ),
+    Revert(
+        # Inserted rather than edited in place, so the anchor survives every regeneration.
+        "toolsets: a catalog-size snapshot naming a bundle the catalog no longer has passes",
+        CATALOG_SIZES_FILE,
+        '  "bundles": {\n',
+        '  "bundles": {\n    "retired-bundle": {\n      "catalog_bytes": 1,\n      "tool_count": 1\n    },\n',
+        (_SIZES_MATCH,),
+    ),
+    Revert(
+        "toolsets: the catalog-size snapshot is written in bundle order, so one new bundle reflows the file",
+        TEST_CATALOG_SIZES_FILE,
+        '    return json.dumps(sizes, indent=2, sort_keys=True) + "\\n"',
+        '    return json.dumps(sizes, indent=2) + "\\n"',
+        (_SIZES_SERIALIZED,),
     ),
 ]

@@ -1,0 +1,72 @@
+{
+  "bundles": {
+    "assets": {
+      "catalog_bytes": 8168,
+      "tool_count": 7
+    },
+    "camera": {
+      "catalog_bytes": 39212,
+      "tool_count": 17
+    },
+    "camera-rigs": {
+      "catalog_bytes": 10660,
+      "tool_count": 6
+    },
+    "character-posing": {
+      "catalog_bytes": 47258,
+      "tool_count": 8
+    },
+    "character-rigging": {
+      "catalog_bytes": 100669,
+      "tool_count": 28
+    },
+    "cloth": {
+      "catalog_bytes": 53407,
+      "tool_count": 19
+    },
+    "core": {
+      "catalog_bytes": 76585,
+      "tool_count": 37
+    },
+    "core-authoring": {
+      "catalog_bytes": 20492,
+      "tool_count": 16
+    },
+    "geometry-nodes": {
+      "catalog_bytes": 62400,
+      "tool_count": 38
+    },
+    "lighting": {
+      "catalog_bytes": 21820,
+      "tool_count": 11
+    },
+    "lighting-construction": {
+      "catalog_bytes": 22654,
+      "tool_count": 9
+    },
+    "liquid": {
+      "catalog_bytes": 87220,
+      "tool_count": 37
+    },
+    "rendering": {
+      "catalog_bytes": 23099,
+      "tool_count": 6
+    },
+    "retopology": {
+      "catalog_bytes": 58315,
+      "tool_count": 27
+    },
+    "rigid-body": {
+      "catalog_bytes": 72238,
+      "tool_count": 31
+    },
+    "scene-authoring": {
+      "catalog_bytes": 12258,
+      "tool_count": 2
+    },
+    "texture": {
+      "catalog_bytes": 33143,
+      "tool_count": 21
+    }
+  }
+}

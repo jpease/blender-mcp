@@ -102,6 +102,10 @@ SERVER_DOCUMENTATION = ROOT / "src/blender_mcp/server/tools/_documentation.py"
 # Where tool modules are imported, at startup and when a session enables a bundle, and where the
 # hardening and documentation passes that follow each registration are called from.
 SERVER_TOOLSETS_RUNTIME = ROOT / "src/blender_mcp/server/toolsets_runtime.py"
+# The committed per-bundle catalog sizes `manage_toolsets` reports, and the test module whose
+# `build_catalog_sizes`/`render_catalog_sizes` generate and check it.
+CATALOG_SIZES_FILE = ROOT / "src/blender_mcp/catalog_sizes.json"
+TEST_CATALOG_SIZES_FILE = ROOT / "tests/server/test_catalog_sizes.py"
 # The hardening pass itself: which config every generated argument model is given.
 SERVER_STRICT_ARGS = ROOT / "src/blender_mcp/server/tools/_strict_args.py"
 SERVER_BUNDLES = ROOT / "src/blender_mcp/server/bundles.py"
@@ -226,6 +230,7 @@ SRVPHT = "tests/server/tools/test_polyhaven.py"
 GNSPACET = "tests/test_geometry_nodes_builder_spaces.py"
 INTEGT = "tests/server/test_integration_gating.py"
 TOOLSETST = "tests/server/test_toolsets_runtime.py"
+CATSIZET = "tests/server/test_catalog_sizes.py"
 HOSTILE_LIB = f"{SESSIONT}::test_a_hostile_library_path_is_reduced_the_same_way_a_failure_note_is"
 # The `name` half of the same table, with short ids so a row can list its nodes; the
 # `filepath` half's ids run to hundreds of characters.

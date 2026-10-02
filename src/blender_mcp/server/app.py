@@ -296,16 +296,6 @@ class BlenderFastMCP(FastMCP):
             await session.send_tool_list_changed()
         return changed
 
-    async def registered_tools(self) -> list[MCPTool]:
-        """
-        List every registered tool, whichever session enabled it and whatever is withheld.
-
-        Returns:
-            list[MCPTool]: The `tools/list` entries.
-
-        """
-        return await super().list_tools()
-
     async def list_tools(self) -> list[MCPTool]:
         """List the session's tools, less those a disabled integration withholds."""
         withheld = withheld_tools(get_last_handshake())

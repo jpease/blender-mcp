@@ -1,5 +1,5 @@
 """
-Register tool bundles on demand, and measure what each one costs a client's context.
+Register tool bundles on demand, and report what each one costs a client's context.
 
 A process registers its `BLENDER_MCP_TOOLSETS` selection when `tools` is imported, and nothing
 else: importing a bundle's modules is what registers its tools, and an unselected bundle stays
@@ -15,23 +15,23 @@ once however many requests name it.
 The import runs on the event loop. That is deliberate: importing on a worker thread would mutate
 the tool registry while the loop iterates it for another session's `tools/list`. It happens once
 per bundle per process.
+
+What a bundle costs is read from `catalog_sizes.json`, committed beside the package: a tool's
+schema exists only once its module is imported, so an unselected bundle cannot be measured here
+without registering it. `tests/server/test_catalog_sizes.py` keeps the snapshot current.
 """
 
+import functools
 import importlib
 import json
 import os
-import subprocess
-import sys
-import threading
 
-from collections.abc import Iterable, Sequence
-
-from mcp.types import Tool as MCPTool
+from collections.abc import Iterable, Mapping
+from pathlib import Path
+from types import MappingProxyType
 
 from .app import mcp
-from .bundles import ALL_SENTINEL, BUNDLES, CORE_MODULES, TOOLSETS_ENV_VAR, resolve_toolset_bundles
-from .catalog_metrics import payload_report
-from .mount_map import bundle_tool_names
+from .bundles import BUNDLES, CORE_MODULES, TOOLSETS_ENV_VAR, resolve_toolset_bundles
 from .tools._documentation import finalize_tool_documentation
 from .tools._strict_args import harden_tool_arguments
 
@@ -40,20 +40,9 @@ _TOOLS_PACKAGE = f"{__package__}.tools"
 # The bundles this process was started with: what a session lists until it enables or disables one.
 STARTUP_BUNDLES: tuple[str, ...] = resolve_toolset_bundles(os.getenv(TOOLSETS_ENV_VAR))
 
-# Measures every tool's advertised bytes in a process started with every bundle. `mcp.list_tools`
-# outside a request is the process's own selection, which there is everything.
-_MEASURE_EVERY_TOOL = (
-    "import asyncio, json\n"
-    "from blender_mcp.server import mcp\n"
-    "from blender_mcp.server.catalog_metrics import payload_report\n"
-    "print(json.dumps(dict(payload_report(asyncio.run(mcp.list_tools())).per_tool)))\n"
-)
-_MEASURE_TIMEOUT_SECONDS = 60
-
-# Tool name to its advertised `tools/list` bytes, filled once per name and never invalidated: a
-# tool's advertisement is fixed once its registration has been documented.
-_tool_bytes: dict[str, int] = {}
-_measure_lock = threading.Lock()
+# Every bundle's tool count and advertised bytes, measured in a process started with every bundle.
+# Shipped as package data (pyproject.toml); `just catalog-sizes` rewrites it.
+CATALOG_SIZES_PATH = Path(__file__).resolve().parents[1] / "catalog_sizes.json"
 
 
 def register_tool_modules(modules: Iterable[str]) -> frozenset[str]:
@@ -127,57 +116,18 @@ def resolve_requested_bundles(names: Iterable[str]) -> tuple[str, ...]:
     return resolve_toolset_bundles(",".join(requested))
 
 
-def _measure_unregistered_tools() -> dict[str, int]:
-    """
-    Measure every tool's advertised bytes in a process started with every bundle.
-
-    A tool's schema exists only once its module is imported, and importing here would register it.
-
-    Returns:
-        dict[str, int]: Tool name to bytes.
-
-    Raises:
-        RuntimeError: If the measuring process fails or times out.
-
-    """
-    env = {**os.environ, TOOLSETS_ENV_VAR: ALL_SENTINEL}
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", _MEASURE_EVERY_TOOL],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=_MEASURE_TIMEOUT_SECONDS,
-            check=True,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError(f"could not measure the unregistered bundles' catalog bytes: {exc}") from exc
-    return {str(name): int(size) for name, size in json.loads(result.stdout).items()}
-
-
-def bundle_catalog(registered: Sequence[MCPTool]) -> dict[str, dict[str, int]]:
+@functools.cache
+def bundle_catalog() -> Mapping[str, Mapping[str, int]]:
     """
     Report each bundle's tool count and the bytes its tools add to `tools/list`.
 
-    Measured once per tool per process, with `catalog_metrics.payload_report` as
-    `scripts/measure_catalog.py` measures: from the registered schemas where the tool is
-    registered, otherwise in one child process started with every bundle, the first time any
-    tool is unmeasured. Blocks for that child, so call it off the event loop.
-
-    Args:
-        registered: Every registered tool's `tools/list` entry, unfiltered by session.
+    Read once per process from the committed snapshot, the figures `scripts/measure_catalog.py`
+    would report for a process started with every bundle.
 
     Returns:
-        dict[str, dict[str, int]]: Bundle name, `core` first, to `tool_count` and `catalog_bytes`.
+        Mapping[str, Mapping[str, int]]: Bundle name, `core` included, to `tool_count` and
+        `catalog_bytes`.
 
     """
-    by_bundle = bundle_tool_names()
-    with _measure_lock:
-        _tool_bytes.update(payload_report([tool for tool in registered if tool.name not in _tool_bytes]).per_tool)
-        if any(name not in _tool_bytes for names in by_bundle.values() for name in names):
-            measured = _measure_unregistered_tools()
-            _tool_bytes.update({name: size for name, size in measured.items() if name not in _tool_bytes})
-    return {
-        bundle: {"tool_count": len(names), "catalog_bytes": sum(_tool_bytes[name] for name in names)}
-        for bundle, names in by_bundle.items()
-    }
+    bundles = json.loads(CATALOG_SIZES_PATH.read_text(encoding="utf-8"))["bundles"]
+    return MappingProxyType({name: MappingProxyType(sizes) for name, sizes in bundles.items()})

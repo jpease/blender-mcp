@@ -56,6 +56,11 @@ anchors:
 addon-surface:
     {{PYTHON}} scripts/update_addon_surface.py
 
+# Rewrite the committed per-bundle catalog sizes `manage_toolsets` reports. Run it after changing
+# any tool's name, signature or description; test_catalog_sizes.py refuses a stale snapshot.
+catalog-sizes:
+    {{PYTHON}} scripts/update_catalog_sizes.py
+
 # Prove each tracked test still fails with its fix reverted; `--only <prefix>` narrows it
 matrix *args:
     {{PYTHON}} scripts/revert_matrix.py "$@"

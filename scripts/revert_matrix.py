@@ -108,6 +108,7 @@ from revert_rows.common import (
     CANDT,
     CAPST,
     CAPT,
+    CATSIZET,
     CLIT,
     CLOTHT,
     CONNFAILT,
@@ -187,7 +188,8 @@ from revert_rows.common import (
 # joins it because every node in it is a claim the add-on writes into a shipped `.blend`'s
 # provenance block, which a recipient cannot check against anything else. TOOLSETST joins it
 # because every node in it is a claim about which tools one client session is offered and may
-# call, which another session's request must never change.
+# call, which another session's request must never change. CATSIZET joins it on the SURFT rule:
+# it is the freshness gate for the committed catalog sizes, so every node is a claim about them.
 NEW_TEST_FILES = (
     RIGT,
     DOCKT,
@@ -217,6 +219,7 @@ NEW_TEST_FILES = (
     INTEGT,
     CAPST,
     TOOLSETST,
+    CATSIZET,
 )
 # Nodes in files the matrix does not own. `coverage_gaps()` sees only these and the nodes
 # collected from NEW_TEST_FILES, so a node left off this list is never checked.

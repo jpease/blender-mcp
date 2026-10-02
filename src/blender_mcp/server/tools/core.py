@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context
@@ -605,7 +605,7 @@ async def get_addon_status(
         raise ToolError(f"Error checking addon status: {e}") from e
 
 
-async def _toolsets_payload(session: ServerSession | None, *, changed: bool) -> dict[str, object]:
+def _toolsets_payload(session: ServerSession | None, *, changed: bool) -> dict[str, object]:
     """
     Describe one session's toolsets and what each available bundle would cost it.
 
@@ -619,21 +619,13 @@ async def _toolsets_payload(session: ServerSession | None, *, changed: bool) -> 
     """
     chosen = mcp.enabled_bundles(session)
     enabled = frozenset(STARTUP_BUNDLES) if chosen is None else chosen
-    warnings: list[str] = []
-    catalog: Mapping[str, Mapping[str, int | None]]
-    try:
-        catalog = await asyncio.to_thread(bundle_catalog, await mcp.registered_tools())
-    except RuntimeError as exc:
-        by_bundle = bundle_tool_names()
-        catalog = {name: {"tool_count": len(by_bundle[name]), "catalog_bytes": None} for name in BUNDLES}
-        warnings.append(f"catalog_bytes is null: {exc}")
+    catalog = bundle_catalog()
     return {
         "enabled_bundles": [CORE_BUNDLE, *(name for name in BUNDLES if name in enabled)],
         "bundles": {name: {"enabled": name in enabled, **catalog[name]} for name in BUNDLES},
         "modes": {name: list(members) for name, members in MODES.items()},
         "listed_tool_count": len(mcp.session_tool_names(session)),
         "changed": changed,
-        "warnings": warnings,
     }
 
 
@@ -669,7 +661,7 @@ async def manage_toolsets(
     """
     session = _calling_session(ctx)
     if action == "LIST":
-        return ok(await _toolsets_payload(session, changed=False))
+        return ok(_toolsets_payload(session, changed=False))
     names = toolsets or []
     if not names:
         raise ToolError(f"{action} needs at least one toolset name in toolsets; LIST names them.")
@@ -689,4 +681,4 @@ async def manage_toolsets(
     else:
         current -= requested
     changed = await mcp.choose_bundles(session, current)
-    return ok(await _toolsets_payload(session, changed=changed))
+    return ok(_toolsets_payload(session, changed=changed))
