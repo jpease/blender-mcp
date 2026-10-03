@@ -1024,3 +1024,13 @@ def test_handshake_reads_an_addon_that_omits_the_file_path_policy_as_permissive(
     assert handshake.file_roots == []
     assert handshake.file_roots_enforced is False
     assert _hostile_handshake(file_roots_enforced="true").file_roots_enforced is False
+
+
+def test_the_handshake_reads_only_a_list_of_command_names_as_read_only() -> None:
+    """A malformed field must read as "names nothing", never as a reason to advise a blind retry."""
+    assert _hostile_handshake().read_only_commands == frozenset()
+    assert _hostile_handshake(read_only_commands=["ping", "list_scene_objects"]).read_only_commands == frozenset(
+        {"ping", "list_scene_objects"}
+    )
+    assert _hostile_handshake(read_only_commands="ping").read_only_commands == frozenset()
+    assert _hostile_handshake(read_only_commands=["ping", 3]).read_only_commands == frozenset()

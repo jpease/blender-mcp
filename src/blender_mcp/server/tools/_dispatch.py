@@ -75,6 +75,31 @@ _RESEND_HINT = (
     "answers an id it already ran with that run's reply instead of running it again, so for the next 10 minutes "
     "an identical call returns the first run's result. The next command reconnects."
 )
+# Said instead, after the same failure, for a command the addon's registry marks read-only: running
+# a read twice changes nothing, so inspecting the scene first would only cost a call.
+_READ_ONLY_RETRY_HINT = (
+    "The command was sent before the connection failed, but it only reads the scene, so retrying it is safe. "
+    "The next command reconnects."
+)
+
+
+def _is_read_only(command: str) -> bool:
+    """
+    Report whether the addon named this command read-only whatever its params.
+
+    Only the addon's own registry decides, through the handshake: a guess from the tool's name
+    that was wrong would tell an agent to blindly repeat a mutation.
+
+    Args:
+        command: Addon command name.
+
+    Returns:
+        bool: True only when the handshake lists it.
+
+    """
+    handshake = get_last_handshake()
+    return handshake is not None and command in handshake.read_only_commands
+
 
 _RESEND_WINDOW_SECONDS = 600.0
 _RESEND_CAPACITY = 64
@@ -184,10 +209,13 @@ def send_command(command: str, params: dict[str, Any] | None = None) -> dict[str
         ToolError: If Blender refused the operation, or the round trip failed.
 
     """
-    blender = get_blender_connection()
-    key = _resend_key(command, params)
-    request_id = _resend_ids.take(key) if key is not None else None
+    key = None
+    request_id = None
     try:
+        # Inside the try: a Blender that cannot be reached at all is a command never sent.
+        blender = get_blender_connection()
+        key = None if _is_read_only(command) else _resend_key(command, params)
+        request_id = _resend_ids.take(key) if key is not None else None
         if request_id is None:
             reply = blender.send_command(command, params)
         else:
@@ -204,6 +232,8 @@ def send_command(command: str, params: dict[str, Any] | None = None) -> dict[str
         raise ToolError(f"{exc} {_RETRY_HINT}") from exc
     except BlenderTransportError as exc:
         logger.error("Transport failure running %s: %s", command, exc)
+        if _is_read_only(command):
+            raise ToolError(f"{exc} {_READ_ONLY_RETRY_HINT}") from exc
         if key is not None and exc.request_id is not None:
             _resend_ids.remember(key, exc.request_id)
             raise ToolError(f"{exc} {_RESEND_HINT}") from exc

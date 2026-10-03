@@ -30,7 +30,7 @@ from .text_hygiene import strip_unsafe
 logger = logging.getLogger("BlenderMCPServer")
 
 # Must match ADDON_PROTOCOL_VERSION in bundled/addon/__init__.py
-EXPECTED_ADDON_PROTOCOL_VERSION = 54
+EXPECTED_ADDON_PROTOCOL_VERSION = 55
 
 _ADDON_MARKER = 'bl_info = {\n    "name": "Blender MCP"'
 _INSTALLED_DIRNAME = "blender_mcp"
@@ -270,6 +270,10 @@ class AddonHandshake:
     # the command again. Only then does the dispatch resend a command whose outcome is unknown
     # under its first id. Older addons omit it, and would run the resend a second time.
     idempotent_resend: bool = False
+    # Commands the addon's registry marks read-only whatever their params. A lost reply to one
+    # of these is worth a plain retry: running a read twice changes nothing. Empty for an older
+    # addon, which then gets the cautious inspect-first hint for every sent-and-lost command.
+    read_only_commands: frozenset[str] = frozenset()
 
     def session_marker(self) -> tuple[str | None, int | None]:
         """
@@ -1082,6 +1086,25 @@ def _is_transport_failure(error: BaseException) -> bool:
     return isinstance(error, ConnectionError) or getattr(error, "is_transport_failure", False) is True
 
 
+def _read_only_command_names(value: object) -> frozenset[str]:
+    """
+    Read the addon's list of read-only commands, or nothing when it is malformed.
+
+    Naming a command read-only tells an agent a lost reply is safe to retry blind, so a field
+    that is not exactly a list of strings names nothing rather than whatever parts parsed.
+
+    Args:
+        value: The `read_only_commands` field off the socket.
+
+    Returns:
+        frozenset[str]: The command names, or empty.
+
+    """
+    if not isinstance(value, list) or not all(isinstance(name, str) for name in value):
+        return frozenset()
+    return frozenset(value)
+
+
 def handshake_addon(blender_connection) -> AddonHandshake:
     """
     Query a connected Blender addon for protocol version and dispatch surface.
@@ -1173,6 +1196,7 @@ def handshake_addon(blender_connection) -> AddonHandshake:
             missing_parameters=missing_parameters,
             # `is True`, like `session_indeterminate`: a truthy string is not a yes.
             idempotent_resend=info.get("idempotent_resend") is True,
+            read_only_commands=_read_only_command_names(info.get("read_only_commands")),
         )
     except Exception as e:
         if _is_transport_failure(e):

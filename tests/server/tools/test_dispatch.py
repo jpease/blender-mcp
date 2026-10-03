@@ -453,3 +453,60 @@ def test_a_replayed_reply_is_enveloped_like_any_other(monkeypatch) -> None:
     assert replayed == ordinary
     assert replayed["data"] == {"name": "Cube"}
     assert replayed["changed_objects"] == ["Cube"]
+
+
+def test_a_reconnect_that_fails_is_reported_as_never_sent_and_worth_a_retry(monkeypatch) -> None:
+    """
+    A dropped socket that cannot be reopened never carried the command.
+
+    It used to surface as a bare `ConnectionError`, so the agent got neither hint and could not
+    tell a Blender that is gone from a command that may have run.
+    """
+    blender = _install_socket(monkeypatch, None)
+    monkeypatch.setattr(blender, "connect", lambda: False)
+
+    message = _fails()
+
+    assert message.endswith(_dispatch._RETRY_HINT)
+
+
+def test_no_connection_at_all_is_reported_as_never_sent_and_worth_a_retry(monkeypatch) -> None:
+    """The first connection failing is the same fact: nothing reached Blender."""
+    monkeypatch.setattr(_dispatch, "get_blender_connection", connection_module.get_blender_connection)
+    monkeypatch.setattr(connection_module, "_blender_connection", None)
+    monkeypatch.setattr(connection_module, "connect_with_retry", lambda *_args, **_kwargs: False)
+
+    message = _fails()
+
+    assert message.startswith("Could not connect to Blender")
+    assert message.endswith(_dispatch._RETRY_HINT)
+
+
+def _install_read_only(monkeypatch, sock, read_only_commands):
+    blender = _install_resending(monkeypatch, sock, capable=False)
+    handshake = connection_module._addon_handshake
+    monkeypatch.setattr(handshake, "read_only_commands", frozenset(read_only_commands))
+    return blender
+
+
+def test_a_read_only_command_that_was_sent_and_lost_is_worth_a_retry(monkeypatch) -> None:
+    """Running a read twice changes nothing, so inspecting the scene first would only cost a call."""
+    _install_read_only(monkeypatch, _AnsweringSocket(replies=[TimeoutError("timed out")]), {"get_object_info"})
+
+    message = _fails("get_object_info", name="Cube")
+
+    assert message.endswith(_dispatch._READ_ONLY_RETRY_HINT)
+    assert "inspect the scene" not in message
+
+
+def test_a_mutating_command_lost_after_sending_still_asks_for_inspection(monkeypatch) -> None:
+    _install_read_only(monkeypatch, _AnsweringSocket(replies=[TimeoutError("timed out")]), {"get_object_info"})
+
+    assert _fails().endswith(_dispatch._OUTCOME_UNKNOWN_HINT)
+
+
+def test_an_addon_that_does_not_name_its_reads_gets_the_cautious_hint(monkeypatch) -> None:
+    """Guessing read-only from a tool's name would tell an agent to blindly repeat a mutation."""
+    _install_resending(monkeypatch, _AnsweringSocket(replies=[TimeoutError("timed out")]), capable=False)
+
+    assert _fails("get_object_info", name="Cube").endswith(_dispatch._OUTCOME_UNKNOWN_HINT)

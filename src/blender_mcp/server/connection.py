@@ -91,12 +91,13 @@ class BlenderPeerClosedError(BlenderTransportError):
     """
     Raised when the peer closed the connection without sending a single byte.
 
-    Distinct from every other transport fault because it is the one case that
-    proves the command was *not* serviced: a socket Blender had already closed
-    accepts the write and then reports EOF, so nothing was ever read. That makes
-    a side-effect-free command safe to resend once; see
-    `_SIDE_EFFECT_FREE_COMMANDS`. Bytes arriving and then stopping is not this -
-    that is a command Blender may well have run, and stays a plain transport error.
+    Distinct from every other transport fault because no reply ever started: a
+    socket Blender had already retired accepts the write and then reports EOF.
+    That does not prove the command never ran - a handler can finish and die
+    before its reply reaches the wire - so it is resent only for a command where
+    running twice equals running once; see `_SIDE_EFFECT_FREE_COMMANDS`. To the
+    tool layer it is an unknown outcome like any other sent-and-lost command.
+    Bytes arriving and then stopping is not this, and stays a plain transport error.
     """
 
 
@@ -390,11 +391,14 @@ class BlenderConnection:
                 command was sent under and whether the whole frame was written. A peer
                 that closed before answering raises `BlenderPeerClosedError`, either
                 immediately for a mutating command or after one failed retry.
-            ConnectionError: If there is no socket and one cannot be opened.
+            BlenderCommandNotSentError: If there is no socket and one cannot be opened,
+                so the command never reached Blender.
 
         """
         if not self.sock and not self.connect():
-            raise ConnectionError("Not connected to Blender")
+            raise BlenderCommandNotSentError(
+                "Not connected to Blender: the connection was lost and could not be reopened"
+            )
 
         # Bound to a name so the id stays a plain `str`: read back out of the
         # command dict it would widen to the dict's union value type.
@@ -698,7 +702,7 @@ def _tracked_connection() -> BlenderConnection:
         BlenderConnection: The tracked connection.
 
     Raises:
-        Exception: If no connection is tracked and none can be opened.
+        BlenderCommandNotSentError: If no connection is tracked and none can be opened.
 
     """
     global _blender_connection
@@ -715,7 +719,7 @@ def _tracked_connection() -> BlenderConnection:
         # reconnect after a dropped socket deliberately still fails fast.
         if not connect_with_retry(blender, attempts=connect_attempts(), delay=connect_retry_delay()):
             logger.error("Failed to connect to Blender")
-            raise Exception("Could not connect to Blender. Make sure the Blender addon is running.")
+            raise BlenderCommandNotSentError("Could not connect to Blender. Make sure the Blender addon is running.")
         # Published only once connected, so the unlocked fast path can never hand
         # out a connection whose socket is still None.
         _blender_connection = blender

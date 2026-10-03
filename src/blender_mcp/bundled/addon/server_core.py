@@ -1030,6 +1030,9 @@ class BlenderMCPServer(
             # A resent request id is answered from `reply_cache` instead of run again, so the
             # server may resend a command whose first attempt's outcome it never learned.
             "idempotent_resend": True,
+            # Unconditionally read-only commands only: one whose params decide (`read_only_when`)
+            # may mutate, so a lost reply to it still has to be inspected before a retry.
+            "read_only_commands": sorted(name for name in handlers if self.command_spec(name).read_only),
         }
 
     @staticmethod

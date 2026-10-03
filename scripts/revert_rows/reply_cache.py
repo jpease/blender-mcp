@@ -7,7 +7,7 @@ identical call under it, but only to an add-on whose handshake advertises `idemp
 What the add-on does against a real database is proven by `tests/blender_reply_cache_smoke.py`,
 which no pytest node runs.
 
-Label prefixes: `reply cache:`.
+Label prefixes: `reply cache:`, `transport:`, `transport control:`.
 """
 
 from .common import (
@@ -46,6 +46,14 @@ _ANSWER_REFUSAL = f"{DISPT}::test_an_answer_forgets_the_id_so_a_later_identical_
 _UNSENT_RESEND = f"{DISPT}::test_a_resend_that_never_left_the_socket_keeps_the_id"
 
 _HANDSHAKE = f"{AMT}::test_the_handshake_advertises_idempotent_resend_only_when_the_addon_says_true"
+_READ_ONLY_PARSE = f"{AMT}::test_the_handshake_reads_only_a_list_of_command_names_as_read_only"
+
+_RECONNECT = f"{DISPT}::test_a_reconnect_that_fails_is_reported_as_never_sent_and_worth_a_retry"
+_NO_CONNECTION = f"{DISPT}::test_no_connection_at_all_is_reported_as_never_sent_and_worth_a_retry"
+_READ_RETRY = f"{DISPT}::test_a_read_only_command_that_was_sent_and_lost_is_worth_a_retry"
+_MUTATING_INSPECT = f"{DISPT}::test_a_mutating_command_lost_after_sending_still_asks_for_inspection"
+_UNNAMED_READS = f"{DISPT}::test_an_addon_that_does_not_name_its_reads_gets_the_cautious_hint"
+_NAMES_READS = f"{REPLYCACHET}::test_the_handshake_names_the_commands_that_never_mutate"
 
 # Every node that sends an identical call after an unknown outcome and expects the first id back.
 _REUSES_THE_ID = (_SAME_ID, _KEY_ORDER, _LRU, _ANSWER_REPLY, _ANSWER_REFUSAL, _UNSENT_RESEND, _EXPIRY)
@@ -250,5 +258,51 @@ ROWS: list[Revert] = [
         '            idempotent_resend=info.get("idempotent_resend") is True,',
         "            idempotent_resend=False,",
         (_HANDSHAKE,),
+    ),
+    # --- what the agent is told when nothing reached Blender, or only a read was lost ---
+    Revert(
+        "transport: a reconnect that fails is a bare ConnectionError again, so neither hint is given",
+        SERVER_CONNECTION,
+        "            raise BlenderCommandNotSentError(\n"
+        '                "Not connected to Blender: the connection was lost and could not be reopened"\n',
+        "            raise ConnectionError(\n"
+        '                "Not connected to Blender: the connection was lost and could not be reopened"\n',
+        (_RECONNECT,),
+    ),
+    Revert(
+        "transport: the first connection failing is an untyped Exception again",
+        SERVER_CONNECTION,
+        '            raise BlenderCommandNotSentError("Could not connect to Blender. Make sure',
+        '            raise Exception("Could not connect to Blender. Make sure',
+        (_NO_CONNECTION,),
+    ),
+    Revert(
+        "transport: a lost read-only command is told to inspect the scene like a mutation",
+        SERVER_DISPATCH,
+        '        if _is_read_only(command):\n            raise ToolError(f"{exc} {_READ_ONLY_RETRY_HINT}") from exc\n',
+        "",
+        (_READ_RETRY,),
+    ),
+    Revert(
+        # The dangerous direction: calling every command a read tells an agent to repeat a mutation.
+        "transport control: every command is treated as read-only",
+        SERVER_DISPATCH,
+        "    return handshake is not None and command in handshake.read_only_commands",
+        "    return True",
+        (_MUTATING_INSPECT, _UNNAMED_READS),
+    ),
+    Revert(
+        "reply cache: the handshake names every command read-only",
+        ADDON_SERVER_CORE,
+        '            "read_only_commands": sorted(name for name in handlers if self.command_spec(name).read_only),',
+        '            "read_only_commands": sorted(handlers),',
+        (_NAMES_READS,),
+    ),
+    Revert(
+        "reply cache: a malformed read_only_commands field is read as names",
+        ADDON_MANAGER,
+        "    if not isinstance(value, list) or not all(isinstance(name, str) for name in value):",
+        "    if not isinstance(value, (list, str)):",
+        (_READ_ONLY_PARSE,),
     ),
 ]

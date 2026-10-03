@@ -301,3 +301,18 @@ def test_the_cache_keeps_sixty_four_replies_and_no_more_bytes_than_the_reply_cap
     assert survivors == ["r1", *(f"r{index}" for index in range(56, 65))]
     assert not cache.store("huge", marker, b"z" * 1_001, 1_000)
     assert cache.lookup("big", marker) == b"y" * 990
+
+
+def test_the_handshake_names_the_commands_that_never_mutate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only unconditionally read-only commands: one whose params decide is not safe to name."""
+    _addon, _bpy, server_core = _setup(monkeypatch)
+    server = server_core.BlenderMCPServer()
+
+    named = set(server.get_addon_info()["read_only_commands"])
+
+    expected = {
+        name for name in server._build_command_handlers() if server_core.BlenderMCPServer.command_spec(name).read_only
+    }
+    assert named == expected
+    assert "list_scene_objects" in named
+    assert "create_primitive_object" not in named
