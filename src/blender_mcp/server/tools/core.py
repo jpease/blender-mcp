@@ -613,6 +613,13 @@ async def get_addon_status(
         raise ToolError(f"Error checking addon status: {e}") from e
 
 
+# A client that ignores tools/list_changed keeps the list it had; only this reply can say so.
+_LIST_CHANGED_HINT = (
+    "If the new tools are not in your tool list, your client did not act on tools/list_changed: "
+    f"list tools again, or set {TOOLSETS_ENV_VAR} and restart the client."
+)
+
+
 def _toolsets_payload(session: ServerSession | None, *, changed: bool) -> dict[str, object]:
     """
     Describe one session's toolsets and what each available bundle would cost it.
@@ -689,4 +696,5 @@ async def manage_toolsets(
     else:
         current -= requested
     changed = await mcp.choose_bundles(session, current)
-    return ok(_toolsets_payload(session, changed=changed))
+    warnings = [_LIST_CHANGED_HINT] if action == "ENABLE" and changed else None
+    return ok(_toolsets_payload(session, changed=changed), warnings=warnings)

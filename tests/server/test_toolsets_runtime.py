@@ -173,6 +173,29 @@ def test_enabling_a_bundle_lists_its_tools_and_announces_the_change() -> None:
     assert seen["announced"] == 2
 
 
+def test_an_enable_that_changed_the_list_says_how_to_recover_from_a_client_that_ignored_it() -> None:
+    """
+    A client that drops tools/list_changed keeps its old list, and the agent sees no new tools.
+
+    Only the reply can tell it why, so a changing ENABLE carries the hint; an ENABLE that changed
+    nothing, and a DISABLE, carry none.
+    """
+    seen = _run(
+        f"""
+        async with Client().connect() as session:
+            first = await toolsets(session, "ENABLE", "{_RIGGING}")
+            again = await toolsets(session, "ENABLE", "{_RIGGING}")
+            disabled = await toolsets(session, "DISABLE", "{_RIGGING}")
+            return [json.loads(reply["text"])["warnings"] for reply in (first, again, disabled)]
+        """
+    )
+
+    first, again, disabled = seen
+    assert len(first) == 1, first
+    assert "tools/list_changed" in first[0] and "BLENDER_MCP_TOOLSETS" in first[0], first
+    assert again == [] and disabled == [], seen
+
+
 def test_a_second_session_is_unaffected_and_refused_with_the_bundle_named() -> None:
     """Enabling registers tools process-wide; only the session that asked may list or call them."""
     seen = _run(

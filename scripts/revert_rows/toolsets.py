@@ -28,10 +28,25 @@ _STATUS = f"{TOOLSETST}::test_get_addon_status_reports_per_session"
 _TWICE = f"{TOOLSETST}::test_enabling_twice_registers_once_and_advertises_what_a_started_process_does"
 _LIST = f"{TOOLSETST}::test_list_reports_each_bundles_tool_count_and_catalog_bytes"
 _ONCE = f"{TOOLSETST}::test_the_documentation_pass_rewrites_a_tool_once_however_often_it_is_asked"
+_HINT = f"{TOOLSETST}::test_an_enable_that_changed_the_list_says_how_to_recover_from_a_client_that_ignored_it"
 _SIZES_MATCH = f"{CATSIZET}::test_committed_catalog_sizes_match_a_process_started_with_every_bundle"
 _SIZES_SERIALIZED = f"{CATSIZET}::test_committed_catalog_sizes_are_serialized_the_way_the_generator_writes_them"
 
 ROWS: list[Revert] = [
+    Revert(
+        "toolsets: a changing ENABLE does not say how to recover from a client that ignored list_changed",
+        SERVER_CORE_TOOL,
+        '    warnings = [_LIST_CHANGED_HINT] if action == "ENABLE" and changed else None\n',
+        "    warnings = None\n",
+        (_HINT,),
+    ),
+    Revert(
+        "toolsets: the list_changed hint is sent on every ENABLE and DISABLE",
+        SERVER_CORE_TOOL,
+        '    warnings = [_LIST_CHANGED_HINT] if action == "ENABLE" and changed else None\n',
+        "    warnings = [_LIST_CHANGED_HINT]\n",
+        (_HINT,),
+    ),
     Revert(
         "toolsets: manage_toolsets is never registered",
         SERVER_CORE_TOOL,
