@@ -25,6 +25,7 @@ python_files = ["test_*.py"]
 testpaths = ["tests"]
 markers = [
     "phase2_gate: shells out to a live GUI Blender via scripts/blender_rig.py; skipped unless BLENDERMCP_LIVE_RIG=1 is set and /opt/homebrew/bin/blender exists",
+    "run_calls_blender: runs blender-mcp run-calls against a real headless Blender; skipped unless BLENDERMCP_TEST_BLENDER names an executable",
 ]
 
 [tool.pyright]

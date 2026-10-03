@@ -1,5 +1,5 @@
 """
-`blender-mcp` CLI entrypoint: install-addon/addon-paths subcommands, or mcp.run().
+`blender-mcp` CLI entrypoint: install-addon/addon-paths/run-calls subcommands, or mcp.run().
 
 stdio is the default, and every existing client configuration depends on it. Streamable
 HTTP is opt-in and supported only on loopback, reached remotely through an SSH tunnel.
@@ -18,6 +18,7 @@ from typing import Literal
 
 from ..addon_manager import run_cli as run_addon_cli
 from .app import mcp
+from .bundles import TOOLSETS_ENV_VAR, resolve_toolset_modules
 
 logger = logging.getLogger("BlenderMCPServer")
 
@@ -292,14 +293,44 @@ def _serve_http(host: str, port: int) -> None:
     mcp.run(transport="streamable-http")
 
 
+def _exec_run_calls(argv: list[str]) -> int:
+    """
+    Validate `run-calls`' toolsets, then re-execute as `python -m blender_mcp.run_calls`.
+
+    Tools mount when `blender_mcp` is imported, and this process has already imported it, so
+    the runner needs a fresh interpreter with `BLENDER_MCP_TOOLSETS` set before that import.
+
+    Args:
+        argv: The arguments after `run-calls`.
+
+    Returns:
+        int: 2 for an unknown toolset name; otherwise this process is replaced and never returns.
+
+    """
+    # Lazily: imported with the package, `python -m blender_mcp.run_calls` would run it twice.
+    from ..run_calls import PROG, build_parser  # ruff: ignore[import-outside-top-level]
+
+    args = build_parser().parse_args(argv)
+    try:
+        resolve_toolset_modules(args.toolsets)
+    except ValueError as exc:
+        print(f"{PROG}: {exc}", file=sys.stderr)
+        return 2
+    env = {**os.environ, TOOLSETS_ENV_VAR: args.toolsets}
+    os.execve(sys.executable, [sys.executable, "-m", "blender_mcp.run_calls", *argv], env)
+
+
 def main() -> None:
     """
-    Run the MCP server, or addon install CLI subcommands.
+    Run the MCP server, the run-calls runner, or addon install CLI subcommands.
 
     Raises:
         SystemExit: If the operation cannot be completed.
 
     """
+    if len(sys.argv) > 1 and sys.argv[1] == "run-calls":
+        raise SystemExit(_exec_run_calls(sys.argv[2:]))
+
     if len(sys.argv) > 1 and sys.argv[1] in {
         "install-addon",
         "addon-paths",

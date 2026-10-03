@@ -1262,6 +1262,10 @@ def run_cli(argv: list[str] | None = None) -> int:
     """
     import argparse
 
+    # Lazily: run_calls imports this module and the server, and imported with the package,
+    # `python -m blender_mcp.run_calls` would run it twice.
+    from .run_calls import add_arguments as add_run_calls_arguments  # ruff: ignore[import-outside-top-level]
+
     parser = argparse.ArgumentParser(
         prog="blender-mcp",
         description="Blender MCP server and addon installer",
@@ -1282,6 +1286,14 @@ def run_cli(argv: list[str] | None = None) -> int:
     sub.add_parser(
         "addon-paths",
         help="List discovered Blender user addons directories",
+    )
+
+    # Listed here for `--help` only: `server.cli.main` dispatches `run-calls` before this parser runs.
+    add_run_calls_arguments(
+        sub.add_parser(
+            "run-calls",
+            help="Run calls files against a background Blender through the MCP tool layer",
+        )
     )
 
     args = parser.parse_args(argv)

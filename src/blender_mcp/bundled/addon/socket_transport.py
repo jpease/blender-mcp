@@ -153,11 +153,21 @@ class SocketTransportMixin:
 
     def _start_serving(self) -> None:
         """
-        Bind the listening socket, start its accept thread, and register the drain timer.
+        Listen, then register the drain timer.
 
         `start`'s whole bring-up, kept in one call because `start` undoes all of it with
         `stop()` when any step raises.
         """
+        self._listen()
+
+        # start() is called from the operator, i.e. the main thread, so
+        # this is the only safe place to touch bpy.app.timers.
+        self._register_drain_timer()
+
+        logger.info("Server started on %s:%s", self.host, self.port)
+
+    def _listen(self) -> None:
+        """Bind the listening socket and start its accept thread."""
         # Create socket
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -172,11 +182,35 @@ class SocketTransportMixin:
         self.server_thread.daemon = True
         self.server_thread.start()
 
-        # start() is called from the operator, i.e. the main thread, so
-        # this is the only safe place to touch bpy.app.timers.
-        self._register_drain_timer()
+    def serve_in_background(self, ready: Callable[[int], None]) -> None:
+        """
+        Serve under `blender -b`, draining the command queue on the calling thread until stopped.
 
-        logger.info("Server started on %s:%s", self.host, self.port)
+        `start()` refuses background mode because its drain timer never fires there; here the
+        caller's own thread, Blender's main thread when run from `--python`, is the drain loop.
+        Returns once the server stops; the server is stopped on the way out however it ends.
+
+        Args:
+            ready: Called once with the bound port, after the socket listens and before the
+                first drain.
+
+        Raises:
+            RuntimeError: Outside background mode, where `start()` is the way to serve.
+
+        """
+        if not bpy.app.background:
+            raise RuntimeError("serve_in_background is for blender -b; use start()")
+        self.running = True
+        try:
+            self._listen()
+            ready(self.socket.getsockname()[1])
+            while self.running:
+                interval = self.drain_command_queue()
+                if interval is None:
+                    break
+                time.sleep(interval)
+        finally:
+            self.stop()
 
     def stop(self) -> None:
         """
