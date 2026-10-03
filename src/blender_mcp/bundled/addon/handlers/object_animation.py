@@ -486,6 +486,30 @@ def _prepare_records(keyframes):
     return prepared
 
 
+def _in_frame_order(prepared):
+    """
+    Order each object's records by frame, leaving every other object's records where they were.
+
+    A WORLD rotation is re-spelled against the channel's previous key, which only exists if the
+    earlier frame was keyed first: listed descending, every key found nothing before it and kept
+    the setter's +-180 spelling. Each object's records are sorted into the slots that object
+    already held, so the interleaving across objects - a parent keyed before its child at a
+    frame - stays as the caller listed it.
+
+    Args:
+        prepared: The validated records, in the caller's order.
+
+    Returns:
+        list: The same records, each object's ascending by frame.
+
+    """
+    by_object = {}
+    for entry in prepared:
+        by_object.setdefault(entry["object_name"], []).append(entry)
+    ascending = {name: iter(sorted(entries, key=lambda item: item["frame"])) for name, entries in by_object.items()}
+    return [next(ascending[entry["object_name"]]) for entry in prepared]
+
+
 class ObjectAnimationHandlersMixin:
     """Keyframe an object's location/rotation/scale, in local or world space, across a scene."""
 
@@ -547,11 +571,16 @@ class ObjectAnimationHandlersMixin:
             warnings = _cycle_extension_warnings(prepared)
             if any(entry["space"] == "WORLD" for entry in prepared):
                 borrowed.enter_context(restored_playhead(bpy.context.scene))
-            changed_keys = []
-            for entry in prepared:
+            inserted_keys = {}
+            for entry in _in_frame_order(prepared):
                 inserted = _apply_and_key(entry["object"], entry["frame"], entry["space"], entry["channels"])
-                for data_path in inserted:
-                    changed_keys.extend(_style_inserted_keys(entry["object"], data_path, entry["frame"], style))
+                inserted_keys[entry["label"]] = [
+                    record
+                    for data_path in inserted
+                    for record in _style_inserted_keys(entry["object"], data_path, entry["frame"], style)
+                ]
+            # Reported in the order the caller listed the records, whatever order they were keyed in.
+            changed_keys = [record for entry in prepared for record in inserted_keys[entry["label"]]]
 
             changed_objects = list(dict.fromkeys(entry["object_name"] for entry in prepared))
             actions = sorted(

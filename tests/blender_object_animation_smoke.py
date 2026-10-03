@@ -111,6 +111,33 @@ def _test_world_rotation_keeps_a_deliberate_turn(handler) -> None:
         assert math.isclose(value, degrees, abs_tol=1e-3), f"WORLD turn keyed as {keyed}, not {[d for _f, d in yaws]}"
 
 
+def _test_world_rotation_keys_do_not_depend_on_record_order(handler) -> None:
+    """
+    Key the same WORLD yaws listed descending and ascending, and compare the curves.
+
+    Each WORLD key is re-spelled against the channel's previous key, which is only there when
+    the frames before it were keyed first. Listed 30, 20, 10, 1, every key found nothing before
+    it and kept the setter's +-180 spelling, so the turn folded back instead of accumulating.
+    """
+    yaws = ((1.0, 0.0), (10.0, 170.0), (20.0, 340.0), (30.0, 510.0))
+    for mode, path in (("QUATERNION", "rotation_quaternion"), ("XYZ", "rotation_euler")):
+        curves = {}
+        for order, listed in (("ascending", yaws), ("descending", tuple(reversed(yaws)))):
+            obj = _new_object(f"AnimOrder{mode}{order}")
+            obj.rotation_mode = mode
+            reply = handler.keyframe_object_transform(keyframes=_yaw_records(obj, path, listed))
+            reported = list(dict.fromkeys(record["frame"] for record in reply["keyframes"]))
+            assert reported == [frame for frame, _degrees in listed], f"{order} reply reordered: {reported}"
+            curves[order] = [_channel_at(obj, path, frame / 4.0) for frame in range(4, 121)]
+        worst = max(
+            abs(a - b)
+            for ascending, descending in zip(curves["ascending"], curves["descending"], strict=True)
+            for a, b in zip(ascending, descending, strict=True)
+        )
+        print(f"{mode}: descending vs ascending WORLD yaw curves differ by at most {worst:.3e}")
+        assert worst < 1e-5, f"{mode}: listing the frames descending keyed different curves (by {worst})"
+
+
 def _test_local_rotation_is_keyed_verbatim(handler) -> None:
     """LOCAL writes the caller's own spelling, so a single step past 180 degrees stays the step asked for."""
     euler_obj = _new_object("AnimLocalEuler")
@@ -357,6 +384,7 @@ def main() -> None:
     _test_batch_validation(handler)
     _test_world_rotation_keys_take_the_short_way(handler)
     _test_world_rotation_keeps_a_deliberate_turn(handler)
+    _test_world_rotation_keys_do_not_depend_on_record_order(handler)
     _test_local_rotation_is_keyed_verbatim(handler)
     _test_a_key_outside_a_travelling_cycle_is_reported(handler, _new_object("AnimRoot"))
 
