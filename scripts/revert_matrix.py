@@ -781,8 +781,10 @@ NEW_NODES_IN_EXISTING_FILES = (
     f"{OANIMT}::test_a_batch_failing_part_way_hands_a_reused_action_back_its_keys",
     # --- an orchestrated render keeps every reply's warnings, the add-on's change notice among them ---
     f"{RENDT}::test_orchestrated_animation_reports_every_replys_warnings_once",
-    # --- the handshake field that lets the dispatch resend under a command's first id ---
-    f"{AMT}::test_the_handshake_advertises_idempotent_resend_only_when_the_addon_says_true",
+    # --- the handshake field that lets the dispatch resend, marked, under a command's first id ---
+    f"{AMT}::test_the_handshake_advertises_marked_resend_only_when_the_addon_says_true",
+    # --- a reply spread over many recvs is searched once, chunk by chunk ---
+    f"{CONNT}::test_a_frame_spread_over_many_recvs_arrives_whole_and_the_next_one_still_follows",
 )
 
 # Nodes no single revert can break, each with the reason, so the gap check skips them.

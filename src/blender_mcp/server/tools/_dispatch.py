@@ -22,13 +22,17 @@ reconnects; after, Blender may have run it, so the message says to inspect the s
 retry. All of these reach the MCP client as `ToolError`; the distinction is for the prose, not
 for the wire.
 
-An addon that advertises `idempotent_resend` answers a request id it already ran from its reply
-cache. For it, a command whose outcome is unknown is remembered by its command and canonical
-parameters, and an identical call within `_RESEND_WINDOW_SECONDS` is resent under the first
-attempt's id: Blender runs it once whichever attempt arrives, so the message says an identical
-retry is safe. A reply or a refusal ends that, since the outcome is then known. Any command is
-remembered, not only mutating ones: the addon's own registry decides per call what it caches,
-and a resent read simply runs again, which is as safe.
+An addon that advertises `marked_resend` accepts a frame marked as a resend: it answers the id
+from its reply cache when it still holds the reply to that id's first run, and otherwise refuses
+it without running anything. For it, a command whose outcome is unknown is remembered by its
+command and canonical parameters, with the id and the session marker it was sent under, and an
+identical call within `_RESEND_WINDOW_SECONDS` is resent under that id and marker. Blender never
+runs the resend itself, so the message says an identical retry either returns the first run's
+result or is refused. A resend is refused here, unsent, when the cached handshake already shows
+another session than the first attempt was sent under. A reply or a refusal ends that, since
+the next identical call is then a new request. Any command is remembered, not only mutating
+ones: the server cannot tell a read whose params decide it from a mutation, and refusing a
+resent read costs only the call that issues it again.
 """
 
 import asyncio
@@ -47,6 +51,7 @@ from ..connection import (
     BlenderCommandNotSentError,
     BlenderOperationError,
     BlenderTransportError,
+    Resend,
     get_blender_connection,
     get_last_handshake,
 )
@@ -68,12 +73,22 @@ _OUTCOME_UNKNOWN_HINT = (
     "or may never have read it: inspect the scene for its effect before retrying, since a blind retry can do "
     "the work twice. The next command reconnects."
 )
-# Said instead, after the same failure, to an addon that answers a resent id from its reply cache.
+# Said instead, after the same failure, to an addon that answers a marked resend from its reply
+# cache or refuses it, and never runs it.
 _RESEND_HINT = (
     "The command was sent before the connection failed, so Blender may have run it, may still be running it, "
-    "or may never have read it. An identical retry is safe: it is resent under the same request id, and Blender "
-    "answers an id it already ran with that run's reply instead of running it again, so for the next 10 minutes "
-    "an identical call returns the first run's result. The next command reconnects."
+    "or may never have read it. For the next 10 minutes an identical call is sent as a retry of that same "
+    "request, and Blender never runs the retry itself: it answers with the first run's result if it still holds "
+    "it, and otherwise refuses the retry without running anything, in which case inspect the scene for the "
+    "command's effect before issuing it again. The next command reconnects."
+)
+# Said instead of resending, when the session moved since the first attempt was sent: the
+# addon would refuse the resend for the same reason.
+_RESEND_REFUSED = (
+    "Not sent: this repeats a command whose first attempt's outcome was never learned, and Blender's session has "
+    "changed since that attempt was sent (another file was opened, or the add-on was reloaded), so whether it ran "
+    "cannot be established. Inspect the scene for the command's effect before issuing it again; issued again, it "
+    "runs as a new request."
 )
 # Said instead, after the same failure, for a command the addon's registry marks read-only: running
 # a read twice changes nothing, so inspecting the scene first would only cost a call.
@@ -107,13 +122,14 @@ _RESEND_CAPACITY = 64
 
 class _ResendIds:
     """
-    The request ids of recent calls whose outcome is unknown, least recently set first.
+    The first attempts of recent calls whose outcome is unknown, least recently set first.
 
-    Keyed by `(command, canonical JSON params)`. An entry lasts `ttl_seconds` from the last
-    unknown outcome that set it, and past `capacity` the least recently set is dropped. A
-    resend takes its entry out, so the answer it gets - a reply or a refusal - leaves nothing
-    behind, and only another unknown outcome puts it back. Tools dispatch from worker threads,
-    so every access holds the lock.
+    Keyed by `(command, canonical JSON params)`, each holding the id and session marker the
+    first attempt was sent under. An entry lasts `ttl_seconds` from the last unknown outcome
+    that set it, and past `capacity` the least recently set is dropped. A resend takes its
+    entry out, so the answer it gets - a reply or a refusal - leaves nothing behind, and only
+    another unknown outcome puts it back. Tools dispatch from worker threads, so every access
+    holds the lock.
     """
 
     def __init__(
@@ -126,40 +142,40 @@ class _ResendIds:
         self._capacity = capacity
         self._ttl_seconds = ttl_seconds
         self._clock = clock
-        self._ids: OrderedDict[tuple[str, str], tuple[str, float]] = OrderedDict()
+        self._ids: OrderedDict[tuple[str, str], tuple[Resend, float]] = OrderedDict()
         self._lock = threading.Lock()
 
-    def take(self, key: tuple[str, str]) -> str | None:
+    def take(self, key: tuple[str, str]) -> Resend | None:
         """
-        Remove and return the id to resend this call under, or None when it is a new request.
+        Remove and return the first attempt to resend this call as, or None when it is a new request.
 
         Args:
             key: The call's command and canonical params.
 
         Returns:
-            str | None: The remembered id, unless it has expired.
+            Resend | None: The remembered attempt, unless it has expired.
 
         """
         with self._lock:
             entry = self._ids.pop(key, None)
         if entry is None:
             return None
-        request_id, expires_at = entry
+        attempt, expires_at = entry
         if self._clock() >= expires_at:
             return None
-        return request_id
+        return attempt
 
-    def remember(self, key: tuple[str, str], request_id: str) -> None:
+    def remember(self, key: tuple[str, str], attempt: Resend) -> None:
         """
         Record an unknown outcome, restarting the window.
 
         Args:
             key: The call's command and canonical params.
-            request_id: The id it was sent under.
+            attempt: The id and session marker the first attempt was sent under.
 
         """
         with self._lock:
-            self._ids[key] = (request_id, self._clock() + self._ttl_seconds)
+            self._ids[key] = (attempt, self._clock() + self._ttl_seconds)
             self._ids.move_to_end(key)
             while len(self._ids) > self._capacity:
                 self._ids.popitem(last=False)
@@ -170,7 +186,7 @@ _resend_ids = _ResendIds()
 
 def _resend_key(command: str, params: dict[str, Any] | None) -> tuple[str, str] | None:
     """
-    Name a call by what it asks for, when the addon would deduplicate its resend.
+    Name a call by what it asks for, when the addon would answer or refuse its resend.
 
     Args:
         command: Addon command name.
@@ -178,17 +194,30 @@ def _resend_key(command: str, params: dict[str, Any] | None) -> tuple[str, str] 
 
     Returns:
         tuple[str, str] | None: The command and its params as sorted-key JSON; None when the
-        addon does not advertise `idempotent_resend`, or the params do not serialize, in which
+        addon does not advertise `marked_resend`, or the params do not serialize, in which
         case the send reports that itself.
 
     """
     handshake = get_last_handshake()
-    if handshake is None or not handshake.idempotent_resend:
+    if handshake is None or not handshake.marked_resend:
         return None
     try:
         return command, json.dumps(params or {}, sort_keys=True, separators=(",", ":"))
     except (TypeError, ValueError):
         return None
+
+
+def _session_marker() -> tuple[str | None, int | None]:
+    """
+    Read the session the cached handshake says Blender has open.
+
+    Returns:
+        tuple: `(session_id, session_epoch)`; both None before any handshake, which the
+        addon matches to no session.
+
+    """
+    handshake = get_last_handshake()
+    return (None, None) if handshake is None else handshake.session_marker()
 
 
 def send_command(command: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -206,28 +235,32 @@ def send_command(command: str, params: dict[str, Any] | None = None) -> dict[str
         Whatever the addon returned, unwrapped from its response frame.
 
     Raises:
-        ToolError: If Blender refused the operation, or the round trip failed.
+        ToolError: If Blender refused the operation, the round trip failed, or the call
+            would resend an attempt sent under a session that is no longer open.
 
     """
     key = None
-    request_id = None
+    resend = None
     try:
         # Inside the try: a Blender that cannot be reached at all is a command never sent.
         blender = get_blender_connection()
         key = None if _is_read_only(command) else _resend_key(command, params)
-        request_id = _resend_ids.take(key) if key is not None else None
-        if request_id is None:
+        resend = _resend_ids.take(key) if key is not None else None
+        if resend is None:
             reply = blender.send_command(command, params)
+        elif resend.session_marker != _session_marker():
+            logger.error("Not resending %s: the session moved since request %s was sent", command, resend.request_id)
+            raise ToolError(_RESEND_REFUSED)
         else:
-            logger.info("Resending %s under request %s, whose outcome was unknown", command, request_id)
-            reply = blender.send_command(command, params, request_id=request_id)
+            logger.info("Resending %s under request %s, whose outcome was unknown", command, resend.request_id)
+            reply = blender.send_command(command, params, resend=resend)
     except BlenderOperationError as exc:
         logger.error("Blender refused %s: %s", command, exc)
         raise ToolError(str(exc)) from exc
     except BlenderCommandNotSentError as exc:
-        if key is not None and request_id is not None:
+        if key is not None and resend is not None:
             # This resend never left, and the attempt before it may still have run.
-            _resend_ids.remember(key, request_id)
+            _resend_ids.remember(key, resend)
         logger.error("Transport failure before sending %s: %s", command, exc)
         raise ToolError(f"{exc} {_RETRY_HINT}") from exc
     except BlenderTransportError as exc:
@@ -235,7 +268,8 @@ def send_command(command: str, params: dict[str, Any] | None = None) -> dict[str
         if _is_read_only(command):
             raise ToolError(f"{exc} {_READ_ONLY_RETRY_HINT}") from exc
         if key is not None and exc.request_id is not None:
-            _resend_ids.remember(key, exc.request_id)
+            # A lost resend changed nothing, so it stays a resend of the first attempt.
+            _resend_ids.remember(key, resend or Resend(exc.request_id, _session_marker()))
             raise ToolError(f"{exc} {_RESEND_HINT}") from exc
         raise ToolError(f"{exc} {_OUTCOME_UNKNOWN_HINT}") from exc
     return reply

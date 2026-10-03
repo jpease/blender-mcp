@@ -266,10 +266,11 @@ class AddonHandshake:
     # "enabled_devices", "available_devices". None for an older add-on that does not report
     # it, rather than a guessed CPU-only machine.
     render_devices: dict[str, object] | None = None
-    # Whether the addon answers a resent request id from its reply cache instead of running
-    # the command again. Only then does the dispatch resend a command whose outcome is unknown
-    # under its first id. Older addons omit it, and would run the resend a second time.
-    idempotent_resend: bool = False
+    # Whether the addon answers a frame marked as a resend from its reply cache, or refuses it
+    # without running, and never runs it. Only then does the dispatch resend a command whose
+    # outcome is unknown under its first id. Older addons omit it; one that advertised the
+    # earlier `idempotent_resend` ran a resend whose reply it no longer held a second time.
+    marked_resend: bool = False
     # Commands the addon's registry marks read-only whatever their params. A lost reply to one
     # of these is worth a plain retry: running a read twice changes nothing. Empty for an older
     # addon, which then gets the cautious inspect-first hint for every sent-and-lost command.
@@ -1195,7 +1196,7 @@ def handshake_addon(blender_connection) -> AddonHandshake:
             missing_commands=missing_commands,
             missing_parameters=missing_parameters,
             # `is True`, like `session_indeterminate`: a truthy string is not a yes.
-            idempotent_resend=info.get("idempotent_resend") is True,
+            marked_resend=info.get("marked_resend") is True,
             read_only_commands=_read_only_command_names(info.get("read_only_commands")),
         )
     except Exception as e:

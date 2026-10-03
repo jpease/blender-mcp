@@ -220,7 +220,7 @@ def _with_reconnect(conn: BlenderConnection, replacement, monkeypatch) -> list[o
     def fake_connect() -> bool:
         reconnects.append(replacement)
         conn.sock = replacement
-        conn._recv_buffer = b""
+        conn._recv_buffer = bytearray()
         return True
 
     monkeypatch.setattr(conn, "connect", fake_connect)

@@ -696,17 +696,19 @@ def test_the_handshake_reports_an_indeterminate_session_only_when_the_addon_says
     assert _hostile_handshake(session_indeterminate=1).session_indeterminate is False
 
 
-def test_the_handshake_advertises_idempotent_resend_only_when_the_addon_says_true() -> None:
+def test_the_handshake_advertises_marked_resend_only_when_the_addon_says_true() -> None:
     """
-    The server resends an unknown-outcome command under its first id only to an add-on that dedupes it.
+    The server resends an unknown-outcome command under its first id only to an add-on that never runs it.
 
-    An add-on without the reply cache would run the resent id a second time, so an omitted or
-    merely truthy field must read as no.
+    An add-on that does not read the resend mark would run the resent id as a new request, so an
+    omitted or merely truthy field must read as no, and so must the earlier `idempotent_resend`,
+    whose add-on ran a resend whose reply it had evicted.
     """
-    assert _hostile_handshake().idempotent_resend is False
-    assert _hostile_handshake(idempotent_resend=True).idempotent_resend is True
-    assert _hostile_handshake(idempotent_resend="yes").idempotent_resend is False
-    assert _hostile_handshake(idempotent_resend=1).idempotent_resend is False
+    assert _hostile_handshake().marked_resend is False
+    assert _hostile_handshake(marked_resend=True).marked_resend is True
+    assert _hostile_handshake(marked_resend="yes").marked_resend is False
+    assert _hostile_handshake(marked_resend=1).marked_resend is False
+    assert _hostile_handshake(idempotent_resend=True).marked_resend is False
 
 
 def test_both_sides_of_the_socket_hold_the_same_control_character_block() -> None:

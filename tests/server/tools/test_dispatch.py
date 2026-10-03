@@ -22,6 +22,7 @@ from blender_mcp.server.connection import (
     BlenderConnection,
     BlenderOperationError,
     BlenderTransportError,
+    Resend,
 )
 from blender_mcp.server.tools import _dispatch, core, mesh, model, nd, viewport
 
@@ -222,7 +223,7 @@ def test_a_tool_warns_against_a_blind_retry_once_the_command_was_sent(stub_blend
     assert str(failure.value) == f"{lost} {_dispatch._OUTCOME_UNKNOWN_HINT}"
 
 
-# --- an identical call after an unknown outcome resends under the first call's id ---
+# --- an identical call after an unknown outcome resends under the first call's id, marked ---
 
 
 class _AnsweringSocket:
@@ -257,6 +258,9 @@ class _AnsweringSocket:
     def sent_ids(self) -> list[str]:
         return [json.loads(data)["id"] for data in self.sent]
 
+    def sent_resend_marks(self) -> list[object]:
+        return [json.loads(data).get("resend") for data in self.sent]
+
 
 def _reset() -> ConnectionResetError:
     return ConnectionResetError(54, "Connection reset by peer")
@@ -284,7 +288,9 @@ def _install_resending(monkeypatch, sock, *, capable=True, now=None):
         capabilities=[],
         blender_version=None,
         source="native",
-        idempotent_resend=capable,
+        session_id="session-a",
+        session_epoch=7,
+        marked_resend=capable,
     )
     monkeypatch.setattr(connection_module, "_addon_handshake", handshake)
     clock = now if now is not None else [0.0]
@@ -310,14 +316,14 @@ def test_a_transport_error_names_the_request_it_was_sent_under_and_whether_it_le
         blender = BlenderConnection(host="localhost", port=0)
         blender.sock = sock
         with pytest.raises(BlenderTransportError) as failure:
-            blender.send_command_locked("create_primitive_object", {}, request_id="feed")
+            blender.send_command_locked("create_primitive_object", {}, resend=Resend("feed", ("session-a", 7)))
         assert failure.value.request_id == "feed"
         assert failure.value.sent is sent
     assert lost.sent_ids() == ["feed"]
 
 
 def test_an_identical_call_after_an_unknown_outcome_resends_under_the_same_id(monkeypatch) -> None:
-    """The add-on answers an id it already ran from its reply cache, so the work is not done twice."""
+    """The add-on answers a marked resend from its reply cache or refuses it, so the work is not done twice."""
     sock = _AnsweringSocket(replies=[_reset(), {"result": {"name": "Cube"}}])
     _install_resending(monkeypatch, sock)
 
@@ -329,13 +335,43 @@ def test_an_identical_call_after_an_unknown_outcome_resends_under_the_same_id(mo
     assert envelope["data"] == {"name": "Cube"}
 
 
-def test_the_outcome_unknown_hint_says_an_identical_retry_is_safe_when_the_addon_dedupes(monkeypatch) -> None:
+def test_a_resend_is_marked_with_the_session_its_first_attempt_was_sent_under(monkeypatch) -> None:
+    """Unmarked, the add-on takes it for a new request and runs it whenever the reply is gone."""
+    sock = _AnsweringSocket(replies=[_reset(), {"result": {}}])
+    _install_resending(monkeypatch, sock)
+
+    _fails()
+    _call()
+
+    assert sock.sent_resend_marks() == [None, {"session_id": "session-a", "session_epoch": 7}]
+
+
+def test_a_resend_after_the_session_moved_is_refused_without_sending_it(monkeypatch) -> None:
+    """
+    The first attempt was meant for a file that is no longer open, so only an inspection can tell.
+
+    The refusal answers the remembered id, so issuing the call again sends a new request.
+    """
+    sock = _AnsweringSocket(replies=[_reset(), {"result": {}}])
+    _install_resending(monkeypatch, sock)
+
+    _fails()
+    monkeypatch.setattr(connection_module._addon_handshake, "session_epoch", 8)
+    refused = _fails()
+    _call()
+
+    assert refused == _dispatch._RESEND_REFUSED
+    first, fresh = sock.sent_ids()
+    assert fresh != first
+    assert sock.sent_resend_marks() == [None, None]
+
+
+def test_the_hint_says_an_identical_retry_is_answered_or_refused_when_the_addon_marks_resends(monkeypatch) -> None:
     _install_resending(monkeypatch, _AnsweringSocket(replies=[_reset()]))
 
     message = _fails()
 
     assert message == f"Connection to Blender lost: [Errno 54] Connection reset by peer {_dispatch._RESEND_HINT}"
-    assert "inspect the scene" not in message
 
 
 def test_a_call_with_other_params_after_an_unknown_outcome_gets_a_new_id(monkeypatch) -> None:

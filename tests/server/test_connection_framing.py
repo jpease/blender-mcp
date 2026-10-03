@@ -62,6 +62,30 @@ def test_two_frames_in_one_recv_are_not_glued_together() -> None:
     assert json.loads(line2) == {"status": "success", "result": {"n": 2}}
 
 
+def test_a_frame_spread_over_many_recvs_arrives_whole_and_the_next_one_still_follows() -> None:
+    r"""
+    A large reply arrives in socket-sized pieces, and the terminator can land anywhere in one.
+
+    Each piece is searched for the `\n` as it arrives, so a terminator in the middle of a
+    piece, or as its very first byte, must still end the frame there, and the bytes after it
+    must start the next one.
+    """
+    first = json.dumps({"status": "success", "result": {"blob": "a" * 300_000}}).encode("utf-8")
+    second = json.dumps({"status": "success", "result": {"blob": "b" * 20_000}}).encode("utf-8")
+    body = first + b"\n" + second
+    chunk = 8192
+    # The second frame's terminator arrives as a piece of its own.
+    pieces = [body[start : start + chunk] for start in range(0, len(body), chunk)] + [b"\n"]
+    assert len(first) % chunk, "the first terminator must fall inside a piece, not between two"
+
+    conn = BlenderConnection(host="localhost", port=0)
+    sock = ScriptedSocket(pieces)
+
+    assert conn.receive_full_response(sock) == first
+    assert conn.receive_full_response(sock) == second
+    assert not conn._recv_buffer
+
+
 def test_oversized_response_without_terminator_raises_instead_of_growing_forever() -> None:
     conn = BlenderConnection(host="localhost", port=0)
     conn._MAX_MESSAGE_BYTES = 100  # keep the test fast

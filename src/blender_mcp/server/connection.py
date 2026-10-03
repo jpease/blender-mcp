@@ -10,7 +10,7 @@ import uuid
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 from ..addon_manager import (
     EXPECTED_ADDON_PROTOCOL_VERSION,
@@ -112,6 +112,22 @@ class BlenderCommandNotSentError(BlenderTransportError):
     """
 
     sent = False
+
+
+class Resend(NamedTuple):
+    """
+    A first attempt whose outcome was never learned, for a call that sends it again.
+
+    Attributes:
+        request_id: The id the first attempt was sent under, and the resend goes under.
+        session_marker: The `(session_id, session_epoch)` the cached handshake held when the
+            first attempt was sent. The add-on refuses a resend naming any session but the
+            one the first attempt ran under.
+
+    """
+
+    request_id: str
+    session_marker: tuple[str | None, int | None]
 
 
 def ad_hoc_failure_message(result: object) -> str | None:
@@ -231,8 +247,10 @@ class BlenderConnection:
     # the stream stays desynced until the 180s timeout fires.
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     # Bytes received past the current message's `\n` terminator, carried over
-    # to the next receive_full_response() call instead of being discarded.
-    _recv_buffer: bytes = field(default=b"", repr=False)
+    # to the next receive_full_response() call instead of being discarded. A
+    # bytearray, so each chunk appends in place instead of copying the whole
+    # message received so far.
+    _recv_buffer: bytearray = field(default_factory=bytearray, repr=False)
 
     def connect(self) -> bool:
         """
@@ -248,7 +266,7 @@ class BlenderConnection:
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((self.host, self.port))
-            self._recv_buffer = b""
+            self._recv_buffer = bytearray()
             logger.info(f"Connected to Blender at {self.host}:{self.port}")
             return True
         except Exception as e:
@@ -279,12 +297,17 @@ class BlenderConnection:
         next call, in case the addon ever sends more than one frame per
         recv().
 
+        Linear in the response's size: each chunk is appended in place and only
+        it is searched for the terminator, since every byte before it was
+        searched already. Rescanning the whole buffer per chunk made a 32 MiB
+        reply take seconds.
+
         Args:
-            sock: Value for sock.
-            buffer_size: Value for buffer size.
+            sock: The connected socket to read from.
+            buffer_size: The most bytes one `recv` may return.
 
         Returns:
-            Result produced by the operation.
+            bytes: The message, terminator excluded.
 
         Raises:
             BlenderPeerClosedError: If the peer closed before sending a single byte,
@@ -299,28 +322,38 @@ class BlenderConnection:
         """
         sock.settimeout(180.0)  # Match the addon's timeout
 
-        while b"\n" not in self._recv_buffer:
-            if len(self._recv_buffer) > self._MAX_MESSAGE_BYTES:
-                raise Exception(f"Response exceeded max size ({len(self._recv_buffer)} bytes) without a terminator")
+        buffer = self._recv_buffer
+        # Carried-over bytes may already hold a whole frame, so they are searched once too.
+        end = buffer.find(b"\n")
+        while end < 0:
+            if len(buffer) > self._MAX_MESSAGE_BYTES:
+                raise Exception(f"Response exceeded max size ({len(buffer)} bytes) without a terminator")
             chunk = sock.recv(buffer_size)
             if not chunk:
-                if not self._recv_buffer:
+                if not buffer:
                     # Nothing at all came back. Typed apart from the mid-message case
                     # so `send_command_locked` can resend a side-effect-free command.
                     raise BlenderPeerClosedError("Connection closed before receiving any data")
                 # Bytes arrived, so Blender read the command and started answering it:
                 # the command was serviced and must never be resent blind.
                 raise Exception("Connection closed mid-message")
-            self._recv_buffer += chunk
+            searched = len(buffer)
+            buffer += chunk
+            end = buffer.find(b"\n", searched)
 
-        line, self._recv_buffer = self._recv_buffer.split(b"\n", 1)
-        if len(line) > self._MAX_MESSAGE_BYTES:
-            raise Exception(f"Response exceeded max size ({len(line)} bytes)")
+        if end > self._MAX_MESSAGE_BYTES:
+            # Consumed like any other frame, so whatever followed it is still read next.
+            del buffer[: end + 1]
+            raise Exception(f"Response exceeded max size ({end} bytes)")
+        # One copy out, through a view released before the buffer is resized.
+        with memoryview(buffer) as view:
+            line = view[:end].tobytes()
+        del buffer[: end + 1]
         logger.info(f"Received complete response ({len(line)} bytes)")
         return line
 
     def send_command(
-        self, command_type: str, params: dict[str, Any] | None = None, *, request_id: str | None = None
+        self, command_type: str, params: dict[str, Any] | None = None, *, resend: Resend | None = None
     ) -> dict[str, Any]:
         """
         Send a command to Blender and return the response.
@@ -328,8 +361,8 @@ class BlenderConnection:
         Args:
             command_type: Value for command type.
             params: Value for params.
-            request_id: The id to send it under, to resend a command whose outcome is
-                unknown; None mints a new one.
+            resend: The first attempt this call resends, when that attempt's outcome is
+                unknown; None sends a new request.
 
         Returns:
             dict[str, Any]: Result produced by the operation.
@@ -366,10 +399,10 @@ class BlenderConnection:
         # check below), so overlapping calls would hand each other's
         # responses back.
         with self._lock:
-            return self.send_command_locked(command_type, params, request_id=request_id)
+            return self.send_command_locked(command_type, params, resend=resend)
 
     def send_command_locked(
-        self, command_type: str, params: dict[str, Any] | None = None, *, request_id: str | None = None
+        self, command_type: str, params: dict[str, Any] | None = None, *, resend: Resend | None = None
     ) -> dict[str, Any]:
         """
         Run one command on this socket, resending it once if the peer was already gone.
@@ -377,10 +410,11 @@ class BlenderConnection:
         Args:
             command_type: The addon command to run.
             params: Its parameters, or None.
-            request_id: The id to send it under; None mints a new one. A resend of a
-                command whose outcome is unknown passes the id it was first sent under,
-                so an addon that advertises `idempotent_resend` answers it from its reply
-                cache instead of running it again.
+            resend: The first attempt this call resends; None sends a new request under a
+                new id. A resend goes under the first attempt's id, marked as a resend with
+                the session that attempt was sent under, so an addon that advertises
+                `marked_resend` answers it from its reply cache or refuses it, and never
+                runs it.
 
         Returns:
             dict[str, Any]: The unwrapped `result` from Blender's response.
@@ -402,8 +436,11 @@ class BlenderConnection:
 
         # Bound to a name so the id stays a plain `str`: read back out of the
         # command dict it would widen to the dict's union value type.
-        command_id = request_id or uuid.uuid4().hex
-        command = {"id": command_id, "type": command_type, "params": params or {}}
+        command_id = resend.request_id if resend is not None else uuid.uuid4().hex
+        command: dict[str, Any] = {"id": command_id, "type": command_type, "params": params or {}}
+        if resend is not None:
+            session_id, session_epoch = resend.session_marker
+            command["resend"] = {"session_id": session_id, "session_epoch": session_epoch}
 
         try:
             return self._round_trip_once_more_if_retired(command_type, command, command_id)
