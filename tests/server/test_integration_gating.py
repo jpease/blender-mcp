@@ -111,13 +111,17 @@ def test_an_integration_enabled_since_the_cached_handshake_is_not_refused(handsh
     handshakes(_handshake(polyhaven_enabled=False), _handshake(polyhaven_enabled=True))
     recorder = stub_blender_connection(
         {
-            "total_count": 0,
-            "returned_count": 0,
-            "assets": {},
-            "offset": 0,
-            "limit": 20,
-            "truncated": False,
-            "next_offset": None,
+            "fetch_id": "f",
+            "state": "SUCCEEDED",
+            "result": {
+                "total_count": 0,
+                "returned_count": 0,
+                "assets": {},
+                "offset": 0,
+                "limit": 20,
+                "truncated": False,
+                "next_offset": None,
+            },
         }
     )
 
@@ -126,7 +130,7 @@ def test_an_integration_enabled_since_the_cached_handshake_is_not_refused(handsh
             return await client.call_tool(_TOOL, {})
 
     assert not asyncio.run(call()).isError
-    assert [command for command, _params in recorder.calls] == ["list_polyhaven_assets"]
+    assert [command for command, _params in recorder.calls] == ["start_polyhaven_catalog", "cancel_provider_fetch"]
 
 
 def test_a_session_that_listed_tools_is_told_when_a_handshake_withholds_some(

@@ -10,6 +10,7 @@ from pydantic import Field
 
 from ..app import mcp
 from ._dispatch import send_blender_command
+from ._provider_fetch import fetch_provider_result, import_fetched
 from .envelope import envelope_for, ok
 
 logger = logging.getLogger("BlenderMCPServer")
@@ -71,9 +72,7 @@ async def get_polyhaven_categories(ctx: Context, asset_type: AssetType = "hdris"
                     ]
                 )
             )
-        result = await send_blender_command("get_polyhaven_categories", {"asset_type": asset_type})
-        if "error" in result:
-            raise ToolError(result["error"])
+        result = await fetch_provider_result(ctx, "start_polyhaven_categories", {"asset_type": asset_type})
         # As above: the notice may be on either reply.
         return ok(
             {"asset_type": asset_type, "categories": result["categories"]},
@@ -116,12 +115,11 @@ async def list_polyhaven_assets(
 
     """
     try:
-        result = await send_blender_command(
-            "list_polyhaven_assets",
+        result = await fetch_provider_result(
+            ctx,
+            "start_polyhaven_catalog",
             {"asset_type": asset_type, "categories": categories, "limit": limit, "offset": offset},
         )
-        if "error" in result:
-            raise ToolError(result["error"])
         return ok(
             {
                 "total_count": result["total_count"],
@@ -155,6 +153,9 @@ async def import_polyhaven_asset(
     The exact result depends on `asset_type`; use `apply_polyhaven_texture` after
     downloading a texture to assign it to a specific object.
 
+    The download runs in Blender off its main thread, so Blender stays responsive; its byte
+    count is reported as MCP progress, and cancelling this call cancels the download.
+
     Args:
         ctx: MCP request context.
         asset_id: Polyhaven asset ID from `list_polyhaven_assets`.
@@ -176,14 +177,16 @@ async def import_polyhaven_asset(
 
     """
     try:
-        result = await send_blender_command(
-            "import_polyhaven_asset",
+        result = await import_fetched(
+            ctx,
+            "start_polyhaven_download",
             {
                 "asset_id": asset_id,
                 "asset_type": asset_type,
                 "resolution": resolution,
                 "file_format": file_format,
             },
+            "import_polyhaven_asset",
         )
         if "error" in result:
             raise ToolError(result["error"])

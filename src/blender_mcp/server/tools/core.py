@@ -26,6 +26,7 @@ from ..mount_map import (
 )
 from ..toolsets_runtime import STARTUP_BUNDLES, bundle_catalog, ensure_bundles_registered, resolve_requested_bundles
 from ._dispatch import send_blender_command
+from ._provider_fetch import fetch_provider_result
 from .envelope import ok
 
 logger = logging.getLogger("BlenderMCPServer")
@@ -413,20 +414,54 @@ def _status_payload(
     return payload
 
 
-async def _collect_integration_status(provider: Provider | None) -> dict:
+async def _verified_sketchfab_status(ctx: Context | None, reply: dict) -> dict:
+    """
+    Replace a Sketchfab status that asks for an API-key check with the check's verdict.
+
+    The add-on's status command does no network I/O; when a key is configured it says
+    `verify_api_key`, and the check runs as a provider fetch off Blender's main thread.
+
+    Args:
+        ctx: The call's context, for progress, or None.
+        reply: The add-on's `get_sketchfab_status` reply.
+
+    Returns:
+        dict: The reply unchanged, or its `enabled` and `message` replaced by the check's,
+        with both replies' `warnings` merged.
+
+    """
+    if not reply.get("verify_api_key"):
+        return reply
+    verdict = await fetch_provider_result(ctx, "start_sketchfab_account_check", {})
+    status = {key: value for key, value in reply.items() if key != "verify_api_key"}
+    status["enabled"] = bool(verdict.get("enabled"))
+    status["message"] = verdict.get("message", "")
+    notices = [*reply.get("warnings", []), *verdict.get("warnings", [])]
+    if notices:
+        status["warnings"] = notices
+    return status
+
+
+async def _collect_integration_status(provider: Provider | None, ctx: Context | None = None) -> dict:
     """
     Ask the addon which optional integrations are enabled.
 
     Args:
         provider: A single provider to query, or None for all of them.
+        ctx: The call's context, for the Sketchfab key check's progress, or None.
 
     Returns:
         dict: The provider's status, or a mapping of provider name to status.
 
     """
-    if provider is not None:
-        return await send_blender_command(_STATUS_COMMANDS[provider])
-    return {name: await send_blender_command(command) for name, command in _STATUS_COMMANDS.items()}
+    names: list[Provider] = [provider] if provider is not None else list(_STATUS_COMMANDS)
+    status = {}
+    for name in names:
+        reply = await send_blender_command(_STATUS_COMMANDS[name])
+        if name == "sketchfab":
+            reply = await _verified_sketchfab_status(ctx, reply)
+        status[name] = reply
+    return status[provider] if provider is not None else status
 
 
 def _collect_addon_status(
@@ -509,7 +544,7 @@ async def get_integration_status(ctx: Context, provider: Provider | None = None)
         ToolError: If the operation cannot be completed.
 
     """
-    status = await _collect_integration_status(provider)
+    status = await _collect_integration_status(provider, ctx)
     if provider is not None:
         return ok(status)
     # Each provider's reply may carry the add-on's notice; nested a level down, `ok()` would not lift it.

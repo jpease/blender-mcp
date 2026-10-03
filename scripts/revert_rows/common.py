@@ -161,6 +161,11 @@ ADDON_PICK_RAYS = ROOT / "src/blender_mcp/bundled/addon/pick_rays.py"
 SERVER_VIEWPORT_TOOL = ROOT / "src/blender_mcp/server/tools/viewport.py"
 # Same-id resend: the add-on's cache of replies to mutating commands, answered for a resent id.
 ADDON_REPLY_CACHE = ROOT / "src/blender_mcp/bundled/addon/reply_cache.py"
+# Provider network I/O off Blender's main thread: the worker-thread fetch registry, the bounded
+# HTTP helpers its jobs call, and the server half that starts, polls and cancels a fetch.
+ADDON_PROVIDER_FETCHES = ROOT / "src/blender_mcp/bundled/addon/provider_fetches.py"
+ADDON_NETWORK = ROOT / "src/blender_mcp/bundled/addon/network.py"
+SERVER_PROVIDER_FETCH = ROOT / "src/blender_mcp/server/tools/_provider_fetch.py"
 
 # Short names for the test files rows cite. Node ids carry parameter text
 # verbatim, so the rows would otherwise be unreadably long lines.
@@ -248,6 +253,11 @@ RNT = "tests/server/tools/test_reply_notices.py"
 PICKT = "tests/test_pick_rays.py"
 PICKTOOLT = "tests/server/tools/test_pick_from_camera.py"
 REPLYCACHET = "tests/test_reply_cache.py"
+PFT = "tests/test_provider_fetches.py"
+PNETT = "tests/test_provider_network.py"
+SPFT = "tests/server/tools/test_provider_fetch.py"
+PHFT = "tests/test_polyhaven_fetch.py"
+SKFT = "tests/test_sketchfab_fetch.py"
 HOSTILE_LIB = f"{SESSIONT}::test_a_hostile_library_path_is_reduced_the_same_way_a_failure_note_is"
 # The `name` half of the same table, with short ids so a row can list its nodes; the
 # `filepath` half's ids run to hundreds of characters.

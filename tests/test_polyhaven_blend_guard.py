@@ -1,8 +1,8 @@
 """
 The Poly Haven `.blend` model import validates the download before Blender reads it.
 
-The file must be a real `.blend` inside the handler's own download directory; the
-deployment's file roots do not apply.
+The file must be a real `.blend` inside its fetch's own download directory; the
+deployment's file roots do not apply. Each test downloads on the fetch worker, then imports.
 """
 
 import contextlib
@@ -113,6 +113,44 @@ def _server(
     return server_core.BlenderMCPServer(), loads
 
 
+def _finished(server: Any, started: dict) -> dict:
+    """
+    Wait for a started fetch's worker and report its status.
+
+    Args:
+        server: The addon server that started it.
+        started: The start command's reply.
+
+    Returns:
+        dict: `get_provider_fetch`'s reply once the worker exited.
+
+    """
+    assert "error" not in started, started
+    fetches = sys.modules[type(server).__module__.rsplit(".", 1)[0] + ".provider_fetches"].REGISTRY
+    fetches.join(started["fetch_id"], timeout=5)
+    return server.get_provider_fetch(started["fetch_id"])
+
+
+def _imported(server: Any, asset_id: str, asset_type: str, **kwargs: object) -> dict:
+    """
+    Download one asset on the worker, then import it, as the server tool does.
+
+    Args:
+        server: The addon server.
+        asset_id: The asset id.
+        asset_type: `hdris`, `textures` or `models`.
+        **kwargs: The download's other arguments.
+
+    Returns:
+        dict: `import_polyhaven_asset`'s reply.
+
+    """
+    started = server.start_polyhaven_download(asset_id, asset_type, **kwargs)
+    status = _finished(server, started)
+    assert status["state"] == "SUCCEEDED", status
+    return server.import_polyhaven_asset(started["fetch_id"])
+
+
 def test_a_valid_downloaded_blend_is_still_imported(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A real `.blend` still imports, even when the file roots are enforced elsewhere."""
     elsewhere = tmp_path / "configured_root"
@@ -120,7 +158,7 @@ def test_a_valid_downloaded_blend_is_still_imported(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("BLENDERMCP_FILE_ROOTS", str(elsewhere))
     server, loads = _server(monkeypatch, (FIXTURES / "empty_zstd.blend").read_bytes())
 
-    result = server.import_polyhaven_asset("chair", "models", file_format="blend")
+    result = _imported(server, "chair", "models", file_format="blend")
 
     assert result.get("success") is True, result
     assert result["imported_objects"]["names"] == ["Chair"]
@@ -142,7 +180,7 @@ def test_a_model_of_many_parts_is_counted_and_only_its_roots_are_changed_objects
     loose = types.SimpleNamespace(name="Bench Shadow", session_uid=2, type="MESH", parent=None)
     server, _loads = _server(monkeypatch, (FIXTURES / "empty_zstd.blend").read_bytes(), imported=[root, *parts, loose])
 
-    result = server.import_polyhaven_asset("bench", "models", file_format="blend")
+    result = _imported(server, "bench", "models", file_format="blend")
 
     assert result["imported_objects"] == {
         "total": 16,
@@ -159,7 +197,7 @@ def test_a_downloaded_blend_whose_header_is_not_a_blend_is_never_loaded(monkeypa
     """A response that is an HTML error page or a hostile payload never reaches Blender's reader."""
     server, loads = _server(monkeypatch, b"<!doctype html><title>502</title>")
 
-    result = server.import_polyhaven_asset("chair", "models", file_format="blend")
+    result = _imported(server, "chair", "models", file_format="blend")
 
     assert loads.calls == []
     assert "not a .blend" in result["error"]
@@ -173,7 +211,7 @@ def test_a_downloaded_blend_resolving_outside_its_download_directory_is_never_lo
     outside.write_bytes((FIXTURES / "empty_zstd.blend").read_bytes())
     server, loads = _server(monkeypatch, None, link_to=outside)
 
-    result = server.import_polyhaven_asset("chair", "models", file_format="blend")
+    result = _imported(server, "chair", "models", file_format="blend")
 
     assert loads.calls == []
     assert "outside" in result["error"]
@@ -184,7 +222,7 @@ def test_a_failed_blend_load_reports_no_absolute_path(monkeypatch: pytest.Monkey
     leak = RuntimeError('Error: Cannot read file "/private/var/folders/xy/T/tmpabc/chair_1k.blend": Missing DNA')
     server, loads = _server(monkeypatch, (FIXTURES / "empty_zstd.blend").read_bytes(), error=leak)
 
-    result = server.import_polyhaven_asset("chair", "models", file_format="blend")
+    result = _imported(server, "chair", "models", file_format="blend")
 
     assert len(loads.calls) == 1
     assert "/private" not in result["error"] and "tmpabc" not in result["error"], result
@@ -200,7 +238,7 @@ def test_a_downloaded_blend_is_never_loaded_while_scripts_auto_execute_is_on(
     filepaths = types.SimpleNamespace(use_scripts_auto_execute=True) if preferences == "on" else types.SimpleNamespace()
     sys.modules["bpy"].context.preferences = types.SimpleNamespace(filepaths=filepaths)
 
-    result = server.import_polyhaven_asset("chair", "models", file_format="blend")
+    result = _imported(server, "chair", "models", file_format="blend")
 
     assert loads.calls == []
     assert "import_polyhaven_asset refuses" in result["error"] and "use_scripts_auto_execute" in result["error"]
@@ -212,7 +250,7 @@ def test_a_downloaded_blend_is_loaded_while_scripts_auto_execute_is_off(monkeypa
     server, loads = _server(monkeypatch, (FIXTURES / "empty_zstd.blend").read_bytes())
     sys.modules["bpy"].context.preferences.filepaths.use_scripts_auto_execute = False
 
-    result = server.import_polyhaven_asset("chair", "models", file_format="blend")
+    result = _imported(server, "chair", "models", file_format="blend")
 
     assert result.get("success") is True, result
     assert len(loads.calls) == 1
@@ -279,7 +317,7 @@ def test_a_failed_hdri_setup_reports_no_absolute_path(monkeypatch: pytest.Monkey
     bpy.context.scene = types.SimpleNamespace(name="Scene", world=object())
     monkeypatch.setattr(type(server), "configure_hdri_environment", _raise(_leak(tmp_path)), raising=False)
 
-    _assert_sanitized(server.import_polyhaven_asset("asset", "hdris"), tmp_path)
+    _assert_sanitized(_imported(server, "asset", "hdris"), tmp_path)
 
 
 def test_a_failed_texture_load_reports_no_absolute_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -290,23 +328,27 @@ def test_a_failed_texture_load_reports_no_absolute_path(monkeypatch: pytest.Monk
     monkeypatch.setattr(handler, "get_json", lambda *_a, **_k: files)
     sys.modules["bpy"].data.images = types.SimpleNamespace(load=_raise(_leak(tmp_path)))
 
-    _assert_sanitized(server.import_polyhaven_asset("asset", "textures"), tmp_path)
+    _assert_sanitized(_imported(server, "asset", "textures"), tmp_path)
 
 
 @pytest.mark.parametrize(
     ("command", "arguments"),
     [
-        ("import_polyhaven_asset", ("asset", "models")),
-        ("get_polyhaven_categories", ("hdris",)),
-        ("list_polyhaven_assets", ()),
+        ("start_polyhaven_download", ("asset", "models")),
+        ("start_polyhaven_categories", ("hdris",)),
+        ("start_polyhaven_catalog", ()),
     ],
+    ids=["download", "categories", "catalog"],
 )
 def test_a_failure_before_any_download_reports_no_absolute_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str, arguments: tuple
 ) -> None:
-    """The outer handlers sanitize any error, including an OS error naming a path."""
+    """A worker's unexpected error, including an OS error naming a path, fails the fetch sanitized."""
     server, _loads = _server(monkeypatch, None)
     handler = sys.modules[type(server).__module__.rsplit(".", 1)[0] + ".handlers.polyhaven"]
     monkeypatch.setattr(handler, "get_json", _raise(_leak(tmp_path)))
 
-    _assert_sanitized(getattr(server, command)(*arguments), tmp_path)
+    status = _finished(server, getattr(server, command)(*arguments))
+
+    assert status["state"] == "FAILED", status
+    _assert_sanitized({"error": status["failure"]}, tmp_path)

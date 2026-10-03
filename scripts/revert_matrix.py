@@ -20,7 +20,8 @@ substring, so the prefix is how a group of rows is selected: `session:`, `barrie
 `entrypoint:`, `quiet box:`, `reply budget:`, `lighting:`, `pose:`,
 `render settings:`, `strict args:`, `addon surface:`, `action assignment:`, `size caps:`,
 `camera:`, `pagination:`, `simulation:`, `data users:`, `counted replies:`, `lint gate:`,
-`geometry nodes:`, `integrations:`, `scene watch:`, `pick:`, `reply cache:` and `boundary:`. A
+`geometry nodes:`, `integrations:`, `scene watch:`, `pick:`, `reply cache:`, `provider fetch:`
+and `boundary:`. A
 `... control:` row is the deliberate opposite of its neighbour: it proves that over-enforcing
 the same line is caught too, either by the same node or by the sibling node that exists to say
 the guard can be passed.

@@ -85,6 +85,24 @@ def _inline_images(monkeypatch: pytest.MonkeyPatch) -> None:
 
 _PNG = base64.b64encode(b"png").decode("ascii")
 
+
+def _fetched(result: dict) -> dict:
+    """
+    Answer a provider `start_*` command with a fetch that already finished.
+
+    Args:
+        result: The query's result.
+
+    Returns:
+        dict: A SUCCEEDED status carrying it, so the tool sends no poll before releasing it.
+
+    """
+    return {"fetch_id": "f1", "state": "SUCCEEDED", "stage": "succeeded", "bytes_received": 0, "result": result}
+
+
+# The reply to the release every provider query sends once it has read its result.
+_RELEASED = {"fetch_id": "f1", "discarded": True, "state": "SUCCEEDED"}
+
 # (tool call, command -> reply). Each case names every command the tool sends.
 _CASES: dict[str, tuple[Callable[[], Any], dict[str, dict]]] = {
     "read-only call_blender": (
@@ -97,29 +115,61 @@ _CASES: dict[str, tuple[Callable[[], Any], dict[str, dict]]] = {
     ),
     "get_polyhaven_categories": (
         lambda: polyhaven.get_polyhaven_categories(ctx=None),
-        {"get_polyhaven_status": {"enabled": True}, "get_polyhaven_categories": {"categories": {"sky": 3}}},
+        {
+            "get_polyhaven_status": {"enabled": True},
+            "start_polyhaven_categories": _fetched({"categories": {"sky": 3}}),
+            "cancel_provider_fetch": _RELEASED,
+        },
     ),
     "list_polyhaven_assets": (
         lambda: polyhaven.list_polyhaven_assets(ctx=None),
         {
-            "list_polyhaven_assets": {
-                "assets": {},
-                "total_count": 0,
-                "returned_count": 0,
-                "offset": 0,
-                "limit": 20,
-                "truncated": False,
-                "next_offset": None,
-            }
+            "start_polyhaven_catalog": _fetched(
+                {
+                    "assets": {},
+                    "total_count": 0,
+                    "returned_count": 0,
+                    "offset": 0,
+                    "limit": 20,
+                    "truncated": False,
+                    "next_offset": None,
+                }
+            ),
+            "cancel_provider_fetch": _RELEASED,
         },
     ),
     "search_sketchfab_models": (
         lambda: sketchfab.search_sketchfab_models(ctx=None, query="tree"),
-        {"search_sketchfab_models": {"results": []}},
+        {"start_sketchfab_search": _fetched({"results": []}), "cancel_provider_fetch": _RELEASED},
     ),
     "get_sketchfab_model_preview": (
         lambda: sketchfab.get_sketchfab_model_preview(ctx=None, uid="abc"),
-        {"get_sketchfab_model_preview": {"image_data": _PNG, "format": "png", "model_name": "Tree"}},
+        {
+            "start_sketchfab_preview": _fetched({"image_data": _PNG, "format": "png", "model_name": "Tree"}),
+            "cancel_provider_fetch": _RELEASED,
+        },
+    ),
+    "import_polyhaven_asset": (
+        lambda: polyhaven.import_polyhaven_asset(ctx=None, asset_id="bricks", asset_type="textures"),
+        {
+            "start_polyhaven_download": {"fetch_id": "f1", "state": "SUCCEEDED", "ready_to_import": True},
+            "import_polyhaven_asset": {"success": True, "message": "imported", "material": "Bricks", "maps": []},
+        },
+    ),
+    "import_sketchfab_model": (
+        lambda: sketchfab.import_sketchfab_model(ctx=None, uid="abc", target_size=1.0),
+        {
+            "start_sketchfab_download": {"fetch_id": "f1", "state": "SUCCEEDED", "ready_to_import": True},
+            "import_sketchfab_model": {"success": True, "imported_objects": ["Box"]},
+        },
+    ),
+    "get_integration_status (sketchfab key check)": (
+        lambda: core.get_integration_status(ctx=None, provider="sketchfab"),
+        {
+            "get_sketchfab_status": {"enabled": True, "message": "checking", "verify_api_key": True},
+            "start_sketchfab_account_check": _fetched({"enabled": True, "message": "Logged in as: artist"}),
+            "cancel_provider_fetch": _RELEASED,
+        },
     ),
     "get_viewport_screenshot": (
         lambda: viewport.get_viewport_screenshot(ctx=None),

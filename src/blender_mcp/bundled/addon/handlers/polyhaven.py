@@ -1,7 +1,15 @@
+"""
+Poly Haven handlers: browse the catalog and import assets without blocking Blender's main thread.
+
+Every network request runs in a `provider_fetches.REGISTRY` job on a worker thread. The
+`start_polyhaven_*` commands validate on the main thread and start that job; a catalog
+query's result rides on its fetch status, and a download's files wait in the fetch's
+directory until `import_polyhaven_asset(fetch_id)` takes them and does the `bpy` work.
+"""
+
 import os
 import shutil
 import string
-import tempfile
 
 from contextlib import suppress
 
@@ -11,10 +19,15 @@ from ..constants import REQ_HEADERS
 from ..file_paths import PathOutsideRootsError, resolve_blend_path, sanitize_blender_error
 from ..helpers import counted_page
 from ..network import download_file, get_json
+from ..provider_fetches import REGISTRY, FetchContext, ProviderFetchHandlersMixin
 from .blend_files import refuse_scripts_auto_execute
+
+API_ROOT = "https://api.polyhaven.com"
 
 _MAX_IMAGE_BYTES = 512 * 1024 * 1024
 _MAX_MODEL_FILE_BYTES = 2 * 1024 * 1024 * 1024
+# The largest catalog page one call returns.
+_MAX_CATALOG_PAGE = 100
 # The maps that carry colour rather than data, so only these are read as sRGB.
 _COLOR_MAP_TYPES = frozenset({"color", "diffuse", "albedo"})
 # Keys in a files response that are whole scenes, not texture maps.
@@ -139,54 +152,41 @@ def _packed_map_image(path: str, name: str, *, color: bool):
     return image
 
 
-def _downloaded_map(asset_id, map_type: str, file_format: str, file_url: str):
+def _downloaded_texture_files(context: FetchContext, files_data: dict, resolution, file_format: str) -> dict:
     """
-    Download one texture map through a temp file that is always removed.
+    Download every map this asset publishes at the requested resolution and format; worker thread only.
+
+    Each map is written to its own numbered file in the fetch's directory, because the
+    map names come from the API response and never reach a path.
 
     Args:
-        asset_id: The asset id, for the datablock name.
-        map_type: Poly Haven's name for this map.
-        file_format: The requested format, also the temp file's suffix.
-        file_url: Where to fetch it.
-
-    Returns:
-        bpy.types.Image: The packed image.
-
-    """
-    with tempfile.NamedTemporaryFile(suffix=f".{file_format}", delete=False) as tmp_file:
-        tmp_path = tmp_file.name
-    try:
-        download_file(file_url, tmp_path, headers=REQ_HEADERS, max_bytes=_MAX_IMAGE_BYTES)
-        return _packed_map_image(tmp_path, f"{asset_id}_{map_type}.{file_format}", color=map_type in _COLOR_MAP_TYPES)
-    finally:
-        with suppress(FileNotFoundError):
-            os.unlink(tmp_path)
-
-
-def _downloaded_texture_maps(asset_id, files_data, resolution, file_format: str) -> dict:
-    """
-    Download every map this asset publishes at the requested resolution and format.
-
-    Args:
-        asset_id: The asset id.
+        context: The fetch's context, its directory and transfer.
         files_data: Poly Haven's files response.
         resolution: The requested resolution.
         file_format: The requested format.
 
     Returns:
-        dict: Map type -> packed image; empty when the asset publishes none.
+        dict: Map type -> downloaded file; empty when the asset publishes none.
 
     """
-    downloaded_maps = {}
-    for map_type in files_data:
-        if map_type in _NON_TEXTURE_KEYS:
+    suffix = f".{file_format}" if _has_safe_filename_characters(file_format) else ""
+    downloaded = {}
+    for map_type, variants in files_data.items():
+        if map_type in _NON_TEXTURE_KEYS or not isinstance(variants, dict):
             continue
-        if resolution not in files_data[map_type] or file_format not in files_data[map_type][resolution]:
+        if resolution not in variants or file_format not in variants[resolution]:
             continue
-        downloaded_maps[map_type] = _downloaded_map(
-            asset_id, map_type, file_format, files_data[map_type][resolution][file_format]["url"]
+        context.stage(f"downloading texture map {len(downloaded) + 1}")
+        path = os.path.join(context.directory, f"map_{len(downloaded)}{suffix}")
+        download_file(
+            variants[resolution][file_format]["url"],
+            path,
+            headers=REQ_HEADERS,
+            max_bytes=_MAX_IMAGE_BYTES,
+            transfer=context,
         )
-    return downloaded_maps
+        downloaded[map_type] = path
+    return downloaded
 
 
 def _connect_texture_map(nodes, links, map_type: str, tex_node, principled, output, x_pos: int, y_pos: int) -> None:
@@ -233,7 +233,7 @@ def _texture_material(asset_id, downloaded_maps: dict):
 
     Args:
         asset_id: The asset id, which names the material.
-        downloaded_maps: `_downloaded_texture_maps`' result, never empty.
+        downloaded_maps: Map type -> packed image, never empty.
 
     Returns:
         bpy.types.Material: The new material.
@@ -270,50 +270,46 @@ def _texture_material(asset_id, downloaded_maps: dict):
     return material
 
 
-def _texture_material_reply(asset_id, files_data, resolution, file_format: str) -> dict:
+def _texture_material_reply(asset_id, map_paths: dict, file_format: str) -> dict:
     """
-    Download an asset's maps and describe the material they were built into.
+    Pack an asset's downloaded maps and describe the material they were built into.
 
     Args:
         asset_id: The asset id.
-        files_data: Poly Haven's files response.
-        resolution: The requested resolution.
-        file_format: The requested format.
+        map_paths: Map type -> downloaded file, never empty.
+        file_format: The downloaded format, for the image names.
 
     Returns:
-        dict: `success`, `message`, `material`, `maps` and `map_types`, or
-        `error` when the asset publishes no map at that resolution and format.
+        dict: `success`, `message`, `material`, `maps` and `map_types`.
 
     """
-    downloaded_maps = _downloaded_texture_maps(asset_id, files_data, resolution, file_format)
-    if not downloaded_maps:
-        return {"error": "No texture maps found for the requested resolution and format"}
-    material = _texture_material(asset_id, downloaded_maps)
+    images = {
+        map_type: _packed_map_image(path, f"{asset_id}_{map_type}.{file_format}", color=map_type in _COLOR_MAP_TYPES)
+        for map_type, path in map_paths.items()
+    }
+    material = _texture_material(asset_id, images)
     return {
         "success": True,
         "message": f"Texture {asset_id} imported as material",
         "material": material.name,
-        "maps": [image.name for image in downloaded_maps.values()],
-        "map_types": list(downloaded_maps),
+        "maps": [image.name for image in images.values()],
+        "map_types": list(images),
     }
 
 
-def _import_textures(asset_id, files_data, resolution, file_format) -> dict:
+def _import_textures(payload: dict) -> dict:
     """
-    Import one Poly Haven texture set as a material.
+    Import one downloaded Poly Haven texture set as a material.
 
     Args:
-        asset_id: The asset id.
-        files_data: Poly Haven's files response.
-        resolution: The requested resolution.
-        file_format: The requested format; `jpg` when the client named none.
+        payload: The download's payload: `asset_id`, `file_format` and `maps`.
 
     Returns:
         dict: `_texture_material_reply`'s report, or `error` with no filesystem path.
 
     """
     try:
-        return _texture_material_reply(asset_id, files_data, resolution, file_format or "jpg")
+        return _texture_material_reply(payload["asset_id"], payload["maps"], payload["file_format"])
     except Exception as e:
         return {"error": f"Failed to process textures: {sanitize_blender_error(e)}"}
 
@@ -343,28 +339,35 @@ def _safe_include_path(include_path: str, temp_dir: str) -> str | None:
     return target_path
 
 
-def _downloaded_model_files(file_info: dict, temp_dir: str) -> str:
+def _downloaded_model_files(context: FetchContext, file_info: dict) -> str:
     """
-    Download a model and every file it includes into one directory.
+    Download a model and every file it includes into the fetch's directory; worker thread only.
 
     Args:
+        context: The fetch's context, its directory and transfer.
         file_info: The chosen format's entry in Poly Haven's files response.
-        temp_dir: The download directory.
 
     Returns:
         str: The main model file, for the importer to read.
 
     """
+    temp_dir = context.directory
     file_url = file_info["url"]
     main_file_path = os.path.join(temp_dir, file_url.split("/")[-1])
-    download_file(file_url, main_file_path, headers=REQ_HEADERS, max_bytes=_MAX_MODEL_FILE_BYTES)
-    for include_path, include_info in (file_info.get("include") or {}).items():
+    context.stage("downloading model")
+    download_file(file_url, main_file_path, headers=REQ_HEADERS, max_bytes=_MAX_MODEL_FILE_BYTES, transfer=context)
+    includes = file_info.get("include") or {}
+    if includes:
+        context.stage("downloading model includes")
+    for include_path, include_info in includes.items():
         include_file_path = _safe_include_path(include_path, temp_dir)
         if include_file_path is None:
             print(f"Skipping include with unsafe path: {include_path}")
             continue
         os.makedirs(os.path.dirname(include_file_path), exist_ok=True)
-        download_file(include_info["url"], include_file_path, headers=REQ_HEADERS, max_bytes=_MAX_IMAGE_BYTES)
+        download_file(
+            include_info["url"], include_file_path, headers=REQ_HEADERS, max_bytes=_MAX_IMAGE_BYTES, transfer=context
+        )
     return main_file_path
 
 
@@ -426,15 +429,15 @@ def _run_model_import(file_format: str, main_file_path: str, temp_dir: str) -> d
     return None
 
 
-def _imported_model_reply(asset_id, file_info: dict, file_format: str, temp_dir: str) -> dict:
+def _imported_model_reply(asset_id, main_file_path: str, file_format: str, temp_dir: str) -> dict:
     """
-    Download, import and describe one model, by the objects it added.
+    Import and describe one downloaded model, by the objects it added.
 
     Args:
         asset_id: The asset id.
-        file_info: The chosen format's entry in Poly Haven's files response.
+        main_file_path: The downloaded main model file.
         file_format: The format being imported.
-        temp_dir: The download directory.
+        temp_dir: The fetch's download directory.
 
     Returns:
         dict: `success`, `message`, `imported_objects` (counted by type beside a sample of
@@ -442,7 +445,6 @@ def _imported_model_reply(asset_id, file_info: dict, file_format: str, temp_dir:
         parents - or `error`.
 
     """
-    main_file_path = _downloaded_model_files(file_info, temp_dir)
     before_ids = {obj.session_uid for obj in bpy.data.objects}
     refusal = _run_model_import(file_format, main_file_path, temp_dir)
     if refusal is not None:
@@ -462,109 +464,196 @@ def _imported_model_reply(asset_id, file_info: dict, file_format: str, temp_dir:
     }
 
 
-def _import_model(asset_id, files_data, resolution, file_format) -> dict:
+def _import_model(payload: dict, directory: str) -> dict:
     """
-    Import one Poly Haven model, with its included files, from a temp directory.
+    Import one downloaded Poly Haven model, with its included files, from the fetch's directory.
 
     Args:
-        asset_id: The asset id.
-        files_data: Poly Haven's files response.
-        resolution: The requested resolution.
-        file_format: The requested format; glTF when the client named none.
+        payload: The download's payload: `asset_id`, `file_format` and `main_file`.
+        directory: The fetch's directory, which the caller removes.
 
     Returns:
         dict: `_imported_model_reply`'s report, or `error` with no filesystem path.
 
     """
-    file_format = file_format or "gltf"
-    if file_format not in files_data or resolution not in files_data[file_format]:
-        return {"error": "Requested format or resolution not available for this model"}
-    temp_dir = tempfile.mkdtemp()
     try:
-        return _imported_model_reply(asset_id, files_data[file_format][resolution][file_format], file_format, temp_dir)
+        return _imported_model_reply(payload["asset_id"], payload["main_file"], payload["file_format"], directory)
     except Exception as e:
         # Blender's and the OS's error text name the temp file's absolute path.
         return {"error": f"Failed to import model: {sanitize_blender_error(e)}"}
-    finally:
-        with suppress(Exception):
-            shutil.rmtree(temp_dir)
 
 
-class PolyhavenHandlersMixin:
-    """Provide handlers for browsing and importing Poly Haven assets."""
+def _hdri_cache_request(asset_id, resolution, file_format) -> dict:
+    """
+    Validate an HDRI request and name its cache file; main thread, since it reads `bpy.utils`.
 
-    def get_polyhaven_categories(self, asset_type):
+    Args:
+        asset_id: The asset id, which reaches the cache file's name.
+        resolution: The requested resolution, which reaches it too.
+        file_format: `hdr` or `exr`; `hdr` when the client named none.
+
+    Returns:
+        dict: `file_format` and `persistent_path`, or `error`.
+
+    """
+    file_format = (file_format or "hdr").lower()
+    if file_format not in {"hdr", "exr"}:
+        return {"error": "Poly Haven HDRIs require file_format 'hdr' or 'exr'"}
+    if not _has_safe_filename_characters(resolution):
+        return {"error": "resolution contains unsupported filename characters"}
+    safe_asset_id = _filename_component(asset_id)
+    if not safe_asset_id:
+        return {"error": "asset_id does not contain a safe filename component"}
+    try:
+        persistent_path = _cached_image_path(safe_asset_id, resolution, file_format)
+    except Exception as e:
+        return {"error": f"Failed to download asset: {sanitize_blender_error(e)}"}
+    if persistent_path is None:
+        return {"error": "Could not create the Blender MCP Poly Haven cache directory"}
+    return {"file_format": file_format, "persistent_path": persistent_path}
+
+
+def _catalog_page(assets: object, limit: int, offset: int) -> dict:
+    """
+    Order a catalog response by asset id and cut one page from it.
+
+    Args:
+        assets: Poly Haven's assets response.
+        limit: The page size.
+        offset: Where the page starts.
+
+    Returns:
+        dict: `assets`, `total_count`, `returned_count`, `offset`, `limit`,
+        `truncated` and `next_offset`, or `error` for a response that is not a catalog.
+
+    """
+    if not isinstance(assets, dict):
+        return {"error": "Poly Haven returned an unexpected catalog response"}
+    ordered = sorted(assets.items(), key=lambda item: item[0].casefold())
+    page = ordered[offset : offset + limit]
+    limited_assets = dict(page)
+    next_offset = offset + len(page)
+    truncated = next_offset < len(ordered)
+    return {
+        "assets": limited_assets,
+        "total_count": len(assets),
+        "returned_count": len(limited_assets),
+        "offset": min(offset, len(ordered)),
+        "limit": limit,
+        "truncated": truncated,
+        "next_offset": next_offset if truncated else None,
+    }
+
+
+def _asset_download_payload(context: FetchContext, request: dict) -> dict:
+    """
+    Fetch one asset's file list and download what its type needs; the job, worker thread only.
+
+    Args:
+        context: The fetch's context, its directory and transfer.
+        request: What the start command validated: `asset_id`, `asset_type`,
+            `resolution`, `file_format`, and `persistent_path` for an HDRI.
+
+    Returns:
+        dict: The private payload `import_polyhaven_asset` takes, or `error`.
+
+    """
+    asset_id = request["asset_id"]
+    asset_type = request["asset_type"]
+    resolution = request["resolution"]
+    context.stage("listing asset files")
+    files_data = get_json(f"{API_ROOT}/files/{asset_id}", headers=REQ_HEADERS, transfer=context)
+    payload = {"asset_id": asset_id, "asset_type": asset_type}
+    if asset_type == "hdris":
+        file_format = request["file_format"]
+        if not (
+            "hdri" in files_data and resolution in files_data["hdri"] and file_format in files_data["hdri"][resolution]
+        ):
+            return {"error": "Requested resolution or format not available for this HDRI"}
+        path = os.path.join(context.directory, f"hdri.{file_format}")
+        context.stage("downloading HDRI")
+        download_file(
+            files_data["hdri"][resolution][file_format]["url"],
+            path,
+            headers=REQ_HEADERS,
+            max_bytes=_MAX_IMAGE_BYTES,
+            transfer=context,
+        )
+        return {**payload, "file_format": file_format, "file": path, "persistent_path": request["persistent_path"]}
+    if asset_type == "textures":
+        file_format = request["file_format"] or "jpg"
+        maps = _downloaded_texture_files(context, files_data, resolution, file_format)
+        if not maps:
+            return {"error": "No texture maps found for the requested resolution and format"}
+        return {**payload, "file_format": file_format, "maps": maps}
+    file_format = request["file_format"] or "gltf"
+    if file_format not in files_data or resolution not in files_data[file_format]:
+        return {"error": "Requested format or resolution not available for this model"}
+    main_file = _downloaded_model_files(context, files_data[file_format][resolution][file_format])
+    return {**payload, "file_format": file_format, "main_file": main_file}
+
+
+class PolyhavenHandlersMixin(ProviderFetchHandlersMixin):
+    """Provide handlers for browsing and importing Poly Haven assets, fetching on worker threads."""
+
+    def start_polyhaven_categories(self, asset_type):
         """
-        Get categories for a specific asset type from Polyhaven.
+        Start listing one asset type's Poly Haven categories on a worker thread.
 
         Args:
-            asset_type: Value for asset type.
+            asset_type: `hdris`, `textures`, `models` or `all`.
 
         Returns:
-            Result produced by the operation.
+            dict: The fetch's status, whose `result` holds `categories` once it
+            succeeds, or `error` for an invalid type.
 
         """
-        try:
-            if asset_type not in {"hdris", "textures", "models", "all"}:
+        if asset_type not in {"hdris", "textures", "models", "all"}:
+            return {"error": f"Invalid asset type: {asset_type}. Must be one of: hdris, textures, models, all"}
+
+        def job(context: FetchContext) -> dict:
+            categories = get_json(f"{API_ROOT}/categories/{asset_type}", headers=REQ_HEADERS, transfer=context)
+            return {"categories": categories}
+
+        return REGISTRY.start(
+            "polyhaven", "categories", job, keeps_files=False, failure_label="Failed to list Poly Haven categories"
+        )
+
+    def start_polyhaven_catalog(self, asset_type=None, categories=None, limit=20, offset=0):
+        """
+        Start fetching one page of the Poly Haven catalog on a worker thread.
+
+        Args:
+            asset_type: `hdris`, `textures`, `models`, `all` or None for every type.
+            categories: Comma-separated categories to filter by.
+            limit: The page size, 1 through 100.
+            offset: Where the page starts in the catalog ordered by asset id.
+
+        Returns:
+            dict: The fetch's status, whose `result` holds `assets`, `total_count`,
+            `returned_count`, `offset`, `limit`, `truncated` and `next_offset` once
+            it succeeds, or `error` for an invalid argument.
+
+        """
+        params = {}
+        if asset_type and asset_type != "all":
+            if asset_type not in {"hdris", "textures", "models"}:
                 return {"error": f"Invalid asset type: {asset_type}. Must be one of: hdris, textures, models, all"}
+            params["type"] = asset_type
+        if categories:
+            params["categories"] = categories
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= _MAX_CATALOG_PAGE:
+            return {"error": f"limit must be an integer from 1 through {_MAX_CATALOG_PAGE}"}
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            return {"error": "offset must be a non-negative integer"}
 
-            return {
-                "categories": get_json(
-                    f"https://api.polyhaven.com/categories/{asset_type}",
-                    headers=REQ_HEADERS,
-                )
-            }
-        except Exception as e:
-            return {"error": sanitize_blender_error(e)}
+        def job(context: FetchContext) -> dict:
+            assets = get_json(f"{API_ROOT}/assets", params=params, headers=REQ_HEADERS, transfer=context)
+            return _catalog_page(assets, limit, offset)
 
-    def list_polyhaven_assets(self, asset_type=None, categories=None, limit=20, offset=0):
-        """
-        Search for assets from Polyhaven with optional filtering.
-
-        Args:
-            asset_type: Value for asset type.
-            categories: Value for categories.
-
-        Returns:
-            Result produced by the operation.
-
-        """
-        try:
-            url = "https://api.polyhaven.com/assets"
-            params = {}
-
-            if asset_type and asset_type != "all":
-                if asset_type not in {"hdris", "textures", "models"}:
-                    return {"error": f"Invalid asset type: {asset_type}. Must be one of: hdris, textures, models, all"}
-                params["type"] = asset_type
-
-            if categories:
-                params["categories"] = categories
-
-            if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
-                return {"error": "limit must be an integer from 1 through 100"}
-            if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
-                return {"error": "offset must be a non-negative integer"}
-            assets = get_json(url, params=params, headers=REQ_HEADERS)
-            if not isinstance(assets, dict):
-                return {"error": "Poly Haven returned an unexpected catalog response"}
-            ordered = sorted(assets.items(), key=lambda item: item[0].casefold())
-            page = ordered[offset : offset + limit]
-            limited_assets = dict(page)
-            next_offset = offset + len(page)
-            truncated = next_offset < len(ordered)
-
-            return {
-                "assets": limited_assets,
-                "total_count": len(assets),
-                "returned_count": len(limited_assets),
-                "offset": min(offset, len(ordered)),
-                "limit": limit,
-                "truncated": truncated,
-                "next_offset": next_offset if truncated else None,
-            }
-        except Exception as e:
-            return {"error": sanitize_blender_error(e)}
+        return REGISTRY.start(
+            "polyhaven", "catalog", job, keeps_files=False, failure_label="Failed to list Poly Haven assets"
+        )
 
     def _configured_environment(self, image_path: str) -> dict:
         """
@@ -589,100 +678,41 @@ class PolyhavenHandlersMixin:
             create_world=scene.world is None,
         )
 
-    def _downloaded_hdri_world(self, asset_id, file_url: str, persistent_path: str) -> dict:
+    def _import_hdri(self, payload: dict) -> dict:
         """
-        Download one HDRI into the cache and light the scene with it.
+        Move a downloaded HDRI into the cache and light the scene with it.
 
-        Written to `<target>.part` and renamed, so an interrupted download never
-        leaves a half-file where the world expects an image; the partial name is
-        removed whether the download succeeded or not.
+        The download sits in a fetch directory made inside the cache, so the rename
+        is atomic: the world never sees a half-written image.
 
         Args:
-            asset_id: The asset id, for the message.
-            file_url: Where to fetch the image.
-            persistent_path: The cache file to write.
+            payload: The download's payload: `asset_id`, `file` and `persistent_path`.
 
         Returns:
             dict: `success`, `message`, `image_name`, `image_path` and `world`,
             or `error` with no filesystem path.
 
         """
-        partial_path = f"{persistent_path}.part"
+        persistent_path = payload["persistent_path"]
         try:
-            download_file(file_url, partial_path, headers=REQ_HEADERS, max_bytes=_MAX_IMAGE_BYTES)
-            os.replace(partial_path, persistent_path)
+            os.replace(payload["file"], persistent_path)
             configured = self._configured_environment(persistent_path)
             return {
                 "success": True,
-                "message": f"HDRI {asset_id} imported successfully",
+                "message": f"HDRI {payload['asset_id']} imported successfully",
                 "image_name": configured["image"],
                 "image_path": configured["image_path"],
                 "world": configured["world"],
             }
         except Exception as e:
             return {"error": f"Failed to set up HDRI in Blender: {sanitize_blender_error(e)}"}
-        finally:
-            with suppress(FileNotFoundError):
-                os.remove(partial_path)
 
-    def _import_hdri(self, asset_id, files_data, resolution, file_format) -> dict:
+    def start_polyhaven_download(self, asset_id, asset_type, resolution="1k", file_format=None):
         """
-        Import one Poly Haven HDRI as the scene's environment.
+        Start downloading one Poly Haven asset on a worker thread.
 
-        Args:
-            asset_id: The asset id.
-            files_data: Poly Haven's files response.
-            resolution: The requested resolution, which reaches the cache file's name.
-            file_format: `hdr` or `exr`; `hdr` when the client named none.
-
-        Returns:
-            dict: `_downloaded_hdri_world`'s report, or `error`.
-
-        """
-        file_format = (file_format or "hdr").lower()
-        if file_format not in {"hdr", "exr"}:
-            return {"error": "Poly Haven HDRIs require file_format 'hdr' or 'exr'"}
-        if not _has_safe_filename_characters(resolution):
-            return {"error": "resolution contains unsupported filename characters"}
-        if not (
-            "hdri" in files_data and resolution in files_data["hdri"] and file_format in files_data["hdri"][resolution]
-        ):
-            return {"error": "Requested resolution or format not available for this HDRI"}
-        safe_asset_id = _filename_component(asset_id)
-        if not safe_asset_id:
-            return {"error": "asset_id does not contain a safe filename component"}
-        persistent_path = _cached_image_path(safe_asset_id, resolution, file_format)
-        if persistent_path is None:
-            return {"error": "Could not create the Blender MCP Poly Haven cache directory"}
-        file_url = files_data["hdri"][resolution][file_format]["url"]
-        return self._downloaded_hdri_world(asset_id, file_url, persistent_path)
-
-    def _imported_asset(self, asset_id, asset_type, files_data, resolution, file_format) -> dict:
-        """
-        Route one asset to the importer for its type.
-
-        Args:
-            asset_id: The asset id.
-            asset_type: `hdris`, `textures` or `models`.
-            files_data: Poly Haven's files response.
-            resolution: The requested resolution.
-            file_format: The requested format, or None for the type's default.
-
-        Returns:
-            dict: That importer's report, or `error` for an unknown type.
-
-        """
-        if asset_type == "hdris":
-            return self._import_hdri(asset_id, files_data, resolution, file_format)
-        if asset_type == "textures":
-            return _import_textures(asset_id, files_data, resolution, file_format)
-        if asset_type == "models":
-            return _import_model(asset_id, files_data, resolution, file_format)
-        return {"error": f"Unsupported asset type: {asset_type}"}
-
-    def import_polyhaven_asset(self, asset_id, asset_type, resolution="1k", file_format=None):
-        """
-        Download one Poly Haven asset and bring it into the open file.
+        Validation and the HDRI cache path (`bpy.utils`) happen here, on the main
+        thread; the file list and every file are fetched by the job.
 
         Args:
             asset_id: The Poly Haven asset id.
@@ -691,15 +721,58 @@ class PolyhavenHandlersMixin:
             file_format: The format to fetch; each asset type has its own default.
 
         Returns:
-            dict: The report for the asset's type, or `error`. Blender's and the
-            OS's error text names the temp file, so every failure is sanitized.
+            dict: The fetch's status; pass its `fetch_id` to `import_polyhaven_asset`
+            once it SUCCEEDED. `error` for an invalid request.
 
         """
+        if asset_type not in {"hdris", "textures", "models"}:
+            return {"error": f"Unsupported asset type: {asset_type}"}
+        request = {"asset_id": asset_id, "asset_type": asset_type, "resolution": resolution, "file_format": file_format}
+        directory_parent = None
+        if asset_type == "hdris":
+            cached = _hdri_cache_request(asset_id, resolution, file_format)
+            if "error" in cached:
+                return cached
+            request.update(cached)
+            directory_parent = os.path.dirname(cached["persistent_path"])
+
+        def job(context: FetchContext) -> dict:
+            return _asset_download_payload(context, request)
+
+        return REGISTRY.start(
+            "polyhaven",
+            "asset",
+            job,
+            keeps_files=True,
+            failure_label="Failed to download asset",
+            directory_parent=directory_parent,
+        )
+
+    def import_polyhaven_asset(self, fetch_id):
+        """
+        Bring one finished Poly Haven download into the open file; no network I/O.
+
+        Args:
+            fetch_id: The id `start_polyhaven_download` returned, once it SUCCEEDED.
+
+        Returns:
+            dict: The report for the asset's type, or `error`. Blender's and the
+            OS's error text names the temp file, so every failure is sanitized.
+            The fetch's directory is removed whatever happens.
+
+        """
+        payload, directory = REGISTRY.take(str(fetch_id), provider="polyhaven", kind="asset")
         try:
-            files_data = get_json(f"https://api.polyhaven.com/files/{asset_id}", headers=REQ_HEADERS)
-            return self._imported_asset(asset_id, asset_type, files_data, resolution, file_format)
-        except Exception as e:
-            return {"error": f"Failed to download asset: {sanitize_blender_error(e)}"}
+            asset_type = payload["asset_type"]
+            if asset_type == "hdris":
+                return self._import_hdri(payload)
+            if asset_type == "textures":
+                return _import_textures(payload)
+            return _import_model(payload, directory or "")
+        finally:
+            if directory is not None:
+                with suppress(Exception):
+                    shutil.rmtree(directory)
 
     def apply_polyhaven_texture(
         self,

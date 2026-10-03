@@ -449,12 +449,21 @@ COMMANDS: Mapping[str, CommandSpec] = MappingProxyType(
         ),
         "setup_liquid_shot": CommandSpec(),
         "validate_liquid_result": CommandSpec(),
-        "get_polyhaven_categories": CommandSpec(read_only=True, provider="polyhaven"),
-        "list_polyhaven_assets": CommandSpec(read_only=True, provider="polyhaven"),
+        # A provider's network I/O runs on a worker thread (`provider_fetches.py`). A `start_*`
+        # command only validates and starts it, changing nothing in bpy.data, so it skips the
+        # transaction; it is not read-only, so a resent request id is answered with the fetch the
+        # first attempt started instead of starting a second.
+        "get_provider_fetch": CommandSpec(read_only=True),
+        "cancel_provider_fetch": CommandSpec(non_undo=True),
+        "start_polyhaven_categories": CommandSpec(non_undo=True, provider="polyhaven"),
+        "start_polyhaven_catalog": CommandSpec(non_undo=True, provider="polyhaven"),
+        "start_polyhaven_download": CommandSpec(non_undo=True, provider="polyhaven"),
         "import_polyhaven_asset": CommandSpec(provider="polyhaven"),
         "apply_polyhaven_texture": CommandSpec(provider="polyhaven"),
-        "search_sketchfab_models": CommandSpec(read_only=True, provider="sketchfab"),
-        "get_sketchfab_model_preview": CommandSpec(read_only=True, provider="sketchfab"),
+        "start_sketchfab_account_check": CommandSpec(non_undo=True, provider="sketchfab"),
+        "start_sketchfab_search": CommandSpec(non_undo=True, provider="sketchfab"),
+        "start_sketchfab_preview": CommandSpec(non_undo=True, provider="sketchfab"),
+        "start_sketchfab_download": CommandSpec(non_undo=True, provider="sketchfab"),
         "import_sketchfab_model": CommandSpec(provider="sketchfab"),
         "nd_boolean": CommandSpec(provider="nd"),
         "nd_mark_as_util": CommandSpec(provider="nd"),

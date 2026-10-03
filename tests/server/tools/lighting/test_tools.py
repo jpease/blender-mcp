@@ -90,7 +90,12 @@ def test_a_polyhaven_hdri_lights_the_scene_through_the_managed_environment(monke
 
     monkeypatch.setattr(server, "configure_hdri_environment", configure_hdri_environment)
 
-    result = server.import_polyhaven_asset("sky", "hdris")
+    fetches = sys.modules[f"{addon.__name__}.provider_fetches"].REGISTRY
+    started = server.start_polyhaven_download("sky", "hdris")
+    fetches.join(started["fetch_id"], timeout=5)
+    assert server.get_provider_fetch(started["fetch_id"])["state"] == "SUCCEEDED"
+
+    result = server.import_polyhaven_asset(started["fetch_id"])
 
     assert result.get("success") is True, result
     [call] = calls

@@ -10,7 +10,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from ..app import mcp
-from ._dispatch import send_blender_command
+from ._provider_fetch import fetch_provider_result, import_fetched
 from .envelope import ok
 
 logger = logging.getLogger("BlenderMCPServer")
@@ -71,8 +71,9 @@ async def search_sketchfab_models(
         logger.info(
             f"Searching Sketchfab models with query: {query}, categories: {categories}, count: {count}, downloadable: {downloadable}"
         )
-        result = await send_blender_command(
-            "search_sketchfab_models",
+        result = await fetch_provider_result(
+            ctx,
+            "start_sketchfab_search",
             {
                 "query": query,
                 "categories": categories,
@@ -81,10 +82,6 @@ async def search_sketchfab_models(
                 "cursor": cursor,
             },
         )
-        if result is None:
-            raise ToolError("Received no response from Sketchfab search")
-        if "error" in result:
-            raise ToolError(result["error"])
         models = result.get("results", []) or []
         return ok(
             {
@@ -129,13 +126,7 @@ async def get_sketchfab_model_preview(ctx: Context, uid: Annotated[str, Field(mi
     try:
         logger.info(f"Getting Sketchfab model preview for UID: {uid}")
 
-        result = await send_blender_command("get_sketchfab_model_preview", {"uid": uid})
-
-        if result is None:
-            raise Exception("Received no response from Blender")
-
-        if "error" in result:
-            raise Exception(result["error"])
+        result = await fetch_provider_result(ctx, "start_sketchfab_preview", {"uid": uid})
 
         # Decode base64 image data
         image_data = base64.b64decode(result["image_data"])
@@ -160,7 +151,8 @@ async def import_sketchfab_model(
     """
     Download and import a Sketchfab model, scaling its largest dimension to a chosen size.
 
-    The model will be scaled so its largest dimension equals target_size.
+    The model will be scaled so its largest dimension equals target_size. The download runs off Blender's
+    main thread, reporting progress, and cancelling this call cancels it in Blender.
 
     Args:
         ctx: MCP request context.
@@ -179,13 +171,13 @@ async def import_sketchfab_model(
     try:
         logger.info(f"Downloading Sketchfab model: {uid}, target_size={target_size}")
 
-        result = await send_blender_command(
+        result = await import_fetched(
+            ctx,
+            "start_sketchfab_download",
+            {"uid": uid},
             "import_sketchfab_model",
-            {
-                "uid": uid,
-                "normalize_size": True,  # Always normalize
-                "target_size": target_size,
-            },
+            normalize_size=True,  # Always normalize
+            target_size=target_size,
         )
 
         if result is None:

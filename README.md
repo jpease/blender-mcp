@@ -388,6 +388,8 @@ In Blender: **Preferences → Add-ons** → disable and re-enable **Interface: B
 - Download the right models, assets and HDRIs through [Poly Haven](https://polyhaven.com/)
 - Search and download models from [Sketchfab](https://sketchfab.com/)
 
+Poly Haven and Sketchfab requests run on a worker thread inside Blender, not on its main thread, so the UI and other commands keep answering while a download is in flight. A provider tool starts the fetch, reports the bytes received as MCP progress notifications, and imports the files on the main thread once they have arrived; cancelling the tool call cancels the download in Blender and removes its partial files. At most three provider fetches run at once, and one nobody polls for two minutes is cancelled.
+
 
 ## Configuration
 

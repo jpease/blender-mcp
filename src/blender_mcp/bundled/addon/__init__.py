@@ -27,7 +27,12 @@ bl_info = {
 # addon that omits writable_output_roots gets an empty list.
 ADDON_PROTOCOL_VERSION = 57
 
-from . import render_result_record, scene_watch, session  # ruff: ignore[module-import-not-at-top-of-file]
+from . import (  # ruff: ignore[module-import-not-at-top-of-file]
+    provider_fetches,
+    render_result_record,
+    scene_watch,
+    session,
+)
 from .handlers import render_jobs  # ruff: ignore[module-import-not-at-top-of-file]
 from .server_core import BlenderMCPServer  # ruff: ignore[module-import-not-at-top-of-file]
 from .ui import (  # ruff: ignore[module-import-not-at-top-of-file]
@@ -131,6 +136,9 @@ def unregister() -> None:
     # After the server stops, so no job can start behind it. There is no register half: the
     # watchdog registers itself when a job starts, and a reload must not leave the old one firing.
     render_jobs.unregister_handlers()
+    # Running provider downloads are cancelled and finished ones' files removed: a reload
+    # would otherwise strand them in a registry nothing can reach any more.
+    provider_fetches.REGISTRY.shutdown()
 
     bpy.utils.unregister_class(BLENDERMCP_PT_Panel)
     bpy.utils.unregister_class(BLENDERMCP_OT_StartServer)
