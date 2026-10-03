@@ -1,7 +1,7 @@
 {
   "bundles": {
     "assets": {
-      "catalog_bytes": 8168,
+      "catalog_bytes": 8456,
       "tool_count": 7
     },
     "camera": {
@@ -13,11 +13,11 @@
       "tool_count": 6
     },
     "character-posing": {
-      "catalog_bytes": 47483,
+      "catalog_bytes": 47710,
       "tool_count": 8
     },
     "character-rigging": {
-      "catalog_bytes": 100894,
+      "catalog_bytes": 101121,
       "tool_count": 28
     },
     "cloth": {

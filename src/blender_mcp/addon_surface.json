@@ -377,6 +377,9 @@
       "u_segments",
       "v_segments"
     ],
+    "cancel_provider_fetch": [
+      "fetch_id"
+    ],
     "clean_skin_weights": [
       "armature_object_name",
       "confirm_remove_orphan_groups",
@@ -1535,6 +1538,9 @@
       "sections"
     ],
     "get_polyhaven_status": [],
+    "get_provider_fetch": [
+      "fetch_id"
+    ],
     "get_rigid_body_constraint_info": [
       "constraint_object_names",
       "limit",
@@ -2650,5 +2656,5 @@
       "scope"
     ]
   },
-  "protocol_version": 57
+  "protocol_version": 58
 }
