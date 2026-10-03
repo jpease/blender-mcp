@@ -319,20 +319,49 @@ def _step_reopen(counted: _Counted, epoch_before_save: int, target: Path) -> int
     return epoch
 
 
-def _step_assert_link_survived(counted: _Counted, epoch: int, link: dict[str, object]) -> None:
+def _published_location(filepath: str, open_file: Path) -> Path:
+    """
+    Resolve a published library path to the file it names.
+
+    `list_libraries` publishes a `//` path relative to the directory of the .blend that is
+    open now, so one library is spelled differently once the shot is saved somewhere else.
+
+    Args:
+        filepath: The library's published `filepath`.
+        open_file: The .blend that is open, which a `//` path is relative to.
+
+    Returns:
+        Path: The resolved file.
+
+    """
+    if filepath.startswith("//"):
+        return (open_file.parent / filepath[2:]).resolve()
+    return Path(filepath).resolve()
+
+
+def _step_assert_link_survived(
+    counted: _Counted, epoch: int, link: dict[str, object], canon: Path, target: Path
+) -> None:
     """
     Assert the link and the override both survived the save/reopen round trip.
+
+    The library is matched by the file it resolves to, not by its spelling: the shot was
+    opened from the fixture directory and saved one level up, so the same library is
+    published as `//canon.blend` before the save and `//blends/canon.blend` after it.
 
     Args:
         counted: The counting wrapper around the rig.
         epoch: The epoch, which this read-only probe must not move.
         link: The dict `_step_link` returned.
+        canon: The canon fixture the library must still resolve to.
+        target: The reopened file, which a `//` path is relative to.
 
     """
     listing = counted.send("list_libraries", {"detail": True})["result"]
-    # This filter is already the exact filepath comparison.
-    matches = [lib for lib in listing["libraries"] if lib["filepath"] == link["library_filepath"]]
-    assert len(matches) == 1, f"expected exactly one library with filepath {link['library_filepath']!r}: {matches}"
+    expected = canon.resolve()
+    matches = [lib for lib in listing["libraries"] if _published_location(str(lib["filepath"]), target) == expected]
+    published = [lib["filepath"] for lib in listing["libraries"]]
+    assert len(matches) == 1, f"expected exactly one library resolving to {expected}: {published}"
     reopened_library = matches[0]
     assert reopened_library["is_missing"] is False, reopened_library
 
@@ -550,7 +579,7 @@ def run(rig: Rig) -> None:
     target = rig.work_dir / "phase2_gate_saved.blend"
     _step_save(counted, epoch, target, canon)
     epoch = _step_reopen(counted, epoch, target)
-    _step_assert_link_survived(counted, epoch, link)
+    _step_assert_link_survived(counted, epoch, link, canon, target)
     print("RIG: phase-2 gate scenario (steps 1-10) passed", flush=True)
 
     # After the gate, so no negative case can disturb its sequence.
