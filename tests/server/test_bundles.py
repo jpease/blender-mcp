@@ -635,7 +635,11 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 #
 # Raised from 220,242, measured at 222,671 - 2,429 bytes: the core surface's `pick_from_camera`
 # (see the default ceiling below).
-SHOT_MODE_BYTE_CEILING = 222_671
+#
+# Raised from 222,671, measured at 222,776 - 105 bytes: set_character_pose stating that
+# rotation_euler is read in the bone's own rotation_mode order. It always was meant to be, but was
+# built as XYZ, so a caller posing an XZY or ZYX bone had no way to know which order applied.
+SHOT_MODE_BYTE_CEILING = 222_776
 
 # The same rule as above, for the default, core-only surface.
 #

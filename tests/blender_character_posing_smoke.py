@@ -968,6 +968,43 @@ for action_name in ("SMOKE_spin_matrix", "SMOKE_spin_reach", "SMOKE_spin_euler")
 bpy.data.objects.remove(spin_rig)
 bpy.context.scene.frame_set(playhead_before)
 
+# --- 10d. A caller's Euler triple means what it means in the bone's own rotation order ---------
+#
+# A bone in XZY or ZYX mode stores (x, y, z) composed in that order, so the same three numbers
+# read as XYZ are a different orientation. The triple used to be built as XYZ whatever the bone,
+# which keyed a pose 0.3 matrix units away from the one asked for on an XZY bone.
+
+
+def check_caller_euler_uses_the_bone_rotation_order():
+    order_rig = build_rig("OrderRig", (0.0, 0.0, 0.0), 0.0)
+    asked = (0.3, 0.5, 0.7)
+    for mode in ("XZY", "ZYX"):
+        rest_pose(order_rig)
+        order_rig.pose.bones["spine"].rotation_mode = mode
+        action_name = f"SMOKE_order_{mode}"
+        handler.keyframe_character_pose(
+            order_rig.name,
+            action_name,
+            1.0,
+            [{"bone_name": "spine", "rotation_euler": asked}],
+            action_policy="CREATE",
+            confirm_displace_action=True,
+        )
+        rest_pose(order_rig)
+        bpy.context.scene.frame_set(1)
+        played = order_rig.pose.bones["spine"].matrix_basis.to_3x3()
+        meant = Euler(asked, mode).to_matrix()
+        error = max(abs(played[row][col] - meant[row][col]) for row in range(3) for col in range(3))
+        print(f"rotation_euler {asked} on a {mode} bone plays back {error:.3e} from Euler(..., {mode!r})")
+        assert error < 1e-5, f"a {mode} bone played back {error} away from the {mode} pose its values mean"
+        order_rig.animation_data.action = None
+        bpy.data.actions.remove(bpy.data.actions[action_name])
+    bpy.data.objects.remove(order_rig)
+
+
+check_caller_euler_uses_the_bone_rotation_order()
+bpy.context.scene.frame_set(playhead_before)
+
 # --- 11. The reply names the bone axis for each world direction, and an aim takes it ----------
 #
 # `length_axis` is `Y` on every bone Blender builds, and an upright bone's `up_axis` is `Y` too,

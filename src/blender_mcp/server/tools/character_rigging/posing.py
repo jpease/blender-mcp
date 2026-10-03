@@ -349,6 +349,8 @@ async def set_character_pose(
     composes with its parent; LOCAL_WITH_PARENT, POSE and WORLD are absolute, so writing one
     replaces what the parent contributed. Parents are posed first, and an absolute child target
     is resolved against the parent this call already wrote. aim_at is always world-space.
+    rotation_euler is read in the bone's own rotation_mode order (XYZ on a quaternion or
+    axis-angle bone).
 
     Args:
         ctx: MCP request context.

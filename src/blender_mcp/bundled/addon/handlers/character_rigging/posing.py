@@ -99,7 +99,11 @@ def _pose_matrix_from_channels(armature, pose_bone, spec, space):
         values = spec["rotation_quaternion"]
         rotation = mathutils.Quaternion(values).normalized()
     elif "rotation_euler" in spec:
-        rotation = mathutils.Euler(spec["rotation_euler"], "XYZ").to_quaternion()
+        # The triple is read in the bone's own order: an XZY bone's (x, y, z) is a different
+        # orientation from the same numbers as XYZ. A quaternion or axis-angle bone has no
+        # order of its own, so its caller's Euler stays XYZ.
+        order = "XYZ" if _rotation_path(pose_bone) != "rotation_euler" else pose_bone.rotation_mode
+        rotation = mathutils.Euler(spec["rotation_euler"], order).to_quaternion()
     elif "rotation_axis_angle" in spec:
         angle, x, y, z = spec["rotation_axis_angle"]
         rotation = mathutils.Quaternion((x, y, z), angle)
