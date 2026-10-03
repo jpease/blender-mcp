@@ -513,7 +513,7 @@ def _clear_existing_installs(addons_dir: Path, source: Path) -> tuple[list[str],
     if not addons_dir.is_dir():
         return replaced, stale_backups, linked
     for path in sorted(addons_dir.iterdir()):
-        is_legacy_file = not path.is_symlink() and path.is_file() and _is_blendermcp_addon_file(path)
+        is_legacy_file = path.is_file() and _is_blendermcp_addon_file(path)
         is_package_dir = (
             path.is_dir() and (path / "__init__.py").is_file() and _is_blendermcp_addon_file(path / "__init__.py")
         )

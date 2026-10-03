@@ -610,8 +610,8 @@ def _start(record, create_directories):
     """
     Make the job directory, save the copy, write the record and start the child.
 
-    Anything that fails removes the job directory again, so a job that never started leaves
-    nothing to LIST.
+    Anything that fails removes the job directory again, and any output directory it made
+    that is still empty, so a job that never started leaves nothing to LIST.
 
     Args:
         record: The job's first record.
@@ -626,6 +626,7 @@ def _start(record, create_directories):
     path = os.path.join(directory, job_file.JOB_FILENAME)
     os.makedirs(os.path.dirname(directory), exist_ok=True)
     os.makedirs(directory)
+    missing = _missing_directories(os.path.dirname(record["filepath"])) if create_directories else []
     try:
         _save_copy(record["blend_copy"])
         job_file.write_job(path, record)
@@ -634,11 +635,49 @@ def _start(record, create_directories):
         process = _spawn(path, record["blend_copy"], record["log_path"])
     except BaseException:
         shutil.rmtree(directory, ignore_errors=True)
+        _remove_empty_directories(missing)
         raise
     _OWNED_JOBS[record["job_id"]] = _OwnedJob(process, path)
     if not bpy.app.timers.is_registered(_watch_owned_jobs):
         bpy.app.timers.register(_watch_owned_jobs, first_interval=_WATCH_INTERVAL_SECONDS, persistent=True)
     return job_file.update_job(path, pid=process.pid) or record, created_directory
+
+
+def _missing_directories(directory):
+    """
+    List the directories `os.makedirs(directory)` would create, deepest first.
+
+    Args:
+        directory: The output directory.
+
+    Returns:
+        list[str]: Each missing directory from `directory` up to its first existing ancestor.
+
+    """
+    missing = []
+    while directory and not os.path.isdir(directory):
+        missing.append(directory)
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            break
+        directory = parent
+    return missing
+
+
+def _remove_empty_directories(directories):
+    """
+    Remove the directories a failed start created, deepest first, keeping any now in use.
+
+    Args:
+        directories: Directories that were missing before the start, deepest first.
+
+    """
+    for directory in directories:
+        try:
+            os.rmdir(directory)
+        except OSError:
+            # Missing, or something else wrote into it meanwhile: not ours to remove.
+            return
 
 
 def _create(request):

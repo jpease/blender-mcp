@@ -255,6 +255,21 @@ def test_a_job_that_cannot_start_leaves_no_job_directory(jobs, monkeypatch, fail
     assert _job_directories(jobs) == []
 
 
+def test_a_job_that_cannot_start_removes_only_the_output_directories_it_made(jobs, monkeypatch) -> None:
+    def refuse(*_args, **_kwargs):
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(jobs.module.subprocess, "Popen", refuse)
+    existing = jobs.root / "shots"
+    existing.mkdir()
+
+    with pytest.raises(RuntimeError, match="manage_render_job"):
+        _create(jobs, filepath=str(existing / "a" / "b" / "frame_"))
+
+    assert existing.is_dir(), "removed a directory the job did not create"
+    assert not (existing / "a").exists(), "left the output directories it created behind"
+
+
 @pytest.mark.parametrize("job_id", ["../../etc", "..", "ABCDEF012345", "0123456789ab/..", "0123456789a", ""])
 @pytest.mark.parametrize("action", ["READ", "DELETE"])
 def test_a_job_id_create_could_not_have_issued_is_refused_before_any_path_is_built(jobs, action, job_id) -> None:

@@ -552,4 +552,11 @@ ROWS: list[Revert] = [
             "[60-None-RENDERING-cannot be checked on this platform]",
         ),
     ),
+    Revert(
+        "rendering: a job that cannot start leaves the output directories it created",
+        ADDON_RENDER_JOBS,
+        "        _remove_empty_directories(missing)\n",
+        "",
+        (f"{RJOBT}::test_a_job_that_cannot_start_removes_only_the_output_directories_it_made",),
+    ),
 ]

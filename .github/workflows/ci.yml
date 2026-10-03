@@ -38,8 +38,23 @@ jobs:
 
       # Not `ruff check .`: the tree carries an inherited backlog, so the gate is
       # the lines this branch introduces. `just lint-all` reports the rest.
+      # A pull request measures against its base branch; a push against the commit it
+      # replaced, or the parent when the push created the branch (all-zero `before`).
       - name: Lint changed lines
-        run: poetry run python scripts/lint_changed.py --base "origin/${{ github.base_ref }}"
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE="origin/$BASE_REF"
+          elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] \
+              && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            BASE="$BEFORE_SHA"
+          else
+            BASE="HEAD~1"
+          fi
+          poetry run python scripts/lint_changed.py --base "$BASE"
 
       - name: Check formatting
         run: poetry run ruff format --check .

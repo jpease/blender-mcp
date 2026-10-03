@@ -33,6 +33,13 @@ ROWS: list[Revert] = [
         (f"{AMT}::test_install_refuses_to_write_through_a_development_symlink",),
     ),
     Revert(
+        "install: a symlinked single-file install is neither removed nor reported",
+        ADDON_MANAGER,
+        "        is_legacy_file = path.is_file() and _is_blendermcp_addon_file(path)\n",
+        "        is_legacy_file = not path.is_symlink() and path.is_file() and _is_blendermcp_addon_file(path)\n",
+        (f"{AMT}::test_install_reports_and_keeps_a_symlinked_single_file_install",),
+    ),
+    Revert(
         "dispatch: a refused request is logged as a fault, traceback and all",
         ADDON_SERVER_CORE,
         "        except ValueError as refusal:\n",

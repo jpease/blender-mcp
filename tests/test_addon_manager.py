@@ -324,6 +324,24 @@ def test_install_refuses_to_write_through_a_development_symlink(tmp_path: Path) 
     assert not (am.backup_directory(addons) / "blender_mcp.bak").exists(), "copied the checkout into a backup"
 
 
+def test_install_reports_and_keeps_a_symlinked_single_file_install(tmp_path: Path) -> None:
+    from blender_mcp import addon_manager as am
+
+    elsewhere = tmp_path / "checkout" / "blender_mcp.py"
+    elsewhere.parent.mkdir()
+    elsewhere.write_text((am.get_bundled_addon_path() / "__init__.py").read_text(encoding="utf-8"), encoding="utf-8")
+    addons = tmp_path / "5.2" / "scripts" / "addons"
+    addons.mkdir(parents=True)
+    link = addons / "blender_mcp.py"
+    link.symlink_to(elsewhere)
+
+    replaced, _stale, linked = am._clear_existing_installs(addons, am.get_bundled_addon_path())
+
+    assert replaced == []
+    assert linked == [f"{link} -> {elsewhere}"], "a symlinked single-file install went unreported"
+    assert link.is_symlink() and elsewhere.is_file(), "the link or its target was touched"
+
+
 def test_handshake_surfaces_writable_output_roots() -> None:
     """The roots Blender reports have to reach the handshake the server caches."""
     blender = Mock()
