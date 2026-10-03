@@ -20,9 +20,15 @@ It is deliberately coarse; three limits follow from what Blender reports:
   update with every `is_updated_*` False, which cannot be told apart; such an update is ignored,
   so a scene-setting edit is missed rather than every viewport click being reported.
 
-Work a command leaves running past its reply marks the objects it writes with `JOB_MARKER_KEY`;
-their updates are not outside edits. An async job that does not mark its objects can raise a
-false notice.
+Only the liquid bake leaves work running past its reply: START_BAKE and RESUME start Blender's
+fluid job with `INVOKE_DEFAULT`, so the handler marks the domain with `JOB_MARKER_KEY`, and a
+marked object's updates are not outside edits. Every other bake, render and import the add-on runs
+is an `EXEC_DEFAULT` call that finishes before the command returns. In a Blender 5.2 window, cloth
+and rigid-body point-cache bakes, a Geometry Nodes bake, an `object.bake` and a `render.render`
+preview each left no notice on a read 3 s later, while a timer edit did. ND operators run with
+`INVOKE_DEFAULT`; one that goes modal is answered with an error, and anything it changes afterwards
+follows the user's input, so a notice for it is not false. An async job added later must mark its
+objects the same way, or it raises a false notice.
 
 Main thread only: Blender runs the handlers there, and `server_core` dispatches commands there.
 """
