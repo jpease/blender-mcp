@@ -70,4 +70,16 @@ ROWS: list[Revert] = [
     bpy.data.images.remove(img)""",
         (f"{VIEWT}::test_window_grab_removes_the_loaded_screenshot_when_the_rescale_save_fails",),
     ),
+    # --- a synthetic view's image takes the render gate's aspect, not the live region's ---
+    Revert(
+        "viewport: a synthetic capture is sized from a fixed wide frame instead of the render gate",
+        ADDON_VIEWPORT,
+        "    return _fit_size(res_x * render.pixel_aspect_x, res_y * render.pixel_aspect_y, "
+        "min(max_size, max(res_x, res_y)))",
+        "    return _fit_size(1600, 900, min(max_size, max(res_x, res_y)))",
+        tuple(
+            f"{VIEWT}::test_synthetic_image_size_matches_the_render_gate_aspect[{case}]"
+            for case in ("square", "portrait", "small", "anamorphic")
+        ),
+    ),
 ]

@@ -70,8 +70,13 @@ def _camera_matrices(cam_obj, width, height, *, basis):
     # location/rotation/scale with no depsgraph involved, and on an unparented object it is
     # bit-identical to the matrix_world an equivalent linked camera reports.
     transform = cam_obj.matrix_basis if basis else cam_obj.matrix_world
+    render = bpy.context.scene.render
     window_matrix = cam_obj.calc_matrix_camera(
-        bpy.context.evaluated_depsgraph_get(), x=width, y=height, scale_x=1.0, scale_y=1.0
+        bpy.context.evaluated_depsgraph_get(),
+        x=width,
+        y=height,
+        scale_x=render.pixel_aspect_x,
+        scale_y=render.pixel_aspect_y,
     )
     return transform.inverted(), window_matrix
 
@@ -161,7 +166,36 @@ def _shading_override(space, shading_override):
         space.shading.type = original
 
 
-def _render_offscreen(space, region, view_matrix, window_matrix, max_size, filepath, image_format):
+def _fit_size(src_w, src_h, max_size):
+    """
+    Scale (src_w, src_h) so its long side is at most max_size, keeping its aspect ratio.
+
+    Returns:
+        tuple: (width, height) in whole pixels, each at least 1.
+
+    """
+    scale = min(1.0, max_size / max(src_w, src_h))
+    return max(1, round(src_w * scale)), max(1, round(src_h * scale))
+
+
+def _synthetic_image_size(render, max_size):
+    """
+    Size a synthetic view's image to the render gate's aspect, the one its projection uses.
+
+    _synthetic_view_matrices builds the window matrix from the render resolution and pixel
+    aspect, so the offscreen buffer must share that aspect or draw_view3d stretches the frame
+    to the live region's shape. The long side is capped by max_size and by the render's own
+    long side (resolution_percentage only scales, it never changes the aspect).
+
+    Returns:
+        tuple: (width, height) in whole pixels.
+
+    """
+    res_x, res_y = render.resolution_x, render.resolution_y
+    return _fit_size(res_x * render.pixel_aspect_x, res_y * render.pixel_aspect_y, min(max_size, max(res_x, res_y)))
+
+
+def _render_offscreen(space, region, view_matrix, window_matrix, size, filepath, image_format):
     """
     Rasterize one GPU offscreen capture of a 3D viewport and save it to filepath.
 
@@ -171,6 +205,15 @@ def _render_offscreen(space, region, view_matrix, window_matrix, max_size, filep
     gpu` there), so a module-level import would break every test that loads this addon package
     outside Blender (tests/conftest.py's load_addon and everything built on it).
 
+    Args:
+        space: The SpaceView3D to draw.
+        region: That space's WINDOW region (draw_view3d's context; it does not set the size).
+        view_matrix: 4x4 view matrix to render with.
+        window_matrix: 4x4 projection matrix to render with.
+        size: (width, height) of the offscreen buffer; it must share window_matrix's aspect.
+        filepath: Path to save the image to.
+        image_format: Image format, matching bpy image.file_format casing.
+
     Returns:
         tuple: (width, height) of the saved image.
 
@@ -178,12 +221,7 @@ def _render_offscreen(space, region, view_matrix, window_matrix, max_size, filep
     import gpu
     import numpy as np
 
-    src_w, src_h = region.width, region.height
-    if max(src_w, src_h) > max_size:
-        s = max_size / max(src_w, src_h)
-        width, height = max(1, int(src_w * s)), max(1, int(src_h * s))
-    else:
-        width, height = src_w, src_h
+    width, height = size
 
     offscreen = gpu.types.GPUOffScreen(width, height)
     try:
@@ -279,11 +317,13 @@ def _capture_view(
 
     """
     method = "offscreen"
+    if view_source == "live_viewport":
+        size = _fit_size(region.width, region.height, max_size)
+    else:
+        size = _synthetic_image_size(bpy.context.scene.render, max_size)
     with _shading_override(space, shading_override) as shading_mode:
         try:
-            width, height = _render_offscreen(
-                space, region, view_matrix, window_matrix, max_size, filepath, image_format
-            )
+            width, height = _render_offscreen(space, region, view_matrix, window_matrix, size, filepath, image_format)
         except Exception as offscreen_err:
             if view_source != "live_viewport":
                 raise

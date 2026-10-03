@@ -142,7 +142,9 @@ def _viewport_module(monkeypatch: pytest.MonkeyPatch, *, objects=None, cameras=N
     addon, bpy = load_addon(monkeypatch, data={"objects": objects, "cameras": cameras})
     bpy.context.view_layer = types.SimpleNamespace(update=lambda: None)
     bpy.context.evaluated_depsgraph_get = lambda: "DEPSGRAPH"
-    bpy.context.scene.render = types.SimpleNamespace(resolution_x=640, resolution_y=480)
+    bpy.context.scene.render = types.SimpleNamespace(
+        resolution_x=640, resolution_y=480, pixel_aspect_x=1.0, pixel_aspect_y=1.0
+    )
     monkeypatch.setattr(sys.modules["mathutils"], "Vector", tuple, raising=False)
     module = sys.modules[f"{addon.__name__}.handlers.viewport"]
     return module, bpy, objects, cameras
@@ -256,6 +258,34 @@ def test_shading_override_restores_even_when_the_capture_raises(monkeypatch: pyt
     assert space.shading.type == "SOLID"
 
 
+@pytest.mark.parametrize(
+    ("resolution", "pixel_aspect", "max_size", "expected"),
+    [
+        # A square gate gives a square image, whatever shape the live region happens to be.
+        ((512, 512), (1.0, 1.0), 400, (400, 400)),
+        ((1920, 1080), (1.0, 1.0), 400, (400, 225)),
+        ((1080, 1920), (1.0, 1.0), 800, (450, 800)),
+        # Never upscaled past the render's own long side.
+        ((320, 240), (1.0, 1.0), 800, (320, 240)),
+        # Anamorphic pixels widen the displayed frame.
+        ((1000, 1000), (2.0, 1.0), 400, (400, 200)),
+    ],
+    ids=["square", "landscape", "portrait", "small", "anamorphic"],
+)
+def test_synthetic_image_size_matches_the_render_gate_aspect(
+    monkeypatch: pytest.MonkeyPatch, resolution, pixel_aspect, max_size, expected
+) -> None:
+    module, _bpy, _objects, _cameras = _viewport_module(monkeypatch)
+    render = types.SimpleNamespace(
+        resolution_x=resolution[0],
+        resolution_y=resolution[1],
+        pixel_aspect_x=pixel_aspect[0],
+        pixel_aspect_y=pixel_aspect[1],
+    )
+
+    assert module._synthetic_image_size(render, max_size) == expected
+
+
 class _FakeImage:
     """Image datablock whose save() can be made to fail, as an unwritable filepath makes it."""
 
@@ -338,7 +368,7 @@ def test_offscreen_capture_removes_its_image_datablock_when_the_save_fails(
     region = types.SimpleNamespace(width=320, height=240)
 
     with pytest.raises(RuntimeError, match="cannot write image"):
-        module._render_offscreen(None, region, "VIEW", "WINDOW", 800, "/tmp/shot.png", "png")
+        module._render_offscreen(None, region, "VIEW", "WINDOW", (320, 240), "/tmp/shot.png", "png")
 
     assert images.removed == images.created
     assert len(images.created) == 1

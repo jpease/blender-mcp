@@ -75,6 +75,10 @@ _MAX_CENTROID_OFFSET = 0.15
 # Per-channel 0-255 difference a pixel must exceed to count as part of the silhouette, so
 # dithering or a one-bit rounding difference in the background is not mistaken for geometry.
 _BACKGROUND_TOLERANCE = 8
+# Allowed mismatch between a synthetic capture's image aspect and the render gate's, and
+# between a frontal cube silhouette's width/height ratio and 1.
+_MAX_IMAGE_ASPECT_ERROR = 0.02
+_MAX_SILHOUETTE_ASPECT_ERROR = 0.1
 
 # PNG's five scanline filter types (RFC 2083 §6) and the sample layouts this decoder reads.
 _FILTER_NONE = 0
@@ -440,6 +444,71 @@ def _check_eye_target_view(rig: Rig) -> None:
     _assert_no_scratch_camera(rig)
 
 
+def _silhouette_box(shot: Path, reference: Path) -> tuple[int, int]:
+    """
+    Measure the bounding box of where one capture differs from its background reference.
+
+    Args:
+        shot: Capture that should contain the cube.
+        reference: Same-sized capture of the background alone.
+
+    Returns:
+        tuple: (box width, box height) in pixels; (0, 0) when nothing differs.
+
+    """
+    width, height, channels, rows = _decode_png(shot)
+    _w, _h, _c, ref_rows = _decode_png(reference)
+    compared = min(channels, _COLOUR_CHANNELS)
+    xs: list[int] = []
+    ys: list[int] = []
+    for y in range(height):
+        row, ref_row = rows[y], ref_rows[y]
+        for x in range(width):
+            base = x * channels
+            if max(abs(row[base + c] - ref_row[base + c]) for c in range(compared)) > _BACKGROUND_TOLERANCE:
+                xs.append(x)
+                ys.append(y)
+    if not xs:
+        return 0, 0
+    return max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+
+
+def _check_render_gate_aspect(rig: Rig, scene_name: str) -> None:
+    """
+    Prove a synthetic view's image has the render gate's aspect and is not stretched.
+
+    The projection is built from the render resolution, so the image must be too: a buffer
+    sized from the live region instead squashes a frontal cube into a rectangle.
+
+    Args:
+        rig: The live rig.
+        scene_name: The scene whose render resolution is patched.
+
+    Raises:
+        AssertionError: If the image aspect or the cube silhouette's aspect is wrong.
+
+    """
+    for res_x, res_y in ((512, 512), (1920, 1080)):
+        patched = rig.send(
+            "configure_render_settings",
+            {"scene_name": scene_name, "patch": {"resolution_x": res_x, "resolution_y": res_y}},
+        )
+        if patched["status"] != "success":
+            raise SystemExit(f"configure_render_settings failed: {patched}")
+        params = {"shading_override": "SOLID"}
+        toward, result = _capture(rig, f"aspect_{res_x}x{res_y}", {**params, "view": {"camera_object": _CAMERA_TOWARD}})
+        away, _away = _capture(rig, f"aspect_{res_x}x{res_y}_away", {**params, "view": {"camera_object": _CAMERA_AWAY}})
+        image_aspect = result["width"] / result["height"]
+        box_w, box_h = _silhouette_box(toward, away)
+        print(f"RIG: gate {res_x}x{res_y}: image aspect {image_aspect:.3f}, cube box {box_w}x{box_h}", flush=True)
+        assert abs(image_aspect - res_x / res_y) <= _MAX_IMAGE_ASPECT_ERROR, (
+            f"image {result} does not match render gate {res_x}x{res_y}"
+        )
+        assert box_h > 0 and abs(box_w / box_h - 1.0) <= _MAX_SILHOUETTE_ASPECT_ERROR, (
+            f"frontal cube silhouette {box_w}x{box_h} is stretched"
+        )
+
+
 def _assert_no_scratch_camera(rig: Rig) -> None:
     """
     Prove the eye/target path's throwaway camera is gone from `bpy.data`, not just unlinked.
@@ -534,8 +603,9 @@ def run(rig: Rig) -> None:
     if missing:
         raise SystemExit(f"the addon does not advertise {missing}")
 
-    _build_scene(rig)
+    scene_name = _build_scene(rig)
     _check_camera_object_view(rig)
     _check_eye_target_view(rig)
+    _check_render_gate_aspect(rig, scene_name)
     _check_shading_override_is_restored(rig)
     _check_the_live_viewport_was_never_moved(rig)
