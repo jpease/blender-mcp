@@ -999,7 +999,7 @@ def _refuse_unkeyable_request(keying_policy, style, action_policy, action_name, 
             )
 
 
-def _write_pose_keys(action, prepared, frame, keying_policy, *, quaternion_continuity=True):
+def _write_pose_keys(action, prepared, frame, keying_policy, space, *, quaternion_continuity=True):
     """
     Write one frame's keys for every prepared bone and report what changed.
 
@@ -1008,6 +1008,8 @@ def _write_pose_keys(action, prepared, frame, keying_policy, *, quaternion_conti
         prepared: `_validate_pose_specs` output, already applied to the rig.
         frame: The frame to key, subframe included.
         keying_policy: INSERT adds, REPLACE deletes then adds, REMOVE only deletes.
+        space: The pose space the entries are stated in. Under LOCAL a caller's rotation_euler is
+            the bone's own channel and is keyed as written; in any other space it was converted.
         quaternion_continuity: Re-sign every quaternion key to take the short way from the
             action's previous key, not only aim-derived ones. Every rotation reaches the channel
             through a matrix, whose decomposition lands on w >= 0, so a turn passing 180 degrees
@@ -1030,12 +1032,17 @@ def _write_pose_keys(action, prepared, frame, keying_policy, *, quaternion_conti
                 with contextlib.suppress(TypeError):
                     pose_bone.keyframe_delete(data_path=path, frame=frame)
             if keying_policy != "REMOVE":
-                # An Euler triple is only re-spelled when derived - from an aim, or from a matrix
-                # (every keyframe_bone_reach key is one), whose decomposition wraps to +-180
-                # whatever the previous key holds. A caller's own Euler may be a deliberate
-                # multi-turn spin, which its nearest equivalent would undo.
+                # A caller's rotation_euler under LOCAL is the bone's own channel, so it is keyed
+                # exactly as written: 190 stays 190 and 720 stays two turns, though the matrix the
+                # pose went through decomposed them onto +-180. Any other Euler key was derived -
+                # from an aim, a matrix (every keyframe_bone_reach key is one), or a rotation stated
+                # in another space - and is re-spelled the short way from the previous key.
+                caller_euler = path == "rotation_euler" and "rotation_euler" in spec
+                if caller_euler and space == _PARENT_RELATIVE_SPACE:
+                    pose_bone.rotation_euler = spec["rotation_euler"]
+                converted = caller_euler and space != _PARENT_RELATIVE_SPACE
                 derived = ("aim_at" in spec or "matrix" in spec) and path in _ROTATION_CHANNEL_WIDTH
-                if derived or (quaternion_continuity and path == "rotation_quaternion"):
+                if derived or converted or (quaternion_continuity and path == "rotation_quaternion"):
                     _match_previous_rotation(action, pose_bone, path, frame)
                 if not pose_bone.keyframe_insert(data_path=path, frame=frame, group=pose_bone.name):
                     raise RuntimeError(f"Could not insert key for {pose_bone.name}.{path}")
@@ -1391,7 +1398,9 @@ def _key_pose_frames(
                 _cycle_extension_warnings(action, prepared, frame)
                 + _inert_rotation_warnings(prepared, space, witnesses)
             )
-        written = _write_pose_keys(action, prepared, frame, keying_policy, quaternion_continuity=quaternion_continuity)
+        written = _write_pose_keys(
+            action, prepared, frame, keying_policy, space, quaternion_continuity=quaternion_continuity
+        )
         if keying_policy != "REMOVE":
             styled += _style_written_keys(action, written, style)
         changed_keys.extend(written)

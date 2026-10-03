@@ -781,7 +781,7 @@ def _key_reach_frames(armature, action, prepared, keying_policy, style, toleranc
     for frame in frames:
         captured, solved = _solved_reach_frame(armature, prepared, frame, tolerance_m)
         specs, _records = _apply_captured_matrices(armature, captured, detail)
-        written = _write_pose_keys(action, specs, frame, keying_policy)
+        written = _write_pose_keys(action, specs, frame, keying_policy, "POSE")
         styled += _style_written_keys(action, written, style)
         changed_keys.extend(written)
         changed_bones.extend(name for name in captured if name not in changed_bones)

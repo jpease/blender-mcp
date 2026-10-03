@@ -492,7 +492,9 @@ async def keyframe_character_pose(
     previous key in this action: the quaternion sign is flipped when it would take the long
     route, and an Euler triple is made compatible with the previous key. Every key written to a
     quaternion channel gets the same sign rule, so per-frame rotation_quaternion values need no
-    sign bookkeeping by the caller; a caller's own Euler values are keyed as written.
+    sign bookkeeping by the caller. A caller's own rotation_euler is keyed as written under LOCAL
+    (190 stays 190, 720 stays two turns); under the other spaces it is converted, and re-spelled
+    like an aim.
 
     Args:
         ctx: MCP request context.

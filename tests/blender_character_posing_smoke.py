@@ -941,8 +941,12 @@ def check_reach_euler_keys_take_the_short_way():
 
 
 def check_caller_euler_is_keyed_as_given():
-    # 170 then -170 is a deliberate turn back through 0; the nearest spelling would undo it.
-    asked = ((1.0, 170.0), (10.0, -170.0))
+    # Under LOCAL a rotation_euler is the bone's own channel, so every number is keyed as written:
+    # 170 -> -170 is a deliberate turn back through 0, 190 is not -170, and 720 is two whole turns
+    # rather than rest. The matrix the pose goes through decomposes onto +-180 and used to key
+    # 190 as -170 and 720 as 0.
+    asked = ((1.0, 170.0), (10.0, -170.0), (20.0, 190.0), (30.0, 720.0))
+    rest_pose(spin_rig)
     handler.keyframe_character_pose(
         spin_rig.name,
         "SMOKE_spin_euler",
@@ -950,20 +954,57 @@ def check_caller_euler_is_keyed_as_given():
             {"frame": frame, "poses": [{"bone_name": "spine", "rotation_euler": (math.radians(degrees), 0.0, 0.0)}]}
             for frame, degrees in asked
         ],
+        space="LOCAL",
         action_policy="CREATE",
         confirm_displace_action=True,
     )
     keyed = spine_euler_keys("SMOKE_spin_euler")
+    print(f"SMOKE_spin_euler: LOCAL Euler keys (deg) { {f: round(math.degrees(v[0]), 3) for f, v in keyed.items()} }")
     for frame, degrees in asked:
         assert abs(math.degrees(keyed[frame][0]) - degrees) < 1e-4, (
             f"frame {frame}: keyed {keyed[frame]}, asked {degrees}"
         )
 
 
+def check_converted_euler_keys_take_the_short_way():
+    # POSE and WORLD state an absolute orientation that is converted into the bone's channel, so
+    # the caller's spelling cannot survive and the converted value is re-spelled like a matrix.
+    # The rig sits at the origin unturned, so POSE and WORLD agree; the spine's rest turn is put
+    # in front of each channel turn so the channel crosses 180 exactly as SPIN_TURNS does.
+    rest = spin_rig.data.bones["spine"].matrix_local.to_3x3()
+    for space in ("POSE", "WORLD"):
+        rest_pose(spin_rig)
+        action_name = f"SMOKE_spin_euler_{space}"
+        handler.keyframe_character_pose(
+            spin_rig.name,
+            action_name,
+            keys=[
+                {
+                    "frame": frame,
+                    "poses": [
+                        {"bone_name": "spine", "rotation_euler": tuple((rest @ x_turn(degrees).to_3x3()).to_euler())}
+                    ],
+                }
+                for frame, degrees in SPIN_TURNS
+            ],
+            space=space,
+            action_policy="CREATE",
+            confirm_displace_action=True,
+        )
+        check_euler_keys_take_the_short_way(action_name, 1e-5)
+
+
 check_matrix_euler_keys_take_the_short_way()
 check_reach_euler_keys_take_the_short_way()
 check_caller_euler_is_keyed_as_given()
-for action_name in ("SMOKE_spin_matrix", "SMOKE_spin_reach", "SMOKE_spin_euler"):
+check_converted_euler_keys_take_the_short_way()
+for action_name in (
+    "SMOKE_spin_matrix",
+    "SMOKE_spin_reach",
+    "SMOKE_spin_euler",
+    "SMOKE_spin_euler_POSE",
+    "SMOKE_spin_euler_WORLD",
+):
     bpy.data.actions.remove(bpy.data.actions[action_name])
 bpy.data.objects.remove(spin_rig)
 bpy.context.scene.frame_set(playhead_before)

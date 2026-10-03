@@ -639,7 +639,12 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # Raised from 222,671, measured at 222,776 - 105 bytes: set_character_pose stating that
 # rotation_euler is read in the bone's own rotation_mode order. It always was meant to be, but was
 # built as XYZ, so a caller posing an XZY or ZYX bone had no way to know which order applied.
-SHOT_MODE_BYTE_CEILING = 222_776
+#
+# Raised from 222,776, measured at 222,896 - 120 bytes: keyframe_character_pose saying a LOCAL
+# rotation_euler is keyed as written (190 stays 190, 720 two turns) and any other space's is
+# re-spelled the short way. It used to claim verbatim keying in every space and deliver it only
+# for LOCAL values inside +-180.
+SHOT_MODE_BYTE_CEILING = 222_896
 
 # The same rule as above, for the default, core-only surface.
 #
