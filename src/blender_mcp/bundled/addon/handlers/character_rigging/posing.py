@@ -28,6 +28,7 @@ from ..action_assignment import (
     restored_action_assignment,
     restored_keys_on_error,
 )
+from ..animation import _continuous_rotation
 from ..key_style import KeyStyle, style_point
 from .axes import (
     _AIM_MIN_LENGTH,
@@ -837,9 +838,11 @@ def _match_previous_rotation(action, pose_bone, path, frame):
         rotation = mathutils.Euler(pose_bone.rotation_euler, mode).to_quaternion()
         pose_bone.rotation_euler = rotation.to_euler(mode, mathutils.Euler(previous, mode))
         return True
-    # An axis-angle pair has the same two-branch problem, but no bone on the rigs here uses it
-    # and there is no measurement to justify a guess at the right convention.
-    return False
+    # rotation_axis_angle: (angle, axis) and (2pi - angle, -axis) are one orientation, and the
+    # matrix setter picks one per key. The hemisphere rule baked samples already use decides it.
+    angle, *axis = pose_bone.rotation_axis_angle
+    pose_bone.rotation_axis_angle = _continuous_rotation("AXIS_ANGLE", mathutils.Quaternion(axis, angle), previous)
+    return True
 
 
 def _bone_curve_path(bone_name, data_path):

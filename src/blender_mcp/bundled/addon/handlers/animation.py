@@ -442,11 +442,15 @@ def _continuous_rotation(rotation_mode, quaternion, previous):
             return tuple(quaternion.to_euler(rotation_mode))
         return tuple(quaternion.to_euler(rotation_mode, mathutils.Euler(previous, rotation_mode)))
     if previous is not None:
-        before = (
-            mathutils.Quaternion(previous)
-            if rotation_mode == "QUATERNION"
-            else mathutils.Quaternion(previous[1:], previous[0])
-        )
+        if rotation_mode == "QUATERNION":
+            before = mathutils.Quaternion(previous)
+        else:
+            # Built by hand: `mathutils.Quaternion(axis, angle)` wraps the angle to +-180, so a
+            # previous key past 180 - the very spelling this rule produces - came back on the
+            # other hemisphere, and the next key flipped away from it.
+            half = previous[0] / 2.0
+            axis = mathutils.Vector(previous[1:]).normalized() * math.sin(half)
+            before = mathutils.Quaternion((math.cos(half), *axis))
         if quaternion.dot(before) < 0.0:
             quaternion = -quaternion
     if rotation_mode == "QUATERNION":

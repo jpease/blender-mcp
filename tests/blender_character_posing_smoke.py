@@ -25,7 +25,7 @@ from pathlib import Path
 
 import bpy
 
-from mathutils import Euler, Matrix, Vector
+from mathutils import Euler, Matrix, Quaternion, Vector
 
 sys.path.append(str(Path(__file__).resolve().parent))
 from smoke_addon import load_addon
@@ -994,16 +994,57 @@ def check_converted_euler_keys_take_the_short_way():
         check_euler_keys_take_the_short_way(action_name, 1e-5)
 
 
+def check_matrix_axis_angle_keys_take_the_short_way():
+    # An axis-angle pair has two spellings per orientation, (angle, axis) and (2pi - angle,
+    # -axis), and the matrix setter picks one per key, so 170 -> 190 about X can land on
+    # opposite spellings and the four curves between them swing back through rest.
+    spine = spin_rig.pose.bones["spine"]
+    spine.rotation_mode = "AXIS_ANGLE"
+    rest_pose(spin_rig)
+    handler.keyframe_character_pose(
+        spin_rig.name,
+        "SMOKE_spin_axis_angle",
+        keys=[
+            {"frame": frame, "poses": [{"bone_name": "spine", "matrix": [list(row) for row in x_turn(degrees)]}]}
+            for frame, degrees in SPIN_TURNS
+        ],
+        action_policy="CREATE",
+        confirm_displace_action=True,
+    )
+    curves = {}
+    for curve in action_fcurves(bpy.data.actions["SMOKE_spin_axis_angle"]):
+        if curve.data_path == 'pose.bones["spine"].rotation_axis_angle':
+            curves[curve.array_index] = curve
+    assert sorted(curves) == [0, 1, 2, 3], f"keyed {sorted(curves)} axis-angle components"
+    keyed = {frame: [curves[index].evaluate(frame) for index in range(4)] for frame, _degrees in SPIN_TURNS}
+    print(f"SMOKE_spin_axis_angle: keys { {f: [round(v, 4) for v in k] for f, k in keyed.items()} }")
+    for frame, degrees in SPIN_TURNS:
+        angle, *axis = keyed[frame]
+        error = Quaternion(axis, angle).rotation_difference(x_turn(degrees).to_quaternion()).angle
+        assert error < 1e-4, f"frame {frame} keyed {keyed[frame]}, not {degrees} about X"
+    for (left, _), (right, _) in itertools.pairwise(SPIN_TURNS):
+        dot = sum(a * b for a, b in zip(keyed[left][1:], keyed[right][1:], strict=True))
+        assert dot > 0.0, f"the axis flipped between frames {left} and {right}: {keyed[left]} -> {keyed[right]}"
+    # Halfway between 170 and 190 about +X is 180 about +X; on opposite spellings the four curves
+    # pass through a zero axis there and the bone snaps from one turn to the other.
+    angle, axis_x = (curves[index].evaluate(SPIN_MIDWAY) for index in (0, 1))
+    print(f"SMOKE_spin_axis_angle: frame {SPIN_MIDWAY} angle {math.degrees(angle):.3f} deg, axis x {axis_x:.3f}")
+    assert 170.0 <= math.degrees(angle) <= 190.0 and axis_x > 0.5, (angle, axis_x)
+    spine.rotation_mode = "XYZ"
+
+
 check_matrix_euler_keys_take_the_short_way()
 check_reach_euler_keys_take_the_short_way()
 check_caller_euler_is_keyed_as_given()
 check_converted_euler_keys_take_the_short_way()
+check_matrix_axis_angle_keys_take_the_short_way()
 for action_name in (
     "SMOKE_spin_matrix",
     "SMOKE_spin_reach",
     "SMOKE_spin_euler",
     "SMOKE_spin_euler_POSE",
     "SMOKE_spin_euler_WORLD",
+    "SMOKE_spin_axis_angle",
 ):
     bpy.data.actions.remove(bpy.data.actions[action_name])
 bpy.data.objects.remove(spin_rig)
