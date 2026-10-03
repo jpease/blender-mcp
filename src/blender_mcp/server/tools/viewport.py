@@ -196,7 +196,7 @@ UnitInterval = Annotated[float, Field(ge=0.0, le=1.0)]
 
 
 class PickRegion(StrictModel):
-    """A frame rectangle, 0..1 like points."""
+    """A frame rectangle, 0..1 like points: v_min is its top edge."""
 
     u_min: UnitInterval
     v_min: UnitInterval
@@ -222,9 +222,9 @@ async def pick_from_camera(
     """
     Find the world point, object and face a camera sees at spots of its render frame.
 
-    u and v run 0..1 over the render frame, (0, 0) bottom-left; lens shift, sensor fit and aspect
-    are honoured. A ray that hits nothing lands on the z=0 ground plane. ORTHO casts parallel
-    rays; a panoramic camera is refused.
+    u and v run 0..1 over the render frame, (0, 0) top-left, the same as image pixel coordinates;
+    lens shift, sensor fit and aspect are honoured. A ray that hits nothing lands on the z=0
+    ground plane. ORTHO casts parallel rays; a panoramic camera is refused.
 
     Args:
         ctx: MCP request context.

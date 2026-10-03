@@ -76,10 +76,10 @@ ROWS: list[Revert] = [
         (_SHIFT,),
     ),
     Revert(
-        "pick: v runs down the frame instead of up it",
+        "pick: v runs up the frame from the bottom instead of down it from the top",
         ADDON_PICK_RAYS,
+        "    y = bounds.y_max - v * (bounds.y_max - bounds.y_min)\n",
         "    y = bounds.y_min + v * (bounds.y_max - bounds.y_min)\n",
-        "    y = bounds.y_min + (1.0 - v) * (bounds.y_max - bounds.y_min)\n",
         (*_CORNERS, _ORTHO),
     ),
     Revert(

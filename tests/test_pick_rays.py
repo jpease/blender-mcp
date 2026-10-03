@@ -75,16 +75,16 @@ def test_the_frame_centre_ray_leaves_the_eye_along_the_view_axis() -> None:
 
 @pytest.mark.parametrize("order", [(0, 1, 2, 3), (2, 0, 3, 1)])
 def test_the_frame_corners_map_to_the_view_frame_corners_whatever_their_order(order) -> None:
-    """(0, 0) is the frame's bottom-left, (1, 1) its top-right: left is -X, down is -Z here."""
+    """(0, 0) is the frame's top-left, (1, 1) its bottom-right, as in an image: up is +Z here."""
     corners = tuple(_PERSPECTIVE_CORNERS[index] for index in order)
     half_width = 0.5 / 1.3888889
     half_height = 0.28125 / 1.3888889
 
-    bottom_left = _ray(corners, 0.0, 0.0)
-    top_right = _ray(corners, 1.0, 1.0)
+    top_left = _ray(corners, 0.0, 0.0)
+    bottom_right = _ray(corners, 1.0, 1.0)
 
-    assert _close(bottom_left.direction, _unit((-half_width, 1.0, -half_height)))
-    assert _close(top_right.direction, _unit((half_width, 1.0, half_height)))
+    assert _close(top_left.direction, _unit((-half_width, 1.0, half_height)))
+    assert _close(bottom_right.direction, _unit((half_width, 1.0, -half_height)))
 
 
 def test_a_shifted_frame_moves_the_centre_ray_off_the_view_axis() -> None:
@@ -95,13 +95,13 @@ def test_a_shifted_frame_moves_the_centre_ray_off_the_view_axis() -> None:
 
 
 def test_an_ortho_camera_casts_parallel_rays_from_across_the_frame() -> None:
-    bottom_left = _ray(_ORTHO_CORNERS, 0.0, 0.0, perspective=False)
-    top_right = _ray(_ORTHO_CORNERS, 1.0, 1.0, perspective=False)
+    top_left = _ray(_ORTHO_CORNERS, 0.0, 0.0, perspective=False)
+    bottom_right = _ray(_ORTHO_CORNERS, 1.0, 1.0, perspective=False)
 
-    assert _close(bottom_left.origin, (-2.0, -5.0, 1.0 - 1.125))
-    assert _close(top_right.origin, (2.0, -5.0, 1.0 + 1.125))
-    assert _close(bottom_left.direction, (0.0, 1.0, 0.0))
-    assert _close(top_right.direction, (0.0, 1.0, 0.0))
+    assert _close(top_left.origin, (-2.0, -5.0, 1.0 + 1.125))
+    assert _close(bottom_right.origin, (2.0, -5.0, 1.0 - 1.125))
+    assert _close(top_left.direction, (0.0, 1.0, 0.0))
+    assert _close(bottom_right.direction, (0.0, 1.0, 0.0))
 
 
 @pytest.mark.parametrize("perspective", [True, False])

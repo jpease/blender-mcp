@@ -75,7 +75,8 @@ def _frame_point(camera: bpy.types.Object, point) -> list[float]:
     bpy.context.view_layer.update()
     projected = world_to_camera_view(scene, camera, mathutils.Vector(point))
     assert 0.0 < projected.x < 1.0 and 0.0 < projected.y < 1.0 and projected.z > 0.0, (point, projected)
-    return [projected.x, projected.y]
+    # world_to_camera_view measures y up from the bottom; a frame point measures v down from the top.
+    return [projected.x, 1.0 - projected.y]
 
 
 def _pick(**params) -> dict:
@@ -129,8 +130,19 @@ def case_off_object_lands_on_the_ground_plane() -> None:
     assert math.isclose(record["distance"], (mathutils.Vector(ground) - camera.location).length, abs_tol=TOLERANCE_M)
     # A level camera's upper half rises away from the ground plane; this one faces away from the cube.
     _camera("Level", (0.0, -6.0, 1.0), (0.0, -20.0, 1.0))
-    (rising,) = _pick(camera_name="Level", points=[[0.5, 0.9]])["points"]
+    (rising,) = _pick(camera_name="Level", points=[[0.5, 0.1]])["points"]
     assert rising["hit"] == "NONE" and rising["target_point"] is None, rising
+
+
+def case_v_runs_down_from_the_top_of_the_frame() -> None:
+    """Hit the top of the frame at a small v, as in the image an agent sees; nothing here projects."""
+    _fresh_scene()
+    _box("Sky", (0.0, 0.0, 3.0), (2.0, 0.1, 1.0))
+    # Level at z = 1 looking along +Y: the box fills the top half, the ground the bottom.
+    _camera("Cam", (0.0, -10.0, 1.0), (0.0, 0.0, 1.0), lens=35.0)
+    top, bottom = _pick(camera_name="Cam", points=[[0.5, 0.2], [0.5, 0.8]])["points"]
+    assert top["hit"] == "OBJECT" and top["object_name"] == "Sky", top
+    assert bottom["hit"] == "GROUND_PLANE", bottom
 
 
 def case_region_ranks_the_larger_object_first() -> None:
@@ -151,7 +163,7 @@ def case_region_ranks_the_larger_object_first() -> None:
         "u_max": max(u for u, _v in corners) + 0.02,
         "v_max": max(v for _u, v in corners) + 0.02,
     }
-    assert region["v_min"] > 0.5, region
+    assert region["v_max"] < 0.5, region
     result = _pick(camera_name="Cam", region=region)
     names = [entry["object_name"] for entry in result["objects"]]
     assert names == ["Big", "Small"], result
@@ -261,6 +273,7 @@ CASES = [
     case_cube_face_with_lens_shift,
     case_cube_face_with_vertical_sensor_fit,
     case_off_object_lands_on_the_ground_plane,
+    case_v_runs_down_from_the_top_of_the_frame,
     case_region_ranks_the_larger_object_first,
     case_ortho_camera,
     case_another_frame_follows_the_animated_object,

@@ -644,7 +644,12 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # rotation_euler is keyed as written (190 stays 190, 720 two turns) and any other space's is
 # re-spelled the short way. It used to claim verbatim keying in every space and deliver it only
 # for LOCAL values inside +-180.
-SHOT_MODE_BYTE_CEILING = 222_896
+#
+# Raised from 222,896, measured at 222,953 - 57 bytes: pick_from_camera's frame points now run in
+# image convention, (0, 0) top-left. An agent reads its spots off a rendered image or screenshot,
+# whose y runs down, and the old bottom-left origin made every v it copied across land mirrored.
+# The description says so, and PickRegion says v_min is the top edge.
+SHOT_MODE_BYTE_CEILING = 222_953
 
 # The same rule as above, for the default, core-only surface.
 #
@@ -726,7 +731,10 @@ SHOT_MODE_BYTE_CEILING = 222_896
 # screenshot. One call now returns the object, world point, normal and face under up to 16 frame
 # points, or ranks what fills a frame region; its two modes, frame, visibility and the
 # returned-field contract are the cost.
-DEFAULT_MODE_BYTE_CEILING = 79_471
+#
+# Raised from 79,471, measured at 79,528 - 57 bytes: the same pick_from_camera image-convention
+# wording as the shot ceiling above.
+DEFAULT_MODE_BYTE_CEILING = 79_528
 
 
 def test_shot_mode_payload_stays_under_its_ceiling() -> None:

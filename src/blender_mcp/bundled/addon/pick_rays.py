@@ -1,10 +1,11 @@
 """
 Frame-point-to-ray maths for `pick_from_camera`, with no `bpy` so it is unit-tested without Blender.
 
-A frame point is (u, v) over the camera's render frame: (0, 0) its bottom-left corner, (1, 1) its
-top-right. The frame itself comes from `Camera.view_frame(scene=...)`, which already folds in lens
-shift, sensor fit and the render's aspect ratio, so nothing here re-derives any of them: it only
-interpolates between the corners Blender returned and carries the result into world space.
+A frame point is (u, v) over the camera's render frame in image convention: (0, 0) its top-left
+corner, (1, 1) its bottom-right, the way a rendered image's pixels run. The frame itself comes
+from `Camera.view_frame(scene=...)`, which already folds in lens shift, sensor fit and the
+render's aspect ratio, so nothing here re-derives any of them: it only interpolates between the
+corners Blender returned and carries the result into world space.
 """
 
 import math
@@ -167,7 +168,7 @@ def camera_ray(
         matrix_world: The camera's evaluated 4x4 world matrix, as rows.
         bounds: The frame, from `frame_bounds`.
         u: Horizontal frame position, 0 at the left edge.
-        v: Vertical frame position, 0 at the bottom edge.
+        v: Vertical frame position, 0 at the top edge.
         clip_start: The camera's near clip depth.
         clip_end: The camera's far clip depth.
 
@@ -178,7 +179,7 @@ def camera_ray(
     """
     x_axis, y_axis, z_axis, location = _axes(matrix_world)
     x = bounds.x_min + u * (bounds.x_max - bounds.x_min)
-    y = bounds.y_min + v * (bounds.y_max - bounds.y_min)
+    y = bounds.y_max - v * (bounds.y_max - bounds.y_min)
     if not bounds.perspective:
         origin = _combine(location, ((x, x_axis), (y, y_axis)))
         direction = (-z_axis[0], -z_axis[1], -z_axis[2])
@@ -215,13 +216,13 @@ def region_samples(
     u_min: float, v_min: float, u_max: float, v_max: float, grid: int = REGION_GRID
 ) -> list[tuple[float, float]]:
     """
-    List the cell centres of a grid laid over a frame region, row by row from the bottom-left.
+    List the cell centres of a grid laid over a frame region, row by row from the top-left.
 
     Args:
         u_min: Left edge of the region.
-        v_min: Bottom edge.
+        v_min: Top edge.
         u_max: Right edge.
-        v_max: Top edge.
+        v_max: Bottom edge.
         grid: Cells along each side.
 
     Returns:

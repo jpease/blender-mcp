@@ -276,7 +276,7 @@ class PickHandlersMixin:
 
         Args:
             camera_name: The camera to look through; PERSP or ORTHO.
-            points: [u, v] frame points, (0, 0) the frame's bottom-left corner.
+            points: [u, v] frame points, (0, 0) the frame's top-left corner.
             region: {u_min, v_min, u_max, v_max} to sample on a grid and rank by area, instead.
             frame: Evaluate at this frame, subframe included, and put the playhead back.
             visibility: RENDER passes through surfaces the render does not show; VIEWPORT stops
