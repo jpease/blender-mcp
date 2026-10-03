@@ -219,6 +219,21 @@ else:
 assert bpy.data.objects.get("Smoke Orphan Cam") is None, "a refused creation left the camera object behind"
 assert bpy.data.cameras.get("Smoke Orphan Cam Data") is None, "a refused creation left the camera data behind"
 
+# from_viewport reads a live 3D view, which --background has none of: a clear refusal, nothing built.
+try:
+    handler.create_camera(scene.name, "Smoke Rigs", "Smoke Viewport Cam", from_viewport=True)
+except RuntimeError as error:
+    assert "3D viewport" in str(error), f"the headless refusal does not say what is missing: {error}"
+else:
+    raise AssertionError("create_camera(from_viewport=True) built a camera with no 3D viewport to copy")
+assert bpy.data.objects.get("Smoke Viewport Cam") is None, "a refused from_viewport left a camera behind"
+try:
+    handler.create_camera(scene.name, "Smoke Rigs", "Smoke Viewport Cam", location=(1.0, 0.0, 0.0), from_viewport=True)
+except ValueError as error:
+    assert "from_viewport" in str(error), error
+else:
+    raise AssertionError("create_camera accepted a location alongside from_viewport")
+
 gate_result = handler.configure_camera_render_gate(
     scene.name,
     camera.name,

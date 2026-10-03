@@ -73,8 +73,8 @@ async def create_camera(
     scene_name: str,
     collection_name: str,
     name: Annotated[str, Field(min_length=1, max_length=63)],
-    projection: Projection = "PERSP",
-    location: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    projection: Projection | None = None,
+    location: tuple[float, float, float] | None = None,
     rotation_euler: tuple[float, float, float] | None = None,
     rotation_quaternion: tuple[float, float, float, float] | None = None,
     target_object_name: str | None = None,
@@ -82,11 +82,13 @@ async def create_camera(
     target_bone_name: str | None = None,
     optics: CameraOpticsPatch | None = None,
     make_active: bool = False,
+    from_viewport: bool = False,
 ) -> dict:
     """
     Create a collision-safe camera in an explicit scene collection.
 
     Coordinates are world-space; Euler angles are XYZ radians and quaternions are [w, x, y, z].
+    ``location`` defaults to the origin and ``projection`` to PERSP.
     Supply at most one of rotation_euler, rotation_quaternion, target_object_name, or target_point.
     The camera is not selected and does not become the scene camera unless ``make_active`` is true.
     Panoramic settings are capability-checked against the running Blender build.
@@ -95,7 +97,30 @@ async def create_camera(
     only the object aims at its origin, which on a character rig is the floor under it, so name
     ``target_bone_name`` to aim at a bone on it. The bone's evaluated world head is used, its
     posed position at the current frame.
+
+    ``from_viewport`` places the camera at the largest open 3D viewport's current view, with the
+    lens, sensor and ortho scale that reproduce its field of view; in camera view it copies the
+    scene camera. It replaces projection, location, every aim field and optics, which are refused
+    alongside it, and needs a GUI Blender. The frame matches the viewport exactly when the render
+    resolution has the viewport region's aspect (returned as ``viewport_region``).
     """
+    if from_viewport:
+        placed = {
+            "projection": projection,
+            "location": location,
+            "rotation_euler": rotation_euler,
+            "rotation_quaternion": rotation_quaternion,
+            "target_object_name": target_object_name,
+            "target_point": target_point,
+            "target_bone_name": target_bone_name,
+            "optics": optics,
+        }
+        given = sorted(key for key, value in placed.items() if value is not None)
+        if given:
+            raise ToolError(
+                f"from_viewport takes the camera's placement, aim and optics from the viewport; drop {given} "
+                "(adjust optics afterwards with configure_camera)"
+            )
     orientations = [rotation_euler, rotation_quaternion, target_object_name, target_point]
     if sum(value is not None for value in orientations) > 1:
         raise ToolError(
@@ -104,7 +129,7 @@ async def create_camera(
         )
     if target_bone_name is not None and target_object_name is None:
         raise ToolError("target_bone_name requires target_object_name")
-    if optics is not None and optics.projection is not None and optics.projection != projection:
+    if optics is not None and optics.projection is not None and optics.projection != (projection or "PERSP"):
         raise ToolError("projection conflicts with optics.projection; supply projection in only one place")
     return await call_blender(
         "create_camera",
@@ -121,6 +146,7 @@ async def create_camera(
             "target_bone_name": target_bone_name,
             "optics": dump_input(optics),
             "make_active": make_active,
+            "from_viewport": from_viewport,
         },
     )
 

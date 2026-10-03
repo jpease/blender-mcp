@@ -733,6 +733,7 @@
     ],
     "create_camera": [
       "collection_name",
+      "from_viewport",
       "location",
       "make_active",
       "name",
@@ -2649,5 +2650,5 @@
       "scope"
     ]
   },
-  "protocol_version": 56
+  "protocol_version": 57
 }

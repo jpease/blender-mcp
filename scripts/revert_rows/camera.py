@@ -302,4 +302,25 @@ ROWS: list[Revert] = [
         "            raise\n",
         (f"{CAMT}::test_handler_create_camera_removes_both_datablocks_when_configuration_is_refused",),
     ),
+    # --- create_camera(from_viewport=True): only the server's refusal and wire are pytest-reachable;
+    # the viewport maths runs in tests/test_viewport_camera_gate.py, the headless refusal in smoke ---
+    Revert(
+        "camera: from_viewport alongside a placement, aim or optics is dispatched instead of refused",
+        SERVER_CAMERA_CORE_TOOL,
+        "    if from_viewport:\n        placed = {",
+        "    if False:\n        placed = {",
+        tuple(
+            f"{CAMT}::test_create_camera_from_viewport_refuses_any_placement_or_optics_of_its_own[placement{index}]"
+            # Each case names one field alone, which the one-orientation-source check lets through,
+            # so only this guard keeps it off the wire.
+            for index in range(7)
+        ),
+    ),
+    Revert(
+        "camera: from_viewport never leaves the server, so the add-on builds an origin camera instead",
+        SERVER_CAMERA_CORE_TOOL,
+        '            "from_viewport": from_viewport,',
+        '            "from_viewport": False,',
+        (f"{CAMT}::test_create_camera_from_viewport_forwards_the_flag_with_no_placement",),
+    ),
 ]

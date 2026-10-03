@@ -63,6 +63,93 @@ def _validate_optics(data, patch):
     return patch
 
 
+# Blender's viewport projection (BKE_camera_params_from_view3d) builds its frame from the space
+# lens over a 36 mm sensor at zoom 2, which halves the viewplane: the same field of view a real
+# camera gets from that lens over a 72 mm sensor. Ortho views take ortho_scale = distance * 36 /
+# lens, and the same zoom doubles that extent.
+_VIEWPORT_SENSOR_MM = 72.0
+
+
+def _largest_view3d_region():
+    """
+    Return (space, region) for the largest 3D viewport WINDOW region in any open window.
+
+    Commands run from a timer, which has no area under it, so "the view under the context" does
+    not exist here; the largest view is the one a user is most plausibly composing in.
+
+    Raises:
+        RuntimeError: If Blender runs in background mode, or no window shows a 3D viewport.
+
+    """
+    if bpy.app.background:
+        # Background mode still loads the startup file's screen layout, VIEW_3D included, but
+        # nobody navigates that view: copying it would build a camera from a stale default.
+        raise RuntimeError(
+            "from_viewport needs a live 3D viewport, and Blender is running in background mode with no "
+            "window; run it with a GUI, or place the camera with location and an aim instead"
+        )
+    best = None
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type != "VIEW_3D":
+                continue
+            for region in area.regions:
+                if region.type == "WINDOW" and (best is None or region.width * region.height > best[0]):
+                    best = (region.width * region.height, area.spaces.active, region)
+    if best is None:
+        raise RuntimeError("from_viewport needs a 3D viewport, and no open window shows one; open a 3D Viewport")
+    return best[1], best[2]
+
+
+def _viewport_camera(scene, competing):
+    """
+    Read the largest 3D viewport's view as a camera matrix_world and an optics patch.
+
+    Args:
+        scene: The scene whose camera a camera view copies.
+        competing: create_camera's own placement, aim and optics arguments by name; any that is
+            not None competes with the viewport and is refused before the viewport is read.
+
+    Returns:
+        tuple: (matrix_world, optics patch for _validate_optics, region size [width, height]).
+
+    Raises:
+        ValueError: If any competing argument was supplied.
+        RuntimeError: If no 3D viewport is open, or it is in camera view with no scene camera.
+
+    """
+    given = sorted(key for key, value in competing.items() if value is not None)
+    if given:
+        raise ValueError(
+            f"from_viewport takes the camera's placement, aim and optics from the viewport; drop {given} "
+            "(adjust optics afterwards with configure_camera)"
+        )
+    space, region = _largest_view3d_region()
+    r3d = space.region_3d
+    size = [region.width, region.height]
+    if r3d.view_perspective == "CAMERA":
+        source = scene.camera
+        if source is None or source.type != "CAMERA":
+            raise RuntimeError("The 3D viewport is in camera view but the scene has no camera to copy")
+        data = source.data
+        fields = [field for field in sorted(_CAMERA_OPTICS) if hasattr(data, field)]
+        if data.type != "PANO" and "panorama_type" in fields:
+            fields.remove("panorama_type")
+        patch = {"type": data.type, **{field: getattr(data, field) for field in fields}}
+        return source.matrix_world.copy(), patch, size
+    patch = {
+        "type": "ORTHO" if r3d.view_perspective == "ORTHO" else "PERSP",
+        "lens": space.lens,
+        "sensor_width": _VIEWPORT_SENSOR_MM,
+        "sensor_fit": "AUTO",
+        "clip_start": space.clip_start,
+        "clip_end": space.clip_end,
+    }
+    if patch["type"] == "ORTHO":
+        patch["ortho_scale"] = r3d.view_distance * _VIEWPORT_SENSOR_MM / space.lens
+    return r3d.view_matrix.inverted(), patch, size
+
+
 # A quaternion is four components, and one this short names no rotation: `normalize()` on it
 # divides by ~zero. Mirrors `_look_quaternion`'s own guard in `camera/_shared.py`.
 _QUATERNION_COMPONENTS = 4
@@ -248,8 +335,8 @@ class _CoreMixin:
         scene_name,
         collection_name,
         name,
-        projection="PERSP",
-        location=(0.0, 0.0, 0.0),
+        projection=None,
+        location=None,
         rotation_euler=None,
         rotation_quaternion=None,
         target_object_name=None,
@@ -257,13 +344,33 @@ class _CoreMixin:
         target_bone_name=None,
         optics=None,
         make_active=False,
+        from_viewport=False,
     ):
         scene = _scene(scene_name)
         _required_name(name, "name")
-        world_location = _vector(location, "location")
-        rotation_euler, quaternion, aim_target = _resolved_camera_orientation(
-            scene, rotation_euler, rotation_quaternion, target_object_name, target_point, target_bone_name
-        )
+        view_matrix_world = viewport_optics = region_size = None
+        if from_viewport:
+            view_matrix_world, viewport_optics, region_size = _viewport_camera(
+                scene,
+                {
+                    "projection": projection,
+                    "location": location,
+                    "rotation_euler": rotation_euler,
+                    "rotation_quaternion": rotation_quaternion,
+                    "target_object_name": target_object_name,
+                    "target_point": target_point,
+                    "target_bone_name": target_bone_name,
+                    "optics": optics,
+                },
+            )
+            world_location = view_matrix_world.to_translation()
+            quaternion = aim_target = None
+        else:
+            projection = projection or "PERSP"
+            world_location = _vector((0.0, 0.0, 0.0) if location is None else location, "location")
+            rotation_euler, quaternion, aim_target = _resolved_camera_orientation(
+                scene, rotation_euler, rotation_quaternion, target_object_name, target_point, target_bone_name
+            )
 
         if optics and optics.get("projection") not in {None, projection}:
             raise ValueError("projection conflicts with optics.projection; supply projection in only one place")
@@ -272,11 +379,14 @@ class _CoreMixin:
         obj = bpy.data.objects.new(name, data)
         try:
             collection.objects.link(obj)
-            patch = {"projection": projection, **(optics or {})}
+            patch = viewport_optics if from_viewport else {"projection": projection, **(optics or {})}
             validated = _validate_optics(data, patch)
             _patch_values(data, validated, _CAMERA_OPTICS | {"type"})
             obj.location = world_location
-            if rotation_euler is not None:
+            if view_matrix_world is not None:
+                obj.rotation_mode = "QUATERNION"
+                obj.matrix_world = view_matrix_world
+            elif rotation_euler is not None:
                 obj.rotation_mode = "XYZ"
                 obj.rotation_euler = rotation_euler
             elif quaternion is not None:
@@ -298,7 +408,7 @@ class _CoreMixin:
             bpy.data.objects.remove(obj, do_unlink=True)
             bpy.data.cameras.remove(data, do_unlink=True)
             raise
-        return {
+        result = {
             "object": obj.name,
             "camera_data": data.name,
             "collection": collection.name,
@@ -309,6 +419,11 @@ class _CoreMixin:
             "changed_objects": [obj.name],
             "changed_resources": [data.name],
         }
+        if region_size is not None:
+            # The camera frame matches the viewport exactly only when the render resolution has
+            # the region's aspect: sensor_fit AUTO fits the larger render dimension.
+            result["viewport_region"] = region_size
+        return result
 
     def configure_camera(self, camera_name, optics=None, display=None):
         camera = _camera(camera_name)

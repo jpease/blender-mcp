@@ -649,7 +649,12 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # image convention, (0, 0) top-left. An agent reads its spots off a rendered image or screenshot,
 # whose y runs down, and the old bottom-left origin made every v it copied across land mirrored.
 # The description says so, and PickRegion says v_min is the top edge.
-SHOT_MODE_BYTE_CEILING = 222_953
+#
+# Raised from 222,953, measured at 223,487 - 534 bytes: create_camera(from_viewport=True), which
+# builds a camera from the live 3D viewport's view. The flag, the description that says which
+# viewport is read and what it refuses alongside, and location/projection turning optional (so
+# an explicit placement can be refused next to it) are the cost.
+SHOT_MODE_BYTE_CEILING = 223_487
 
 # The same rule as above, for the default, core-only surface.
 #

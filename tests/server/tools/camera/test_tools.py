@@ -120,6 +120,51 @@ def test_create_camera_forwards_its_aim_fields_under_the_shared_target_spelling(
     assert by_object["target_point"] is None
 
 
+@pytest.mark.parametrize(
+    "placement",
+    [
+        {"location": (0.0, 0.0, 0.0)},
+        {"rotation_euler": (0.0, 0.0, 0.0)},
+        {"rotation_quaternion": (1.0, 0.0, 0.0, 0.0)},
+        {"target_object_name": "Subject"},
+        {"target_point": (1.0, 2.0, 3.0)},
+        {"projection": "PERSP"},
+        {"optics": {"lens": 50.0}},
+    ],
+)
+def test_create_camera_from_viewport_refuses_any_placement_or_optics_of_its_own(monkeypatch, placement) -> None:
+    """The viewport decides where the camera sits, how it looks, and what it projects; nothing may compete."""
+    connection = _StubConnection()
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+
+    with pytest.raises(ToolError, match="from_viewport"):
+        _run(
+            camera.create_camera,
+            scene_name="Scene",
+            collection_name="Cameras",
+            name="Hero",
+            from_viewport=True,
+            **placement,
+        )
+
+    assert connection.calls == []
+
+
+def test_create_camera_from_viewport_forwards_the_flag_with_no_placement(monkeypatch) -> None:
+    connection = _StubConnection()
+    monkeypatch.setattr(_dispatch, "get_blender_connection", lambda: connection)
+
+    _run(camera.create_camera, scene_name="Scene", collection_name="Cameras", name="Hero", from_viewport=True)
+    _run(camera.create_camera, scene_name="Scene", collection_name="Cameras", name="Hero2")
+
+    _command, from_view = connection.calls[0]
+    assert from_view["from_viewport"] is True
+    assert from_view["location"] is None
+    assert from_view["projection"] is None
+    _command, plain = connection.calls[1]
+    assert plain["from_viewport"] is False
+
+
 def test_create_camera_treats_a_bone_as_a_qualifier_of_its_object_not_a_fifth_source(monkeypatch) -> None:
     """A bone names where on the target to look, so it travels with the object and never alone."""
     connection = _StubConnection()
