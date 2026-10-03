@@ -654,7 +654,13 @@ def _payload_bytes_for_toolsets(raw_value: str | None) -> int:
 # builds a camera from the live 3D viewport's view. The flag, the description that says which
 # viewport is read and what it refuses alongside, and location/projection turning optional (so
 # an explicit placement can be refused next to it) are the cost.
-SHOT_MODE_BYTE_CEILING = 223_487
+#
+# Raised from 223,487, measured at 223,714 - 227 bytes: keyframe_character_pose stating one rule for
+# every rotation source. A LOCAL rotation_euler or rotation_axis_angle on the channel the bone's
+# rotation mode keys is kept as written; rotate, aim_at, matrix and every other rotation are
+# re-spelled the short way. `rotate` used to be keyed off the matrix decomposition, so a 170-to-190
+# degree turn was keyed 170 then -170 and swung 340 degrees the long way.
+SHOT_MODE_BYTE_CEILING = 223_714
 
 # The same rule as above, for the default, core-only surface.
 #

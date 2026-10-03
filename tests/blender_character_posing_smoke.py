@@ -1033,11 +1033,97 @@ def check_matrix_axis_angle_keys_take_the_short_way():
     spine.rotation_mode = "XYZ"
 
 
+def check_rotate_euler_keys_take_the_short_way():
+    # `rotate` reaches the channel through a matrix like any derived rotation, so 170 -> 190 ->
+    # 200 about X used to key 170, -170, -160 and swing back through 0 between the first two.
+    rest_pose(spin_rig)
+    handler.keyframe_character_pose(
+        spin_rig.name,
+        "SMOKE_spin_rotate",
+        keys=[
+            {
+                "frame": frame,
+                "poses": [{"bone_name": "spine", "rotate": {"axis": [1.0, 0.0, 0.0], "degrees": degrees}}],
+            }
+            for frame, degrees in SPIN_TURNS
+        ],
+        space="LOCAL",
+        action_policy="CREATE",
+        confirm_displace_action=True,
+    )
+    check_euler_keys_take_the_short_way("SMOKE_spin_rotate", 1e-5)
+    keyed = spine_euler_keys("SMOKE_spin_rotate")
+    for frame, degrees in SPIN_TURNS:
+        assert abs(math.degrees(keyed[frame][0]) - degrees) < 1e-3, f"frame {frame}: keyed {keyed[frame]}"
+
+
+def axis_angle_curves(action_name):
+    curves = {}
+    for curve in action_fcurves(bpy.data.actions[action_name]):
+        if curve.data_path == 'pose.bones["spine"].rotation_axis_angle':
+            curves[curve.array_index] = curve
+    assert sorted(curves) == [0, 1, 2, 3], f"{action_name} keyed {sorted(curves)} axis-angle components"
+    return [curves[index] for index in range(4)]
+
+
+def check_caller_axis_angle_is_keyed_as_given():
+    # Under LOCAL a rotation_axis_angle on an AXIS_ANGLE bone is its own channel, so 190 about +X
+    # stays 190 about +X; it used to key as 170 about -X and the midway axis collapsed to zero.
+    spine = spin_rig.pose.bones["spine"]
+    spine.rotation_mode = "AXIS_ANGLE"
+    rest_pose(spin_rig)
+    handler.keyframe_character_pose(
+        spin_rig.name,
+        "SMOKE_spin_axis_angle_local",
+        keys=[
+            {
+                "frame": frame,
+                "poses": [{"bone_name": "spine", "rotation_axis_angle": (math.radians(degrees), 1.0, 0.0, 0.0)}],
+            }
+            for frame, degrees in SPIN_TURNS
+        ],
+        space="LOCAL",
+        action_policy="CREATE",
+        confirm_displace_action=True,
+    )
+    curves = axis_angle_curves("SMOKE_spin_axis_angle_local")
+    for frame, degrees in SPIN_TURNS:
+        keyed = [curve.evaluate(frame) for curve in curves]
+        expected = [math.radians(degrees), 1.0, 0.0, 0.0]
+        assert max(abs(a - b) for a, b in zip(keyed, expected, strict=True)) < 1e-5, f"frame {frame} keyed {keyed}"
+    angle, axis_x = (curves[index].evaluate(SPIN_MIDWAY) for index in (0, 1))
+    assert 170.0 <= math.degrees(angle) <= 190.0 and axis_x > 0.5, (angle, axis_x)
+    spine.rotation_mode = "XYZ"
+
+
+def check_axis_angle_on_euler_bone_takes_the_short_way():
+    # An axis-angle entry on an Euler bone is converted through the matrix, not its own channel.
+    rest_pose(spin_rig)
+    handler.keyframe_character_pose(
+        spin_rig.name,
+        "SMOKE_spin_axis_angle_euler",
+        keys=[
+            {
+                "frame": frame,
+                "poses": [{"bone_name": "spine", "rotation_axis_angle": (math.radians(degrees), 1.0, 0.0, 0.0)}],
+            }
+            for frame, degrees in SPIN_TURNS
+        ],
+        space="LOCAL",
+        action_policy="CREATE",
+        confirm_displace_action=True,
+    )
+    check_euler_keys_take_the_short_way("SMOKE_spin_axis_angle_euler", 1e-5)
+
+
 check_matrix_euler_keys_take_the_short_way()
 check_reach_euler_keys_take_the_short_way()
 check_caller_euler_is_keyed_as_given()
 check_converted_euler_keys_take_the_short_way()
 check_matrix_axis_angle_keys_take_the_short_way()
+check_rotate_euler_keys_take_the_short_way()
+check_caller_axis_angle_is_keyed_as_given()
+check_axis_angle_on_euler_bone_takes_the_short_way()
 for action_name in (
     "SMOKE_spin_matrix",
     "SMOKE_spin_reach",
@@ -1045,6 +1131,9 @@ for action_name in (
     "SMOKE_spin_euler_POSE",
     "SMOKE_spin_euler_WORLD",
     "SMOKE_spin_axis_angle",
+    "SMOKE_spin_rotate",
+    "SMOKE_spin_axis_angle_local",
+    "SMOKE_spin_axis_angle_euler",
 ):
     bpy.data.actions.remove(bpy.data.actions[action_name])
 bpy.data.objects.remove(spin_rig)

@@ -492,9 +492,11 @@ async def keyframe_character_pose(
     previous key in this action: the quaternion sign is flipped when it would take the long
     route, and an Euler triple is made compatible with the previous key. Every key written to a
     quaternion channel gets the same sign rule, so per-frame rotation_quaternion values need no
-    sign bookkeeping by the caller. A caller's own rotation_euler is keyed as written under LOCAL
-    (190 stays 190, 720 stays two turns); under the other spaces it is converted, and re-spelled
-    like an aim.
+    sign bookkeeping by the caller. Under LOCAL, a caller's own rotation_euler or
+    rotation_axis_angle naming the channel the bone's rotation mode keys is keyed as written
+    (190 stays 190, 720 stays two turns, 190 about +X is not 170 about -X). Every other rotation
+    - rotate, matrix, an aim, any rotation under the other spaces, or one given for another
+    rotation mode - is converted, and re-spelled like an aim.
 
     Args:
         ctx: MCP request context.
@@ -511,8 +513,8 @@ async def keyframe_character_pose(
             interpolates the short way from the previous key in this action, including keys
             written earlier in the same call. Every rotation reaches the channel through a matrix
             whose decomposition lands on w >= 0, so without this a turn passing 180 degrees between
-            two keys swings back the long way. False keys that w >= 0 spelling; aim_at keys are
-            re-spelled either way.
+            two keys swings back the long way. False keys that w >= 0 spelling; aim_at, matrix
+            and rotate keys are re-spelled either way.
 
     Returns:
         armature_object, action, action_slot, assigned_action (the action now driving the rig),

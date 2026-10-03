@@ -253,6 +253,11 @@ _POSE_CHANNELS = (
 # Everything that ends up writing the bone's rotation channel, whether the caller spelled the
 # rotation or asked for one to be worked out.
 _ROTATION_CHANNELS = ("rotation_euler", "rotation_quaternion", "rotation_axis_angle", "rotate", "aim_at")
+# Rotations only ever reached through a matrix, so their keys are always re-spelled the short way.
+_DERIVED_ROTATION_KEYS = ("rotate", "aim_at", "matrix")
+# Channels whose numbers carry more than an orientation (turn count, axis-angle spelling), so a
+# caller's own value under LOCAL is keyed as written. A quaternion's sign is governed separately.
+_LITERAL_ROTATION_CHANNELS = ("rotation_euler", "rotation_axis_angle")
 
 
 def _rounded_matrix_list(matrix):
@@ -1011,8 +1016,9 @@ def _write_pose_keys(action, prepared, frame, keying_policy, space, *, quaternio
         prepared: `_validate_pose_specs` output, already applied to the rig.
         frame: The frame to key, subframe included.
         keying_policy: INSERT adds, REPLACE deletes then adds, REMOVE only deletes.
-        space: The pose space the entries are stated in. Under LOCAL a caller's rotation_euler is
-            the bone's own channel and is keyed as written; in any other space it was converted.
+        space: The pose space the entries are stated in. Under LOCAL a caller's rotation_euler or
+            rotation_axis_angle that names the bone's own channel is keyed as written; in any other
+            space, or on a bone whose rotation mode keys another channel, it was converted.
         quaternion_continuity: Re-sign every quaternion key to take the short way from the
             action's previous key, not only aim-derived ones. Every rotation reaches the channel
             through a matrix, whose decomposition lands on w >= 0, so a turn passing 180 degrees
@@ -1035,16 +1041,21 @@ def _write_pose_keys(action, prepared, frame, keying_policy, space, *, quaternio
                 with contextlib.suppress(TypeError):
                     pose_bone.keyframe_delete(data_path=path, frame=frame)
             if keying_policy != "REMOVE":
-                # A caller's rotation_euler under LOCAL is the bone's own channel, so it is keyed
-                # exactly as written: 190 stays 190 and 720 stays two turns, though the matrix the
-                # pose went through decomposed them onto +-180. Any other Euler key was derived -
-                # from an aim, a matrix (every keyframe_bone_reach key is one), or a rotation stated
-                # in another space - and is re-spelled the short way from the previous key.
-                caller_euler = path == "rotation_euler" and "rotation_euler" in spec
-                if caller_euler and space == _PARENT_RELATIVE_SPACE:
-                    pose_bone.rotation_euler = spec["rotation_euler"]
-                converted = caller_euler and space != _PARENT_RELATIVE_SPACE
-                derived = ("aim_at" in spec or "matrix" in spec) and path in _ROTATION_CHANNEL_WIDTH
+                # A caller's rotation_euler or rotation_axis_angle under LOCAL, on the channel the
+                # bone's rotation mode keys, is that channel, so it is keyed exactly as written:
+                # 190 stays 190 and 720 stays two turns, though the matrix the pose went through
+                # decomposed them onto one spelling. Every other rotation key was derived - from an
+                # aim, a matrix (every keyframe_bone_reach key is one), a `rotate`, a rotation
+                # stated in another space, or one stated for another rotation mode - and is
+                # re-spelled the short way from the previous key.
+                literal = path in _LITERAL_ROTATION_CHANNELS and path in spec
+                kept = literal and space == _PARENT_RELATIVE_SPACE
+                if kept:
+                    setattr(pose_bone, path, spec[path])
+                derived = any(key in spec for key in _DERIVED_ROTATION_KEYS) and path in _ROTATION_CHANNEL_WIDTH
+                converted = (
+                    path in _LITERAL_ROTATION_CHANNELS and not kept and any(key in spec for key in _ROTATION_CHANNELS)
+                )
                 if derived or converted or (quaternion_continuity and path == "rotation_quaternion"):
                     _match_previous_rotation(action, pose_bone, path, frame)
                 if not pose_bone.keyframe_insert(data_path=path, frame=frame, group=pose_bone.name):
